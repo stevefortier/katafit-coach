@@ -484,6 +484,12 @@ test("worker offers negotiated media only inside claimed request budget", async 
       ["coach_read_media"],
     );
     assert.equal(f.publications, 1);
+    const callCount = f.calls.length;
+    await assert.rejects(
+      exposed[0].execute("late", { media_ref: "opaque-original" }),
+      /READ_UNAVAILABLE/,
+    );
+    assert.equal(f.calls.length, callCount);
   } finally {
     await f.close();
   }

@@ -400,6 +400,9 @@ test("full backend catalog completes four turns within the unchanged wire budget
       ...entry.function.parameters,
       properties: {
         ...entry.function.parameters.properties,
+        ...(entry.function.name === "coach_read_media"
+          ? { media_ref: { type: "string", minLength: 100, maxLength: 4096 } }
+          : {}),
         request_id: schema.properties.request_id,
         lease_generation: schema.properties.lease_generation,
       },
@@ -410,7 +413,7 @@ test("full backend catalog completes four turns within the unchanged wire budget
       ],
     },
   }));
-  const reference = "opaque-" + "abcDEF012_-".repeat(40);
+  const reference = "abcDEF012_-".repeat(23).slice(0, 243);
   const activity = "123456789012345678901234";
   const f = await wire((method, params) => {
     if (method === "tools/list")
@@ -490,6 +493,14 @@ test("full backend catalog completes four turns within the unchanged wire budget
       p.bodies.every((body) => Buffer.byteLength(JSON.stringify(body)) < 28000),
     );
     assert.ok(JSON.stringify(p.bodies.at(-1)).includes(image));
+    assert.equal(JSON.stringify(p.bodies).includes(reference), false);
+    const detail = p.bodies[2].messages
+      .filter((m: any) => m.role === "tool")
+      .at(-1);
+    assert.match(
+      JSON.parse(detail.content).items[0].media_ref,
+      /^mr:[a-f0-9]{16}$/,
+    );
   } finally {
     await p.close();
     await f.close();

@@ -93,6 +93,24 @@ mock("./core/activities/media", {
 });
 const service = require("./core/personalExternalCoach");
 const reads = require("./core/externalCoachRead");
+// Memory-only observer: delegate every call unchanged to the real service.
+const issuedReferences = new Set();
+const backendReferenceChecks = [];
+const executeRead = reads.execute;
+reads.execute = async (...args) => {
+  const [, name, input] = args;
+  if (name === "coach_read_media")
+    backendReferenceChecks.push({
+      exactIssuedReference: issuedReferences.has(input.media_ref),
+      referenceLength: input.media_ref.length,
+    });
+  const result = await executeRead(...args);
+  if (name === "coach_read_activity" && input.section === "media_files")
+    for (const item of result.items || [])
+      if (typeof item.media_ref === "string")
+        issuedReferences.add(item.media_ref);
+  return result;
+};
 const express = require("express");
 const app = express();
 app.use(express.json());
@@ -327,6 +345,15 @@ try {
   assert.equal(request.reply_source, "external_agent");
   const references = referenceChecks();
   assert.ok(
+    backendReferenceChecks.length > 0 &&
+      backendReferenceChecks.every((r) => r.exactIssuedReference),
+  );
+  const modelView = JSON.stringify(payloads);
+  assert.ok(
+    [...issuedReferences].every((ref) => !modelView.includes(ref)),
+    "Backend references must remain private",
+  );
+  assert.ok(
     references.length > 0 && references.every((r) => r.exactIssuedReference),
   );
   assert.ok(
@@ -341,6 +368,8 @@ try {
       liveProvider: live,
       grantScopes: persistedGrant.grant.scopes,
       referenceChecks: references,
+      backendReferenceChecks,
+      originalReferencesAbsentFromProvider: true,
       catalogBytes: Buffer.byteLength(JSON.stringify(payloads[0].tools)),
       maximumActiveInference: maximumActive,
       ...(live
@@ -383,6 +412,7 @@ try {
     ),
     providerStatuses: providerResponses.map((r) => r.status),
     referenceChecks: referenceChecks(),
+    backendReferenceChecks,
     requestedTools: payloads.map((p) =>
       p.messages
         .filter((m) => m.role === "assistant")
@@ -394,6 +424,7 @@ try {
   throw error;
 } finally {
   await worker?.stop();
+  reads.execute = executeRead;
   for (const s of [server, provider]) {
     s.closeAllConnections();
     await new Promise((r) => s.close(r));

@@ -61,6 +61,7 @@ export class Worker {
     let fence: any;
     let deadline = 0;
     let publishing = false;
+    let disposeReads: (() => void) | undefined;
     const budget = () => {
       signal.throwIfAborted();
       const n = deadline - Date.now();
@@ -137,6 +138,7 @@ export class Worker {
           ),
         modelSignal,
       );
+      disposeReads = reads.dispose;
       if (
         current.attachment_count !== 0 &&
         !reads.tools.some((t) => t.name === "coach_read_media")
@@ -195,6 +197,8 @@ export class Worker {
         } catch {}
       }
       throw error;
+    } finally {
+      disposeReads?.();
     }
   }
   start() {
