@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "../katafit/client.js";
 import { serializeContext } from "../katafit/context.js";
+import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 export async function bounded<T>(
   action: () => Promise<T>,
   signal: AbortSignal,
@@ -21,6 +22,7 @@ export interface WorkerOptions {
   origin: string;
   token: string;
   system: string;
+  secrets?: string[];
   complete: (
     context: string,
     signal: AbortSignal,
@@ -71,15 +73,7 @@ export class Worker {
         this.update("idle");
         return;
       }
-      const instructions = (
-        await c.fetch("/api/agents/coach.md", undefined, 10000, 65536)
-      ).text;
-      if (
-        !/^# Kata\.fit external Coach agent v1[ \t]*(?:\r?\n|$)/.test(
-          instructions,
-        )
-      )
-        throw new Error("CONTRACT_UNSUPPORTED");
+      const instructions = await fetchInstructions(c);
       const { request } = await c.call("coach_claim_request", {
         lease_seconds: 120,
       });
@@ -128,7 +122,10 @@ export class Worker {
           this.options.complete(
             serialized,
             modelSignal,
-            this.options.system + "\n" + instructions,
+            effectivePrompt(this.options.system, instructions, [
+              this.options.token,
+              ...(this.options.secrets ?? []),
+            ]),
           ),
         modelSignal,
       );

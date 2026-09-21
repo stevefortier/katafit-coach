@@ -26,10 +26,14 @@ The package is not published on npm; use the produced tarball. `start` starts th
 1. Create a connection credential in Kata.fit's external Coach settings for the intended identity/scope. Paste it in the studio. No MCP configuration is exposed to users.
 2. Select OpenAI API or a compatible custom endpoint, enter the **exact model ID and provider API key**, then save. No silent provider fallback; no account/subscription OAuth support. The current Pi OpenAI transport requires an API key. Unauthenticated LM Studio is not supported yet; do not invent a dummy key.
 3. Test the saved Kata.fit connection. This verifies credential acceptance, **not inference or a persisted reply**.
-4. Edit name, voice, principles, examples, boundaries, verbosity, initiative, or advanced Markdown. Save and preview. Preview calls the configured provider; it never writes to Kata.fit. Review the effective instructions. Rollback creates a new nonsecret configuration revision and preserves credentials.
+4. Edit name, voice, principles, examples, boundaries, verbosity, initiative, or advanced Markdown. Save and preview; unsaved edits must be saved or reverted first. Preview calls the saved provider with the same system-instruction assembly as the worker, including freshly fetched backend instructions. If those instructions are unavailable/invalid, preview fails without inference. It never writes to Kata.fit and uses your sample question rather than canonical request context. The displayed instructions are a snapshot, not a guarantee about future backend changes. Rollback creates a new nonsecret configuration revision and preserves credentials.
 5. Click **Run Coach**, then ask a text question in Kata.fit. The worker claims it, reads server-authorized context, infers, publishes, then reads the request's completed state back. Ask a follow-up to exercise canonical history. Inspect the reply in Kata.fit for end-to-end acceptance.
 
 Stop the worker **before** changing connection/provider/persona. Blank password fields retain saved values; secrets are never returned to the UI. To revoke credentials, revoke at the provider/Kata.fit and replace them while stopped.
+
+Credential replacement is rejected if its value occurs in the new, current or previous configuration. Remove the value and save clean configuration twice before retrying replacement, so neither retained revision contains it. Unsafe legacy storage also fails closed on load/rollback/export; stop the service and repair the protected local configuration rather than exporting it. Never paste real credentials into persona fields.
+
+The audited backend lacks a Clear-generation completion fence: an in-flight reply can arrive after Clear. Shared/public Dojo context, renewable leases and original-media/detail access are also unsupported. These are draft acceptance gates, not capabilities supplied by persona instructions.
 
 ## Operations
 

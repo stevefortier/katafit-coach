@@ -14,6 +14,8 @@
 - Private authorized LM Studio `http://10.10.10.1:1234/v1/models` returned curl 7 (unreachable) on two attempts. No successful live-model inference claim. Current Pi OpenAI transport also requires an API key; unauthenticated provider transport remains an explicit limitation.
 - No production Kata.fit credential used, connection made, request created, or reply published. The synthetic backend demonstrates the real connector path, not production DB correctness or actual customer sharing policy.
 - No lease-renew endpoint, independent worker reply-text readback, media review, boot/login service setup, hosted multi-tenancy or Windows support.
+- Clear does not fence outstanding worker completion in the audited backend; late completion/idempotent repair can recreate a cleared reply. Backend generation/anchor fencing and race tests are a separate required change, not fixed here. Shared/public Dojo audience is not supported; synthetic peer context is not sharing evidence.
+- No authorized live persona evaluation has run. Fixed synthetic responses prove transport and instruction parity, not persona behavior or coaching quality.
 - Cross-platform macOS installation untested. Linux Node 22 is the locally exercised environment; CI declares Node 22/24 but actual remote status must be checked rather than assumed.
 
 Acceptance status: useful standalone install/configure/preview/worker pilot implemented. A's **live inference** gate and B's **production/real-backend continuity and renewal/media gates** are not fully satisfied; see explicit protocol prerequisites. No production merge or deploy authorized or performed.

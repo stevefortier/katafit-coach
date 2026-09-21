@@ -5,6 +5,7 @@ import { Store, compile } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
 import { Worker } from "../worker/runner.js";
 import { Client } from "../katafit/client.js";
+import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 export async function admin(
   store: Store,
   port = 4317,
@@ -127,14 +128,27 @@ export async function admin(
           const controller = preview;
           const cancel = () => controller.abort();
           res.once("close", cancel);
-          const c = store.publicConfig();
-          const prompt = compile(c);
           try {
+            const c = store.publicConfig();
+            const signal = AbortSignal.any([
+              controller.signal,
+              AbortSignal.timeout(60000),
+            ]);
+            const instructions = await fetchInstructions(
+              new Client(c.origin, store.secrets.token, signal),
+            ).catch(() => {
+              throw new Error("BACKEND_INSTRUCTIONS_UNAVAILABLE");
+            });
+            const prompt = effectivePrompt(
+              compile(c, Object.values(store.secrets)),
+              instructions,
+              Object.values(store.secrets),
+            );
             const text = await infer(
               { ...c.provider, apiKey: store.secrets.apiKey },
               prompt,
               body.text,
-              AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]),
+              signal,
             );
             for (const secret of [
               store.secrets.token,
@@ -143,7 +157,13 @@ export async function admin(
             ])
               if (secret && text.includes(secret))
                 throw new Error("OUTPUT_REJECTED");
-            return send(200, { text, prompt, revision: c.revision });
+            return send(200, {
+              text,
+              prompt,
+              revision: c.revision,
+              instructionsStatus: "fetched",
+              configuration: "saved",
+            });
           } finally {
             res.removeListener("close", cancel);
             preview = undefined;
@@ -157,7 +177,8 @@ export async function admin(
             worker = new Worker({
               origin: c.origin,
               token: store.secrets.token,
-              system: compile(c),
+              system: compile(c, Object.values(store.secrets)),
+              secrets: Object.values(store.secrets),
               complete: (context, signal, system) =>
                 infer(
                   { ...c.provider, apiKey: store.secrets.apiKey },
@@ -189,10 +210,15 @@ export async function admin(
         "STOP_WORKER_BEFORE_PREVIEW",
         "PROVIDER_KEY_REQUIRED",
         "NO_PREVIOUS_REVISION",
+        "BACKEND_INSTRUCTIONS_UNAVAILABLE",
+        "SECRET_IN_CONFIG",
       ];
       send(400, {
         error: allowed.includes(e.message) ? e.message : "REQUEST_FAILED",
-        hint: "Check connection, provider key/model and endpoint. No raw provider errors are logged.",
+        hint:
+          e.message === "BACKEND_INSTRUCTIONS_UNAVAILABLE"
+            ? "Exact preview unavailable: backend instructions could not be fetched or validated. No inference ran. Check the saved Kata.fit origin."
+            : "Check connection, provider key/model and endpoint. No raw provider errors are logged.",
       });
     }
   });

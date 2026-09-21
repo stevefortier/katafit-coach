@@ -34,7 +34,9 @@ async function load() {
   $("revision").textContent = "Saved revision " + config.revision;
   $("token").value = "";
   $("apiKey").value = "";
-  $("prompt").textContent = "Run preview to inspect the exact saved prompt.";
+  $("prompt").textContent =
+    "Preview the saved revision with freshly fetched backend instructions. Unsaved edits are not previewed.";
+  $("answer").textContent = "Your preview will appear here.";
 }
 function action(id, fn) {
   $(id).onclick = async () => {
@@ -73,7 +75,26 @@ action("rollback", async () => {
   );
 });
 action("connect", async () => notice((await api("connect", {})).message));
+function hasUnsavedEdits() {
+  return (
+    fields.some((f) => $(f).value !== config.persona[f]) ||
+    $("origin").value !== config.origin ||
+    $("baseUrl").value !== config.provider.baseUrl ||
+    $("model").value !== config.provider.model ||
+    !!$("token").value ||
+    !!$("apiKey").value
+  );
+}
 action("previewButton", async () => {
+  if (hasUnsavedEdits()) {
+    notice(
+      "Unsaved edits: save a new revision or revert edits before previewing.",
+    );
+    return;
+  }
+  $("answer").textContent = "Preview pending.";
+  $("prompt").textContent =
+    "Fetching backend instructions; exact preview not yet available.";
   notice("Preview running with your saved provider…");
   const r = await api("preview", { text: $("question").value });
   $("answer").textContent = r.text;
@@ -81,7 +102,7 @@ action("previewButton", async () => {
   notice(
     "Preview complete · revision " +
       r.revision +
-      " · nothing written to Kata.fit",
+      " · saved configuration + fetched backend instructions (snapshot) · nothing written to Kata.fit",
   );
 });
 action("cancel", async () => {

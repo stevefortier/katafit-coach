@@ -2,6 +2,69 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { Worker } from "../src/worker/runner.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { Store } from "../src/config/store.js";
+import { admin } from "../src/server/admin.js";
+
+test("preview and running worker receive byte-identical saved effective instructions", async () => {
+  const f = await fixture();
+  const dir = await mkdtemp(tmpdir() + "/coach-parity-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-key",
+  });
+  const systems: string[] = [];
+  let entered!: () => void;
+  const workerEntered = new Promise<void>((r) => (entered = r));
+  const app = await admin(store, 0, async (_provider, system) => {
+    systems.push(system);
+    if (systems.length === 2) entered();
+    return "Synthetic parity reply, not persona evaluation";
+  });
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string, body: unknown) =>
+    fetch(app.origin + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  try {
+    const preview = await (
+      await post("/api/preview", {
+        text: "Preview",
+        persona: { name: "UNSAVED" },
+      })
+    ).json();
+    assert.ok(preview.prompt.includes("Use server-authorized context."));
+    assert.equal(preview.instructionsStatus, "fetched");
+    assert.equal(preview.configuration, "saved");
+    assert.equal(preview.prompt.includes("UNSAVED"), false);
+    f.enqueue("Worker question");
+    assert.equal((await post("/api/run", {})).status, 200);
+    await Promise.race([
+      workerEntered,
+      new Promise((_, reject) => {
+        const t = setTimeout(() => reject(new Error("worker timeout")), 2000);
+        t.unref();
+      }),
+    ]);
+    assert.deepEqual(systems, [preview.prompt, preview.prompt]);
+  } finally {
+    await app.close();
+    await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 export async function fixture(
   options: { dropReply?: boolean; rejectFence?: boolean } = {},
 ) {

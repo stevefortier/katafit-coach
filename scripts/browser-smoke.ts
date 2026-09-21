@@ -6,7 +6,9 @@ import assert from "node:assert/strict";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 const dir = await mkdtemp(tmpdir() + "/coach-browser-");
+let providerCalls = 0;
 const provider = createServer(async (req, res) => {
+  providerCalls++;
   for await (const _ of req) {
   }
   res.setHeader("Content-Type", "text/event-stream");
@@ -37,6 +39,16 @@ const provider = createServer(async (req, res) => {
 await new Promise<void>((r) => provider.listen(0, "127.0.0.1", r));
 const store = new Store(dir);
 await store.init();
+const backend = createServer((_req, res) =>
+  res.end(
+    "# Kata.fit external Coach agent v1\nSynthetic browser backend policy",
+  ),
+);
+await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
+await store.save({
+  ...store.publicConfig(),
+  origin: `http://127.0.0.1:${(backend.address() as any).port}`,
+});
 const app = await admin(store, 0);
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
@@ -63,6 +75,13 @@ try {
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
+  await page.locator("#name").fill("Unsaved name");
+  await page.locator("#previewButton").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#notice")?.textContent?.includes("Unsaved edits"),
+  );
+  assert.equal(providerCalls, 0);
+  await page.locator("#name").fill("Sage");
   await page.locator("#previewButton").click();
   await page.waitForFunction(() =>
     document
@@ -78,6 +97,14 @@ try {
     /name: Sage/,
   );
   assert.equal(store.publicConfig().persona.name, "Sage");
+  assert.match(
+    (await page.locator("#prompt").textContent()) ?? "",
+    /Synthetic browser backend policy/,
+  );
+  assert.match(
+    (await page.locator("#notice").textContent()) ?? "",
+    /fetched backend instructions/,
+  );
   assert.equal(await page.locator("#apiKey").inputValue(), "");
   await mkdir("docs/evidence", { recursive: true });
   await page.evaluate(() => scrollTo(0, 0));
@@ -101,6 +128,8 @@ try {
 } finally {
   await browser.close();
   await app.close();
+  backend.closeAllConnections();
+  await new Promise((r) => backend.close(r));
   provider.closeAllConnections();
   await new Promise((r) => provider.close(r));
   await rm(dir, { recursive: true, force: true });

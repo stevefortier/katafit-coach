@@ -4,10 +4,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
+import { createServer } from "node:http";
 test("loopback admin requires bearer, exact origin, hides secrets, previews and controls worker", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-admin-");
   const store = new Store(dir);
   await store.init();
+  const backend = createServer((_req, res) =>
+    res.end("# Kata.fit external Coach agent v1\nSynthetic backend policy"),
+  );
+  await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
+  await store.save({
+    ...store.publicConfig(),
+    origin: `http://127.0.0.1:${(backend.address() as any).port}`,
+  });
   const app = await admin(store, 0, async () => "Synthetic preview");
   const origin = app.origin;
   const headers = {
@@ -69,6 +78,8 @@ test("loopback admin requires bearer, exact origin, hides secrets, previews and 
     assert.ok((await (await fetch(origin)).text()).includes("Kata.fit"));
   } finally {
     await app.close();
+    backend.closeAllConnections();
+    await new Promise((r) => backend.close(r));
     await rm(dir, { recursive: true, force: true });
   }
 });

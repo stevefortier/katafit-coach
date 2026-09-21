@@ -63,6 +63,100 @@ test("rejects copying known secrets into exportable persona configuration", asyn
   }
 });
 
+for (const key of ["apiKey", "token"] as const) {
+  test(`credential rotation rejects a secret in a retained persona (${key})`, async () => {
+    const dir = await mkdtemp(tmpdir() + "/coach-rotation-");
+    try {
+      const s = new Store(dir);
+      await s.init();
+      const c = s.publicConfig();
+      await s.save({
+        ...c,
+        [key]: "synthetic-old-credential",
+        persona: { ...c.persona, markdown: "synthetic-future-credential" },
+      });
+      const before = s.publicConfig();
+      await assert.rejects(
+        s.save({
+          ...before,
+          [key]: "synthetic-future-credential",
+          persona: { ...before.persona, markdown: "clean" },
+        }),
+        /SECRET_IN_CONFIG/,
+      );
+      assert.deepEqual(s.publicConfig(), before);
+      assert.equal(s.secrets[key], "synthetic-old-credential");
+      // Even the older retained revision is checked before credential replacement.
+      await s.save({
+        ...before,
+        persona: { ...before.persona, markdown: "clean" },
+      });
+      await assert.rejects(
+        s.save({ ...s.publicConfig(), [key]: "synthetic-future-credential" }),
+        /SECRET_IN_CONFIG/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const key of ["apiKey", "token"] as const) {
+  test(`rechecks export, compilation, restore and loaded revisions against ${key}`, async () => {
+    const dir = await mkdtemp(tmpdir() + "/coach-boundaries-");
+    try {
+      const s = new Store(dir);
+      await s.init();
+      const c = s.publicConfig();
+      await s.save({
+        ...c,
+        persona: { ...c.persona, markdown: "synthetic-lifecycle-secret" },
+      });
+      s.secrets[key] = "synthetic-lifecycle-secret";
+      assert.throws(() => s.publicConfig(), /SECRET_IN_CONFIG/);
+      assert.throws(
+        () =>
+          compile(
+            { ...c, persona: { ...c.persona, markdown: s.secrets[key] } },
+            Object.values(s.secrets),
+          ),
+        /SECRET_IN_CONFIG/,
+      );
+      s.secrets[key] = "";
+      await s.save(c);
+      s.secrets[key] = "synthetic-lifecycle-secret";
+      const before = s.publicConfig();
+      await assert.rejects(s.rollback(), /SECRET_IN_CONFIG/);
+      assert.deepEqual(s.publicConfig(), before);
+      // Reproduce a pre-fix disk state with safe current but unsafe previous.
+      await s.atomic("secrets", s.secrets);
+      await assert.rejects(new Store(dir).init(), /SECRET_IN_CONFIG/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("escaped credential characters cannot bypass export and prompt checks", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-escaped-");
+  try {
+    const s = new Store(dir);
+    await s.init();
+    const c = s.publicConfig();
+    const secret = 'synthetic-"quoted"-credential';
+    await assert.rejects(
+      s.save({
+        ...c,
+        apiKey: secret,
+        persona: { ...c.persona, markdown: secret },
+      }),
+      /SECRET_IN_CONFIG/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("loading an existing store does not rewrite its files", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-load-");
   try {
