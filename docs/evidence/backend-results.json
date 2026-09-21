@@ -1,0 +1,46 @@
+{
+  "synthetic_provider": true,
+  "real_components": [
+    "installed production-only standalone package",
+    "Pi Agent",
+    "Pi OpenAI-compatible adapter",
+    "Express app MCP router",
+    "MongoDB replica set",
+    "canonical Coach services"
+  ],
+  "standalone_head": "506f63355a1c76efae0d8751927aa34e2e0acb89",
+  "checks": [
+    {
+      "name": "canonical feedback through real Pi / HTTP / Mongo, original-time retry exclusion, exact persistence + attribution",
+      "passed": true
+    },
+    {
+      "name": "follow-up receives persisted exact prior reply",
+      "passed": true
+    },
+    {
+      "name": "completed duplicate repair rejected over real MCP after Clear",
+      "passed": true
+    },
+    {
+      "name": "Clear between real Pi inference and real MCP publication rejects in-flight reply",
+      "passed": true
+    },
+    {
+      "name": "revocation during Pi turn rejects publication via real authentication",
+      "passed": true
+    },
+    {
+      "name": "dojo credential scope, member-private persistence, foreign request denied",
+      "passed": true
+    },
+    {
+      "name": "membership revocation during real Pi turn fences dojo completion",
+      "passed": true
+    }
+  ],
+  "provider_calls": 6,
+  "package_sha256": "4c1df8fcbd71ac79c618d23334fe466ef89af8a3e253ccb73ca46201b7db8609",
+  "success": true,
+  "cleanup": "HTTP servers closed, Mongo client closed, disposable replica set stopped"
+}
