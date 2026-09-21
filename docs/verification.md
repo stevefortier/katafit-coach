@@ -9,13 +9,21 @@
 - `npm run test:package`: packed tarball installed with production dependencies only into a fresh temp prefix; help, service start, authenticated health and stop.
 - `npm audit --omit=dev`: no production vulnerabilities at implementation time. Initial full audit reported one low-severity development finding; do not conflate with the production audit.
 
-## Not verified / blockers
+## Real backend and live provider acceptance
 
-- Private authorized LM Studio `http://10.10.10.1:1234/v1/models` returned curl 7 (unreachable) on two attempts. No successful live-model inference claim. Current Pi OpenAI transport also requires an API key; unauthenticated provider transport remains an explicit limitation.
-- No production Kata.fit credential used, connection made, request created, or reply published. The synthetic backend demonstrates the real connector path, not production DB correctness or actual customer sharing policy.
-- No lease-renew endpoint, independent worker reply-text readback, media review, boot/login service setup, hosted multi-tenancy or Windows support.
-- Clear does not fence outstanding worker completion in the audited backend; late completion/idempotent repair can recreate a cleared reply. Backend generation/anchor fencing and race tests are a separate required change, not fixed here. Shared/public Dojo audience is not supported; synthetic peer context is not sharing evidence.
-- No authorized live persona evaluation has run. Fixed synthetic responses prove transport and instruction parity, not persona behavior or coaching quality.
-- Cross-platform macOS installation untested. Linux Node 22 is the locally exercised environment; CI declares Node 22/24 but actual remote status must be checked rather than assumed.
+- Authenticated LM Studio at `https://lmstudio-3090.munchlax.net/v1`, actual installed Pi/worker/admin, actual MCP router/services and disposable Mongo 7.0.14 replica set: **three live worker replies, five checks passed**. Persona A/B were saved/reloaded; same recovery question on separate synthetic users, plus B follow-up. Replies and external-agent attribution matched exactly in both Mongo collections. Fetched backend instructions were present; the quoted override in the follow-up did not produce a claimed plan mutation. See [reproducible commands and boundaries](live-acceptance.md) and redacted receipts in `docs/evidence/`.
+- Actual unmodified model budget: 60 seconds; requested/observed claim: 120 seconds. Each measured inference and total turn fits those limits. No lease-renewal support is implied.
+- Complementary installed Pi + deterministic provider + real MCP/Mongo suite: **seven checks passed**, covering provenance-backed visible assessment/original retry time, prior-answer continuity, completed and in-flight Clear fences, credential revocation, foreign-request denial/member-private Dojo routing, and membership-transition publication rejection.
+- Backend checkout `912ce158803473a7076c1ba9971ceb62654f9302` contains the Clear fix. Exercised `core/{personalExternalCoach,coach,externalCoachHistory}.js`, `routes/personalExternalCoach.js` and `public/agents/coach.md` are byte-equivalent to merge commit `9113eeedfe88289ee322fa86e7dd019b3dc76ce1` from app PR 771. This proves the local implementation, not a deployed app version.
+- Initial live attempts exposed harness-only idempotency-key/JSON-escape mistakes; no production runtime fix was needed. Persona style differed observably, but a small sample is not a quality/safety benchmark. A sometimes copied a backend heading and suggested a proposal; this pilot has no proposal tool. Full observed text is retained rather than hiding imperfect outputs.
+- Independent static review of runtime head `d3e185fc065e28d8de927d0f7a59f8066e22d754`: PASS within the text-only single-user Linux scope, with a stale-documentation nit corrected here. That review did not run tests/provider. Final evidence/diff review is still required before any readiness transition.
 
-Acceptance status: useful standalone install/configure/preview/worker pilot implemented. A's **live inference** gate and B's **production/real-backend continuity and renewal/media gates** are not fully satisfied; see explicit protocol prerequisites. No production merge or deploy authorized or performed.
+## Limits / remaining review gate
+
+- No production Kata.fit credential/customer data, production connection or customer reply was used. App-user browser acceptance is not established by this local admin/API/database harness. Browser screenshots remain synthetic-provider UI evidence.
+- No lease-renew endpoint, independent worker reply-text readback endpoint, media review, boot/login service setup, hosted multi-tenancy or Windows support. Shared/public Dojo audiences are unsupported; member-private routing is not public sharing.
+- Clear is fenced only on backends with the app PR 771 implementation; older deployments remain unsafe. No app deployment was performed.
+- Unauthenticated providers remain unsupported by the Pi adapter; the successful LM Studio run used a real authorized token, never a dummy key. Live credentials were memory-only in the acceptance harness; normal synthetic tests cover file-storage lifecycle.
+- macOS installation is untested. Linux is verified; remote CI status must be checked on each head rather than inferred from local results.
+
+Acceptance status: live inference, bounded persona A/B and real-backend continuity/persistence/Clear gates are exercised for the **text-only single-user Linux pilot**. Final parent review of the evidence/diff remains open. The PR stays draft; no merge, deployment, npm publication or readiness transition was performed.

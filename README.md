@@ -2,7 +2,7 @@
 
 A local Node service with a browser studio for your Kata.fit connection, an explicit model provider, and a versioned coaching persona. No Hermes or OpenClaw dependency. One installation, one credential-authorized personal or Dojo scope. No shell/filesystem tools, proactive scheduler, mutations, or marketplace.
 
-**Pilot, not production-certified.** The real Pi runtime and HTTP integration are exercised with synthetic model/backend fixtures. Live LM Studio was unreachable from the build host; no production credential was used and no production conversation was written. See [verification](docs/verification.md) and [protocol limitations](docs/protocol.md).
+**Text-only single-user Linux pilot, not production-certified.** The installed worker and actual Pi runtime have answered through authenticated live LM Studio, the real backend MCP routes and disposable MongoDB. Saved persona A/B, canonical follow-up and exact persisted reply attribution were verified with synthetic users only. No production credential or customer conversation was used. See [live acceptance](docs/live-acceptance.md), [verification](docs/verification.md) and [protocol limitations](docs/protocol.md).
 
 ## Install from this repository
 
@@ -33,7 +33,7 @@ Stop the worker **before** changing connection/provider/persona. Blank password 
 
 Credential replacement is rejected if its value occurs in the new, current or previous configuration. Remove the value and save clean configuration twice before retrying replacement, so neither retained revision contains it. Unsafe legacy storage also fails closed on load/rollback/export; stop the service and repair the protected local configuration rather than exporting it. Never paste real credentials into persona fields.
 
-The audited backend lacks a Clear-generation completion fence: an in-flight reply can arrive after Clear. Shared/public Dojo context, renewable leases and original-media/detail access are also unsupported. These are draft acceptance gates, not capabilities supplied by persona instructions.
+Clear-generation/anchor completion fencing is verified against the real backend implementation merged in app PR 771, using disposable MongoDB (including in-flight and duplicate-repair rejection). This does not claim deployment of that app change. Shared/public Dojo context, renewable leases and original-media/detail access remain unsupported and outside this text-only pilot; persona instructions cannot supply them.
 
 ## Operations
 
