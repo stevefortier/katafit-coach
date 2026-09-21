@@ -80,6 +80,15 @@
             <button id="connect" class="secondary">
               Test saved connection
             </button>
+            <label class="vision-option"
+              ><input id="vision" type="checkbox" /> Enable original-image input
+              for a vision-capable provider</label
+            >
+            <p class="hint">
+              Explicit opt-in. Authorized original images may be sent to your
+              configured provider. This does not grant data access; Kata.fit
+              credentials and requester grants still apply.
+            </p>
           </section>
           <section class="card" id="persona">
             <div class="eyebrow">02 / PERSONA</div>
@@ -136,7 +145,8 @@
             instructions. Save unsaved edits first. If backend instructions are
             unavailable, no preview runs. This sandbox uses your sample
             question, not a real request's canonical context, and does not write
-            to Kata.fit.
+            to Kata.fit. Preview has no claimed-request data authority or read
+            tools.
           </p>
           <label
             >Sample question<textarea id="question" rows="2">

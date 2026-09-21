@@ -1,5 +1,7 @@
 # Internal Kata.fit wire protocol
 
+> The lifecycle below is preserved for v1. Optional v2 request-scoped reads, original images and limits are specified in [request-scoped data access](request-data-access.md).
+
 Reference implementations: official `katafit-hermes/katafit/worker.py`, `katafit-openclaw/src/worker.js`, and backend `core/personalExternalCoach.js` / `routes/personalExternalCoach.js`. Local real-backend acceptance used `/home/kai/regimen-clear-fence/regimen-backend` with the app PR 771 Clear fence; see [artifact provenance](verification.md). No application source files were changed.
 
 The connector internally uses stateless Streamable HTTP JSON-RPC at `/api/agents/coach/mcp`, Bearer credential, `MCP-Protocol-Version: 2025-03-26`, and Accept JSON or SSE. Redirects are rejected, HTTP calls bounded to 10 seconds, response bytes to 1 MiB. JSON-RPC version/ID and tool errors are checked; both structuredContent and JSON text content are accepted.

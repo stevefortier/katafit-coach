@@ -66,7 +66,7 @@ test("preview and running worker receive byte-identical saved effective instruct
 });
 
 export async function fixture(
-  options: { dropReply?: boolean; rejectFence?: boolean } = {},
+  options: { dropReply?: boolean; rejectFence?: boolean; data?: boolean } = {},
 ) {
   let history: any[] = [];
   let current: any = null;
@@ -91,8 +91,37 @@ export async function fixture(
     let value: any = {};
     const a = msg.params?.arguments;
     if (msg.method === "initialize") value = { protocolVersion: "2025-03-26" };
+    else if (msg.method === "tools/list")
+      value = {
+        tools: options.data
+          ? [
+              { name: "coach_get_capabilities" },
+              {
+                name: "coach_read_media",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    request_id: { type: "string" },
+                    lease_generation: { type: "integer" },
+                    media_ref: { type: "string" },
+                  },
+                  required: ["request_id", "lease_generation"],
+                  additionalProperties: false,
+                },
+              },
+            ]
+          : [],
+      };
     else {
       switch (msg.params.name) {
+        case "coach_get_capabilities":
+          value = {
+            contract_version: 2,
+            allowed_tools: ["coach_read_media"],
+            domains: { media: { available: true } },
+            limits: {},
+          };
+          break;
         case "coach_list_requests":
           value = {
             requests:
@@ -161,8 +190,9 @@ export async function fixture(
       JSON.stringify({
         jsonrpc: "2.0",
         id: msg.id,
-        result:
-          msg.method === "initialize" ? value : { structuredContent: value },
+        result: ["initialize", "tools/list"].includes(msg.method)
+          ? value
+          : { structuredContent: value },
       }),
     );
   });
@@ -427,6 +457,59 @@ test("actual Pi adapter connects authorized context to persisted synthetic-backe
   } finally {
     model.closeAllConnections();
     await new Promise((r) => model.close(r));
+    await f.close();
+  }
+});
+
+test("worker offers negotiated media only inside claimed request budget", async () => {
+  const f = await fixture({ data: true });
+  let exposed: any;
+  try {
+    f.enqueue("original photo");
+    f.current.attachment_count = 1;
+    const w = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      vision: true,
+      complete: async (context, signal, system, tools) => {
+        exposed = tools;
+        assert.ok(context.includes("Request data capabilities"));
+        return "Synthetic authorized image reply";
+      },
+    });
+    await w.pollOnce();
+    assert.deepEqual(
+      exposed.map((t: any) => t.name),
+      ["coach_read_media"],
+    );
+    assert.equal(f.publications, 1);
+  } finally {
+    await f.close();
+  }
+});
+test("request model deadline fences a non-cooperative completion without publication", async () => {
+  const f = await fixture();
+  let finish: ((text: string) => void) | undefined;
+  const worker = new Worker({
+    origin: f.origin,
+    token: "synthetic-token",
+    system: "Coach",
+    modelMs: 30,
+    complete: async () =>
+      new Promise<string>((r) => {
+        finish = r;
+      }),
+  });
+  try {
+    f.enqueue("Timeout proof");
+    await assert.rejects(worker.pollOnce(), /CANCELLED|Timeout|abort/i);
+    finish?.("Late ignored response");
+    assert.equal(f.publications, 0);
+    assert.equal(f.current.status, "failed");
+  } finally {
+    finish?.("Late");
+    await worker.stop();
     await f.close();
   }
 });

@@ -31,6 +31,7 @@ async function load() {
   $("origin").value = config.origin;
   $("model").value = config.provider.model;
   $("baseUrl").value = config.provider.baseUrl;
+  $("vision").checked = config.provider.vision === true;
   $("revision").textContent = "Saved revision " + config.revision;
   $("token").value = "";
   $("apiKey").value = "";
@@ -60,7 +61,11 @@ action("save", async () => {
   await api("config", {
     persona,
     origin: $("origin").value,
-    provider: { baseUrl: $("baseUrl").value, model: $("model").value },
+    provider: {
+      baseUrl: $("baseUrl").value,
+      model: $("model").value,
+      vision: $("vision").checked,
+    },
     token: $("token").value,
     apiKey: $("apiKey").value,
   });
@@ -81,6 +86,7 @@ function hasUnsavedEdits() {
     $("origin").value !== config.origin ||
     $("baseUrl").value !== config.provider.baseUrl ||
     $("model").value !== config.provider.model ||
+    $("vision").checked !== (config.provider.vision === true) ||
     !!$("token").value ||
     !!$("apiKey").value
   );
@@ -102,7 +108,7 @@ action("previewButton", async () => {
   notice(
     "Preview complete · revision " +
       r.revision +
-      " · saved configuration + fetched backend instructions (snapshot) · nothing written to Kata.fit",
+      " · saved configuration + fetched backend instructions (snapshot) · no claimed-request data authority or read tools · nothing written to Kata.fit",
   );
 });
 action("cancel", async () => {

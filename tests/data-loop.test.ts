@@ -1,0 +1,287 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { complete } from "../src/runtime/piAdapter.js";
+import { Client } from "../src/katafit/client.js";
+import { discoverReads } from "../src/katafit/readTools.js";
+import { readFixture, fence } from "./data-fixtures.js";
+
+// Original 1x1 PNG fixture; equality asserts bytes, not a caption or resized image.
+const image =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=";
+async function providerFixture(reply: (body: any, n: number) => any) {
+  const bodies: any[] = [];
+  const server = createServer(async (req, res) => {
+    let raw = "";
+    for await (const c of req) raw += c;
+    const body = JSON.parse(raw);
+    bodies.push(body);
+    const delta = reply(body, bodies.length);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.end(
+      "data: " +
+        JSON.stringify({
+          id: "synthetic",
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", ...delta },
+              finish_reason: null,
+            },
+          ],
+        }) +
+        "\n\ndata: " +
+        JSON.stringify({
+          id: "synthetic",
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: delta.tool_calls ? "tool_calls" : "stop",
+            },
+          ],
+        }) +
+        "\n\ndata: [DONE]\n\n",
+    );
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return {
+    bodies,
+    config: {
+      baseUrl: `http://127.0.0.1:${(server.address() as any).port}/v1`,
+      model: "synthetic",
+      apiKey: "synthetic-private-provider",
+      vision: true,
+    },
+    async close() {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    },
+  };
+}
+function toolCall(name: string, args: any = {}) {
+  return {
+    tool_calls: [
+      {
+        index: 0,
+        id: "tool1",
+        type: "function",
+        function: { name, arguments: JSON.stringify(args) },
+      },
+    ],
+  };
+}
+test("real Pi model -> MCP media -> next provider payload preserves original PNG bytes -> final", async () => {
+  const f = await readFixture({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ original: true, mime_type: "image/png" }),
+      },
+      { type: "image", mimeType: "image/png", data: image },
+    ],
+  });
+  const p = await providerFixture((_b, n) =>
+    n === 1
+      ? toolCall("coach_read_media", { media_ref: "opaque-original" })
+      : { content: "Original fixture inspected." },
+  );
+  try {
+    const signal = AbortSignal.timeout(5000);
+    const reads = await discoverReads(
+      new Client(f.origin, "synthetic-private-token", signal),
+      fence,
+      {
+        vision: true,
+        secrets: ["synthetic-private-token", "synthetic-private-provider"],
+      },
+    );
+    const text = await complete(
+      p.config,
+      "Coach",
+      "Inspect authorized media",
+      signal,
+      reads.tools,
+    );
+    assert.equal(text, "Original fixture inspected.");
+    assert.equal(p.bodies.length, 2);
+    assert.deepEqual(
+      p.bodies[0].tools.map((t: any) => t.function.name),
+      ["coach_list_activities", "coach_read_media"],
+    );
+    assert.equal(JSON.stringify(p.bodies).includes("lease_generation"), false);
+    const content = p.bodies[1].messages.flatMap((m: any) =>
+      Array.isArray(m.content) ? m.content : [],
+    );
+    const img = content.find((c: any) => c.type === "image_url");
+    assert.ok(img, "original image must reach second provider call");
+    assert.deepEqual(
+      Buffer.from(img.image_url.url.split(",")[1], "base64"),
+      Buffer.from(image, "base64"),
+    );
+    assert.ok(
+      p.bodies[1].messages.some(
+        (m: any) => m.role === "tool" && m.content.includes("original"),
+      ),
+    );
+    assert.deepEqual(f.calls.at(-1).params.arguments, {
+      media_ref: "opaque-original",
+      ...fence,
+    });
+  } finally {
+    await p.close();
+    await f.close();
+  }
+});
+test("real Pi stops repeated model tool calls at six turns without returning a partial answer", async () => {
+  const f = await readFixture();
+  const p = await providerFixture(() => toolCall("coach_list_activities"));
+  try {
+    const signal = AbortSignal.timeout(5000);
+    const reads = await discoverReads(
+      new Client(f.origin, "token", signal),
+      fence,
+      { vision: false, secrets: [] },
+    );
+    await assert.rejects(
+      complete(p.config, "Coach", "Loop", signal, reads.tools),
+      /BUDGET_EXHAUSTED/,
+    );
+    assert.equal(p.bodies.length, 6);
+  } finally {
+    await p.close();
+    await f.close();
+  }
+});
+for (const [label, result] of Object.entries({
+  unsupported: {
+    content: [{ type: "image", mimeType: "image/svg+xml", data: image }],
+  },
+  malformed: {
+    content: [{ type: "image", mimeType: "image/png", data: "not base64" }],
+  },
+  oversized: {
+    content: [
+      {
+        type: "image",
+        mimeType: "image/png",
+        data: Buffer.alloc(8 * 1024 * 1024 + 1).toString("base64"),
+      },
+    ],
+  },
+  count: {
+    content: Array.from({ length: 5 }, () => ({
+      type: "image",
+      mimeType: "image/png",
+      data: image,
+    })),
+  },
+  embeddedResource: {
+    content: [{ type: "resource", resource: { uri: "file:///private" } }],
+  },
+}))
+  test(`media rejects ${label}`, async () => {
+    const f = await readFixture(result);
+    try {
+      const signal = AbortSignal.timeout(5000);
+      const r = await discoverReads(
+        new Client(f.origin, "token", signal),
+        fence,
+        { vision: true, secrets: [] },
+      );
+      await assert.rejects(
+        r.tools.find((t) => t.name === "coach_read_media")!.execute("x", {}),
+        /MEDIA_REJECTED|RESULT_REJECTED/,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+for (const args of [
+  { request_id: "forged" },
+  { lease_generation: 99 },
+  { limit: "5" },
+])
+  test(`real Pi cannot normalize rejected raw arguments ${JSON.stringify(args)}`, async () => {
+    const f = await readFixture();
+    const p = await providerFixture((_b, n) =>
+      n === 1
+        ? toolCall("coach_list_activities", args)
+        : { content: "Read unavailable." },
+    );
+    try {
+      const signal = AbortSignal.timeout(5000);
+      const r = await discoverReads(
+        new Client(f.origin, "token", signal),
+        fence,
+        { vision: false, secrets: [] },
+      );
+      assert.equal(
+        await complete(p.config, "Coach", "Read", signal, r.tools),
+        "Read unavailable.",
+      );
+      assert.equal(f.calls.length, 2);
+    } finally {
+      await p.close();
+      await f.close();
+    }
+  });
+test("real Pi blocks a burst beyond twelve read executions", async () => {
+  const f = await readFixture();
+  const p = await providerFixture(() => ({
+    tool_calls: Array.from({ length: 13 }, (_, i) => ({
+      index: i,
+      id: "call" + i,
+      type: "function",
+      function: { name: "coach_list_activities", arguments: "{}" },
+    })),
+  }));
+  try {
+    const signal = AbortSignal.timeout(5000);
+    const r = await discoverReads(
+      new Client(f.origin, "token", signal),
+      fence,
+      { vision: false, secrets: [] },
+    );
+    await assert.rejects(
+      complete(p.config, "Coach", "Read", signal, r.tools),
+      /BUDGET_EXHAUSTED/,
+    );
+    assert.equal(
+      f.calls.filter((c) => c.params?.name === "coach_list_activities").length,
+      12,
+    );
+    assert.equal(p.bodies.length, 1);
+  } finally {
+    await p.close();
+    await f.close();
+  }
+});
+test("Pi fails closed instead of silently downgrading a mismatched vision capability", async () => {
+  const f = await readFixture();
+  try {
+    const signal = AbortSignal.timeout(1000);
+    const r = await discoverReads(
+      new Client(f.origin, "token", signal),
+      fence,
+      { vision: true, secrets: [] },
+    );
+    await assert.rejects(
+      complete(
+        {
+          baseUrl: "http://127.0.0.1:1/v1",
+          model: "synthetic",
+          apiKey: "synthetic-key",
+          vision: false,
+        },
+        "Coach",
+        "Image",
+        signal,
+        r.tools,
+      ),
+      /VISION_UNSUPPORTED/,
+    );
+  } finally {
+    await f.close();
+  }
+});

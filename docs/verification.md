@@ -1,5 +1,7 @@
 # Verification record
 
+> Historical text-only verification. Current v2 synthetic-provider/real-Pi and packed backend proof is documented in [request-scoped data access](request-data-access.md); previous static/live review does not cover new runtime code.
+
 ## Executed locally
 
 - Released Pi package discovery and declaration/export inspection; full SDK explicit-loader spike; core adapter chosen from observed coding-metadata injection and authless limitations.

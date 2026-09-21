@@ -1,4 +1,4 @@
-import { chromium } from "playwright-core";
+import { chromium, type Browser, type BrowserContext } from "playwright-core";
 import { createServer } from "node:http";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -50,21 +50,28 @@ await store.save({
   origin: `http://127.0.0.1:${(backend.address() as any).port}`,
 });
 const app = await admin(store, 0);
-const browser = await chromium.launch({
-  executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
-  headless: true,
-  args: ["--no-sandbox"],
-});
+let browser: Browser | undefined;
+let context: BrowserContext | undefined;
 try {
-  const page = await browser.newPage({
-    viewport: { width: 1440, height: 1000 },
-  });
+  browser = process.env.COACH_CDP
+    ? await chromium.connectOverCDP(process.env.COACH_CDP)
+    : await chromium.launch({
+        executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
+        headless: true,
+        args: ["--no-sandbox"],
+      });
+  context = await browser.newContext();
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(app.origin);
   await page.locator("#adminKey").fill(store.secrets.admin);
   await page.locator("#unlock").click();
   await page.locator("#studio").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#vision").isChecked(), false);
+  assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
+  await page.locator("#vision").check();
   await page
     .locator("#baseUrl")
     .fill(`http://127.0.0.1:${(provider.address() as any).port}/v1`);
@@ -76,6 +83,7 @@ try {
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
   await page.locator("#name").fill("Unsaved name");
+  assert.equal(store.publicConfig().provider.vision, true);
   await page.locator("#previewButton").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.includes("Unsaved edits"),
@@ -106,11 +114,16 @@ try {
     /fetched backend instructions/,
   );
   assert.equal(await page.locator("#apiKey").inputValue(), "");
+  assert.match(
+    (await page.locator("#notice").textContent()) ?? "",
+    /no claimed-request data authority/,
+  );
   await mkdir("docs/evidence", { recursive: true });
   await page.evaluate(() => scrollTo(0, 0));
-  await page.screenshot({ path: "docs/evidence/studio-desktop.png" });
+  await page.locator("#vision").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "docs/evidence/data-vision-desktop.png" });
   await page.locator("#preview").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: "docs/evidence/studio-preview.png" });
+  await page.screenshot({ path: "docs/evidence/data-preview.png" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => scrollTo(0, 0));
   assert.equal(
@@ -119,14 +132,23 @@ try {
     ),
     true,
   );
-  await page.screenshot({ path: "docs/evidence/studio-mobile.png" });
+  await page.locator("#vision").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: "docs/evidence/data-vision-mobile.png" });
+  await page.locator("#rollback").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#notice")?.textContent?.includes("restored"),
+  );
+  assert.equal(await page.locator("#vision").isChecked(), false);
+  assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
+  assert.equal(store.publicConfig().provider.vision, false);
   assert.deepEqual(errors, []);
   console.log(
     "Browser PASS: unlock, config persistence, actual Pi + synthetic HTTP preview, cleared secret inputs, desktop/mobile no overflow; 0 page errors.",
   );
   await page.close();
 } finally {
-  await browser.close();
+  await context?.close();
+  await browser?.close();
   await app.close();
   backend.closeAllConnections();
   await new Promise((r) => backend.close(r));

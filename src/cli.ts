@@ -149,7 +149,7 @@ async function main() {
     );
     child.once("error", () => {
       console.error(
-        "Browser could not open. Visit the local studio and read admin from the protected secrets.json file.",
+        "Browser could not open. Use a local desktop browser; credential storage is encrypted. See the protected headless setup instructions in README.",
       );
     });
     return;

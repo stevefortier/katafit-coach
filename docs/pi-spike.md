@@ -1,5 +1,7 @@
 # A — Pi feasibility spike
 
+> Historical zero-tool spike. Current Pi request-scoped tool/image behavior is covered in [request-scoped data access](request-data-access.md).
+
 Released npm packages, not guessed upstream names: `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, all pinned to **0.86.1**, installed and their actual `dist` declarations/exports inspected. Full SDK's published `createAgentSession` accepts `tools: string[]` (not tool instances), `modelRuntime`, a `ResourceLoader`, in-memory settings/session managers.
 
 `spike/fullSdk.ts` is the executed full-SDK experiment. Its custom loader returns no extensions, skills, prompts, themes, AGENTS files or appended prompt files; models/auth are explicitly in memory, model-catalog network refresh is disabled, `modelsPath:null`, `tools:[]`, `noTools:'all'`, no custom tools, and a synthetic non-existent cwd/agent directory. No ambient discovery is delegated to DefaultResourceLoader.

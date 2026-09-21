@@ -5,6 +5,13 @@ export class Client {
     private token: string,
     readonly signal: AbortSignal,
   ) {}
+  withSignal(signal?: AbortSignal) {
+    return new Client(
+      this.origin,
+      this.token,
+      signal ? AbortSignal.any([this.signal, signal]) : this.signal,
+    );
+  }
   async fetch(path: string, body?: unknown, budget = 10000, limit = 1048576) {
     const response = await fetch(this.origin + path, {
       method: body ? "POST" : "GET",
@@ -47,12 +54,14 @@ export class Client {
     params?: unknown,
     notification = false,
     budget = 10000,
+    limit = 1048576,
   ): Promise<any> {
     const id = ++this.id;
     const data = await this.fetch(
       "/api/agents/coach/mcp",
       { jsonrpc: "2.0", ...(notification ? {} : { id }), method, params },
       budget,
+      limit,
     );
     if (notification) return;
     let result;

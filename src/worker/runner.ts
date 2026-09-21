@@ -1,3 +1,6 @@
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { discoverReads } from "../katafit/readTools.js";
+import { assertNoSecrets } from "../config/store.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "../katafit/client.js";
 import { serializeContext } from "../katafit/context.js";
@@ -23,10 +26,12 @@ export interface WorkerOptions {
   token: string;
   system: string;
   secrets?: string[];
+  vision?: boolean;
   complete: (
     context: string,
     signal: AbortSignal,
     system: string,
+    tools: AgentTool[],
   ) => Promise<string>;
   onState?: (state: string) => void;
   pollMs?: number;
@@ -100,11 +105,14 @@ export class Worker {
           (k) => current[k] !== request[k],
         ) ||
         !current.requester_id ||
-        !["personal", "dojo"].includes(current.scope) ||
-        current.attachment_count !== 0
+        !["personal", "dojo"].includes(current.scope)
       )
         throw new Error("CONTEXT_REJECTED");
       const serialized = serializeContext(context);
+      assertNoSecrets(context, [
+        this.options.token,
+        ...(this.options.secrets ?? []),
+      ]);
       if (
         serialized.includes(this.options.token) ||
         instructions.includes(this.options.token)
@@ -117,15 +125,36 @@ export class Worker {
       if (ms <= 0) throw new Error("LEASE_EXPIRED");
       const timeout = AbortSignal.timeout(ms);
       const modelSignal = AbortSignal.any([signal, timeout]);
+      const reads = await bounded(
+        () =>
+          discoverReads(
+            new Client(this.options.origin, this.options.token, modelSignal),
+            fence,
+            {
+              vision: this.options.vision === true,
+              secrets: [this.options.token, ...(this.options.secrets ?? [])],
+            },
+          ),
+        modelSignal,
+      );
+      if (
+        current.attachment_count !== 0 &&
+        !reads.tools.some((t) => t.name === "coach_read_media")
+      )
+        throw new Error("CONTEXT_REJECTED");
       const text = await bounded(
         () =>
           this.options.complete(
-            serialized,
+            JSON.stringify({
+              ...JSON.parse(serialized),
+              "Request data capabilities": reads.status,
+            }),
             modelSignal,
             effectivePrompt(this.options.system, instructions, [
               this.options.token,
               ...(this.options.secrets ?? []),
             ]),
+            reads.tools,
           ),
         modelSignal,
       );
