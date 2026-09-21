@@ -27,6 +27,35 @@ if (live) {
   assert.ok((await response.json()).data.some((m) => m.id === liveModel));
 }
 const providerResponses = [];
+function referenceChecks() {
+  const messages = payloads.at(-1)?.messages || [];
+  const issued = new Set();
+  const scan = (value) => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "media_ref" && typeof child === "string") issued.add(child);
+      scan(child);
+    }
+  };
+  for (const message of messages.filter((m) => m.role === "tool")) {
+    try {
+      scan(JSON.parse(message.content));
+    } catch {
+      /* Image content is separate. */
+    }
+  }
+  return messages
+    .filter((m) => m.role === "assistant")
+    .flatMap((m) => m.tool_calls || [])
+    .filter((t) => t.function.name === "coach_read_media")
+    .map((t) => {
+      const ref = JSON.parse(t.function.arguments).media_ref;
+      return {
+        exactIssuedReference: issued.has(ref),
+        referenceLength: typeof ref === "string" ? ref.length : 0,
+      };
+    });
+}
 let active = 0;
 let maximumActive = 0;
 const { Worker } = await import(
@@ -77,9 +106,19 @@ const payloads = [];
 const provider = createServer(async (req, res) => {
   try {
     let raw = "";
-    for await (const c of req) raw += c;
+    for await (const c of req) {
+      raw += c;
+      assert.ok(Buffer.byteLength(raw) <= 24 * 1024 * 1024);
+    }
     const body = JSON.parse(raw);
     payloads.push(body);
+    if (payloads.length === 1 && process.env.KATAFIT_DATA_CATALOG_FILE) {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(
+        process.env.KATAFIT_DATA_CATALOG_FILE,
+        JSON.stringify(body.tools, null, 2),
+      );
+    }
     if (live) {
       assert.equal(active, 0, "Only one active inference allowed");
       active++;
@@ -105,6 +144,7 @@ const provider = createServer(async (req, res) => {
         });
         for await (const chunk of response.body) {
           recorded.body += Buffer.from(chunk).toString("utf8");
+          assert.ok(Buffer.byteLength(recorded.body) <= 1024 * 1024);
           res.write(chunk);
         }
         res.end();
@@ -187,17 +227,28 @@ try {
       ...service.DEFAULT_SCOPES,
       "userdata:read",
       "media:read",
-      ...(live ? ["history:read"] : []),
+      "history:read",
+      "communications:read",
+      "dojo_shared:read",
     ],
   });
-  await reads.putGrant(String(uid), {
+  const grant = await reads.putGrant(String(uid), {
     credential_id: String(created.credential.id),
-    scopes: ["userdata:read", "media:read", ...(live ? ["history:read"] : [])],
-    allow_pre_membership_history: live,
+    scopes: [
+      "userdata:read",
+      "media:read",
+      "history:read",
+      "communications:read",
+      "dojo_shared:read",
+    ],
+    allow_pre_membership_history: true,
     allow_original_media: true,
-    communications_kinds: [],
+    communications_kinds: ["direct_message", "dojo_room"],
     expires_in_days: 30,
   });
+  assert.deepEqual([...grant.grant.scopes].sort(), [...reads.SCOPES].sort());
+  const persistedGrant = await reads.getGrant(String(uid));
+  assert.deepEqual(persistedGrant.grant, grant.grant);
   await db.collection("activities").insertOne({
     _id: new ObjectId(),
     user_id: uid,
@@ -207,9 +258,7 @@ try {
   });
   await service.enqueueExternalCoachRequest(
     String(uid),
-    live
-      ? "Inspect my latest media activity. Use the available read tools to list media activities, read its media_files section, then retrieve the original image. Tell me the dominant color you actually see. Do not guess or substitute a description for viewing the original."
-      : "Inspect my original image",
+    "Inspect my latest media activity. Use the available read tools to list media activities, read its media_files section, then retrieve the original image. Tell me the dominant color you actually see. Do not guess or substitute a description for viewing the original.",
     [],
     { client_request_id: "standalone-original-proof" },
   );
@@ -276,12 +325,23 @@ try {
     assert.equal(maximumActive, 1);
   }
   assert.equal(request.reply_source, "external_agent");
+  const references = referenceChecks();
+  assert.ok(
+    references.length > 0 && references.every((r) => r.exactIssuedReference),
+  );
+  assert.ok(
+    !JSON.stringify(payloads.at(-1).messages).includes("Read unavailable:"),
+  );
+  assert.equal(payloads[0].tools.length, 11); // Personal scope excludes Dojo-owner-only read.
   console.log(
     JSON.stringify({
       proof: live
         ? "real MCP + ephemeral Mongo + packed Pi + live authorized model; synthetic users/storage image"
         : "real MCP + ephemeral Mongo + standalone Pi; synthetic model/storage",
       liveProvider: live,
+      grantScopes: persistedGrant.grant.scopes,
+      referenceChecks: references,
+      catalogBytes: Buffer.byteLength(JSON.stringify(payloads[0].tools)),
       maximumActiveInference: maximumActive,
       ...(live
         ? {
@@ -317,7 +377,12 @@ try {
     liveProvider: live,
     workerState: worker?.state,
     providerTurns: payloads.length,
-    providerResponses,
+    envelopeBytes: payloads.map((p) => Buffer.byteLength(JSON.stringify(p))),
+    catalogBytes: payloads.map((p) =>
+      Buffer.byteLength(JSON.stringify(p.tools)),
+    ),
+    providerStatuses: providerResponses.map((r) => r.status),
+    referenceChecks: referenceChecks(),
     requestedTools: payloads.map((p) =>
       p.messages
         .filter((m) => m.role === "assistant")

@@ -382,3 +382,134 @@ test("Pi fails closed instead of silently downgrading a mismatched vision capabi
     await f.close();
   }
 });
+
+// Catalog captured from backend 8a82fe3 with all five grants, personal owner.
+test("full backend catalog completes four turns within the unchanged wire budget", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { wire, schema } = await import("./data-fixtures.js");
+  const catalog = JSON.parse(
+    await readFile(
+      new URL("./fixtures/backend-full-catalog.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const sourceTools = catalog.map((entry: any) => ({
+    name: entry.function.name,
+    description: entry.function.description,
+    inputSchema: {
+      ...entry.function.parameters,
+      properties: {
+        ...entry.function.parameters.properties,
+        request_id: schema.properties.request_id,
+        lease_generation: schema.properties.lease_generation,
+      },
+      required: [
+        ...entry.function.parameters.required,
+        "request_id",
+        "lease_generation",
+      ],
+    },
+  }));
+  const reference = "opaque-" + "abcDEF012_-".repeat(40);
+  const activity = "123456789012345678901234";
+  const f = await wire((method, params) => {
+    if (method === "tools/list")
+      return { tools: [{ name: "coach_get_capabilities" }, ...sourceTools] };
+    if (params.name === "coach_get_capabilities")
+      return {
+        structuredContent: {
+          contract_version: 2,
+          allowed_tools: sourceTools.map((t: any) => t.name),
+        },
+      };
+    if (params.name === "coach_read_media") {
+      assert.equal(params.arguments.media_ref, reference);
+      return {
+        content: [{ type: "image", mimeType: "image/png", data: image }],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            items:
+              params.name === "coach_list_activities"
+                ? [{ _id: activity }]
+                : [{ media_ref: reference }],
+          }),
+        },
+      ],
+    };
+  });
+  const p = await providerFixture((body, n) => {
+    if (n === 1) return toolCall("coach_list_activities", { types: ["media"] });
+    const last = body.messages.filter((m: any) => m.role === "tool").at(-1);
+    if (n === 2)
+      return toolCall("coach_read_activity", {
+        activity_id: JSON.parse(last.content).items[0]._id,
+        section: "media_files",
+      });
+    if (n === 3)
+      return toolCall("coach_read_media", {
+        media_ref: JSON.parse(last.content).items[0].media_ref,
+        representation: "original",
+      });
+    return { content: "Original consumed." };
+  });
+  try {
+    const signal = AbortSignal.timeout(5000);
+    const r = await discoverReads(
+      new Client(f.origin, "credential", signal),
+      fence,
+      { vision: true, secrets: [] },
+    );
+    assert.equal(r.tools.length, 11);
+    const list = r.tools.find((t) => t.name === "coach_list_activities")!;
+    await assert.rejects(
+      list.execute("invalid", { start_date: "2026-02-30T00:00:00Z" }),
+      /ARGUMENTS_REJECTED/,
+    );
+    // Similar instruction size to the actual backend coach.md, not an empty system.
+    assert.equal(
+      await complete(
+        p.config,
+        "C".repeat(15000),
+        "Inspect original",
+        signal,
+        r.tools,
+      ),
+      "Original consumed.",
+    );
+    assert.equal(p.bodies.length, 4);
+    assert.deepEqual(
+      p.bodies[0].tools.map((t: any) => t.function.name),
+      sourceTools.map((t: any) => t.name),
+    );
+    assert.ok(
+      p.bodies.every((body) => Buffer.byteLength(JSON.stringify(body)) < 28000),
+    );
+    assert.ok(JSON.stringify(p.bodies.at(-1)).includes(image));
+  } finally {
+    await p.close();
+    await f.close();
+  }
+});
+
+test("wire budget includes outbound model metadata before any dispatch", async () => {
+  const p = await providerFixture(() => ({ content: "Unexpected" }));
+  try {
+    await assert.rejects(
+      complete(
+        { ...p.config, model: "m".repeat(28001) },
+        "Coach",
+        "Read",
+        AbortSignal.timeout(5000),
+      ),
+      /MODEL_BUDGET_EXHAUSTED/,
+    );
+    assert.equal(p.bodies.length, 0);
+  } finally {
+    await p.close();
+  }
+});

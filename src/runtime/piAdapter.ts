@@ -49,15 +49,6 @@ export async function complete(
     },
     streamFn: (model, context, options) => {
       assertNoSecrets(context, secrets);
-      const text = JSON.stringify(context, (_k, v) =>
-        v?.type === "image" ? { type: "image", mimeType: v.mimeType } : v,
-      );
-      const bytes = Buffer.byteLength(text);
-      inputBytes += bytes;
-      if (bytes > 28000 || inputBytes > 120000) {
-        exhausted = true;
-        throw new Error("MODEL_BUDGET_EXHAUSTED");
-      }
       return streamSimple(model, context, {
         ...options,
         apiKey: provider.apiKey,
@@ -66,6 +57,17 @@ export async function complete(
         onPayload: (payload) => {
           assertNoSecrets(payload, secrets);
           assertNoSecrets(JSON.stringify(payload), secrets);
+          // Budget the actual wire envelope, not Pi's internal message metadata.
+          // Original image bytes have separate count/byte caps in discoverReads.
+          const text = JSON.stringify(payload, (_k, value) =>
+            value?.type === "image_url" ? { type: "image_url" } : value,
+          );
+          const bytes = Buffer.byteLength(text);
+          inputBytes += bytes;
+          if (bytes > 28000 || inputBytes > 120000) {
+            exhausted = true;
+            throw new Error("MODEL_BUDGET_EXHAUSTED");
+          }
         },
         env: {},
         maxTokens: 2000,

@@ -33,6 +33,8 @@ This is a data-only expansion. Persona defaults and coaching tone are unchanged.
 | Image | 8 MiB decoded bytes each; 12 MiB encoded HTTP response |
 | Images per request | 4 total (stricter than the contract's per-turn maximum); 16 MiB total decoded bytes |
 
+The text-envelope cap measures the final provider payload (including model and tool definitions), not Pi's internal message metadata. Original image parts use the separate image caps. Model-facing schemas omit the root `$schema` annotation and replace generated date-time regexes with UTC ISO 8601 guidance; the original schema still validates every raw tool argument without coercion. Consent, authorized tool membership and opaque references are never shortened or removed to fit this budget.
+
 The text-envelope cap is a conservative byte budget, not an exact model-specific tokenizer. It can reject large otherwise-authorized pages; request smaller pages. Backend advertised limits and permission denials still apply. PNG/JPEG/WebP/GIF MIME types are accepted with canonical base64 encoding; the backend validates actual original media. The worker does not resize, transcode or claim to decode image pixels itself.
 
 ## Credentials

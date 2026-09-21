@@ -85,6 +85,22 @@ function modelSchema(input: any) {
   walk(s);
   return s;
 }
+// Provider-facing guidance need not repeat generated calendar/leap-year regexes.
+// The original schema remains the authoritative raw-argument validator below.
+function compactSchema(schema: any): any {
+  const copy = structuredClone(schema);
+  const visit = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "string" && node.format === "date-time") {
+      delete node.pattern;
+      node.description = `${node.description ? node.description + " " : ""}UTC ISO 8601 timestamp ending in Z.`;
+    }
+    for (const child of Object.values(node)) visit(child);
+  };
+  delete copy.$schema;
+  visit(copy);
+  return copy;
+}
 // Created once per claim. Never shared or cached between requests.
 export async function discoverReads(
   client: Client,
@@ -167,8 +183,7 @@ export async function discoverReads(
       name: t.name,
       label: t.name,
       description: t.description ?? t.name,
-      parameters,
-      // Pi validates with coercion; reject raw forged/invalid input before that step.
+      parameters: compactSchema(parameters), // Pi validates with coercion; reject raw forged/invalid input before that step.
       prepareArguments: checkArgs,
       async execute(_id, args: any, signal) {
         client.signal.throwIfAborted();
