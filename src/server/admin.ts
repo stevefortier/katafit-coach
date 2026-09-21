@@ -145,7 +145,11 @@ export async function admin(
               Object.values(store.secrets),
             );
             const text = await infer(
-              { ...c.provider, apiKey: store.secrets.apiKey },
+              {
+                ...c.provider,
+                apiKey: store.secrets.apiKey,
+                secrets: Object.values(store.secrets),
+              },
               prompt,
               body.text,
               signal,
@@ -163,6 +167,8 @@ export async function admin(
               revision: c.revision,
               instructionsStatus: "fetched",
               configuration: "saved",
+              dataAuthority:
+                "none: preview has no claimed request or data tools",
             });
           } finally {
             res.removeListener("close", cancel);
@@ -179,12 +185,18 @@ export async function admin(
               token: store.secrets.token,
               system: compile(c, Object.values(store.secrets)),
               secrets: Object.values(store.secrets),
-              complete: (context, signal, system) =>
+              vision: c.provider.vision === true,
+              complete: (context, signal, system, tools) =>
                 infer(
-                  { ...c.provider, apiKey: store.secrets.apiKey },
+                  {
+                    ...c.provider,
+                    apiKey: store.secrets.apiKey,
+                    secrets: Object.values(store.secrets),
+                  },
                   system,
                   context,
                   signal,
+                  tools,
                 ),
             });
             worker.start();

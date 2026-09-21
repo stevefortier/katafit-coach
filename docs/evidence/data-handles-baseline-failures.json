@@ -1,0 +1,88 @@
+[
+  {
+    "runtime": "older existing installed artifact (not target baseline)",
+    "failure": "MODEL_BUDGET_EXHAUSTED",
+    "receipt": {
+      "liveProvider": false,
+      "workerState": "working",
+      "providerTurns": 3,
+      "envelopeBytes": [
+        25370,
+        26077,
+        27148
+      ],
+      "catalogBytes": [
+        10544,
+        10544,
+        10544
+      ],
+      "providerStatuses": [],
+      "referenceChecks": [],
+      "backendReferenceChecks": [
+        {
+          "exactIssuedReference": true,
+          "referenceLength": 243
+        }
+      ],
+      "requestedTools": [
+        [],
+        [
+          "coach_list_activities"
+        ],
+        [
+          "coach_list_activities",
+          "coach_read_activity"
+        ]
+      ]
+    }
+  },
+  {
+    "runtime": "6a20a92132a6f9c1917b63aabdc3c1dd0c0e1f94 rebuilt from archive",
+    "failure": "Backend references must remain private",
+    "receipt": {
+      "liveProvider": false,
+      "workerState": "reply-persisted",
+      "providerTurns": 4,
+      "envelopeBytes": [
+        22428,
+        23135,
+        24206,
+        25278
+      ],
+      "catalogBytes": [
+        7602,
+        7602,
+        7602,
+        7602
+      ],
+      "providerStatuses": [],
+      "referenceChecks": [
+        {
+          "exactIssuedReference": true,
+          "referenceLength": 243
+        }
+      ],
+      "backendReferenceChecks": [
+        {
+          "exactIssuedReference": true,
+          "referenceLength": 243
+        }
+      ],
+      "requestedTools": [
+        [],
+        [
+          "coach_list_activities"
+        ],
+        [
+          "coach_list_activities",
+          "coach_read_activity"
+        ],
+        [
+          "coach_list_activities",
+          "coach_read_activity",
+          "coach_read_media"
+        ]
+      ]
+    }
+  }
+]

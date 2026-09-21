@@ -1,0 +1,73 @@
+{
+  "runtimeCommit": "ddaea0653242de47939d583b14b4d6fe78b19562",
+  "tarballSha256": "b3aca48a2253d1360fd4d25c8c7f3f66d2db27c77d55c9b175fb30c54c729c48",
+  "backendCommit": "8a82fe3c025392d79c02edbcb9ca1a7d50bbd782",
+  "backendArchiveSha256": "c4648c1eb649b9a547b5b691fead68c0851f678f929fa9131537028d266c0f21",
+  "installedRuntimeSha256": {
+    "dist/cli.js": "a7dafc7e820b40736f3dfee1ce3dae12101963f407daf8a4fe379158f0c6e098",
+    "dist/config/store.js": "f0ef23fa39bf6eaee309d9b08cf261568339466d576ea3af6185746bc5636932",
+    "dist/katafit/client.js": "39f6d7d519c89aa5af95d2130880db62d66d7688583870ade58186fc7801d25d",
+    "dist/katafit/context.js": "f581264fe838955ee1371ffaebe4d59050036d7da721b613f850bc7c16228da7",
+    "dist/katafit/mediaHandles.js": "ce9bd3ca85f90499c403926da40d9a6a6339ca41e479bc140d73433121693c47",
+    "dist/katafit/readTools.js": "c961bc192d4db9683260f91d7a13146f1efc2de0fde50e42f4ea92136b7f3dba",
+    "dist/runtime/piAdapter.js": "24a1ccc03edef76276ec8659caf9dcb339e811699df3d8247e4cd0363c2cb669",
+    "dist/runtime/prompt.js": "ad88de4f92c7b8151e2d6a1ffe37b02a7574f7e40f87a93d31608fb3103fc469",
+    "dist/server/admin.js": "3b12e901d6856e700925d5af378b4098e2db74de9307ccbea05c0fb64b78f99d",
+    "dist/worker/runner.js": "52443e98e0f27c06137e8da029763c061fecfd297ecfbe4730d9464c96bf7265"
+  },
+  "productionOnlyInstall": true,
+  "proof": "real MCP + ephemeral Mongo + standalone Pi; synthetic model/storage",
+  "liveProvider": false,
+  "grantScopes": [
+    "userdata:read",
+    "media:read",
+    "history:read",
+    "communications:read",
+    "dojo_shared:read"
+  ],
+  "referenceChecks": [
+    {
+      "exactIssuedReference": true,
+      "referenceLength": 19
+    }
+  ],
+  "backendReferenceChecks": [
+    {
+      "exactIssuedReference": true,
+      "referenceLength": 243
+    }
+  ],
+  "originalReferencesAbsentFromProvider": true,
+  "catalogBytes": 7763,
+  "maximumActiveInference": 0,
+  "modelChosenTools": [
+    "coach_list_activities",
+    "coach_read_activity",
+    "coach_read_media"
+  ],
+  "providerTextEnvelopeBytes": [
+    22589,
+    23296,
+    24143,
+    24859
+  ],
+  "providerTurns": 4,
+  "originalImageBytes": 97,
+  "originalImageSha256": "964cdfad7355988d6fae643e321ae060eb3086a3d204b7a8476f4d7b5c9575e3",
+  "canonicalStatus": "completed",
+  "canonicalReply": "Synthetic provider consumed original media through real MCP and Mongo.",
+  "canonicalSource": "external_agent",
+  "modelTools": [
+    "coach_read_profile",
+    "coach_list_activities",
+    "coach_read_activity",
+    "coach_read_media",
+    "coach_list_conversations",
+    "coach_read_conversation",
+    "coach_list_records",
+    "coach_read_record",
+    "coach_read_exercise_history",
+    "coach_read_catalog",
+    "coach_read_daily_summary"
+  ]
+}

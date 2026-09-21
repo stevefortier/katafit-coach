@@ -2,7 +2,7 @@
 
 A local Node service with a browser studio for your Kata.fit connection, an explicit model provider, and a versioned coaching persona. No Hermes or OpenClaw dependency. One installation, one credential-authorized personal or Dojo scope. No shell/filesystem tools, proactive scheduler, mutations, or marketplace.
 
-**Text-only single-user Linux pilot, not production-certified.** The installed worker and actual Pi runtime have answered through authenticated live LM Studio, the real backend MCP routes and disposable MongoDB. Saved persona A/B, canonical follow-up and exact persisted reply attribution were verified with synthetic users only. No production credential or customer conversation was used. See [live acceptance](docs/live-acceptance.md), [verification](docs/verification.md) and [protocol limitations](docs/protocol.md).
+**Single-user Linux pilot, not production-certified.** Negotiated v2 adds request-scoped read tools and opt-in original-image input; v1 remains text-only. Packed v2 proof uses real Pi, final-backend MCP and disposable MongoDB with synthetic users/storage. Bounded request-local media handles now avoid copying long backend references. The full-five-grant deterministic four-turn proof and one authorized live vision attempt both pass without increasing budgets or narrowing consent: the live model retrieved the original image and identified its color, with exact canonical reply persistence. Earlier failed runs remain documented. Independent review of this runtime delta is still required; PR #2 remains draft. No customer data or production Kata.fit credentials were used. See [request data access and proof](docs/request-data-access.md) and [bounded live results and limits](docs/evidence/data-final-integration.md).
 
 ## Install from this repository
 
@@ -11,7 +11,7 @@ Requires Linux or macOS and **Node 22.19+**. Linux is the tested platform. Windo
 ```sh
 git clone https://github.com/stevefortier/katafit-coach.git
 cd katafit-coach
-git checkout feat/standalone-coach-mvp
+git checkout <reviewed-commit>
 npm ci --ignore-scripts
 npm test
 npm run build
@@ -21,7 +21,7 @@ katafit-coach start
 katafit-coach open
 ```
 
-The package is not published on npm; use the produced tarball. `start` starts the studio in the background, **not inference**. `open` launches your local browser with a fragment-only admin credential, immediately removed from browser history by the page. It is not written to logs or sent in the URL to the server. On headless hosts, use a private SSH tunnel and the protected installation's `secrets.json` `admin` value in the login form. Never expose or reverse-proxy the studio publicly.
+The package is not published on npm; use the produced tarball from the reviewed commit. `start` starts the studio in the background, **not inference**. `open` launches your local browser with a fragment-only admin credential, immediately removed from browser history by the page. It is not written to logs or sent in the URL to the server. On headless hosts, use a private SSH tunnel and the protected installation's `secrets.json` `admin` value in the login form. Never expose or reverse-proxy the studio publicly.
 
 1. Create a connection credential in Kata.fit's external Coach settings for the intended identity/scope. Paste it in the studio. No MCP configuration is exposed to users.
 2. Select OpenAI API or a compatible custom endpoint, enter the **exact model ID and provider API key**, then save. No silent provider fallback; no account/subscription OAuth support. The current Pi OpenAI transport requires an API key. Unauthenticated LM Studio is not supported yet; do not invent a dummy key.
@@ -33,7 +33,7 @@ Stop the worker **before** changing connection/provider/persona. Blank password 
 
 Credential replacement is rejected if its value occurs in the new, current or previous configuration. Remove the value and save clean configuration twice before retrying replacement, so neither retained revision contains it. Unsafe legacy storage also fails closed on load/rollback/export; stop the service and repair the protected local configuration rather than exporting it. Never paste real credentials into persona fields.
 
-Clear-generation/anchor completion fencing is verified against the real backend implementation merged in app PR 771, using disposable MongoDB (including in-flight and duplicate-repair rejection). This does not claim deployment of that app change. Shared/public Dojo context, renewable leases and original-media/detail access remain unsupported and outside this text-only pilot; persona instructions cannot supply them.
+Clear-generation/anchor completion fencing remains backend-owned. v2 reads require explicit credential scopes and requester grants; a persona cannot grant access. Enable original-image input only for a known vision-capable provider. Preview has no claimed-request authority and exposes no data tools. Renewable leases remain unsupported. See the v2 contract and limitations below; earlier text-only receipts do not certify this expansion or its deployment.
 
 ## Operations
 
@@ -47,7 +47,7 @@ katafit-coach serve   # foreground, suitable for a service supervisor
 
 Default studio: `http://127.0.0.1:4317`. Data: `~/.katafit-coach` (directory 0700, files 0600). `KATAFIT_COACH_HOME` and `KATAFIT_COACH_PORT` override these. A lock prevents duplicate service ownership of the same installation. Start does not install a login/boot service, and workers intentionally start stopped after a service restart. A laptop asleep/offline means an offline Coach. The backend owns retries and request deadlines.
 
-Local runtime does **not** mean local inference. Sending a remote provider request sends the server-authorized context to that provider. Use only providers and endpoints you trust. Private-file storage is a documented server-secret mechanism, not an OS keychain or encryption-at-rest claim. Protect/back up the directory as credentials; persona export intentionally omits secrets.
+Local runtime does **not** mean local inference. Server-authorized context and opt-in original images go to your configured provider. Private-file storage is a documented server-secret mechanism, not an OS keychain or encryption-at-rest claim. Protect/back up the directory as credentials; persona export intentionally omits secrets.
 
 ## Development and proof
 

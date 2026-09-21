@@ -17,7 +17,10 @@ test("loopback admin requires bearer, exact origin, hides secrets, previews and 
     ...store.publicConfig(),
     origin: `http://127.0.0.1:${(backend.address() as any).port}`,
   });
-  const app = await admin(store, 0, async () => "Synthetic preview");
+  const app = await admin(store, 0, async (provider) => {
+    assert.deepEqual(provider.secrets, Object.values(store.secrets));
+    return "Synthetic preview";
+  });
   const origin = app.origin;
   const headers = {
     Authorization: "Bearer " + store.secrets.admin,

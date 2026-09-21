@@ -1,23 +1,78 @@
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { assertNoSecrets } from "../config/store.js";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 export interface Provider {
   baseUrl: string;
   model: string;
+  vision?: boolean;
+  // Local-only credentials to exclude from every model-visible payload.
+  secrets?: string[];
   apiKey: string;
 }
+// Count the serialized envelope in full, exempting only validated image DATA at
+// the provider's actual messages[].content[] path. Schema defaults, text, URL
+// prefixes and every image metadata/extra field remain in the text budget.
+export function providerTextBytes(payload: unknown): number {
+  const wire = JSON.stringify(payload);
+  const body = JSON.parse(wire);
+  let imageBytes = 0;
+  let imageCount = 0;
+  let exemptBytes = 0;
+  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+    for (const part of Array.isArray(message?.content) ? message.content : []) {
+      if (part?.type !== "image_url") continue;
+      const url = part.image_url?.url;
+      if (typeof url !== "string") throw new Error("MEDIA_REJECTED");
+      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,/.exec(url);
+      if (!match) throw new Error("MEDIA_REJECTED");
+      const data = url.slice(match[0].length);
+      if (
+        !data.length ||
+        data.length > 11184812 ||
+        /[^A-Za-z0-9+/=]/.test(data)
+      )
+        throw new Error("MEDIA_REJECTED");
+      const decoded = Buffer.from(data, "base64");
+      imageCount++;
+      imageBytes += decoded.length;
+      if (
+        decoded.toString("base64") !== data ||
+        decoded.length > 8 * 1024 * 1024 ||
+        imageCount > 4 ||
+        imageBytes > 16 * 1024 * 1024
+      )
+        throw new Error("MEDIA_REJECTED");
+      exemptBytes += data.length;
+    }
+  }
+  return Buffer.byteLength(wire) - exemptBytes;
+}
+
 // The core has no resource loader/discovery. Only this explicit state exists.
 export async function complete(
   provider: Provider,
   system: string,
   context: string,
   signal: AbortSignal,
+  tools: AgentTool[] = [],
 ): Promise<string> {
   signal.throwIfAborted();
   if (!provider.apiKey) throw new Error("PROVIDER_KEY_REQUIRED");
+  if (
+    provider.vision !== true &&
+    tools.some((t) => t.name === "coach_read_media")
+  )
+    throw new Error("VISION_UNSUPPORTED");
+  const secrets = [provider.apiKey, ...(provider.secrets ?? [])];
+  let turns = 0,
+    calls = 0,
+    exhausted = false,
+    outputTokens = 0,
+    inputBytes = 0;
   const agent = new Agent({
     initialState: {
       systemPrompt: system,
-      tools: [],
+      tools,
       model: {
         id: provider.model,
         name: provider.model,
@@ -25,27 +80,85 @@ export async function complete(
         api: "openai-completions",
         baseUrl: provider.baseUrl,
         reasoning: false,
-        input: ["text"],
+        input: provider.vision === true ? ["text", "image"] : ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 32768,
         maxTokens: 2000,
       },
     },
-    streamFn: (model, context, options) =>
-      streamSimple(model, context, {
+    streamFn: (model, context, options) => {
+      assertNoSecrets(context, secrets);
+      return streamSimple(model, context, {
         ...options,
         apiKey: provider.apiKey,
+        // Pi has now assembled the actual request body (including model and
+        // tool schemas). Never rely only on the pre-serialization context.
+        onPayload: (payload) => {
+          assertNoSecrets(payload, secrets);
+          assertNoSecrets(JSON.stringify(payload), secrets);
+          const bytes = providerTextBytes(payload);
+          inputBytes += bytes;
+          if (bytes > 28000 || inputBytes > 120000) {
+            exhausted = true;
+            throw new Error("MODEL_BUDGET_EXHAUSTED");
+          }
+        },
         env: {},
         maxTokens: 2000,
-      }),
+      });
+    },
     getApiKey: () => provider.apiKey,
-    shouldStopAfterTurn: () => true,
+    toolExecution: "sequential",
+    transformContext: async (messages) =>
+      messages.map((m) =>
+        m.role === "toolResult" && m.isError
+          ? {
+              ...m,
+              content: [
+                {
+                  type: "text",
+                  text: "Read unavailable: access, arguments or budget rejected.",
+                },
+              ],
+              details: {},
+            }
+          : m,
+      ),
+    beforeToolCall: async () => {
+      if (++calls > 12) {
+        exhausted = true;
+        return { block: true, reason: "TOOL_BUDGET_EXHAUSTED" };
+      }
+      return undefined;
+    },
+    afterToolCall: async ({ isError }) =>
+      isError
+        ? {
+            content: [
+              {
+                type: "text",
+                text: "Read unavailable: access, arguments or budget rejected.",
+              },
+            ],
+            details: {},
+          }
+        : undefined,
+    shouldStopAfterTurn: ({ message }) => {
+      outputTokens += message.usage.output;
+      if (
+        (++turns >= 6 && message.content.some((c) => c.type === "toolCall")) ||
+        outputTokens > 12000
+      )
+        exhausted = true;
+      return exhausted;
+    },
   });
   const abort = () => agent.abort();
   signal.addEventListener("abort", abort, { once: true });
   try {
     signal.throwIfAborted();
     await agent.prompt(context);
+    if (exhausted) throw new Error("MODEL_BUDGET_EXHAUSTED");
     signal.throwIfAborted();
     const message = [...agent.state.messages]
       .reverse()

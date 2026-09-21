@@ -1,0 +1,61 @@
+{
+  "live_provider": true,
+  "outcome": "MODEL_BUDGET_EXHAUSTED",
+  "canonical_success_claimed": false,
+  "grant_scopes": [
+    "userdata:read",
+    "media:read"
+  ],
+  "provider_turns": 4,
+  "responses": [
+    {
+      "status": 200,
+      "actual_model_tool_calls": [
+        {
+          "name": "coach_list_activities",
+          "arguments": {
+            "types": [
+              "media"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "status": 200,
+      "actual_model_tool_calls": [
+        {
+          "name": "coach_read_activity",
+          "arguments": {
+            "activity_id": "[synthetic activity]",
+            "section": "media_files"
+          }
+        }
+      ]
+    },
+    {
+      "status": 200,
+      "actual_model_tool_calls": [
+        {
+          "name": "coach_read_media",
+          "arguments": {
+            "representation": "original",
+            "media_ref_sha256": "debcc49dc30ef43e2644cbdb530892d60b63392e93787bfac13979b3d57e00b6"
+          }
+        }
+      ]
+    },
+    {
+      "status": 200,
+      "actual_model_tool_calls": [
+        {
+          "name": "coach_read_media",
+          "arguments": {
+            "representation": "original",
+            "media_ref_sha256": "56455c0aca19c457def9c70b70b73120f96556c3f979bf40a38b5e6a2a9b1856"
+          }
+        }
+      ]
+    }
+  ]
+}

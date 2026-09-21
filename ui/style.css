@@ -243,3 +243,17 @@ footer {
     grid-template-columns: 1fr;
   }
 }
+/* Capability checkboxes must not inherit full-width text input geometry. */
+.vision-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.vision-option input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: #d4f5a0;
+}

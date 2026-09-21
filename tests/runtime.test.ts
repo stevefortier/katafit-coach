@@ -71,7 +71,7 @@ test("real Pi cancellation closes streaming transport and never returns late out
       {
         baseUrl: `http://127.0.0.1:${(server.address() as any).port}/v1`,
         model: "synthetic",
-        apiKey: "synthetic",
+        apiKey: "synthetic-cancellation-provider-key",
       },
       "Coach",
       "Cancel",

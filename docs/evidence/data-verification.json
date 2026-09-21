@@ -1,0 +1,17 @@
+{
+  "suite": {
+    "tests": 64,
+    "pass": 64,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0
+  },
+  "build": "passed",
+  "format": "passed",
+  "production_dependency_audit": "0 vulnerabilities",
+  "diff_check": "passed",
+  "package": "production-only install; synthetic MCP/Pi and real MCP/Mongo/Pi receipts alongside",
+  "browser": "desktop/mobile vision opt-in save/rollback + actual Pi synthetic preview; no page errors",
+  "live_provider_calls": 0,
+  "scope": "local standalone only; no tone/persona defaults changed"
+}

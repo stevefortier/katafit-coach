@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -37,6 +37,42 @@ try {
     { stdio: "pipe", timeout: 120000 },
   );
   cli = join(dir, "install/node_modules/@katafit/coach/dist/cli.js");
+  const receipt = execFileSync(
+    process.execPath,
+    [
+      "scripts/data-acceptance.mjs",
+      join(dir, "install/node_modules/@katafit/coach"),
+    ],
+    { encoding: "utf8", timeout: 20000 },
+  );
+  console.log(receipt.trim());
+  await writeFile("docs/evidence/data-packed-receipt.json", receipt);
+  const secretReceipt = execFileSync(
+    process.execPath,
+    [
+      "scripts/secret-acceptance.mjs",
+      join(dir, "install/node_modules/@katafit/coach"),
+    ],
+    { encoding: "utf8", timeout: 20000 },
+  );
+  console.log(secretReceipt.trim());
+  await writeFile("docs/evidence/secret-packed-receipt.json", secretReceipt);
+  if (process.env.COACH_BACKEND_ROOT) {
+    const backendReceipt = execFileSync(
+      process.execPath,
+      [
+        "scripts/data-backend-acceptance.mjs",
+        process.env.COACH_BACKEND_ROOT,
+        join(dir, "install/node_modules/@katafit/coach"),
+      ],
+      { encoding: "utf8", timeout: 120000 },
+    );
+    console.log(backendReceipt.trim());
+    await writeFile(
+      "docs/evidence/data-backend-packed-receipt.json",
+      backendReceipt,
+    );
+  }
   assert.match(run(["help"]), /katafit-coach/);
   assert.match(run(["start"]), /started/);
   assert.match(run(["status"]), /stopped/);
