@@ -145,7 +145,11 @@ export async function admin(
               Object.values(store.secrets),
             );
             const text = await infer(
-              { ...c.provider, apiKey: store.secrets.apiKey },
+              {
+                ...c.provider,
+                apiKey: store.secrets.apiKey,
+                secrets: Object.values(store.secrets),
+              },
               prompt,
               body.text,
               signal,
@@ -184,7 +188,11 @@ export async function admin(
               vision: c.provider.vision === true,
               complete: (context, signal, system, tools) =>
                 infer(
-                  { ...c.provider, apiKey: store.secrets.apiKey },
+                  {
+                    ...c.provider,
+                    apiKey: store.secrets.apiKey,
+                    secrets: Object.values(store.secrets),
+                  },
                   system,
                   context,
                   signal,

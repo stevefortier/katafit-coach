@@ -5,6 +5,8 @@ export interface Provider {
   baseUrl: string;
   model: string;
   vision?: boolean;
+  // Local-only credentials to exclude from every model-visible payload.
+  secrets?: string[];
   apiKey: string;
 }
 // The core has no resource loader/discovery. Only this explicit state exists.
@@ -22,6 +24,7 @@ export async function complete(
     tools.some((t) => t.name === "coach_read_media")
   )
     throw new Error("VISION_UNSUPPORTED");
+  const secrets = [provider.apiKey, ...(provider.secrets ?? [])];
   let turns = 0,
     calls = 0,
     exhausted = false,
@@ -45,7 +48,7 @@ export async function complete(
       },
     },
     streamFn: (model, context, options) => {
-      assertNoSecrets(context, [provider.apiKey]);
+      assertNoSecrets(context, secrets);
       const text = JSON.stringify(context, (_k, v) =>
         v?.type === "image" ? { type: "image", mimeType: v.mimeType } : v,
       );
@@ -58,6 +61,12 @@ export async function complete(
       return streamSimple(model, context, {
         ...options,
         apiKey: provider.apiKey,
+        // Pi has now assembled the actual request body (including model and
+        // tool schemas). Never rely only on the pre-serialization context.
+        onPayload: (payload) => {
+          assertNoSecrets(payload, secrets);
+          assertNoSecrets(JSON.stringify(payload), secrets);
+        },
         env: {},
         maxTokens: 2000,
       });

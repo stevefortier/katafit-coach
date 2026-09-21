@@ -59,6 +59,57 @@ async function providerFixture(reply: (body: any, n: number) => any) {
     },
   };
 }
+for (const location of [
+  "model",
+  "system",
+  "context",
+  "schema",
+  "tool-result",
+]) {
+  test(`real Pi blocks all known credentials at outbound ${location} boundary`, async () => {
+    const secret = 'synthetic-"backend\\credential"';
+    const p = await providerFixture((_b, n) =>
+      n === 1 && location === "tool-result"
+        ? toolCall("coach_list_activities")
+        : { content: "Done" },
+    );
+    const encoded = JSON.stringify({ rows: [{ [secret]: "safe" }] });
+    const tools: any[] = [
+      {
+        name: "coach_list_activities",
+        label: "Read",
+        description: "Read",
+        parameters:
+          location === "schema"
+            ? { type: "object", properties: { [secret]: { type: "string" } } }
+            : { type: "object", properties: {} },
+        execute: async () => ({
+          content: [{ type: "text", text: encoded }],
+          details: {},
+        }),
+      },
+    ];
+    try {
+      await assert.rejects(
+        complete(
+          {
+            ...p.config,
+            model: location === "model" ? secret : "synthetic",
+            secrets: [secret],
+          } as any,
+          location === "system" ? encoded : "Coach",
+          location === "context" ? encoded : "Read",
+          AbortSignal.timeout(5000),
+          tools,
+        ),
+      );
+      assert.equal(p.bodies.length, location === "tool-result" ? 1 : 0);
+    } finally {
+      await p.close();
+    }
+  });
+}
+
 function toolCall(name: string, args: any = {}) {
   return {
     tool_calls: [
@@ -71,6 +122,52 @@ function toolCall(name: string, args: any = {}) {
     ],
   };
 }
+for (const encoded of [false, true])
+  test(`real Pi never sends a backend credential in ${encoded ? "JSON text" : "structured"} result keys`, async () => {
+    const token = 'synthetic-"backend\\key"';
+    const value = { rows: [{ [token]: "innocuous value" }] };
+    const f = await readFixture(
+      encoded
+        ? { content: [{ type: "text", text: JSON.stringify(value) }] }
+        : { structuredContent: value },
+    );
+    const p = await providerFixture((_b, n) =>
+      n === 1
+        ? toolCall("coach_list_activities")
+        : { content: "Read unavailable." },
+    );
+    try {
+      const signal = AbortSignal.timeout(5000);
+      const reads = await discoverReads(
+        new Client(f.origin, token, signal),
+        fence,
+        { vision: false, secrets: [token, p.config.apiKey] },
+      );
+      assert.equal(
+        await complete(p.config, "Coach", "Read", signal, reads.tools),
+        "Read unavailable.",
+      );
+      assert.equal(p.bodies.length, 2);
+      const tool = p.bodies[1].messages.find((m: any) => m.role === "tool");
+      assert.equal(
+        tool.content,
+        "Read unavailable: access, arguments or budget rejected.",
+      );
+      assert.equal(
+        JSON.stringify(p.bodies).includes(JSON.stringify(token).slice(1, -1)),
+        false,
+      );
+      assert.equal(
+        f.calls.filter((c) => c.params?.name === "coach_list_activities")
+          .length,
+        1,
+      );
+    } finally {
+      await p.close();
+      await f.close();
+    }
+  });
+
 test("real Pi model -> MCP media -> next provider payload preserves original PNG bytes -> final", async () => {
   const f = await readFixture({
     content: [

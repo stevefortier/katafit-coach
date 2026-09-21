@@ -45,8 +45,20 @@ export function assertNoSecrets(value: unknown, secrets: string[]) {
   if (typeof value === "string") {
     if (secrets.some((secret) => secret && value.includes(secret)))
       throw new Error("SECRET_IN_CONFIG");
+    // Model-visible strings can themselves contain serialized MCP JSON. Decode
+    // before checking so escaped keys/values receive the same protection.
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(value);
+    } catch {
+      return;
+    }
+    if (decoded !== value) assertNoSecrets(decoded, secrets);
   } else if (value && typeof value === "object") {
-    for (const entry of Object.values(value)) assertNoSecrets(entry, secrets);
+    for (const [key, entry] of Object.entries(value)) {
+      assertNoSecrets(key, secrets);
+      assertNoSecrets(entry, secrets);
+    }
   }
 }
 export function compile(c: Config, secrets: string[] = []) {

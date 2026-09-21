@@ -47,6 +47,16 @@ try {
   );
   console.log(receipt.trim());
   await writeFile("docs/evidence/data-packed-receipt.json", receipt);
+  const secretReceipt = execFileSync(
+    process.execPath,
+    [
+      "scripts/secret-acceptance.mjs",
+      join(dir, "install/node_modules/@katafit/coach"),
+    ],
+    { encoding: "utf8", timeout: 20000 },
+  );
+  console.log(secretReceipt.trim());
+  await writeFile("docs/evidence/secret-packed-receipt.json", secretReceipt);
   if (process.env.COACH_BACKEND_ROOT) {
     const backendReceipt = execFileSync(
       process.execPath,
