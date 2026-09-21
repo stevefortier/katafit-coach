@@ -1,6 +1,6 @@
 # Opt-in live acceptance (text-only Linux pilot)
 
-> Historical text-only runbook/receipt. No live provider run has been made for the current v2 expansion. See [request-scoped data access](request-data-access.md).
+> Historical text-only runbook/receipt. Current v2 packed/backend and live-provider tool/image acceptance is documented in [final integration evidence](evidence/data-final-integration.md), including unsuccessful bounded attempts. See [request-scoped data access](request-data-access.md).
 
 This is real **installed package → authenticated loopback admin → Worker → MCP HTTP → actual backend services/Mongo**, with actual Pi inference against an authorized LM Studio API. It is not a direct chat-completion substitute for worker proof. The backend's database connector alone is replaced with an isolated `mongodb-memory-server` replica set; production/customer data and production authentication are not used. Synthetic users and connection credentials are created through the real service. No application deployment is required.
 
