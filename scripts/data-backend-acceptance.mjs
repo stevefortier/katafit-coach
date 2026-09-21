@@ -10,6 +10,25 @@ const backend = resolve(process.argv[2] ?? "");
 if (!process.argv[2])
   throw new Error("Pass an authorized LOCAL backend checkout path");
 const runtime = resolve(process.argv[3] ?? ".");
+const live = process.env.KATAFIT_DATA_LIVE === "1";
+const liveBase = process.env.UBUNTU3090_LM_STUDIO_BASE_URL;
+const liveKey = process.env.UBUNTU3090_LM_STUDIO_TOKEN;
+const liveModel =
+  process.env.KATAFIT_LIVE_MODEL ||
+  "gemma-4-26b-a4b-it-ultra-uncensored-heretic";
+if (live) {
+  assert.equal(liveBase, "https://lmstudio-3090.munchlax.net/v1");
+  assert.ok(liveKey, "Authorized provider token required");
+  const response = await fetch(liveBase + "/models", {
+    headers: { Authorization: `Bearer ${liveKey}`, "User-Agent": "curl/8.0" },
+    signal: AbortSignal.timeout(15000),
+  });
+  assert.equal(response.status, 200);
+  assert.ok((await response.json()).data.some((m) => m.id === liveModel));
+}
+const providerResponses = [];
+let active = 0;
+let maximumActive = 0;
 const { Worker } = await import(
   pathToFileURL(runtime + "/dist/worker/runner.js")
 );
@@ -61,6 +80,40 @@ const provider = createServer(async (req, res) => {
     for await (const c of req) raw += c;
     const body = JSON.parse(raw);
     payloads.push(body);
+    if (live) {
+      assert.equal(active, 0, "Only one active inference allowed");
+      active++;
+      maximumActive = Math.max(active, maximumActive);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 60000);
+      res.on("close", () => controller.abort());
+      try {
+        const response = await fetch(liveBase + "/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${liveKey}`,
+            "User-Agent": "curl/8.0",
+            "Content-Type": "application/json",
+          },
+          body: raw,
+          signal: controller.signal,
+        });
+        const recorded = { status: response.status, body: "" };
+        providerResponses.push(recorded);
+        res.writeHead(response.status, {
+          "Content-Type": response.headers.get("content-type") || "text/plain",
+        });
+        for await (const chunk of response.body) {
+          recorded.body += Buffer.from(chunk).toString("utf8");
+          res.write(chunk);
+        }
+        res.end();
+      } finally {
+        active--;
+        clearTimeout(timer);
+      }
+      return;
+    }
     let name, args;
     const toolResults = body.messages.filter((m) => m.role === "tool");
     const last = toolResults.at(-1);
@@ -123,42 +176,40 @@ const provider = createServer(async (req, res) => {
 });
 try {
   const uid = new ObjectId();
-  await db
-    .collection("users")
-    .insertOne({
-      _id: uid,
-      display_name: "Synthetic standalone data proof",
-      external_coach_agent: { enabled: true },
-    });
+  await db.collection("users").insertOne({
+    _id: uid,
+    display_name: "Synthetic standalone data proof",
+    external_coach_agent: { enabled: true },
+  });
   await service.ensureExternalCoachIndexes(db);
   const created = await service.createCredential(String(uid), {
     scopes: [
       ...service.DEFAULT_SCOPES,
       "userdata:read",
-      "history:read",
       "media:read",
+      ...(live ? ["history:read"] : []),
     ],
   });
   await reads.putGrant(String(uid), {
     credential_id: String(created.credential.id),
-    scopes: ["userdata:read", "history:read", "media:read"],
-    allow_pre_membership_history: true,
+    scopes: ["userdata:read", "media:read", ...(live ? ["history:read"] : [])],
+    allow_pre_membership_history: live,
     allow_original_media: true,
     communications_kinds: [],
     expires_in_days: 30,
   });
-  await db
-    .collection("activities")
-    .insertOne({
-      _id: new ObjectId(),
-      user_id: uid,
-      type: "media",
-      created_at: new Date(Date.now() - 1000),
-      data: { files: [{ _id: new ObjectId(), type: "image/png" }] },
-    });
+  await db.collection("activities").insertOne({
+    _id: new ObjectId(),
+    user_id: uid,
+    type: "media",
+    created_at: new Date(Date.now() - 1000),
+    data: { files: [{ _id: new ObjectId(), type: "image/png" }] },
+  });
   await service.enqueueExternalCoachRequest(
     String(uid),
-    "Inspect my original image",
+    live
+      ? "Inspect my latest media activity. Use the available read tools to list media activities, read its media_files section, then retrieve the original image. Tell me the dominant color you actually see. Do not guess or substitute a description for viewing the original."
+      : "Inspect my original image",
     [],
     { client_request_id: "standalone-original-proof" },
   );
@@ -167,16 +218,17 @@ try {
   worker = new Worker({
     origin: `http://127.0.0.1:${server.address().port}`,
     token: created.token,
-    secrets: ["synthetic-model-key"],
+    secrets: ["synthetic-model-key", ...(live ? [liveKey] : [])],
     system: "Coach",
     vision: true,
     complete: (context, signal, system, tools) =>
       complete(
         {
           baseUrl: `http://127.0.0.1:${provider.address().port}/v1`,
-          model: "synthetic",
+          model: live ? liveModel : "synthetic",
           apiKey: "synthetic-model-key",
           vision: true,
+          secrets: live ? [liveKey, created.token] : [created.token],
         },
         system,
         context,
@@ -186,9 +238,10 @@ try {
   });
   await worker.pollOnce();
   assert.equal(worker.state, "reply-persisted");
-  assert.equal(payloads.length, 4);
-  const images = payloads[3].messages
-    .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+  if (!live) assert.equal(payloads.length, 4);
+  const images = payloads
+    .at(-1)
+    .messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []))
     .filter((c) => c.type === "image_url");
   assert.equal(images.length, 1);
   assert.deepEqual(
@@ -199,15 +252,57 @@ try {
     .collection("external_coach_requests")
     .findOne({ requester_id: uid });
   assert.equal(request.status, "completed");
-  assert.equal(
-    request.reply_text,
-    "Synthetic provider consumed original media through real MCP and Mongo.",
-  );
+  const finalText = live
+    ? providerResponses
+        .at(-1)
+        .body.split("\n")
+        .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+        .map(
+          (line) =>
+            JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || "",
+        )
+        .join("")
+    : "Synthetic provider consumed original media through real MCP and Mongo.";
+  assert.equal(request.reply_text, finalText);
+  if (live) {
+    assert.ok(
+      /red/i.test(finalText),
+      "Model must identify actual synthetic image color",
+    );
+    assert.ok(
+      payloads.at(-1).messages.some((m) => m.role === "tool"),
+      "Model consumes actual read result",
+    );
+    assert.equal(maximumActive, 1);
+  }
   assert.equal(request.reply_source, "external_agent");
   console.log(
     JSON.stringify({
-      proof:
-        "real MCP + ephemeral Mongo + standalone Pi; synthetic model/storage",
+      proof: live
+        ? "real MCP + ephemeral Mongo + packed Pi + live authorized model; synthetic users/storage image"
+        : "real MCP + ephemeral Mongo + standalone Pi; synthetic model/storage",
+      liveProvider: live,
+      maximumActiveInference: maximumActive,
+      ...(live
+        ? {
+            model: liveModel,
+            providerStatuses: providerResponses.map((r) => r.status),
+          }
+        : {}),
+      modelChosenTools: payloads
+        .at(-1)
+        .messages.filter((m) => m.role === "assistant")
+        .flatMap((m) => m.tool_calls || [])
+        .map((t) => t.function.name),
+      providerTextEnvelopeBytes: payloads.map((p) =>
+        Buffer.byteLength(
+          JSON.stringify(p, (k, v) =>
+            k === "url" && typeof v === "string" && v.startsWith("data:")
+              ? "[original image]"
+              : v,
+          ),
+        ),
+      ),
       providerTurns: payloads.length,
       originalImageBytes: bytes.length,
       originalImageSha256: createHash("sha256").update(bytes).digest("hex"),
@@ -217,6 +312,21 @@ try {
       modelTools: payloads[0].tools.map((t) => t.function.name),
     }),
   );
+} catch (error) {
+  const safe = JSON.stringify({
+    liveProvider: live,
+    workerState: worker?.state,
+    providerTurns: payloads.length,
+    providerResponses,
+    requestedTools: payloads.map((p) =>
+      p.messages
+        .filter((m) => m.role === "assistant")
+        .flatMap((m) => m.tool_calls || [])
+        .map((t) => t.function.name),
+    ),
+  });
+  console.error(safe.split(liveKey || "__NO_LIVE_KEY__").join("[REDACTED]"));
+  throw error;
 } finally {
   await worker?.stop();
   for (const s of [server, provider]) {

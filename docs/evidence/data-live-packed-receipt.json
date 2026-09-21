@@ -1,29 +1,35 @@
 {
-  "proof": "real MCP + ephemeral Mongo + standalone Pi; synthetic model/storage",
-  "liveProvider": false,
-  "maximumActiveInference": 0,
+  "proof": "real MCP + ephemeral Mongo + packed Pi + live authorized model; synthetic users/storage image",
+  "liveProvider": true,
+  "maximumActiveInference": 1,
+  "model": "gemma-4-26b-a4b-it-ultra-uncensored-heretic",
+  "providerStatuses": [
+    200,
+    200,
+    200
+  ],
   "modelChosenTools": [
-    "coach_list_activities",
     "coach_read_activity",
     "coach_read_media"
   ],
   "providerTextEnvelopeBytes": [
-    23710,
-    24417,
-    25488,
-    26422
+    25408,
+    26533,
+    27521
   ],
-  "providerTurns": 4,
+  "providerTurns": 3,
   "originalImageBytes": 97,
   "originalImageSha256": "964cdfad7355988d6fae643e321ae060eb3086a3d204b7a8476f4d7b5c9575e3",
   "canonicalStatus": "completed",
-  "canonicalReply": "Synthetic provider consumed original media through real MCP and Mongo.",
+  "canonicalReply": "The dominant color in the image you provided is red.",
   "canonicalSource": "external_agent",
   "modelTools": [
     "coach_read_profile",
     "coach_list_activities",
     "coach_read_activity",
     "coach_read_media",
+    "coach_list_conversations",
+    "coach_read_conversation",
     "coach_list_records",
     "coach_read_record",
     "coach_read_exercise_history",
