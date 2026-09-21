@@ -15,6 +15,12 @@ This is a data-only expansion. Persona defaults and coaching tone are unchanged.
 
 `coach_read_media` preserves MCP image blocks as Pi `ImageContent`, with safe text/structured metadata. Pi's OpenAI-compatible transport emits original image bytes as image data URLs in the following model request, rather than base64 JSON prose. Unsupported providers do not receive the media tool. Resource/URL content blocks are rejected. Backend-issued opaque references, not client-selected storage URLs, identify media.
 
+### Request-local media handles
+
+Successful, secret-checked read DTOs expose 19-character `mr:` handles instead of long backend media references. Only `coach_read_activity` with `section: media_files` at `items[].media_ref`, and `coach_read_conversation` at `items[].attachments[].media_ref`, are transformed. JSON text and structured-content copies reuse the same mapping; arbitrary text, IDs and nested lookalike fields are not rewritten.
+
+The private per-request map holds at most 256 distinct originals, each at most 4,096 base64url characters. Handles use 64 random bits in a namespace distinct from backend tokens. Only `coach_read_media.media_ref` resolves, by exact lookup, immediately before backend dispatch; unknown/stale handles fail closed. Pi retains the handle, never the resolved token. The original strict schema validates the resolved argument without coercion; provider guidance additionally accepts the handle syntax. No fuzzy repair, guessing or cross-request cache. Worker completion/failure and cancellation clear and close the map. Backend lease, Clear, consent and revocation checks remain authoritative. Result text is budgeted before aliasing, so shortening cannot bypass existing limits.
+
 ## Fixed upper bounds
 
 | Boundary | Limit |
@@ -33,7 +39,7 @@ This is a data-only expansion. Persona defaults and coaching tone are unchanged.
 | Image | 8 MiB decoded bytes each; 12 MiB encoded HTTP response |
 | Images per request | 4 total (stricter than the contract's per-turn maximum); 16 MiB total decoded bytes |
 
-The text-envelope cap measures the final provider payload (including model and tool definitions), not Pi's internal message metadata. Original image parts use the separate image caps. Model-facing schemas omit the root `$schema` annotation and replace generated date-time regexes with UTC ISO 8601 guidance; the original schema still validates every raw tool argument without coercion. Consent, authorized tool membership and opaque references are never shortened or removed to fit this budget.
+The text-envelope cap measures the final provider payload (including model and tool definitions), not Pi's internal message metadata. Original image parts use the separate image caps. Model-facing schemas omit the root `$schema` annotation and replace generated date-time regexes with UTC ISO 8601 guidance; the original schema still validates every backend-bound tool argument without coercion. Consent and authorized tool membership are never narrowed to fit this budget. Media handles preserve the exact original privately rather than truncating or reconstructing tokens.
 
 The text-envelope cap is a conservative byte budget, not an exact model-specific tokenizer. It can reject large otherwise-authorized pages; request smaller pages. Backend advertised limits and permission denials still apply. PNG/JPEG/WebP/GIF MIME types are accepted with canonical base64 encoding; the backend validates actual original media. The worker does not resize, transcode or claim to decode image pixels itself.
 
@@ -57,6 +63,7 @@ COACH_CDP=http://127.0.0.1:9222 npm run test:browser
 - `tests/data-loop.test.ts`: installed Pi 0.86.1 emits a real tool call, runs the HTTP MCP bridge, sends original fixture bytes in the next provider payload, and consumes a final model response. Repeated/burst tool calls hit the six-turn/twelve-execution limits. Raw string-to-number coercion, forged fences, malformed and oversized media are covered.
 - `tests/data-tools.test.ts`, `data-limits.test.ts`, `data-security.test.ts`: fixed allowlist, lifecycle exclusion, schemas, scopes, pagination, per-request isolation, secrets, result budgets and cancellation of a real streaming HTTP body.
 - `tests/worker.test.ts`: request-fenced media exposure plus existing v1, lease, stop, context mismatch, duplicate poll and ambiguous publication regressions.
+- `tests/media-handles.test.ts` and `data-loop.test.ts`: exact 243-character original resolution through real Pi/HTTP MCP, multiple references, JSON/structured duplication, wrong/stale/cross-request handles, cancellation, backend denial, secret rejection, bounded storage and original text limits. Worker tests reject late reads after successful request disposal.
 - `tests/vision-config.test.ts`, `storage-compatibility.test.ts`: vision opt-in, legacy vision migration, restart/rollback, unchanged credential JSON format and private-file permissions.
 - `scripts/data-acceptance.mjs`: production-only packed worker → real Pi → synthetic MCP tool → original-image provider payload → final answer → canonical state readback.
 - `scripts/data-backend-acceptance.mjs`: packed worker → real backend MCP and ephemeral replica-set Mongo → list activity → read media references → read original image → model follow-up → canonical completed reply and external-agent attribution. Only provider and image-storage stream are synthetic. Does not edit backend source or touch existing databases.

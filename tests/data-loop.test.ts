@@ -383,6 +383,100 @@ test("Pi fails closed instead of silently downgrading a mismatched vision capabi
   }
 });
 
+test("real Pi selects the exact second media handle and cannot repair an unknown one", async () => {
+  const { wire, schema } = await import("./data-fixtures.js");
+  const originals = ["AbCd012_-".repeat(27), "zyX987_-A".repeat(27)];
+  const f = await wire((method, p) => {
+    if (method === "tools/list")
+      return {
+        tools: [
+          { name: "coach_get_capabilities" },
+          {
+            name: "coach_read_activity",
+            inputSchema: {
+              ...schema,
+              properties: { ...schema.properties, section: { type: "string" } },
+            },
+          },
+          {
+            name: "coach_read_media",
+            inputSchema: {
+              ...schema,
+              properties: {
+                ...schema.properties,
+                media_ref: { type: "string", minLength: 100, maxLength: 4096 },
+              },
+            },
+          },
+        ],
+      };
+    if (p.name === "coach_get_capabilities")
+      return {
+        structuredContent: {
+          contract_version: 2,
+          allowed_tools: ["coach_read_activity", "coach_read_media"],
+        },
+      };
+    if (p.name === "coach_read_media") {
+      assert.equal(p.arguments.media_ref, originals[1]);
+      return {
+        content: [{ type: "image", mimeType: "image/png", data: image }],
+      };
+    }
+    const dto = { items: originals.map((media_ref) => ({ media_ref })) };
+    return {
+      structuredContent: dto,
+      content: [{ type: "text", text: JSON.stringify(dto) }],
+    };
+  });
+  let chosen = "";
+  const p = await providerFixture((body, n) => {
+    if (n === 1)
+      return toolCall("coach_read_activity", { section: "media_files" });
+    if (n === 2) {
+      chosen = JSON.parse(
+        body.messages.find((m: any) => m.role === "tool").content,
+      ).items[1].media_ref;
+      return toolCall("coach_read_media", { media_ref: chosen + "x" });
+    }
+    if (n === 3) return toolCall("coach_read_media", { media_ref: chosen });
+    return { content: "Second image consumed." };
+  });
+  try {
+    const signal = AbortSignal.timeout(5000);
+    const r = await discoverReads(
+      new Client(f.origin, "credential", signal),
+      fence,
+      { vision: true, secrets: [] },
+    );
+    assert.equal(
+      await complete(p.config, "Coach", "Inspect", signal, r.tools),
+      "Second image consumed.",
+    );
+    assert.equal(
+      f.calls.filter((c) => c.params?.name === "coach_read_media").length,
+      1,
+    );
+    assert.equal(p.bodies.length, 4);
+    assert.ok(
+      p.bodies[2].messages.some(
+        (m: any) =>
+          m.role === "tool" &&
+          m.content ===
+            "Read unavailable: access, arguments or budget rejected.",
+      ),
+    );
+    assert.ok(JSON.stringify(p.bodies[3]).includes(image));
+    assert.ok(
+      originals.every((ref) => !JSON.stringify(p.bodies).includes(ref)),
+    );
+    r.dispose();
+  } finally {
+    await p.close();
+    await f.close();
+  }
+});
+
 // Catalog captured from backend 8a82fe3 with all five grants, personal owner.
 test("full backend catalog completes four turns within the unchanged wire budget", async () => {
   const { readFile } = await import("node:fs/promises");
