@@ -58,10 +58,12 @@ export async function complete(
       message.content.some((c) => c.type === "toolCall")
     )
       throw new Error("MODEL_FAILED");
-    return message.content
+    const text = message.content
       .filter((c) => c.type === "text")
       .map((c) => c.text)
       .join("\n");
+    if (text.includes(provider.apiKey)) throw new Error("OUTPUT_REJECTED");
+    return text;
   } finally {
     signal.removeEventListener("abort", abort);
     agent.abort();

@@ -71,21 +71,25 @@ export class Store {
       throw new Error("UNSAFE_STORAGE");
     await chmod(this.dir, 0o700);
     for (const file of ["config", "secrets"]) {
+      const p = this.dir + "/" + file + ".json";
+      const initial =
+        file === "config" ? { current: this.config } : this.secrets;
       try {
-        const p = this.dir + "/" + file + ".json";
-        if ((await lstat(p)).isSymbolicLink())
-          throw new Error("UNSAFE_STORAGE");
-        const data = JSON.parse(await readFile(p, "utf8"));
-        if (file === "config") {
-          this.config = data.current;
-          this.previous = data.previous;
-        } else this.secrets = data;
-        await chmod(p, 0o600);
+        await writeFile(p, JSON.stringify(initial, null, 2), {
+          flag: "wx",
+          mode: 0o600,
+        });
       } catch (e: any) {
-        if (e.code !== "ENOENT") throw e;
+        if (e.code !== "EEXIST") throw e;
       }
+      if ((await lstat(p)).isSymbolicLink()) throw new Error("UNSAFE_STORAGE");
+      const data = JSON.parse(await readFile(p, "utf8"));
+      if (file === "config") {
+        this.config = data.current;
+        this.previous = data.previous;
+      } else this.secrets = data;
+      await chmod(p, 0o600);
     }
-    await this.persist();
   }
   publicConfig(): Config {
     return structuredClone(this.config);
@@ -135,13 +139,23 @@ export class Store {
       },
       persona,
     };
+    const secrets = { ...this.secrets };
     for (const key of ["token", "apiKey"] as const) {
       if (input[key] !== undefined) {
         if (typeof input[key] !== "string" || input[key].length > 10000)
           throw new Error("INVALID_SECRET");
-        if (input[key]) this.secrets[key] = input[key];
+        if (input[key]) secrets[key] = input[key];
       }
     }
+    const exported = JSON.stringify(next);
+    for (const secret of [
+      ...Object.values(this.secrets),
+      ...Object.values(secrets),
+    ]) {
+      if (secret && exported.includes(secret))
+        throw new Error("SECRET_IN_CONFIG");
+    }
+    this.secrets = secrets;
     this.previous = this.config;
     this.config = next;
     await this.persist();

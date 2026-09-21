@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "../katafit/client.js";
+import { serializeContext } from "../katafit/context.js";
 export async function bounded<T>(
   action: () => Promise<T>,
   signal: AbortSignal,
@@ -109,7 +110,7 @@ export class Worker {
         current.attachment_count !== 0
       )
         throw new Error("CONTEXT_REJECTED");
-      const serialized = JSON.stringify(context);
+      const serialized = serializeContext(context);
       if (
         serialized.includes(this.options.token) ||
         instructions.includes(this.options.token)

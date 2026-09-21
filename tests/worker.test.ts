@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { Worker } from "../src/worker/runner.js";
-export async function fixture() {
+export async function fixture(
+  options: { dropReply?: boolean; rejectFence?: boolean } = {},
+) {
   let history: any[] = [];
   let current: any = null;
   let calls: string[] = [];
@@ -82,6 +84,15 @@ export async function fixture() {
           value = { request: current };
       }
     }
+    if (options.dropReply && msg.params?.name === "coach_respond") {
+      req.socket.destroy();
+      return;
+    }
+    if (options.rejectFence && msg.params?.name === "coach_read_context")
+      value.request = {
+        ...value.request,
+        lease_generation: value.request.lease_generation + 1,
+      };
     res.setHeader("Content-Type", "application/json");
     res.end(
       JSON.stringify({
@@ -246,6 +257,113 @@ test("duplicate concurrent poll is one claim and publication", async () => {
     assert.equal(f.publications, 1);
     assert.equal(f.calls.filter((c) => c === "coach_claim_request").length, 1);
   } finally {
+    await f.close();
+  }
+});
+
+test("ambiguous publication is never failed or republished after restart", async () => {
+  const f = await fixture({ dropReply: true });
+  try {
+    f.enqueue("once");
+    const make = () =>
+      new Worker({
+        origin: f.origin,
+        token: "synthetic-token",
+        system: "Coach",
+        complete: async () => "Persisted before disconnect",
+      });
+    await assert.rejects(make().pollOnce());
+    assert.equal(f.publications, 1);
+    assert.equal(f.calls.includes("coach_fail_request"), false);
+    await make().pollOnce();
+    assert.equal(f.publications, 1);
+  } finally {
+    await f.close();
+  }
+});
+test("mismatched lease generation rejects context before model invocation", async () => {
+  const f = await fixture({ rejectFence: true });
+  try {
+    f.enqueue("stale claim");
+    let calls = 0;
+    const w = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      complete: async () => {
+        calls++;
+        return "no";
+      },
+    });
+    await assert.rejects(w.pollOnce(), /CONTEXT_REJECTED/);
+    assert.equal(calls, 0);
+    assert.equal(f.publications, 0);
+  } finally {
+    await f.close();
+  }
+});
+test("actual Pi adapter connects authorized context to persisted synthetic-backend reply and followup", async () => {
+  const { complete } = await import("../src/runtime/piAdapter.js");
+  const f = await fixture();
+  const observed: string[] = [];
+  const model = createServer(async (req, res) => {
+    let raw = "";
+    for await (const c of req) raw += c;
+    const b = JSON.parse(raw);
+    observed.push(JSON.stringify(b.messages.at(-1).content));
+    res.setHeader("Content-Type", "text/event-stream");
+    res.end(
+      "data: " +
+        JSON.stringify({
+          id: "model",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                content: "Synthetic Pi coaching feedback",
+              },
+              finish_reason: null,
+            },
+          ],
+        }) +
+        "\n\ndata: " +
+        JSON.stringify({
+          id: "model",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        }) +
+        "\n\ndata: [DONE]\n\n",
+    );
+  });
+  await new Promise<void>((r) => model.listen(0, "127.0.0.1", r));
+  try {
+    const make = () =>
+      new Worker({
+        origin: f.origin,
+        token: "synthetic-token",
+        system: "Coach",
+        complete: (context, signal, system) =>
+          complete(
+            {
+              baseUrl: `http://127.0.0.1:${(model.address() as any).port}/v1`,
+              model: "synthetic",
+              apiKey: "synthetic-key",
+            },
+            system,
+            context,
+            signal,
+          ),
+      });
+    f.enqueue("Review my run");
+    await make().pollOnce();
+    assert.equal(f.history[1].text, "Synthetic Pi coaching feedback");
+    f.enqueue("More detail");
+    await make().pollOnce();
+    assert.ok(observed[1].includes("Synthetic Pi coaching feedback"));
+    assert.equal(f.publications, 2);
+  } finally {
+    model.closeAllConnections();
+    await new Promise((r) => model.close(r));
     await f.close();
   }
 });

@@ -13,12 +13,15 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "tsc",
     "test": "tsx --test tests/*.test.ts",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test:browser": "tsx scripts/browser-smoke.ts",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" \"spike/*.ts\" \"ui/*\" package.json tsconfig.json",
+    "test:package": "node scripts/package-smoke.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.86.1",

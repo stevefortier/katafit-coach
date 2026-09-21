@@ -28,3 +28,50 @@ test("save canonical persona revisions without exporting secrets, rollback and p
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("opening status storage never overwrites newer saved configuration", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-read-");
+  try {
+    const first = new Store(dir);
+    await first.init();
+    const second = new Store(dir);
+    await second.init();
+    const c = first.publicConfig();
+    await first.save({ ...c, persona: { ...c.persona, name: "New revision" } });
+    await second.init();
+    assert.equal(second.publicConfig().persona.name, "New revision");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("rejects copying known secrets into exportable persona configuration", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-secret-");
+  try {
+    const s = new Store(dir);
+    await s.init();
+    await s.save({ ...s.publicConfig(), apiKey: "hidden-provider-secret" });
+    const c = s.publicConfig();
+    await assert.rejects(
+      s.save({
+        ...c,
+        persona: { ...c.persona, markdown: "hidden-provider-secret" },
+      }),
+      /SECRET_IN_CONFIG/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loading an existing store does not rewrite its files", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-load-");
+  try {
+    const s = new Store(dir);
+    await s.init();
+    const before = await stat(dir + "/config.json");
+    await new Store(dir).init();
+    assert.equal((await stat(dir + "/config.json")).ino, before.ino);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
