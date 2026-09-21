@@ -1,0 +1,54 @@
+import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import assert from "node:assert/strict";
+const dir = await mkdtemp(join(tmpdir(), "coach-package-"));
+let cli;
+let stopped = false;
+const env = {
+  ...process.env,
+  KATAFIT_COACH_HOME: join(dir, "state"),
+  KATAFIT_COACH_PORT: "0",
+};
+function run(args) {
+  return execFileSync(process.execPath, [cli, ...args], {
+    env,
+    encoding: "utf8",
+    timeout: 15000,
+  });
+}
+try {
+  const packed = JSON.parse(
+    execFileSync("npm", ["pack", "--json", "--pack-destination", dir], {
+      encoding: "utf8",
+    }),
+  );
+  execFileSync(
+    "npm",
+    [
+      "install",
+      "--prefix",
+      join(dir, "install"),
+      "--omit=dev",
+      "--ignore-scripts",
+      join(dir, Object.values(packed)[0].filename),
+    ],
+    { stdio: "pipe", timeout: 120000 },
+  );
+  cli = join(dir, "install/node_modules/@katafit/coach/dist/cli.js");
+  assert.match(run(["help"]), /katafit-coach/);
+  assert.match(run(["start"]), /started/);
+  assert.match(run(["status"]), /stopped/);
+  assert.match(run(["stop"]), /stopped/);
+  stopped = true;
+  console.log(
+    "Package PASS: packed tarball, clean production-only install, CLI help/start/health/stop.",
+  );
+} finally {
+  if (cli && !stopped)
+    try {
+      run(["stop"]);
+    } catch {}
+  await rm(dir, { recursive: true, force: true });
+}
