@@ -16,9 +16,9 @@
 - Complementary installed Pi + deterministic provider + real MCP/Mongo suite: **seven checks passed**, covering provenance-backed visible assessment/original retry time, prior-answer continuity, completed and in-flight Clear fences, credential revocation, foreign-request denial/member-private Dojo routing, and membership-transition publication rejection.
 - Backend checkout `912ce158803473a7076c1ba9971ceb62654f9302` contains the Clear fix. Exercised `core/{personalExternalCoach,coach,externalCoachHistory}.js`, `routes/personalExternalCoach.js` and `public/agents/coach.md` are byte-equivalent to merge commit `9113eeedfe88289ee322fa86e7dd019b3dc76ce1` from app PR 771. This proves the local implementation, not a deployed app version.
 - Initial live attempts exposed harness-only idempotency-key/JSON-escape mistakes; no production runtime fix was needed. Persona style differed observably, but a small sample is not a quality/safety benchmark. A sometimes copied a backend heading and suggested a proposal; this pilot has no proposal tool. Full observed text is retained rather than hiding imperfect outputs.
-- Independent static review of runtime head `d3e185fc065e28d8de927d0f7a59f8066e22d754`: PASS within the text-only single-user Linux scope, with a stale-documentation nit corrected here. That review did not run tests/provider. Final evidence/diff review is still required before any readiness transition.
+- Independent static review of runtime head `d3e185fc065e28d8de927d0f7a59f8066e22d754`: PASS within the text-only single-user Linux scope, with a stale-documentation nit corrected here. That review did not run tests/provider. Parent review of the acceptance scripts, receipts and documentation passed; production source, UI and dependencies are unchanged from the independently reviewed runtime.
 
-## Limits / remaining review gate
+## Pilot limits
 
 - No production Kata.fit credential/customer data, production connection or customer reply was used. App-user browser acceptance is not established by this local admin/API/database harness. Browser screenshots remain synthetic-provider UI evidence.
 - No lease-renew endpoint, independent worker reply-text readback endpoint, media review, boot/login service setup, hosted multi-tenancy or Windows support. Shared/public Dojo audiences are unsupported; member-private routing is not public sharing.
@@ -26,4 +26,4 @@
 - Unauthenticated providers remain unsupported by the Pi adapter; the successful LM Studio run used a real authorized token, never a dummy key. Live credentials were memory-only in the acceptance harness; normal synthetic tests cover file-storage lifecycle.
 - macOS installation is untested. Linux is verified; remote CI status must be checked on each head rather than inferred from local results.
 
-Acceptance status: live inference, bounded persona A/B and real-backend continuity/persistence/Clear gates are exercised for the **text-only single-user Linux pilot**. Final parent review of the evidence/diff remains open. The PR stays draft; no merge, deployment, npm publication or readiness transition was performed.
+Acceptance status: live inference, bounded persona A/B and real-backend continuity/persistence/Clear gates are exercised for the **text-only single-user Linux pilot**. Parent evidence/diff review passed. Readiness is recorded on the PR after final-head CI verification; no merge, deployment or npm publication is authorized by this acceptance.
