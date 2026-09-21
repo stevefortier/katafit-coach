@@ -6,7 +6,7 @@ import {
   chmod,
   lstat,
 } from "node:fs/promises";
-import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
+import { randomBytes } from "node:crypto";
 export interface Config {
   revision: number;
   origin: string;
@@ -74,41 +74,6 @@ export function validateUrl(value: string, allowPrivate = false) {
   return value.replace(/\/$/, "");
 }
 export class Store {
-  private encryptionKey?: Buffer;
-  private encrypt(value: unknown) {
-    if (!this.encryptionKey) throw new Error("SECRET_STORAGE_REJECTED");
-    const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", this.encryptionKey, iv);
-    const ciphertext = Buffer.concat([
-      cipher.update(JSON.stringify(value), "utf8"),
-      cipher.final(),
-    ]);
-    return {
-      version: 1,
-      iv: iv.toString("base64"),
-      tag: cipher.getAuthTag().toString("base64"),
-      ciphertext: ciphertext.toString("base64"),
-    };
-  }
-  private decrypt(value: any) {
-    try {
-      if (!this.encryptionKey || value.version !== 1) throw new Error();
-      const decipher = createDecipheriv(
-        "aes-256-gcm",
-        this.encryptionKey,
-        Buffer.from(value.iv, "base64"),
-      );
-      decipher.setAuthTag(Buffer.from(value.tag, "base64"));
-      return JSON.parse(
-        Buffer.concat([
-          decipher.update(Buffer.from(value.ciphertext, "base64")),
-          decipher.final(),
-        ]).toString("utf8"),
-      );
-    } catch {
-      throw new Error("SECRET_STORAGE_REJECTED");
-    }
-  }
   private config = structuredClone(defaults);
   private previous?: Config;
   secrets = { token: "", apiKey: "", admin: randomBytes(32).toString("hex") };
@@ -118,25 +83,10 @@ export class Store {
     if ((await lstat(this.dir)).isSymbolicLink())
       throw new Error("UNSAFE_STORAGE");
     await chmod(this.dir, 0o700);
-    const keyPath = this.dir + "/secrets.key";
-    try {
-      await writeFile(keyPath, randomBytes(32), { flag: "wx", mode: 0o600 });
-    } catch (e: any) {
-      if (e.code !== "EEXIST") throw e;
-    }
-    if ((await lstat(keyPath)).isSymbolicLink())
-      throw new Error("UNSAFE_STORAGE");
-    await chmod(keyPath, 0o600);
-    this.encryptionKey = await readFile(keyPath);
-    if (this.encryptionKey.length !== 32)
-      throw new Error("SECRET_STORAGE_REJECTED");
-    let migrateSecrets = false;
     for (const file of ["config", "secrets"]) {
       const p = this.dir + "/" + file + ".json";
       const initial =
-        file === "config"
-          ? { current: this.config }
-          : this.encrypt(this.secrets);
+        file === "config" ? { current: this.config } : this.secrets;
       try {
         await writeFile(p, JSON.stringify(initial, null, 2), {
           flag: "wx",
@@ -156,26 +106,16 @@ export class Store {
             if (typeof c.provider.vision !== "boolean")
               throw new Error("INVALID_CONFIG");
           }
-      } else {
-        migrateSecrets =
-          data.version === undefined &&
-          typeof data.token === "string" &&
-          typeof data.apiKey === "string" &&
-          typeof data.admin === "string";
-        this.secrets = migrateSecrets ? data : this.decrypt(data);
-      }
+      } else this.secrets = data;
       await chmod(p, 0o600);
     }
     assertNoSecrets([this.config, this.previous], Object.values(this.secrets));
-    if (migrateSecrets) await this.atomic("secrets", this.secrets);
   }
   publicConfig(): Config {
-    // Export remains nonsecret; initialization migrates legacy credential storage.
     assertNoSecrets(this.config, Object.values(this.secrets));
     return structuredClone(this.config);
   }
   async atomic(file: string, data: unknown) {
-    if (file === "secrets") data = this.encrypt(data);
     const p = this.dir + "/" + file + ".json";
     const temp = p + "." + randomBytes(8).toString("hex");
     await writeFile(temp, JSON.stringify(data, null, 2), {

@@ -37,7 +37,7 @@ The text-envelope cap is a conservative byte budget, not an exact model-specific
 
 ## Credentials
 
-Credentials are AES-256-GCM encrypted with a separate local 0600 key. Existing plaintext stores migrate on initialization. Export/rollback/credential rotation checks remain in force; secrets never become tools, payloads or error logs. This is not an OS keychain: filesystem/process compromise remains in scope for operators. Preserve both encrypted data and key when backing up. Configuration rollback is supported; downgrading to a binary that only understands plaintext storage is not automatic.
+Credential storage is unchanged: `secrets.json` retains its existing JSON format, protected by a 0700 directory and 0600 files, not encryption or an OS keychain. Export/rollback/credential rotation checks remain in force; secrets never become tools, payloads or error logs. Protect/back up the directory as credentials.
 
 ## Reproducible evidence
 
@@ -55,7 +55,7 @@ COACH_CDP=http://127.0.0.1:9222 npm run test:browser
 - `tests/data-loop.test.ts`: installed Pi 0.86.1 emits a real tool call, runs the HTTP MCP bridge, sends original fixture bytes in the next provider payload, and consumes a final model response. Repeated/burst tool calls hit the six-turn/twelve-execution limits. Raw string-to-number coercion, forged fences, malformed and oversized media are covered.
 - `tests/data-tools.test.ts`, `data-limits.test.ts`, `data-security.test.ts`: fixed allowlist, lifecycle exclusion, schemas, scopes, pagination, per-request isolation, secrets, result budgets and cancellation of a real streaming HTTP body.
 - `tests/worker.test.ts`: request-fenced media exposure plus existing v1, lease, stop, context mismatch, duplicate poll and ambiguous publication regressions.
-- `tests/vision-config.test.ts`, `encryption.test.ts`: vision opt-in, legacy migration, restart/rollback, encrypted credential migration and tamper rejection.
+- `tests/vision-config.test.ts`, `storage-compatibility.test.ts`: vision opt-in, legacy vision migration, restart/rollback, unchanged credential JSON format and private-file permissions.
 - `scripts/data-acceptance.mjs`: production-only packed worker → real Pi → synthetic MCP tool → original-image provider payload → final answer → canonical state readback.
 - `scripts/data-backend-acceptance.mjs`: packed worker → real backend MCP and ephemeral replica-set Mongo → list activity → read media references → read original image → model follow-up → canonical completed reply and external-agent attribution. Only provider and image-storage stream are synthetic. Does not edit backend source or touch existing databases.
 - `docs/evidence/data-*-receipt.json`: actual package acceptance receipts, including original byte counts and SHA-256 values.

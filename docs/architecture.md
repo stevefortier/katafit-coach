@@ -1,6 +1,6 @@
 # Architecture and security
 
-> Historical v1 architecture. For the current negotiated read-tool/image loop, budgets and encrypted storage, see [request-scoped data access](request-data-access.md).
+> Historical v1 architecture. For the current negotiated read-tool/image loop and budgets, see [request-scoped data access](request-data-access.md).
 
 ```
 Loopback browser studio -> authenticated Node admin -> private configuration

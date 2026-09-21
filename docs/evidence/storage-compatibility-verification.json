@@ -1,0 +1,29 @@
+{
+  "scope": "Remove unrequested credential encryption only; preserve data tools/media and vision configuration. No push, deployment, live provider calls or customer data.",
+  "priorStandaloneCommit": "253cac366ac79173da3b16bcfdaa6877daf8b68f",
+  "regression": "storage-compatibility.test.ts failed against encrypted envelope before fix; passed after restoring original credential JSON.",
+  "suite": {
+    "tests": 64,
+    "pass": 64,
+    "fail": 0,
+    "skipped": 0
+  },
+  "build": "passed",
+  "format": "passed",
+  "diffCheck": "passed",
+  "productionAudit": "0 vulnerabilities",
+  "package": "Passed production-only tarball install, real Pi synthetic MCP original-image loop, real backend MCP/disposable Mongo original-image loop, CLI help/start/health/stop.",
+  "backend": {
+    "sourceHead": "1a942a7a130f7841a503ebd3e6aad301e59d46f1",
+    "sourceSnapshot": "/tmp/coach-backend-snapshot-f2kfr652",
+    "sourceManifest": "/tmp/coach-backend-snapshot-f2kfr652/manifest.json",
+    "sourceManifestSha256": "fb5caf400e8552b66a88c79ed885308b31e41e14979f7933f54cc4d010fa56e6",
+    "sourceFilesSha256": "dd99e9c93c28fff20f9780fbb69bfbf599f76f8cbd88aecb3eb6b7a9b00e44e2",
+    "note": "Dirty backend copied to isolated source snapshot; dependencies reused read-only; per-file SHA256 binds executed source."
+  },
+  "receipts": [
+    "data-packed-receipt.json",
+    "data-backend-packed-receipt.json"
+  ],
+  "browser": "Not rerun for storage-only correction; UI source unchanged. Prior browser evidence retained."
+}
