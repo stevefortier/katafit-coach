@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Kata.fit Coach · Studio</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <a class="brand" href="/">kata<span>fit</span><b>COACH STUDIO</b></a
+        ><span class="pill" id="state">LOCKED</span>
+      </header>
+      <section class="hero">
+        <div class="eyebrow">YOUR COACH. YOUR RUNTIME.</div>
+        <h1>A little more you.<br />A better kind of Coach.</h1>
+        <p>
+          Connect Kata.fit, choose your model, and shape a coaching voice that
+          feels right. Your conversation stays canonical in Kata.fit.
+        </p>
+      </section>
+      <section id="login" class="card">
+        <h2>Open your local studio</h2>
+        <p>
+          Enter the admin key from your protected installation. It stays in this
+          tab's memory.
+        </p>
+        <label
+          >Admin key<input
+            id="adminKey"
+            type="password"
+            autocomplete="off" /></label
+        ><button id="unlock">Unlock studio</button>
+      </section>
+      <div id="studio" hidden>
+        <nav>
+          <a href="#connection">01 Connection</a
+          ><a href="#persona">02 Persona</a><a href="#preview">03 Preview</a>
+        </nav>
+        <div class="grid">
+          <section class="card" id="connection">
+            <div class="eyebrow">01 / CONNECTION</div>
+            <h2>Bring your own intelligence.</h2>
+            <p>
+              One installation. One personal or explicit Dojo credential scope.
+            </p>
+            <label>Kata.fit origin<input id="origin" type="url" /></label
+            ><label
+              >Kata.fit connection credential<input
+                id="token"
+                type="password"
+                placeholder="Leave blank to keep saved credential"
+                autocomplete="off"
+            /></label>
+            <p class="hint">
+              Create a credential in Kata.fit's external Coach settings. The
+              credential, not this device, determines the authorized audience.
+            </p>
+            <div class="split">
+              <label
+                >Provider preset<select id="preset">
+                  <option value="custom">Custom / OpenAI-compatible</option>
+                  <option value="openai">OpenAI API</option>
+                </select></label
+              ><label>Model ID<input id="model" /></label>
+            </div>
+            <label>API base URL<input id="baseUrl" type="url" /></label
+            ><label
+              >Provider API key<input
+                id="apiKey"
+                type="password"
+                placeholder="Leave blank to keep saved key"
+                autocomplete="off"
+            /></label>
+            <p class="hint">
+              Inference leaves this machine when you choose a remote provider.
+              API-key OpenAI-compatible providers only in this pilot.
+            </p>
+            <button id="connect" class="secondary">
+              Test saved connection
+            </button>
+          </section>
+          <section class="card" id="persona">
+            <div class="eyebrow">02 / PERSONA</div>
+            <h2>Make the voice yours.</h2>
+            <label>Coach name<input id="name" /></label
+            ><label>Voice<input id="voice" /></label>
+            <div class="split">
+              <label
+                >Verbosity<select id="verbosity">
+                  <option>Concise</option>
+                  <option>Balanced</option>
+                  <option>Detailed</option>
+                </select></label
+              ><label>Initiative<input id="initiative" /></label>
+            </div>
+            <label
+              >Coaching principles<textarea
+                id="principles"
+                rows="2"
+              ></textarea></label
+            ><label
+              >Example guidance<textarea
+                id="examples"
+                rows="2"
+              ></textarea></label
+            ><label
+              >Boundaries<textarea id="boundaries" rows="2"></textarea>
+            </label>
+            <details>
+              <summary>Advanced Markdown</summary>
+              <textarea
+                id="markdown"
+                rows="5"
+                placeholder="Additional persona instructions"
+              ></textarea>
+              <p class="hint">
+                Persona cannot grant access or override platform policy.
+              </p>
+            </details>
+          </section>
+        </div>
+        <div class="actions">
+          <button id="save">Save new revision</button
+          ><button id="rollback" class="secondary">Roll back persona</button
+          ><button id="export" class="secondary">
+            Export nonsecret configuration</button
+          ><span id="revision"></span>
+        </div>
+        <section class="card" id="preview">
+          <div class="eyebrow">03 / TRY BEFORE YOU RUN</div>
+          <h2>Hear your Coach.</h2>
+          <p>
+            Uses the saved persona and real configured model. This sandbox
+            preview does not write to Kata.fit.
+          </p>
+          <label
+            >Sample question<textarea id="question" rows="2">
+I trained hard yesterday and feel sore today. How should I approach my next session?</textarea
+            ></label
+          ><button id="previewButton">Preview response</button
+          ><button id="cancel" class="secondary">Cancel preview</button>
+          <pre id="answer">Your preview will appear here.</pre>
+          <details>
+            <summary>Effective nonsecret instructions</summary>
+            <pre id="prompt"></pre>
+          </details>
+        </section>
+        <section class="runbar">
+          <div>
+            <h2>Ready when you are.</h2>
+            <p>
+              Keep this service running. An asleep laptop is an offline Coach.
+            </p>
+          </div>
+          <div>
+            <button id="run">Run Coach</button
+            ><button id="stop" class="secondary">Stop worker</button>
+          </div>
+        </section>
+      </div>
+      <p id="notice" role="status" aria-live="polite"></p>
+      <footer>
+        LOCAL-FIRST CONTROL · SERVER-AUTHORIZED CONTEXT · NO SHELL OR FILE TOOLS
+      </footer>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

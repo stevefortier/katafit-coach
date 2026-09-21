@@ -1,0 +1,251 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { Worker } from "../src/worker/runner.js";
+export async function fixture() {
+  let history: any[] = [];
+  let current: any = null;
+  let calls: string[] = [];
+  let publications = 0;
+  let contexts: any[] = [];
+  const server = createServer(async (req, res) => {
+    if (req.method === "GET") {
+      res.end(
+        "# Kata.fit external Coach agent v1\nUse server-authorized context.",
+      );
+      return;
+    }
+    let raw = "";
+    for await (const c of req) raw += c;
+    const msg = JSON.parse(raw);
+    calls.push(msg.params?.name ?? msg.method);
+    if (msg.method === "notifications/initialized") {
+      res.writeHead(202).end();
+      return;
+    }
+    let value: any = {};
+    const a = msg.params?.arguments;
+    if (msg.method === "initialize") value = { protocolVersion: "2025-03-26" };
+    else {
+      switch (msg.params.name) {
+        case "coach_list_requests":
+          value = {
+            requests:
+              current && (!a.statuses || a.statuses.includes(current.status))
+                ? [current]
+                : [],
+          };
+          break;
+        case "coach_claim_request":
+          if (current && current.status === "queued") {
+            current = {
+              ...current,
+              status: "claimed",
+              lease_generation: current.lease_generation + 1,
+              lease_expires_at: new Date(Date.now() + 120000).toISOString(),
+            };
+            value = { request: current };
+          } else value = { request: null };
+          break;
+        case "coach_start_request":
+          current.status = "working";
+          value = { request: current };
+          break;
+        case "coach_read_context":
+          value = {
+            request: current,
+            conversation: history,
+            authorized_member_data: [
+              {
+                owner: "peer",
+                shared_with_audience: true,
+                summary: "Authorized running goal",
+              },
+            ],
+          };
+          contexts.push(value);
+          break;
+        case "coach_respond":
+          if (current.status !== "completed") {
+            publications++;
+            history.push(
+              { role: "user", text: current.text },
+              { role: "assistant", text: a.text },
+            );
+            current.status = "completed";
+            current.reply = { text: a.text };
+          }
+          value = { request: current };
+          break;
+        case "coach_fail_request":
+          current.status = "failed";
+          value = { request: current };
+      }
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result:
+          msg.method === "initialize" ? value : { structuredContent: value },
+      }),
+    );
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return {
+    origin: `http://127.0.0.1:${(server.address() as any).port}`,
+    enqueue(text: string) {
+      current = {
+        id: String(history.length + 1),
+        text,
+        requester_id: "member",
+        scope: "dojo",
+        attachment_count: 0,
+        lease_generation: 0,
+        status: "queued",
+        timeout_at: new Date(Date.now() + 180000).toISOString(),
+      };
+    },
+    get current() {
+      return current;
+    },
+    get history() {
+      return history;
+    },
+    get publications() {
+      return publications;
+    },
+    get calls() {
+      return calls;
+    },
+    async close() {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    },
+  };
+}
+test("real wire claim/context/persist/followup and restart deduplicate with canonical context", async () => {
+  const f = await fixture();
+  const seen: string[] = [];
+  try {
+    const make = () =>
+      new Worker({
+        origin: f.origin,
+        token: "synthetic-token",
+        system: "Coach",
+        complete: async (c) => {
+          seen.push(c);
+          return "Rest and reassess.";
+        },
+      });
+    f.enqueue("Review my training");
+    await make().pollOnce();
+    assert.equal(f.publications, 1);
+    await make().pollOnce();
+    assert.equal(f.publications, 1);
+    f.enqueue("More detail please");
+    await make().pollOnce();
+    assert.equal(f.publications, 2);
+    assert.ok(seen[1].includes("Rest and reassess."));
+    assert.ok(seen[1].includes("Authorized running goal"));
+    assert.equal(JSON.parse(seen[1]).request.text, "More detail please");
+    assert.equal(f.history.length, 4);
+  } finally {
+    await f.close();
+  }
+});
+
+test("stop fences a non-cooperative late model and settles promptly without publishing", async () => {
+  const f = await fixture();
+  let enter!: () => void;
+  const entered = new Promise<void>((r) => (enter = r));
+  let finish!: (s: string) => void;
+  const worker = new Worker({
+    origin: f.origin,
+    token: "synthetic-token",
+    system: "Coach",
+    complete: async () => {
+      enter();
+      return new Promise<string>((r) => (finish = r));
+    },
+  });
+  try {
+    f.enqueue("Cancel me");
+    const pending = worker.pollOnce();
+    pending.catch(() => {});
+    await entered;
+    await Promise.race([
+      worker.stop(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("stop did not settle")), 200),
+      ),
+    ]);
+    finish("Late response");
+    await pending.catch(() => {});
+    assert.equal(f.publications, 0);
+  } finally {
+    finish?.("Late");
+    await worker.stop();
+    await f.close();
+  }
+});
+
+test("context attachments fail closed before inference", async () => {
+  const f = await fixture();
+  let called = false;
+  try {
+    f.enqueue("photo");
+    f.current.attachment_count = 1;
+    const w = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      complete: async () => {
+        called = true;
+        return "no";
+      },
+    });
+    await assert.rejects(w.pollOnce(), /CONTEXT_REJECTED/);
+    assert.equal(called, false);
+    assert.equal(f.publications, 0);
+  } finally {
+    await f.close();
+  }
+});
+test("expired original timeout is never reset by claiming or reconnecting", async () => {
+  const f = await fixture();
+  try {
+    f.enqueue("stale");
+    f.current.timeout_at = new Date(0).toISOString();
+    const w = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      complete: async () => {
+        throw new Error("must not run");
+      },
+    });
+    await assert.rejects(w.pollOnce(), /LEASE_EXPIRED/);
+    assert.equal(f.publications, 0);
+  } finally {
+    await f.close();
+  }
+});
+test("duplicate concurrent poll is one claim and publication", async () => {
+  const f = await fixture();
+  try {
+    f.enqueue("once");
+    const w = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      complete: async () => "one",
+    });
+    await Promise.all([w.pollOnce(), w.pollOnce(), w.pollOnce()]);
+    assert.equal(f.publications, 1);
+    assert.equal(f.calls.filter((c) => c === "coach_claim_request").length, 1);
+  } finally {
+    await f.close();
+  }
+});

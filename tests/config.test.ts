@@ -1,2 +1,30 @@
-import {test} from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,stat,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {Store,compile} from '../src/config/store.js';
-test('save canonical persona revisions without exporting secrets, rollback and private modes',async()=>{const dir=await mkdtemp(tmpdir()+'/coach-');try{const s=new Store(dir);await s.init();const c=s.publicConfig();await s.save({...c,persona:{...c.persona,name:'Ada'},token:'private-token',apiKey:'private-key'});assert.equal(s.publicConfig().revision,2);assert.ok(!JSON.stringify(s.publicConfig()).includes('private-'));assert.ok(compile(s.publicConfig()).includes('Ada'));assert.ok(compile(s.publicConfig()).includes('owner'));assert.equal((await stat(dir+'/secrets.json')).mode&0o777,0o600);await s.rollback();assert.equal(s.publicConfig().persona.name,'Coach');assert.equal(s.publicConfig().revision,3);assert.equal(s.secrets.token,'private-token');}finally{await rm(dir,{recursive:true,force:true});}});
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, stat, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { Store, compile } from "../src/config/store.js";
+test("save canonical persona revisions without exporting secrets, rollback and private modes", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-");
+  try {
+    const s = new Store(dir);
+    await s.init();
+    const c = s.publicConfig();
+    await s.save({
+      ...c,
+      persona: { ...c.persona, name: "Ada" },
+      token: "private-token",
+      apiKey: "private-key",
+    });
+    assert.equal(s.publicConfig().revision, 2);
+    assert.ok(!JSON.stringify(s.publicConfig()).includes("private-"));
+    assert.ok(compile(s.publicConfig()).includes("Ada"));
+    assert.ok(compile(s.publicConfig()).includes("owner"));
+    assert.equal((await stat(dir + "/secrets.json")).mode & 0o777, 0o600);
+    await s.rollback();
+    assert.equal(s.publicConfig().persona.name, "Coach");
+    assert.equal(s.publicConfig().revision, 3);
+    assert.equal(s.secrets.token, "private-token");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

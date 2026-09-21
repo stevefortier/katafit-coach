@@ -1,1 +1,35 @@
-{"name":"@katafit/coach","version":"0.1.0","type":"module","description":"Standalone, locally configured Kata.fit Coach pilot","bin":{"katafit-coach":"dist/cli.js"},"files":["dist","ui","docs","README.md"],"engines":{"node":">=22"},"scripts":{"build":"tsc","test":"tsx --test tests/*.test.ts","prepack":"npm run build"},"dependencies":{"@earendil-works/pi-agent-core":"0.86.1","@earendil-works/pi-ai":"0.86.1","@earendil-works/pi-coding-agent":"0.86.1"},"devDependencies":{"@types/node":"22.19.15","tsx":"4.21.0","typescript":"5.9.3"}}
+{
+  "name": "@katafit/coach",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Standalone, locally configured Kata.fit Coach pilot",
+  "bin": {
+    "katafit-coach": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "ui",
+    "docs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsx --test tests/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.86.1",
+    "@earendil-works/pi-ai": "0.86.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.86.1",
+    "@types/node": "22.19.15",
+    "playwright-core": "1.55.1",
+    "prettier": "3.6.2",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
+  }
+}
