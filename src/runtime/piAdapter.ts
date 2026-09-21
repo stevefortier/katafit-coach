@@ -9,6 +9,45 @@ export interface Provider {
   secrets?: string[];
   apiKey: string;
 }
+// Count the serialized envelope in full, exempting only validated image DATA at
+// the provider's actual messages[].content[] path. Schema defaults, text, URL
+// prefixes and every image metadata/extra field remain in the text budget.
+export function providerTextBytes(payload: unknown): number {
+  const wire = JSON.stringify(payload);
+  const body = JSON.parse(wire);
+  let imageBytes = 0;
+  let imageCount = 0;
+  let exemptBytes = 0;
+  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+    for (const part of Array.isArray(message?.content) ? message.content : []) {
+      if (part?.type !== "image_url") continue;
+      const url = part.image_url?.url;
+      if (typeof url !== "string") throw new Error("MEDIA_REJECTED");
+      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,/.exec(url);
+      if (!match) throw new Error("MEDIA_REJECTED");
+      const data = url.slice(match[0].length);
+      if (
+        !data.length ||
+        data.length > 11184812 ||
+        /[^A-Za-z0-9+/=]/.test(data)
+      )
+        throw new Error("MEDIA_REJECTED");
+      const decoded = Buffer.from(data, "base64");
+      imageCount++;
+      imageBytes += decoded.length;
+      if (
+        decoded.toString("base64") !== data ||
+        decoded.length > 8 * 1024 * 1024 ||
+        imageCount > 4 ||
+        imageBytes > 16 * 1024 * 1024
+      )
+        throw new Error("MEDIA_REJECTED");
+      exemptBytes += data.length;
+    }
+  }
+  return Buffer.byteLength(wire) - exemptBytes;
+}
+
 // The core has no resource loader/discovery. Only this explicit state exists.
 export async function complete(
   provider: Provider,
@@ -57,12 +96,7 @@ export async function complete(
         onPayload: (payload) => {
           assertNoSecrets(payload, secrets);
           assertNoSecrets(JSON.stringify(payload), secrets);
-          // Budget the actual wire envelope, not Pi's internal message metadata.
-          // Original image bytes have separate count/byte caps in discoverReads.
-          const text = JSON.stringify(payload, (_k, value) =>
-            value?.type === "image_url" ? { type: "image_url" } : value,
-          );
-          const bytes = Buffer.byteLength(text);
+          const bytes = providerTextBytes(payload);
           inputBytes += bytes;
           if (bytes > 28000 || inputBytes > 120000) {
             exhausted = true;

@@ -477,6 +477,57 @@ test("real Pi selects the exact second media handle and cannot repair an unknown
   }
 });
 
+for (const type of ["image_url", "ordinary"]) {
+  test(`real discovery/AJV/Pi budgets adversarial ${type} schema defaults`, async () => {
+    const { wire, schema } = await import("./data-fixtures.js");
+    const names = [
+      "coach_list_activities",
+      "coach_read_activity",
+      "coach_read_profile",
+    ];
+    const f = await wire((method) =>
+      method === "tools/list"
+        ? {
+            tools: [
+              { name: "coach_get_capabilities" },
+              ...names.map((name) => ({
+                name,
+                inputSchema: {
+                  ...schema,
+                  properties: {
+                    ...schema.properties,
+                    trap: {
+                      type: "object",
+                      default: { type, padding: "x".repeat(11000) },
+                    },
+                  },
+                },
+              })),
+            ],
+          }
+        : { structuredContent: { contract_version: 2, allowed_tools: names } },
+    );
+    const p = await providerFixture(() => ({ content: "Must not dispatch" }));
+    try {
+      const signal = AbortSignal.timeout(5000);
+      const reads = await discoverReads(
+        new Client(f.origin, "credential", signal),
+        fence,
+        { vision: true, secrets: [] },
+      );
+      assert.equal(reads.tools.length, 3);
+      await assert.rejects(
+        complete(p.config, "Coach", "Read", signal, reads.tools),
+        /MODEL_BUDGET_EXHAUSTED/,
+      );
+      assert.equal(p.bodies.length, 0);
+    } finally {
+      await p.close();
+      await f.close();
+    }
+  });
+}
+
 // Catalog captured from backend 8a82fe3 with all five grants, personal owner.
 test("full backend catalog completes four turns within the unchanged wire budget", async () => {
   const { readFile } = await import("node:fs/promises");

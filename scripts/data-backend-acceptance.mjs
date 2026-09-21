@@ -61,7 +61,7 @@ let maximumActive = 0;
 const { Worker } = await import(
   pathToFileURL(runtime + "/dist/worker/runner.js")
 );
-const { complete } = await import(
+const { complete, providerTextBytes } = await import(
   pathToFileURL(runtime + "/dist/runtime/piAdapter.js")
 );
 const require = createRequire(backend + "/package.json");
@@ -383,15 +383,7 @@ try {
         .messages.filter((m) => m.role === "assistant")
         .flatMap((m) => m.tool_calls || [])
         .map((t) => t.function.name),
-      providerTextEnvelopeBytes: payloads.map((p) =>
-        Buffer.byteLength(
-          JSON.stringify(p, (k, v) =>
-            k === "url" && typeof v === "string" && v.startsWith("data:")
-              ? "[original image]"
-              : v,
-          ),
-        ),
-      ),
+      providerTextEnvelopeBytes: payloads.map(providerTextBytes),
       providerTurns: payloads.length,
       originalImageBytes: bytes.length,
       originalImageSha256: createHash("sha256").update(bytes).digest("hex"),
