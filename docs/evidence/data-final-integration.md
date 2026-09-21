@@ -1,6 +1,22 @@
 # Final packed/backend and live-provider acceptance
 
-## Current request-local handle follow-up
+## Current provider-budget bypass correction
+
+**The independently reproduced budget bypass is fixed; final independent review is still pending.** PR #2 remains draft. No merge, deployment or npm publication.
+
+- Runtime correction: `ddaea0653242de47939d583b14b4d6fe78b19562`; only `src/runtime/piAdapter.ts` changed in production. `mediaHandles.ts`, `readTools.ts` and `runner.ts` are unchanged.
+- RED before implementation: real discovery → AJV → Pi accepted three schema defaults containing `{type: "image_url", padding: <11,000 characters>}` and dispatched despite the 28,000-byte ceiling; the otherwise-identical ordinary marker control was rejected. The checked-in regression now rejects both before any provider dispatch. Local RED log: `standalone-final-data-proof/budget-red.log`.
+- Accounting now serializes the full provider envelope and subtracts only canonical, supported-MIME base64 DATA at `messages[].content[]` image parts. URL prefixes, all metadata/extras, nested mimics, schema defaults, and text strings remain counted. Arbitrary URLs and malformed/unsupported/oversized image data fail closed. The existing 8 MiB/image, four-image and 16 MiB aggregate caps are rechecked at this boundary; 28,000/call, 120,000 cumulative, turns, calls, output, deadlines and lease limits are unchanged.
+- **129/129 tests pass**, zero skipped, retaining the prior 113 tests. Build, formatting, production-only package smoke, and packed three-case credential harness pass. Unit envelope tests cover extras/nested mimics, URL metadata, text/schema markers, canonical base64, supported MIME restrictions and image caps; real Pi original-PNG and full-catalog/handles regressions remain green.
+- Production-only tested tarball SHA-256: `b3aca48a2253d1360fd4d25c8c7f3f66d2db27c77d55c9b175fb30c54c729c48`. Backend snapshot remains `8a82fe3c025392d79c02edbcb9ca1a7d50bbd782`; all 2,341 archived file hashes matched. `data-budget-{deterministic,live}.json` record exact runtime/artifact/backend hashes; later evidence packaging is not this exact tarball.
+- Deterministic packed worker → real MCP/backend → ephemeral Mongo passes with all five service-created grants and all 11 authorized reads. List → detail → original → final envelopes are 22,589 / 23,296 / 24,143 / 24,859 bytes under the corrected accounting. Exact 19-character model handle resolves to the issued 243-character backend reference; originals never appear in provider payloads.
+- **Exactly one new authorized live attempt passes** on the canonical LM Studio environment: four HTTP 200 responses, one maximum active inference, model-chosen list → detail → media. Original 97-byte PNG hash and canonical persisted `reply_text`/`external_agent` attribution verified. Live envelopes: 22,623 / 23,371 / 24,272 / 25,042 bytes. Exact reply:
+
+  > The dominant color in the image you provided is red.
+
+- No customer data, provider administration, grant reduction or application changes. Proof-owned worker/HTTP/Mongo resources closed in `finally`. One live sample establishes this bounded path, not general reliability. Historical receipts below describe their original runtimes and accounting.
+
+## Historical request-local handle follow-up
 
 **Broad-grant original-image live acceptance now passes.** PR #2 remains draft pending independent runtime re-review; no merge, deployment or npm publication.
 
