@@ -7,7 +7,7 @@ This is a data-only expansion. Persona defaults and coaching tone are unchanged.
 - After claim/start/context, paginate standard MCP `tools/list`, then call `coach_get_capabilities` with the current request ID and lease generation. Model exposure is the intersection of `allowed_tools` and the fixed 12-name read allowlist, never MCP annotations.
 - Lifecycle, publication, proposals, mutations, arbitrary HTTP/DB dispatch, shell and filesystem tools are never model tools. Each read injects the worker's fence. Forged authority fields are rejected, including nested fields. JSON schema is validated without coercion **before Pi's own argument validation**.
 - v1 servers without the capability tool retain zero-tool, text-only inference. Invalid discovery or capability errors fail closed, not an authorization bypass. Preview has no claimed request and never negotiates/exposes reads.
-- Backend credentials and requester consent still determine scopes, ownership, Clear, audience, membership and media access. The worker's allowlist is not a replacement for those backend checks. No private results or schemas are cached between requests.
+- Backend credentials and server-side sharing authority still determine scopes, ownership, Clear, audience, membership and media access. Chief-managed dojo Coaches use existing Dojo Chief per-category sharing rather than a separate external-agent member grant; personal credentials retain requester consent. The worker's allowlist is not a replacement for those backend checks. No private results or schemas are cached between requests.
 
 ## Original images
 

@@ -464,8 +464,12 @@ try {
     .click();
   assert.match(
     await page.locator("#memberStatus").innerText(),
-    /Sharing not enabled/,
+    /Dojo Chief sharing/,
   );
+  await page.screenshot({
+    path: evidence + "/chief-sharing-unavailable.png",
+    fullPage: true,
+  });
   await page.locator("#operatorTab").click();
   assert.equal(await page.locator("#operatorForm").isVisible(), true);
   assert.equal(
