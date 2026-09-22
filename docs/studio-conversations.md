@@ -12,9 +12,11 @@ Chat messages do not silently rewrite global behavior. Use **Use as Coach instru
 
 ## Read-only member tabs
 
-Member tabs fetch canonical retained Coach-page interactions from Kata.fit through dedicated read tools. They do not replay local worker logs, fabricate request leases, or create a second member chat history. Personal credentials can only address their owner; dojo credentials are confined to their current dojo authority.
+Member tabs fetch canonical retained Coach-page interactions from Kata.fit through dedicated read tools. They do not replay local worker logs, fabricate request leases, or create a second member chat history. Member browsing is for current chief-managed dojo credentials; personal credentials do not acquire human-browsing authority from an ordinary worker grant.
 
-Browsing requires the companion Kata.fit backend feature and a fresh, explicit member grant to the **exact credential**, with history access and **Allow this Coach’s human operator to view my Coach conversation** enabled. Older grants default off. Granting model access for a request is not permission for human browsing. Credential holders and people with the installation's Studio admin access are the disclosed audience; Studio does not establish an individually identified human viewer.
+For a chief-managed dojo Coach, browsing follows the member’s existing **Dojo Chief** sharing settings. There is no separate external-agent/operator permission. The backend resolves current chief authority and applies the same per-category audiences used for chief access; chief management does not override private categories. Technical credential authentication, scope and revocation checks remain in force. People with the installation’s credentials can exercise that delegated chief authority: protect Studio access accordingly. Personal-worker data grants remain separately scoped to the owner; personal Studio member browsing is unavailable without an established human-view authority.
+
+Mixed retained chat, advice and proposal payloads may contain data from several categories. Without complete category provenance, the companion backend requires all five existing categories to be chief-visible before returning that prose; narrower sharing can still expose category-proven activity items. This is not a new permission toggle and does not authorize personal direct messages.
 
 Only currently authorized retained main-feed content is returned. No composer, regenerate, retry, fallback, proposal approval, or data-edit controls are available in member tabs. Attachment contents and nested workout conversations are outside this first release; omissions are identified rather than presented as full media parity. Additional shared-data exploration is future work and must preserve server-side consent.
 
@@ -22,4 +24,4 @@ Every page rechecks authority. Revocation, expiry, credential replacement and me
 
 ## Deployment ordering
 
-Deploy the Kata.fit consent/read backend and app settings before expecting member tabs to load. Upgrade the standalone installation separately. Operator chat does not depend on member browsing being enabled. Missing backend support must remain an explicit unavailable state, not a fallback to broader endpoints.
+Deploy the Kata.fit chief-sharing/read backend and app settings before expecting member tabs to load. Upgrade the standalone installation separately. Operator chat does not depend on member browsing being enabled. Missing backend support must remain an explicit unavailable state, not a fallback to broader endpoints.

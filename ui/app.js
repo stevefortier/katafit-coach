@@ -842,7 +842,7 @@ function selectConversation(member) {
   $("memberRefresh").disabled = member.access !== "granted";
   if (member.access !== "granted")
     $("memberStatus").textContent =
-      "Sharing not enabled. Ask this member to enable sharing in Kata.fit, then Refresh members.";
+      "No shared conversation available. For a dojo Coach, access follows this member’s Dojo Chief sharing settings in Kata.fit; no separate agent permission is needed. Refresh members after sharing changes.";
   else void loadMemberFeed();
 }
 function renderMemberFeed() {
@@ -901,7 +901,7 @@ async function loadMemberFeed(more = false, validate = false) {
       return;
     if (data.member_ref !== ref) throw new Error("Mismatched member");
     if (validationCursor) {
-      // A cursor is bound to the complete backend snapshot and live grant.
+      // A cursor is bound to the complete backend snapshot and live authority.
       // Successful revalidation preserves already loaded pages and scroll.
       $("memberStatus").textContent =
         "Read-only · sharing and history rechecked";
@@ -920,7 +920,7 @@ async function loadMemberFeed(more = false, validate = false) {
     renderMemberFeed();
     $("memberStatus").textContent = memberItems.length
       ? "Read-only · refreshed from Kata.fit"
-      : "No retained Coach feed items yet. Refresh after the member chats in Kata.fit.";
+      : "No retained Coach feed items are visible under current sharing settings. Mixed chat history may be omitted when a category is private.";
   } catch (error) {
     if (epoch !== memberEpoch || generation !== authGeneration) return;
     memberItems = [];
