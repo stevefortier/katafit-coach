@@ -16,8 +16,15 @@ test("killing foreground wrapper also closes its owner and runtime", async () =>
     },
   );
   let info: any;
+  const started = performance.now();
   try {
-    for (let i = 0; i < 100; i++) {
+    // The runtime alone has a 10s startup budget; allow launcher/tsx overhead.
+    while (performance.now() - started < 15000) {
+      assert.equal(
+        child.exitCode,
+        null,
+        "foreground launcher exited before readiness",
+      );
       try {
         info = JSON.parse(await readFile(dir + "/service.json", "utf8"));
         break;
@@ -25,6 +32,12 @@ test("killing foreground wrapper also closes its owner and runtime", async () =>
       await new Promise((r) => setTimeout(r, 50));
     }
     assert.ok(info);
+    console.log(
+      JSON.stringify({
+        fixture: "foreground-wrapper",
+        startupMs: Math.round(performance.now() - started),
+      }),
+    );
     child.kill("SIGKILL");
     await new Promise((r) => setTimeout(r, 1000));
     await assert.rejects(readFile(dir + "/service.json"));

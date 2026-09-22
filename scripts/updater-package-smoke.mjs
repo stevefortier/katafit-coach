@@ -17,7 +17,8 @@ import assert from "node:assert/strict";
 const root = await mkdtemp(join(tmpdir(), "coach-packed-update-"));
 const home = join(root, "home"),
   source = join(root, "source"),
-  selection = join(root, "selection.json");
+  selection = join(root, "selection.json"),
+  trace = join(root, "build-trace.jsonl");
 const env = {
   ...process.env,
   KATAFIT_COACH_HOME: home,
@@ -116,7 +117,24 @@ try {
   preload = join(root, "boundary.mjs");
   await writeFile(
     preload,
-    `import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';import {readFileSync} from 'node:fs';const original=cp.spawn;cp.spawn=function(file,args,options){if(file==='git')args=args.map(v=>v==='https://github.com/stevefortier/katafit-coach.git'?${JSON.stringify(source)}:v);return original.call(this,file,args,options);};syncBuiltinESMExports();const request=globalThis.fetch;globalThis.fetch=(url,options)=>String(url)==='https://api.github.com/repos/stevefortier/katafit-coach/git/ref/heads/main'?Promise.resolve(new Response(JSON.stringify({object:{sha:JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8')).sha}}))):request(url,options);const now=Date.now.bind(Date);Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8')).offset;`,
+    `import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {readFileSync,appendFileSync,existsSync,statSync} from 'node:fs';
+const now=Date.now.bind(Date), tracePath=${JSON.stringify(trace)};
+const record=(row)=>{try{if(!existsSync(tracePath)||statSync(tracePath).size<16384)appendFileSync(tracePath,JSON.stringify(row)+'\\n');}catch{}};
+const original=cp.spawn;
+cp.spawn=function(file,args,options){
+  if(file==='git')args=args.map(v=>v==='https://github.com/stevefortier/katafit-coach.git'?${JSON.stringify(source)}:v);
+  const command=file==='git'?'git:'+args[0]:file==='npm'?'npm:'+args[0]:'launcher', started=now();
+  record({event:'start',command});
+  const child=original.call(this,file,args,options);
+  child.once('close',(code,signal)=>record({event:'exit',command,code,signal,durationMs:now()-started}));
+  return child;
+};
+syncBuiltinESMExports();
+const request=globalThis.fetch;
+globalThis.fetch=(url,options)=>String(url)==='https://api.github.com/repos/stevefortier/katafit-coach/git/ref/heads/main'?Promise.resolve(new Response(JSON.stringify({object:{sha:JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8')).sha}}))):request(url,options);
+Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8')).offset;`,
   );
   await writeFile(selection, JSON.stringify({ sha: good, offset: 0 }));
   assert.match(run("start"), /started/);
@@ -136,14 +154,36 @@ try {
       signal: AbortSignal.timeout(5000),
     });
   const wait = async (predicate) => {
+    let lastState;
     for (let i = 0; i < 900; i++) {
       try {
         const state = await (await api("update")).json();
+        lastState = state;
         if (predicate(state)) return state;
       } catch {}
+      if (
+        lastState &&
+        !lastState.applying &&
+        lastState.lastOperation?.state === "failed"
+      )
+        break;
       await sleep(100);
     }
-    throw Error("UPDATE_TIMEOUT");
+    const status = {
+      installed: lastState?.installed,
+      applying: lastState?.applying,
+      operation: lastState?.lastOperation && {
+        sha: lastState.lastOperation.sha,
+        state: lastState.lastOperation.state,
+        phase: lastState.lastOperation.phase,
+      },
+    };
+    throw Error(
+      "UPDATE_NOT_COMPLETED " +
+        JSON.stringify(status) +
+        "\n" +
+        (await readFile(trace, "utf8").catch(() => "(no build trace)")),
+    );
   };
   const apply = async (sha, offset) => {
     await writeFile(selection, JSON.stringify({ sha, offset }));
