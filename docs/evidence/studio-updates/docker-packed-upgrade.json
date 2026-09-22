@@ -1,9 +1,9 @@
 {
   "packedUpdate": "PASS",
   "syntheticTrustedGit": true,
-  "first": "fcf344cefac2b0b8ef47ce8fb4b9b8d6e6cd9a26",
-  "rollbackCandidate": "84e87ab797be6c37cab472e68ed4e7dbd4cfbee4",
-  "second": "3d2095fa95bb154bf10d867180ba56e9c324b4f4",
+  "first": "04f1d79fa0a4d9c5a76a928669adce1c64bbce25",
+  "rollbackCandidate": "2364082f5e4aafeba403a19588f9d8e13c8167ce",
+  "second": "cc30e7b74750c44f0b71c061a93f5f2b4be9e3eb",
   "stableOwner": true,
   "configSecretsPreserved": true,
   "multipleUpgrades": true,

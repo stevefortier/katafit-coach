@@ -27,13 +27,15 @@ Run `npm run test:updates-browser` (Chrome required; `CHROME_PATH` supported). T
 
 The previous PID-file-only launcher failed the forced-termination replacement test because both old and new container processes used PID 7. The kernel-lock launcher passes this regression without requiring deletion of the data volume.
 
-Final verification includes 190 passing tests, build/format checks, normal production-only packed install, and both browser suites. The updater browser regression also verifies that expired remembered credentials and active-session 401s return to login without continued polling, late status cannot repaint a locked session, and an older 401 cannot revoke a newer unlock.
+Final verification includes 195 passing tests, build/format checks, normal production-only packed install, and both browser suites. The updater browser regression also verifies that expired remembered credentials and active-session 401s return to login without continued polling, late status cannot repaint a locked session, and an older 401 cannot revoke a newer unlock.
+
+Disk-monitor regressions reproduce files/directories disappearing after enumeration and a delayed scan completing after a child exits. Normal installer churn is tolerated; permission failures and the actual sparse-file size limit remain fail-closed. A CPU-constrained, `--init` Docker run also verified healthy cold startup beyond the original five-second fixture deadline.
 
 Machine-readable receipts captured from actual execution:
 
 - [Host packed upgrade lifecycle](host-packed-upgrade.json)
 - [Non-root Docker packed upgrade lifecycle](docker-packed-upgrade.json)
 
-Both use actual Git/npm staging, compiled source, installed CLI processes and authenticated admin requests. Only the GitHub/Git source boundary is redirected through a test-only Node preload to disposable local fixture commits. They prove upgrade → startup-failure rollback → another upgrade, unchanged config/secrets, retained versions and restart/crash recovery; they do not claim that any public upstream version was deployed. The Docker lifecycle receipt covers the final backend lifecycle fixes; the later frontend auth fixes are covered by the browser regression and host packed check. The separate Docker smoke covers container recreation on a persistent named volume, including forced-kill recovery and exact clean-build identity in CI.
+Both use actual Git/npm staging, compiled source, installed CLI processes and authenticated admin requests. Only the GitHub/Git source boundary is redirected through a test-only Node preload to disposable local fixture commits. They prove upgrade → startup-failure rollback → another upgrade, unchanged config/secrets, retained versions and restart/crash recovery; they do not claim that any public upstream version was deployed. The Docker lifecycle receipt covers the final backend lifecycle and installer disk-monitor fixes. Browser regressions separately cover frontend authentication and reconnect behavior. The separate Docker smoke covers container recreation on a persistent named volume, including forced-kill recovery and exact clean-build identity in CI.
 
 No customer/production state or real-provider inference was used in this updater verification.

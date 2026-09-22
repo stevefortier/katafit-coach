@@ -73,8 +73,14 @@ async function bytes(path: string): Promise<number> {
   let total = 0;
   for (const entry of await readdir(path, { withFileTypes: true })) {
     const p = join(path, entry.name);
-    if (entry.isDirectory()) total += await bytes(p);
-    else total += (await lstat(p)).size;
+    try {
+      if (entry.isDirectory()) total += await bytes(p);
+      else total += (await lstat(p)).size;
+    } catch (error: any) {
+      // Installers legitimately rename/remove entries after enumeration. The
+      // next scan counts their replacements; other IO failures remain fatal.
+      if (error.code !== "ENOENT") throw error;
+    }
   }
   return total;
 }
@@ -93,8 +99,11 @@ export async function command(
       detached: true,
       stdio: "ignore",
     });
-    let failed = false;
+    let failed = false,
+      finished = false;
     const stop = () => {
+      // An in-flight scan may settle after exit; never signal a stale PID.
+      if (finished) return;
       failed = true;
       try {
         process.kill(-child.pid!, "SIGKILL");
@@ -116,6 +125,7 @@ export async function command(
     }, 1000);
     signal?.addEventListener("abort", stop, { once: true });
     const clear = () => {
+      finished = true;
       clearTimeout(timer);
       clearInterval(disk);
       signal?.removeEventListener("abort", stop);
