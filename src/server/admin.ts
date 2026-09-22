@@ -45,7 +45,7 @@ export async function admin(
         return send(403, { error: "HOST_REJECTED" });
       const path = req.url ?? "/";
       if (
-        ["/", "/app.js", "/style.css"].includes(path) &&
+        ["/", "/app.js", "/style.css", "/favicon.svg"].includes(path) &&
         req.method === "GET"
       ) {
         const file = path === "/" ? "index.html" : path.slice(1);
@@ -55,7 +55,9 @@ export async function admin(
             ? "text/javascript"
             : file.endsWith(".css")
               ? "text/css"
-              : "text/html",
+              : file.endsWith(".svg")
+                ? "image/svg+xml"
+                : "text/html",
         );
         res.end(await readFile(new URL("../../ui/" + file, import.meta.url)));
         return;

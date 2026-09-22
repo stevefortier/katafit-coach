@@ -1,0 +1,2 @@
+# Preserve canonical SVG artwork; Prettier has no inferred SVG parser.
+ui/favicon.svg
