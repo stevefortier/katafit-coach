@@ -1,4 +1,6 @@
-# Chief-sharing guidance
+# Chief-sharing guidance — historical evidence
+
+This capture predates the membership-baseline clarification and is superseded by `../membership-conversations/`. Coach messages are leader-readable through dojo membership; activity-category sharing is not a prerequisite. The image and test totals below describe the earlier snapshot only.
 
 `mobile.png` is the actual Studio at a mobile viewport with synthetic member transport. The unavailable member view now directs a chief-managed dojo Coach to existing Dojo Chief sharing settings, with no separate external-agent permission.
 

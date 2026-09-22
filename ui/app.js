@@ -810,7 +810,7 @@ async function loadMembers(more = false) {
     renderMembers();
     $("membersStatus").textContent = members.length
       ? "Member conversations · read-only"
-      : "No member conversations available for this credential. Check sharing in Kata.fit, then refresh.";
+      : "No member conversations available for this credential. Check dojo membership and credential access in Kata.fit, then refresh.";
   } catch (error) {
     if (epoch !== membersEpoch || generation !== authGeneration) return;
     members = [];
@@ -818,7 +818,7 @@ async function loadMembers(more = false) {
     selectConversation(null);
     renderMembers();
     $("membersStatus").textContent =
-      "Member conversations unavailable. Check your connection and sharing permissions in Settings / Kata.fit, or update an older backend, then Refresh members.";
+      "Member conversations unavailable. Check your connection in Settings and dojo membership, chief authority and credential access in Kata.fit, or update an older backend, then Refresh members.";
   } finally {
     if (epoch === membersEpoch && generation === authGeneration)
       $("membersMore").disabled = false;
@@ -842,7 +842,7 @@ function selectConversation(member) {
   $("memberRefresh").disabled = member.access !== "granted";
   if (member.access !== "granted")
     $("memberStatus").textContent =
-      "No shared conversation available. For a dojo Coach, access follows this member’s Dojo Chief sharing settings in Kata.fit; no separate agent permission is needed. Refresh members after sharing changes.";
+      "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh members. Category sharing controls activity records, not Coach messages.";
   else void loadMemberFeed();
 }
 function renderMemberFeed() {
@@ -920,7 +920,7 @@ async function loadMemberFeed(more = false, validate = false) {
     renderMemberFeed();
     $("memberStatus").textContent = memberItems.length
       ? "Read-only · refreshed from Kata.fit"
-      : "No retained Coach feed items are visible under current sharing settings. Mixed chat history may be omitted when a category is private.";
+      : "No retained Coach feed items are available. Conversation access follows dojo membership; activity records follow category sharing.";
   } catch (error) {
     if (epoch !== memberEpoch || generation !== authGeneration) return;
     memberItems = [];
