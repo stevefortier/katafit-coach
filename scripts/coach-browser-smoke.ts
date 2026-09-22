@@ -373,6 +373,19 @@ try {
   await page.waitForFunction(
     () => document.querySelectorAll(".member-item").length === 4,
   );
+  const memberHint = await page.locator("#memberView .hint").innerText();
+  assert.match(
+    memberHint,
+    /Messages to and from Coach are readable through dojo membership/,
+  );
+  assert.match(memberHint, /including retained workout conversations/);
+  assert.match(memberHint, /Activity records follow category sharing/);
+  assert.match(memberHint, /Raw attachments are not included/);
+  assert.match(memberHint, /not instructions for your Operator chat/);
+  assert.doesNotMatch(
+    memberHint,
+    /nested workout conversations are not included/,
+  );
   assert.equal(
     await page
       .locator("#operatorTab")
@@ -457,10 +470,28 @@ try {
       .querySelector("#memberStatus")
       ?.textContent?.startsWith("No retained"),
   );
-  assert.match(
+  assert.equal(
     await page.locator("#memberStatus").innerText(),
-    /current sharing settings/,
+    "No retained Coach feed items are available. Conversation access follows dojo membership; activity records follow category sharing.",
   );
+  for (const [name, width, height] of [
+    ["desktop", 1280, 1000],
+    ["mobile", 390, 844],
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    await page.locator("#memberView").scrollIntoViewIfNeeded();
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+      "membership empty state fits " + name,
+    );
+    await page.screenshot({
+      path: evidence + "/membership-empty-" + name + ".png",
+      fullPage: true,
+    });
+  }
   memberEmpty = false;
   memberDenied = true;
   await page.locator("#memberRefresh").click();
@@ -477,9 +508,9 @@ try {
   await page
     .getByRole("button", { name: "Synthetic Locked", exact: true })
     .click();
-  assert.match(
+  assert.equal(
     await page.locator("#memberStatus").innerText(),
-    /Dojo Chief sharing/,
+    "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh members. Category sharing controls activity records, not Coach messages.",
   );
   await page.screenshot({
     path: evidence + "/chief-sharing-unavailable.png",
@@ -504,6 +535,39 @@ try {
     0,
     "configuration replacement clears old roster authority",
   );
+  await page.unroute("**/api/members?*");
+  await page.route("**/api/members?*", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ members: [], has_more: false, next_cursor: null }),
+    }),
+  );
+  await page.locator("#coachTab").click();
+  await page.locator("#membersRefresh").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#membersStatus")
+      ?.textContent?.startsWith("No member"),
+  );
+  assert.match(
+    await page.locator("#membersStatus").innerText(),
+    /dojo membership and credential access/,
+  );
+  await page.unroute("**/api/members?*");
+  await page.route("**/api/members?*", (route) =>
+    route.fulfill({ status: 403, contentType: "application/json", body: "{}" }),
+  );
+  await page.locator("#membersRefresh").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#membersStatus")
+      ?.textContent?.startsWith("Member conversations unavailable"),
+  );
+  assert.match(
+    await page.locator("#membersStatus").innerText(),
+    /dojo membership, chief authority and credential access/,
+  );
+  await page.locator("#settingsTab").click();
   // Representative evidence uses the same real Pi transport; adversarial text
   // above remains tested, but does not stand in for the readable UI receipt.
   await page.locator("#run").click();
