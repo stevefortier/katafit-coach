@@ -4,6 +4,7 @@ import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { assertNoSecrets } from "../config/store.js";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 export interface Provider {
+  authorize?: () => Promise<void>;
   onDiagnostic?: (event: LogInput) => void;
   baseUrl: string;
   model: string;
@@ -144,6 +145,8 @@ export async function complete(
         // its actual HTTP boundary instead of parsing/logging that free text.
         fetch: async (url, init) => {
           let response: Response;
+          await provider.authorize?.();
+          signal.throwIfAborted();
           try {
             response = await fetch(url, init);
           } catch {
@@ -194,7 +197,11 @@ export async function complete(
               content: [
                 {
                   type: "text",
-                  text: "Read unavailable: access, arguments or budget rejected.",
+                  text: tools.some(
+                    (t) => t.name === "studio_operator_send_message",
+                  )
+                    ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
+                    : "Read unavailable: access, arguments or budget rejected.",
                 },
               ],
               details: {},
@@ -214,7 +221,11 @@ export async function complete(
             content: [
               {
                 type: "text",
-                text: "Read unavailable: access, arguments or budget rejected.",
+                text: tools.some(
+                  (t) => t.name === "studio_operator_send_message",
+                )
+                  ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
+                  : "Read unavailable: access, arguments or budget rejected.",
               },
             ],
             details: {},

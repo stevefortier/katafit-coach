@@ -41,8 +41,13 @@ function validate(value: unknown): asserts value is Message[] {
 }
 export class History {
   private path: string;
-  constructor(private dir: string) {
-    this.path = resolve(dir, "operator-chat.json");
+  constructor(
+    private dir: string,
+    private filename:
+      | "operator-chat.json"
+      | "operator-actions.json" = "operator-chat.json",
+  ) {
+    this.path = resolve(dir, filename);
   }
   private directories() {
     for (let p = resolve(this.dir); ; p = dirname(p)) {
@@ -102,9 +107,9 @@ export class History {
     // Saves are synchronous and the application has a single storage owner.
     for (const name of readdirSync(this.dir)) {
       if (
-        !/^operator-chat\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-          name,
-        )
+        !new RegExp(
+          `^${this.filename.replace(".", "\\.")}\\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`,
+        ).test(name)
       )
         continue;
       const path = resolve(this.dir, name);

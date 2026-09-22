@@ -38,7 +38,7 @@ export async function admin(
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; img-src 'self' blob:; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     try {
       if (req.headers.host !== new URL(origin).host)
@@ -75,7 +75,13 @@ export async function admin(
       if (
         req.method === "GET" &&
         path.split("?")[0] &&
-        ["/api/members", "/api/members/feed"].includes(path.split("?")[0])
+        [
+          "/api/members",
+          "/api/members/feed",
+          "/api/members/activities",
+          "/api/members/activity",
+          "/api/members/media",
+        ].includes(path.split("?")[0])
       ) {
         if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
         if (Buffer.byteLength(path) > 20000)
@@ -84,7 +90,21 @@ export async function admin(
           return send(429, { error: "OPERATION_IN_PROGRESS" });
         const url = new URL(path, origin);
         const feed = url.pathname === "/api/members/feed";
-        const allowed = feed ? ["member_ref", "cursor"] : ["cursor"];
+        const kind = url.pathname.split("/").at(-1);
+        const allowed =
+          kind === "activity"
+            ? [
+                "member_ref",
+                "activity_ref",
+                "section",
+                "exercise_instance_id",
+                "cursor",
+              ]
+            : kind === "media"
+              ? ["member_ref", "media_ref"]
+              : kind === "members"
+                ? ["cursor"]
+                : ["member_ref", "cursor"];
         for (const key of url.searchParams.keys()) {
           const values = url.searchParams.getAll(key);
           if (
@@ -96,7 +116,12 @@ export async function admin(
             throw new SafeError("ARGUMENTS_REJECTED");
         }
         const member_ref = url.searchParams.get("member_ref");
-        if (feed && !member_ref) throw new SafeError("ARGUMENTS_REJECTED");
+        if (
+          (kind !== "members" && !member_ref) ||
+          (kind === "activity" && !url.searchParams.get("activity_ref")) ||
+          (kind === "media" && !url.searchParams.get("media_ref"))
+        )
+          throw new SafeError("ARGUMENTS_REJECTED");
         const token = store.secrets.token;
         if (!token) throw new SafeError("TOKEN_REQUIRED");
         const c = store.publicConfig();
@@ -116,7 +141,23 @@ export async function admin(
           const cursor = url.searchParams.get("cursor") ?? undefined;
           const result = feed
             ? await reads.feed({ member_ref: member_ref!, cursor })
-            : await reads.members({ cursor });
+            : kind === "activities"
+              ? await reads.activities({ member_ref: member_ref!, cursor })
+              : kind === "activity"
+                ? await reads.activity({
+                    member_ref: member_ref!,
+                    activity_ref: url.searchParams.get("activity_ref")!,
+                    section: url.searchParams.get("section") ?? undefined,
+                    exercise_instance_id:
+                      url.searchParams.get("exercise_instance_id") ?? undefined,
+                    cursor,
+                  })
+                : kind === "media"
+                  ? await reads.media({
+                      member_ref: member_ref!,
+                      media_ref: url.searchParams.get("media_ref")!,
+                    })
+                  : await reads.members({ cursor });
           signal.throwIfAborted();
           if (
             store.publicConfig().revision !== c.revision ||
@@ -124,6 +165,12 @@ export async function admin(
             updates.applying
           )
             throw new SafeError("CANCELLED");
+          if (kind === "media" && "bytes" in result) {
+            res.setHeader("Content-Type", result.mime_type);
+            res.setHeader("Content-Length", result.bytes.length);
+            res.end(result.bytes);
+            return;
+          }
           return send(200, result);
         } finally {
           res.removeListener("close", cancel);
@@ -131,7 +178,7 @@ export async function admin(
         }
       }
       if (req.method === "GET" && path === "/api/operator/chat")
-        return send(200, chat.snapshot());
+        return send(200, await chat.reconcile());
       if (req.method === "GET" && path === "/api/update")
         return send(200, updates.snapshot());
       if (req.method === "GET" && path === "/api/config")
@@ -162,12 +209,12 @@ export async function admin(
       const body = JSON.parse(raw || "{}");
       if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
       if (path === "/api/operator/cancel") {
-        chat.cancel();
-        return send(200, { ok: true });
+        await chat.cancel();
+        return send(200, { ok: true, ...chat.snapshot() });
       }
       if (path === "/api/operator/clear") {
-        chat.clear();
-        return send(200, { ok: true });
+        await chat.clear();
+        return send(200, { ok: true, ...chat.snapshot() });
       }
       if (
         chat.active &&
@@ -185,13 +232,18 @@ export async function admin(
         if (
           !body ||
           Array.isArray(body) ||
-          Object.keys(body).join(",") !== "text"
+          !Object.hasOwn(body, "text") ||
+          Object.keys(body).some((k) => !["text", "member_ref"].includes(k)) ||
+          (body.member_ref !== undefined &&
+            (typeof body.member_ref !== "string" ||
+              !body.member_ref ||
+              body.member_ref.length > 8192))
         )
           throw new SafeError("INVALID_PREVIEW");
         const cancel = () => chat.cancel();
         res.once("close", cancel);
         try {
-          return send(200, await chat.turn(body.text));
+          return send(200, await chat.turn(body.text, body.member_ref));
         } finally {
           res.removeListener("close", cancel);
         }
@@ -226,7 +278,7 @@ export async function admin(
         return send(202, { ok: true });
       }
       if (path === "/api/shutdown" && onShutdown) {
-        chat.cancel();
+        await chat.cancel();
         preview?.abort();
         send(200, { ok: true });
         setImmediate(onShutdown);
@@ -390,10 +442,29 @@ export async function admin(
         metadata: { elapsedMs: Date.now() - started },
         error: failure,
       });
+      let operatorOutcome: Record<string, unknown> = {};
+      if (req.url?.startsWith("/api/operator/")) {
+        operatorOutcome = {
+          hint:
+            (failure.code === "CONTRACT_UNSUPPORTED"
+              ? "This backend does not support operator commands. "
+              : "") +
+            "Operator turn did not complete. Review action receipts before any retry; delivered messages are not undone by Cancel or Clear.",
+          receiptsUnavailable: true,
+        };
+        try {
+          operatorOutcome = {
+            ...operatorOutcome,
+            actions: chat.snapshot().actions,
+            receiptsUnavailable: false,
+          };
+        } catch {}
+      }
       send(400, {
         error: failure.code,
         hint: failure.hint,
         metadata: failure.metadata,
+        ...operatorOutcome,
       });
     }
   });
@@ -406,7 +477,7 @@ export async function admin(
     origin,
     async close() {
       for (const controller of memberReads) controller.abort();
-      chat.cancel();
+      await chat.cancel();
       preview?.abort();
       await worker?.stop();
       server.closeAllConnections();

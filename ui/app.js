@@ -1,6 +1,34 @@
 let key = "",
   config,
-  authGeneration = 0;
+  authGeneration = 0,
+  commandViewEpoch = 0;
+function clearCommandResult() {
+  ++commandViewEpoch;
+  $("operatorCommandResult").replaceChildren();
+  $("operatorCommandResult").hidden = true;
+}
+function renderOperatorActions(actions = []) {
+  const labels = {
+    delivered: "Delivered",
+    pending: "Pending confirmation — do not resend",
+    unknown: "Delivery unknown — refresh receipts before sending again",
+    not_found: "No delivery found after session closed",
+  };
+  $("operatorActions").replaceChildren();
+  for (const action of actions) {
+    if (!Object.hasOwn(labels, action.status)) continue;
+    $("operatorActions").append(
+      detailText(
+        "p",
+        labels[action.status] +
+          (action.action_id ? " · " + action.action_id : ""),
+      ),
+    );
+  }
+  if (!actions.length)
+    $("operatorActions").textContent = "No retained member action receipts.";
+}
+
 function staleAuthentication() {
   const error = new Error("Stale session response");
   error.stale = true;
@@ -45,8 +73,29 @@ async function api(path, body, signal) {
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal,
+      redirect: "error",
+      cache: "no-store",
     });
-    data = await r.json();
+    if (/^members\/(activity|activities)\?/.test(path)) {
+      const reader = r.body.getReader(),
+        chunks = [];
+      let bytes = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > 256 * 1024) {
+            await reader.cancel();
+            throw new Error("Detail response too large");
+          }
+          chunks.push(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      data = JSON.parse(await new Blob(chunks).text());
+    } else data = await r.json();
   } catch (error) {
     if (generation !== authGeneration || requestKey !== key)
       throw staleAuthentication();
@@ -149,7 +198,29 @@ function hasUnsavedEdits() {
     !!$("apiKey").value
   );
 }
+// Bind only conversational inputs, never persona/configuration editors.
+function chatKeyboard(inputId, sendId) {
+  const input = $(inputId);
+  input.addEventListener("keydown", (event) => {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      event.defaultPrevented
+    )
+      return;
+    event.preventDefault();
+    if (event.repeat || input.disabled || input.readOnly || $(sendId).disabled)
+      return;
+    $(sendId).click();
+  });
+}
+chatKeyboard("operatorText", "operatorSend");
+chatKeyboard("question", "previewButton");
+let previewBusy = false;
 action("previewButton", async () => {
+  if (!key || previewBusy || !$("question").value.trim()) return;
   if (hasUnsavedEdits()) {
     notice(
       "Unsaved edits: save a new revision or revert edits before previewing.",
@@ -160,7 +231,16 @@ action("previewButton", async () => {
   $("prompt").textContent =
     "Fetching backend instructions; exact preview not yet available.";
   notice("Preview running with your saved provider…");
-  const r = await api("preview", { text: $("question").value });
+  previewBusy = true;
+  $("previewButton").disabled = true;
+  let r;
+  try {
+    r = await api("preview", { text: $("question").value });
+  } finally {
+    previewBusy = false;
+    $("previewButton").disabled =
+      updatePending || updateData?.applying === true;
+  }
   $("answer").textContent = r.text;
   $("prompt").textContent = r.prompt;
   notice(
@@ -239,6 +319,7 @@ let logData = { entries: [] },
   logTimer,
   logController;
 function selectStudioTab(tab) {
+  clearCommandResult();
   const coach = tab === "coach";
   $("coachPanel").hidden = !coach;
   $("settingsPanel").hidden = coach;
@@ -560,6 +641,7 @@ function lockSession(message) {
   resetMembers();
   ++operatorEpoch;
   operatorMessages = [];
+  renderOperatorActions();
   operatorDraft = "";
   operatorBusy = false;
   operatorControlPending = false;
@@ -616,7 +698,7 @@ function renderOperator() {
     const bubble = document.createElement("article");
     bubble.className = "chat-message chat-" + message.role;
     const label = document.createElement("strong");
-    label.textContent = message.role === "user" ? "You · Operator" : "Coach";
+    label.textContent = message.role === "user" ? "You · Manager" : "Coach";
     const text = document.createElement("p");
     text.textContent = message.text;
     bubble.append(label, text);
@@ -651,6 +733,7 @@ function renderOperator() {
     list.textContent = "Start a private conversation with your Coach.";
   list.scrollTop = list.scrollHeight;
   $("operatorPending").hidden = !operatorBusy;
+  $("operatorTarget").disabled = operatorBusy || operatorControlPending;
   $("operatorSend").disabled = operatorBusy || operatorControlPending;
   $("operatorCancel").disabled = !operatorBusy || operatorControlPending;
   $("operatorClear").disabled = operatorControlPending;
@@ -663,6 +746,7 @@ async function loadOperator() {
     const data = await api("operator/chat");
     if (epoch !== operatorEpoch || generation !== authGeneration) return;
     operatorMessages = data.messages || [];
+    renderOperatorActions(data.actions);
     operatorBusy = data.pending === true;
     renderOperator();
   } catch (error) {
@@ -675,6 +759,8 @@ $("operatorForm").onsubmit = async (event) => {
   event.preventDefault();
   const text = $("operatorText").value.trim();
   if (!key || operatorBusy || operatorControlPending || !text) return;
+  clearCommandResult();
+  const view = commandViewEpoch;
   const epoch = ++operatorEpoch,
     generation = authGeneration;
   operatorBusy = true;
@@ -685,16 +771,34 @@ $("operatorForm").onsubmit = async (event) => {
   $("operatorStatus").textContent = "";
   renderOperator();
   try {
-    const data = await api("operator/chat", { text });
+    const member_ref = $("operatorTarget").value;
+    const data = await api("operator/chat", {
+      text,
+      ...(member_ref ? { member_ref } : {}),
+    });
     if (epoch !== operatorEpoch || generation !== authGeneration) return;
     operatorMessages = data.messages;
+    renderOperatorActions(data.actions);
+    if (
+      data.ephemeral &&
+      typeof data.text === "string" &&
+      view === commandViewEpoch &&
+      !document.hidden &&
+      !$("operatorView").hidden
+    ) {
+      $("operatorCommandResult").hidden = false;
+      $("operatorCommandResult").append(
+        detailText("h3", "Current command result · not retained in chat"),
+        detailText("p", data.text),
+      );
+    }
     operatorDraft = "";
   } catch (error) {
     if (epoch !== operatorEpoch || generation !== authGeneration) return;
     operatorMessages = previous;
     if (!$("operatorText").value) $("operatorText").value = text;
     $("operatorStatus").textContent =
-      "Coach could not complete this response. Check saved provider settings or try again.";
+      "Coach could not complete this response. A member action may already have been delivered; verify its receipt or recipient conversation before sending again.";
   } finally {
     if (epoch === operatorEpoch && generation === authGeneration) {
       operatorBusy = false;
@@ -704,6 +808,7 @@ $("operatorForm").onsubmit = async (event) => {
 };
 async function controlOperator(command) {
   if (!key || operatorControlPending) return;
+  clearCommandResult();
   operatorControlPending = true;
   renderOperator();
   const generation = authGeneration;
@@ -717,7 +822,9 @@ async function controlOperator(command) {
     operatorDraft = "";
     operatorBusy = false;
     $("operatorStatus").textContent =
-      command === "clear" ? "Operator chat cleared." : "Response cancelled.";
+      command === "clear"
+        ? "Operator chat cleared. Messages already delivered cannot be recalled."
+        : "Response cancelled. Messages already delivered cannot be recalled.";
     if (command === "clear") operatorMessages = [];
     renderOperator();
     await loadOperator();
@@ -732,6 +839,16 @@ async function controlOperator(command) {
     }
   }
 }
+$("operatorTarget").onchange = clearCommandResult;
+$("operatorReconcile").onclick = async () => {
+  if (operatorBusy || operatorControlPending) return;
+  $("operatorReconcile").disabled = true;
+  try {
+    await loadOperator();
+  } finally {
+    $("operatorReconcile").disabled = false;
+  }
+};
 $("operatorCancel").onclick = () => controlOperator("cancel");
 $("operatorClear").onclick = () => controlOperator("clear");
 
@@ -756,6 +873,17 @@ function resetMembers() {
   $("membersStatus").textContent = "";
 }
 function renderMembers() {
+  const target = $("operatorTarget").value;
+  $("operatorTarget").replaceChildren(
+    new Option("Discussion only · no member tools", ""),
+  );
+  for (const member of members.filter((m) => m.access === "granted")) {
+    $("operatorTarget").append(
+      new Option(member.display_name, member.member_ref),
+    );
+  }
+  if (members.some((m) => m.member_ref === target && m.access === "granted"))
+    $("operatorTarget").value = target;
   for (const tab of $("conversationTabs").querySelectorAll(".member-tab"))
     tab.remove();
   for (const member of members) {
@@ -825,6 +953,8 @@ async function loadMembers(more = false) {
   }
 }
 function selectConversation(member) {
+  clearCommandResult();
+  clearActivities();
   ++memberEpoch;
   clearTimeout(memberTimer);
   selectedMember = member;
@@ -846,6 +976,7 @@ function selectConversation(member) {
   else void loadMemberFeed();
 }
 function renderMemberFeed() {
+  disposeDetails($("memberItems"));
   $("memberItems").replaceChildren();
   const kinds = {
     message: "Message",
@@ -853,13 +984,42 @@ function renderMemberFeed() {
     insight: "Insight",
     proposal_summary: "Proposal summary",
   };
-  for (const item of memberItems) {
+  // The backend pages newest-first; the conversation reads oldest-first.
+  // Never turn a standalone insight into a reply to an invented question.
+  const ordered = [...memberItems].sort(
+    (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at),
+  );
+  let previousActivity, thread;
+  for (const item of ordered) {
+    if (item.activity_ref && item.activity_ref !== previousActivity) {
+      thread = document.createElement("section");
+      thread.className = "member-thread";
+      thread.append(
+        detailText("h3", "Activity conversation"),
+        activityCard({
+          activity_ref: item.activity_ref,
+          name: "Expand shared activity",
+        }),
+      );
+      $("memberItems").append(thread);
+    } else if (!item.activity_ref) thread = null;
+    previousActivity = item.activity_ref;
     const row = document.createElement("article");
-    row.className = "member-item chat-message";
+    const message = item.type === "message";
+    row.className =
+      "member-item chat-message" +
+      (message && item.role === "user"
+        ? " chat-user"
+        : message && item.role === "coach"
+          ? " chat-assistant"
+          : " member-event");
     const label = document.createElement("strong");
     label.textContent =
-      (kinds[item.type] || "Feed item") +
-      (item.role ? " · " + item.role : "") +
+      (message && item.role === "user"
+        ? selectedMember.display_name
+        : message && item.role === "coach"
+          ? "Coach"
+          : kinds[item.type] || "Feed item") +
       (item.status ? " · " + item.status : "");
     const time = document.createElement("small");
     time.textContent = item.created_at;
@@ -875,7 +1035,7 @@ function renderMemberFeed() {
       omitted.textContent = "Attachment content omitted.";
       row.append(omitted);
     }
-    $("memberItems").append(row);
+    (thread || $("memberItems")).append(row);
   }
   $("memberMore").hidden = !memberCursor;
 }
@@ -900,6 +1060,9 @@ async function loadMemberFeed(more = false, validate = false) {
     )
       return;
     if (data.member_ref !== ref) throw new Error("Mismatched member");
+    // Conversation membership survives raw-category revocation. Rechecking a
+    // feed must not leave previously expanded raw data independently retained.
+    clearActivities();
     if (validationCursor) {
       // A cursor is bound to the complete backend snapshot and live authority.
       // Successful revalidation preserves already loaded pages and scroll.
@@ -923,6 +1086,7 @@ async function loadMemberFeed(more = false, validate = false) {
       : "No retained Coach feed items are available. Conversation access follows dojo membership; activity records follow category sharing.";
   } catch (error) {
     if (epoch !== memberEpoch || generation !== authGeneration) return;
+    clearActivities();
     memberItems = [];
     memberCursor = null;
     memberValidationCursor = null;
@@ -937,7 +1101,390 @@ async function loadMemberFeed(more = false, validate = false) {
     }
   }
 }
+// Every expansion owns its requests and URLs; no raw source IDs become URLs.
+const detailResources = new Set();
+function disposeDetails(root) {
+  for (const resource of [...detailResources]) {
+    if (!root || root === resource.node || root.contains(resource.node)) {
+      resource.controller.abort();
+      for (const url of resource.urls) URL.revokeObjectURL(url);
+      detailResources.delete(resource);
+    }
+  }
+}
+function clearActivities() {
+  disposeDetails();
+  // Inline thread expansions are outside the separate activity inventory.
+  // Closing alone fires toggle asynchronously; clear their raw DOM immediately.
+  for (const node of $("memberItems").querySelectorAll(
+    "details.activity-card",
+  )) {
+    node.open = false;
+    node.querySelector(":scope > div")?.replaceChildren();
+  }
+  $("memberActivities").open = false;
+  $("activityItems").replaceChildren();
+}
+function detailScope(node) {
+  const controller = new AbortController();
+  const generation = authGeneration,
+    ref = selectedMember?.member_ref;
+  const resource = { node, controller, urls: [] };
+  detailResources.add(resource);
+  resource.current = () =>
+    !controller.signal.aborted &&
+    generation === authGeneration &&
+    memberActive() &&
+    selectedMember?.member_ref === ref &&
+    node.isConnected;
+  resource.ref = ref;
+  resource.signal = AbortSignal.any([
+    controller.signal,
+    AbortSignal.timeout(20000),
+  ]);
+  return resource;
+}
+function detailText(tag, text) {
+  const node = document.createElement(tag);
+  node.textContent = String(text);
+  return node;
+}
+function lazyDetails(label, load) {
+  const node = document.createElement("details");
+  node.className = "activity-card";
+  node.append(detailText("summary", label));
+  const body = document.createElement("div");
+  node.append(body);
+  node.addEventListener("toggle", () => {
+    disposeDetails(node);
+    body.replaceChildren();
+    if (node.open) void load(body);
+  });
+  return node;
+}
+function detailError(body, retry) {
+  body.replaceChildren(
+    detailText(
+      "p",
+      "Details unavailable. Sharing may have changed, or this backend may not support this view. Refresh or retry.",
+    ),
+  );
+  const button = detailText("button", "Retry");
+  button.type = "button";
+  button.onclick = () => {
+    button.disabled = true;
+    void retry();
+  };
+  body.append(button);
+}
+function renderDetailFields(body, row, fields) {
+  const list = document.createElement("dl");
+  for (const [key, label] of fields) {
+    const value = row[key];
+    if (!["string", "number", "boolean"].includes(typeof value)) continue;
+    list.append(detailText("dt", label), detailText("dd", value));
+  }
+  body.append(list);
+}
+async function loadDetailPage(body, activity, section, exercise, cursor) {
+  if (!cursor) {
+    disposeDetails(body);
+    body.replaceChildren();
+  }
+  const scope = detailScope(body);
+  const loading = detailText("p", "Loading details…");
+  loading.setAttribute("role", "status");
+  body.append(loading);
+  try {
+    const params = new URLSearchParams({
+      member_ref: scope.ref,
+      activity_ref: activity.activity_ref,
+      section,
+    });
+    if (exercise) params.set("exercise_instance_id", exercise);
+    if (cursor) params.set("cursor", cursor);
+    const data = await api(
+      "members/activity?" + params,
+      undefined,
+      scope.signal,
+    );
+    if (!scope.current()) return;
+    if (
+      data.member_ref !== scope.ref ||
+      data.activity?.activity_ref !== activity.activity_ref ||
+      data.section !== section ||
+      !Array.isArray(data.items) ||
+      data.items.length > 100
+    )
+      throw new Error("Invalid detail response");
+    loading.remove();
+    if (section === "overview") {
+      const next = {
+        workout: "workout_exercises",
+        meal: "meal_foods",
+        metric: "measurements",
+        survey: "survey_questions",
+        status_change: "status",
+        media: "media_files",
+      }[data.activity.type];
+      if (next) return await loadDetailPage(body, data.activity, next);
+    }
+    if (!data.items.length)
+      body.append(detailText("p", "No recorded details in this section."));
+    for (const row of data.items) {
+      if (section === "workout_exercises") {
+        body.append(
+          lazyDetails(row.name || "Exercise", (child) =>
+            loadDetailPage(child, activity, "workout_sets", row._id),
+          ),
+        );
+      } else if (section === "media_files") {
+        if (typeof row.media_ref === "string")
+          await loadMemberImage(body, row.media_ref, scope);
+        else
+          body.append(
+            detailText(
+              "p",
+              "Photo unavailable under current sharing or credential access.",
+            ),
+          );
+      } else {
+        const card = document.createElement("article");
+        if (section === "workout_sets") {
+          card.append(
+            detailText(
+              "strong",
+              `${row.reps ?? row.repetitions ?? "—"} reps · ${row.weight ?? "—"} ${row.weight_unit || "(unit not recorded)"}`,
+            ),
+          );
+          renderDetailFields(card, row, [
+            ["complete", "Completed"],
+            ["distance", "Distance"],
+            ["distance_unit", "Distance unit"],
+            ["duration", "Duration"],
+            ["duration_unit", "Duration unit"],
+            ["calories", "Calories"],
+          ]);
+        } else if (section === "meal_foods") {
+          card.append(
+            detailText(
+              "strong",
+              `${row.name || "Food / ingredient"} · ${row.quantity ?? "—"} ${row.unit || "(unit not recorded)"}`,
+            ),
+          );
+          renderDetailFields(card, row, [
+            ["serving_size", "Serving size"],
+            ["calories", "Calories (stored)"],
+            ["protein", "Protein (stored)"],
+            ["carbs", "Carbohydrates (stored)"],
+            ["fat", "Fat (stored)"],
+            ["water_ml", "Water (ml)"],
+            ["nutrition_source", "Nutrition source"],
+          ]);
+          if (row.snapshot) {
+            card.append(
+              detailText(
+                "p",
+                "Logged nutrition snapshot (not recalculated totals)",
+              ),
+            );
+            renderDetailFields(card, row.snapshot, [
+              ["calories", "Calories"],
+              ["protein", "Protein"],
+              ["carbs", "Carbohydrates"],
+              ["fat", "Fat"],
+              ["fiber", "Fiber"],
+              ["sodium", "Sodium"],
+              ["serving_size", "Serving size"],
+              ["serving_unit", "Serving unit"],
+            ]);
+          }
+        } else {
+          renderDetailFields(card, row, [
+            ["name", "Name"],
+            ["type", "Type"],
+            ["status", "Status"],
+            ["type_id", "Measurement"],
+            ["value", "Value"],
+            ["unit", "Unit"],
+            ["text", "Question"],
+            ["answer", "Answer"],
+            ["reason", "Reason"],
+            ["effective_at", "Effective at"],
+            ["start_date", "Starts"],
+            ["end_date", "Ends"],
+            ["created_at", "Created"],
+            ["completed_at", "Completed"],
+            ["due_at", "Due"],
+            ["measured_at", "Measured"],
+          ]);
+        }
+        body.append(card);
+      }
+    }
+    if (data.has_more && data.next_cursor) {
+      const more = detailText("button", "Load more details");
+      more.type = "button";
+      more.onclick = () => {
+        more.remove();
+        void loadDetailPage(
+          body,
+          activity,
+          section,
+          exercise,
+          data.next_cursor,
+        );
+      };
+      body.append(more);
+    }
+  } catch {
+    if (scope.current()) {
+      disposeDetails(body);
+      detailError(body, () =>
+        loadDetailPage(body, activity, section, exercise),
+      );
+    }
+  }
+}
+async function loadMemberImage(body, media_ref, scope) {
+  const generation = authGeneration,
+    requestKey = key;
+  const response = await fetch(
+    "/api/members/media?" +
+      new URLSearchParams({ member_ref: scope.ref, media_ref }),
+    {
+      headers: { Authorization: "Bearer " + requestKey },
+      signal: scope.signal,
+      redirect: "error",
+      cache: "no-store",
+    },
+  );
+  if (!scope.current()) {
+    await response.body?.cancel();
+    return;
+  }
+  if (
+    response.status === 401 &&
+    generation === authGeneration &&
+    requestKey === key
+  ) {
+    lockSession(
+      "Studio authorization expired. Unlock again with the current admin key.",
+    );
+    return;
+  }
+  const type = response.headers.get("content-type")?.split(";")[0];
+  if (
+    !response.ok ||
+    !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(type)
+  ) {
+    await response.body?.cancel();
+    throw new Error("Image unavailable");
+  }
+  const reader = response.body.getReader(),
+    chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 8 * 1024 * 1024) {
+        await reader.cancel();
+        throw new Error("Image too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!scope.current()) return;
+  const url = URL.createObjectURL(new Blob(chunks, { type }));
+  scope.urls.push(url);
+  const image = document.createElement("img");
+  image.alt = "Shared activity photo";
+  image.src = url;
+  image.onerror = () => {
+    if (scope.current()) {
+      image.replaceWith(
+        detailText(
+          "p",
+          "Photo could not be decoded. Collapse and reopen to retry.",
+        ),
+      );
+      URL.revokeObjectURL(url);
+    }
+  };
+  body.append(image);
+}
+function activityCard(activity) {
+  const sections = {
+    workout: "workout_exercises",
+    meal: "meal_foods",
+    metric: "measurements",
+    survey: "survey_questions",
+    status_change: "status",
+    media: "media_files",
+  };
+  return lazyDetails(
+    activity.name || `${activity.type || "Shared"} activity details`,
+    (body) =>
+      loadDetailPage(body, activity, sections[activity.type] || "overview"),
+  );
+}
+async function loadActivityInventory(cursor) {
+  const body = $("activityItems");
+  if (!cursor) {
+    disposeDetails(body);
+    body.replaceChildren();
+  }
+  const scope = detailScope(body);
+  const loading = detailText("p", "Loading shared activities…");
+  body.append(loading);
+  try {
+    const params = new URLSearchParams({ member_ref: scope.ref });
+    if (cursor) params.set("cursor", cursor);
+    const data = await api(
+      "members/activities?" + params,
+      undefined,
+      scope.signal,
+    );
+    if (!scope.current()) return;
+    if (
+      data.member_ref !== scope.ref ||
+      !Array.isArray(data.items) ||
+      data.items.length > 100
+    )
+      throw new Error("Invalid activities");
+    loading.remove();
+    for (const activity of data.items) body.append(activityCard(activity));
+    if (!data.items.length)
+      body.append(detailText("p", "No shared activities available."));
+    if (data.has_more && data.next_cursor) {
+      const more = detailText("button", "More activities");
+      more.type = "button";
+      more.onclick = () => {
+        more.remove();
+        void loadActivityInventory(data.next_cursor);
+      };
+      body.append(more);
+    }
+  } catch {
+    if (scope.current()) {
+      disposeDetails(body);
+      detailError(body, () => loadActivityInventory());
+    }
+  }
+}
+$("memberActivities").addEventListener("toggle", () => {
+  disposeDetails($("memberActivities"));
+  $("activityItems").replaceChildren();
+  if ($("memberActivities").open && memberActive())
+    void loadActivityInventory();
+});
 function memberVisibility() {
+  clearCommandResult();
+  clearActivities();
   ++memberEpoch;
   clearTimeout(memberTimer);
   // Erase hidden customer content; never retain a stale authority snapshot.
@@ -955,6 +1502,7 @@ $("memberRefresh").onclick = () => loadMemberFeed();
 $("memberMore").onclick = () => loadMemberFeed(true);
 document.addEventListener("visibilitychange", memberVisibility);
 window.addEventListener("pagehide", () => {
+  clearActivities();
   ++memberEpoch;
   clearTimeout(memberTimer);
 });
