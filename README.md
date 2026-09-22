@@ -35,6 +35,14 @@ Credential replacement is rejected if its value occurs in the new, current or pr
 
 Clear-generation/anchor completion fencing remains backend-owned. v2 reads require explicit credential scopes and requester grants; a persona cannot grant access. Enable original-image input only for a known vision-capable provider. Preview has no claimed-request authority and exposes no data tools. Renewable leases remain unsupported. See the v2 contract and limitations below; earlier text-only receipts do not certify this expansion or its deployment.
 
+## Coach and Settings
+
+Studio opens on **Coach**. The **Operator** conversation stays available while the request worker runs, with its own bounded local history and cancellation. It uses saved provider/persona settings; it never posts to a member conversation. **Settings**, the second tab, contains the existing connection, persona, preview, diagnostics and update controls.
+
+Read-only member tabs show currently authorized retained Coach feed interactions. They require the companion Kata.fit backend and each member's separate, default-off permission for people administering the exact connected credential to view their history. Existing agent grants do not automatically enable operator browsing. Member content is never automatically added to operator AI context. Attachment contents and nested workout conversations are outside this initial view.
+
+To make an operator message a lasting instruction, choose **Use as Coach instructions**, review the unsaved Settings draft, pause the worker and explicitly save. Ordinary debugging chat never silently changes global behavior. See [conversation isolation, sharing and rollout](docs/studio-conversations.md).
+
 ## Studio source updates
 
 After one bootstrap install of this updater-capable build, managed **Linux** installs can check and upgrade from **05 Source updates** in Studio. It checks only `stevefortier/katafit-coach` `main`, shows exact Git revisions (not npm `0.1.0`), and requires explicit confirmation of the displayed SHA. Pause the worker and finish preview first. The stable launcher stages pinned source/lockfile dependencies, probes an isolated runtime, replaces its child on the same port, and rolls back startup failure. Config, credentials and user data remain in the existing home; the worker stays stopped. macOS keeps legacy Studio serving but does not apply source upgrades.
@@ -71,6 +79,7 @@ npm run format:check
 npm run test:package
 npm run test:updates-package # actual packed CLI upgrade/rollback; synthetic trusted Git
 npm run test:updates-browser # source UI + synthetic GitHub; desktop/mobile evidence
+npm run test:coach-browser # operator/member tabs; synthetic local inference/read fixtures
 npm run test:browser   # requires /usr/bin/google-chrome, or CHROME_PATH
 ```
 

@@ -15,7 +15,7 @@
       </header>
       <section class="hero">
         <div class="eyebrow">YOUR COACH. YOUR RUNTIME.</div>
-        <h1>A little more you.<br />A better kind of Coach.</h1>
+        <h1>A little more you. <br />A better kind of Coach.</h1>
         <p>
           Connect Kata.fit, choose your model, and shape a coaching voice that
           feels right. Your conversation stays canonical in Kata.fit.
@@ -36,234 +36,341 @@
         ><button id="unlock">Unlock studio</button>
       </section>
       <div id="studio" hidden>
-        <nav>
-          <a href="#connection">01 Connection</a
-          ><a href="#persona">02 Persona</a><a href="#preview">03 Preview</a
-          ><a href="#logsView">04 Diagnostics</a>
-          <a href="#updates">05 Updates</a>
+        <nav class="studio-tabs" aria-label="Studio sections">
+          <button id="coachTab" aria-controls="coachPanel" aria-pressed="true">
+            Coach
+          </button>
+          <button
+            id="settingsTab"
+            class="secondary"
+            aria-controls="settingsPanel"
+            aria-pressed="false"
+          >
+            Settings
+          </button>
         </nav>
-        <div class="grid">
-          <section class="card" id="connection">
-            <div class="eyebrow">01 / CONNECTION</div>
-            <h2>Bring your own intelligence.</h2>
-            <p>
-              One installation. One personal or explicit Dojo credential scope.
-            </p>
-            <label>Kata.fit origin<input id="origin" type="url" /></label
-            ><label
-              >Kata.fit connection credential<input
-                id="token"
-                type="password"
-                placeholder="Leave blank to keep saved credential"
-                autocomplete="off"
-            /></label>
-            <p class="hint">
-              Create a credential in Kata.fit's external Coach settings. The
-              credential, not this device, determines the authorized audience.
-            </p>
-            <div class="split">
-              <label
-                >Provider preset<select id="preset">
-                  <option value="custom">Custom / OpenAI-compatible</option>
-                  <option value="openai">OpenAI API</option>
-                </select></label
-              ><label>Model ID<input id="model" /></label>
-            </div>
-            <label>API base URL<input id="baseUrl" type="url" /></label
-            ><label
-              >Provider API key<input
-                id="apiKey"
-                type="password"
-                placeholder="Leave blank to keep saved key"
-                autocomplete="off"
-            /></label>
-            <p class="hint">
-              Inference leaves this machine when you choose a remote provider.
-              API-key OpenAI-compatible providers only in this pilot.
-            </p>
-            <button id="connect" class="secondary">
-              Test saved connection
+        <section id="coachPanel" class="card">
+          <div
+            id="conversationTabs"
+            class="conversation-tabs"
+            aria-label="Conversations"
+          >
+            <button id="operatorTab" aria-pressed="true">Operator</button>
+          </div>
+          <div class="chat-actions">
+            <button id="membersRefresh" class="secondary">
+              Refresh members</button
+            ><button id="membersMore" class="secondary" hidden>
+              More members
             </button>
-            <label class="vision-option"
-              ><input id="vision" type="checkbox" /> Enable original-image input
-              for a vision-capable provider</label
-            >
+          </div>
+          <p id="membersStatus" class="hint" role="status"></p>
+          <div id="operatorView">
+            <h2>Your private Coach workspace.</h2>
             <p class="hint">
-              Explicit opt-in. Authorized original images may be sent to your
-              configured provider. This does not grant data access; Kata.fit
-              credentials and requester grants still apply.
+              Operator chat stays local to this Studio and never posts to member
+              chats. Your saved provider processes messages; a remote provider
+              receives this content. For permanent instructions, explicitly save
+              your persona in Settings. Chat replies never change settings.
+              Successful turns are retained locally, bounded to 40 messages /
+              128 KiB; failed or cancelled turns are not saved.
             </p>
-          </section>
-          <section class="card" id="persona">
-            <div class="eyebrow">02 / PERSONA</div>
-            <h2>Make the voice yours.</h2>
-            <label>Coach name<input id="name" /></label
-            ><label>Voice<input id="voice" /></label>
-            <div class="split">
-              <label
-                >Verbosity<select id="verbosity">
-                  <option>Concise</option>
-                  <option>Balanced</option>
-                  <option>Detailed</option>
-                </select></label
-              ><label>Initiative<input id="initiative" /></label>
+            <p class="hint" id="operatorSnapshot"></p>
+            <div
+              id="operatorMessages"
+              class="chat-messages"
+              role="log"
+              aria-label="Operator conversation"
+              aria-live="polite"
+            ></div>
+            <div
+              id="operatorPending"
+              class="chat-pending"
+              role="status"
+              hidden
+              aria-label="Coach is thinking"
+            >
+              <span></span><span></span><span></span>
             </div>
-            <label
-              >Coaching principles<textarea
-                id="principles"
-                rows="2"
-              ></textarea></label
-            ><label
-              >Example guidance<textarea
-                id="examples"
-                rows="2"
-              ></textarea></label
-            ><label
-              >Boundaries<textarea id="boundaries" rows="2"></textarea>
-            </label>
-            <details>
-              <summary>Advanced Markdown</summary>
+            <p id="operatorStatus" role="status"></p>
+            <form id="operatorForm">
+              <label for="operatorText">Message your Coach</label>
               <textarea
-                id="markdown"
-                rows="5"
-                placeholder="Additional persona instructions"
+                id="operatorText"
+                rows="2"
+                maxlength="8000"
+                placeholder="Try your coaching ideas here…"
               ></textarea>
-              <p class="hint">
-                Persona cannot grant access or override platform policy.
+              <div class="chat-actions">
+                <button id="operatorSend" type="submit">Send</button
+                ><button
+                  id="operatorCancel"
+                  type="button"
+                  class="secondary"
+                  disabled
+                >
+                  Cancel response</button
+                ><button id="operatorClear" type="button" class="secondary">
+                  Clear chat
+                </button>
+              </div>
+            </form>
+          </div>
+          <section id="memberView" hidden>
+            <h2 id="memberTitle">Member conversation</h2>
+            <p class="hint">
+              Read-only retained Coach feed. Messages, activity, insights and
+              proposal summaries are not instructions for your Operator chat.
+              Attachments and nested workout conversations are not included.
+            </p>
+            <p id="memberStatus" role="status"></p>
+            <div
+              id="memberItems"
+              class="chat-messages"
+              aria-label="Read-only member feed"
+            ></div>
+            <div class="chat-actions">
+              <button id="memberRefresh" class="secondary">Refresh feed</button
+              ><button id="memberMore" class="secondary" hidden>
+                Load more items
+              </button>
+            </div>
+          </section>
+        </section>
+        <section id="settingsPanel" hidden>
+          <nav>
+            <a href="#connection">01 Connection</a
+            ><a href="#persona">02 Persona</a><a href="#preview">03 Preview</a
+            ><a href="#logsView">04 Diagnostics</a>
+            <a href="#updates">05 Updates</a>
+          </nav>
+          <div class="grid">
+            <section class="card" id="connection">
+              <div class="eyebrow">01 / CONNECTION</div>
+              <h2>Bring your own intelligence.</h2>
+              <p>
+                One installation. One personal or explicit Dojo credential
+                scope.
               </p>
+              <label>Kata.fit origin<input id="origin" type="url" /></label
+              ><label
+                >Kata.fit connection credential<input
+                  id="token"
+                  type="password"
+                  placeholder="Leave blank to keep saved credential"
+                  autocomplete="off"
+              /></label>
+              <p class="hint">
+                Create a credential in Kata.fit's external Coach settings. The
+                credential, not this device, determines the authorized audience.
+              </p>
+              <div class="split">
+                <label
+                  >Provider preset<select id="preset">
+                    <option value="custom">Custom / OpenAI-compatible</option>
+                    <option value="openai">OpenAI API</option>
+                  </select></label
+                ><label>Model ID<input id="model" /></label>
+              </div>
+              <label>API base URL<input id="baseUrl" type="url" /></label
+              ><label
+                >Provider API key<input
+                  id="apiKey"
+                  type="password"
+                  placeholder="Leave blank to keep saved key"
+                  autocomplete="off"
+              /></label>
+              <p class="hint">
+                Inference leaves this machine when you choose a remote provider.
+                API-key OpenAI-compatible providers only in this pilot.
+              </p>
+              <button id="connect" class="secondary">
+                Test saved connection
+              </button>
+              <label class="vision-option"
+                ><input id="vision" type="checkbox" /> Enable original-image
+                input for a vision-capable provider</label
+              >
+              <p class="hint">
+                Explicit opt-in. Authorized original images may be sent to your
+                configured provider. This does not grant data access; Kata.fit
+                credentials and requester grants still apply.
+              </p>
+            </section>
+            <section class="card" id="persona">
+              <div class="eyebrow">02 / PERSONA</div>
+              <h2>Make the voice yours.</h2>
+              <label>Coach name<input id="name" /></label
+              ><label>Voice<input id="voice" /></label>
+              <div class="split">
+                <label
+                  >Verbosity<select id="verbosity">
+                    <option>Concise</option>
+                    <option>Balanced</option>
+                    <option>Detailed</option>
+                  </select></label
+                ><label>Initiative<input id="initiative" /></label>
+              </div>
+              <label
+                >Coaching principles<textarea
+                  id="principles"
+                  rows="2"
+                ></textarea></label
+              ><label
+                >Example guidance<textarea
+                  id="examples"
+                  rows="2"
+                ></textarea></label
+              ><label
+                >Boundaries<textarea id="boundaries" rows="2"></textarea>
+              </label>
+              <details>
+                <summary>Advanced Markdown</summary>
+                <textarea
+                  id="markdown"
+                  rows="5"
+                  placeholder="Additional persona instructions"
+                ></textarea>
+                <p class="hint">
+                  Persona cannot grant access or override platform policy.
+                </p>
+              </details>
+            </section>
+          </div>
+          <div class="actions">
+            <button id="save">Save new revision</button
+            ><button id="rollback" class="secondary">Roll back persona</button
+            ><button id="export" class="secondary">
+              Export nonsecret configuration</button
+            ><span id="revision"></span>
+          </div>
+          <section class="card" id="preview">
+            <div class="eyebrow">03 / TRY BEFORE YOU RUN</div>
+            <h2>Hear your Coach.</h2>
+            <p>
+              Uses the saved persona, provider and freshly fetched backend
+              instructions. Save unsaved edits first. If backend instructions
+              are unavailable, no preview runs. This sandbox uses your sample
+              question, not a real request's canonical context, and does not
+              write to Kata.fit. Preview has no claimed-request data authority
+              or read tools.
+            </p>
+            <label
+              >Sample question<textarea id="question" rows="2">
+I trained hard yesterday and feel sore today. How should I approach my next session?</textarea
+              ></label
+            ><button id="previewButton">Preview response</button
+            ><button id="cancel" class="secondary">Cancel preview</button>
+            <pre id="answer">Your preview will appear here.</pre>
+            <details>
+              <summary>Effective nonsecret instructions</summary>
+              <pre id="prompt"></pre>
             </details>
           </section>
-        </div>
-        <div class="actions">
-          <button id="save">Save new revision</button
-          ><button id="rollback" class="secondary">Roll back persona</button
-          ><button id="export" class="secondary">
-            Export nonsecret configuration</button
-          ><span id="revision"></span>
-        </div>
-        <section class="card" id="preview">
-          <div class="eyebrow">03 / TRY BEFORE YOU RUN</div>
-          <h2>Hear your Coach.</h2>
-          <p>
-            Uses the saved persona, provider and freshly fetched backend
-            instructions. Save unsaved edits first. If backend instructions are
-            unavailable, no preview runs. This sandbox uses your sample
-            question, not a real request's canonical context, and does not write
-            to Kata.fit. Preview has no claimed-request data authority or read
-            tools.
-          </p>
-          <label
-            >Sample question<textarea id="question" rows="2">
-I trained hard yesterday and feel sore today. How should I approach my next session?</textarea
-            ></label
-          ><button id="previewButton">Preview response</button
-          ><button id="cancel" class="secondary">Cancel preview</button>
-          <pre id="answer">Your preview will appear here.</pre>
-          <details>
-            <summary>Effective nonsecret instructions</summary>
-            <pre id="prompt"></pre>
-          </details>
-        </section>
-        <section class="card diagnostics">
-          <div class="eyebrow">04 / PRIVATE DIAGNOSTICS</div>
-          <h2>See what happened.</h2>
-          <p id="lastError" role="status">No retained error.</p>
-          <details id="logsView">
-            <summary>Open diagnostic logs</summary>
-            <p class="hint">
-              Sanitized stages, local correlation references and numeric budgets
-              only. No conversations, images, persona, keys or upstream error
-              text. Recent history survives restart in the protected data
-              directory.
+          <section class="card diagnostics">
+            <div class="eyebrow">04 / PRIVATE DIAGNOSTICS</div>
+            <h2>See what happened.</h2>
+            <p id="lastError" role="status">No retained error.</p>
+            <details id="logsView">
+              <summary>Open diagnostic logs</summary>
+              <p class="hint">
+                Sanitized stages, local correlation references and numeric
+                budgets only. No conversations, images, persona, keys or
+                upstream error text. Recent history survives restart in the
+                protected data directory.
+              </p>
+              <div class="log-controls">
+                <button id="logRefresh" class="secondary">Refresh</button>
+                <button id="logPause" class="secondary" aria-pressed="false">
+                  Pause live
+                </button>
+                <label
+                  >Level<select id="logLevel">
+                    <option value="all">All levels</option>
+                    <option value="info">Info</option>
+                    <option value="warn">Warnings</option>
+                    <option value="error">Errors</option>
+                  </select></label
+                >
+                <button id="logCopy" class="secondary">Copy JSON</button>
+                <button id="logDownload" class="secondary">
+                  Download JSON
+                </button>
+              </div>
+              <p id="logStatus" role="status">
+                Logs load only while this view is open and the tab is visible.
+              </p>
+              <div id="logRows" aria-label="Diagnostic entries"></div>
+            </details>
+          </section>
+          <section class="card diagnostics" id="updates">
+            <div class="eyebrow">05 / SOURCE UPDATES</div>
+            <h2>Keep your Coach current.</h2>
+            <p>
+              Updates come from the official Kata.fit Coach repository on
+              GitHub. Checking never installs an update.
             </p>
+            <div class="update-versions">
+              <div>
+                <span class="hint">INSTALLED SOURCE</span
+                ><code id="updateInstalled">Unknown</code>
+              </div>
+              <div>
+                <span class="hint">LATEST ON MAIN</span
+                ><code id="updateLatest">Not checked</code>
+              </div>
+            </div>
+            <p id="updateStatus" role="status" aria-live="polite">
+              Check for a newer source revision.
+            </p>
+            <p class="hint" id="updateChecked">Not checked yet.</p>
+            <p id="updateOutcome" class="hint" role="status" hidden></p>
             <div class="log-controls">
-              <button id="logRefresh" class="secondary">Refresh</button>
-              <button id="logPause" class="secondary" aria-pressed="false">
-                Pause live
+              <button id="updateCheck" class="secondary">
+                Check for updates
               </button>
-              <label
-                >Level<select id="logLevel">
-                  <option value="all">All levels</option>
-                  <option value="info">Info</option>
-                  <option value="warn">Warnings</option>
-                  <option value="error">Errors</option>
-                </select></label
+              <button id="updateApply" disabled>Upgrade…</button>
+              <button id="updateReload" class="secondary" hidden>
+                Reload upgraded Studio
+              </button>
+              <a
+                id="updateSource"
+                target="_blank"
+                rel="noopener noreferrer"
+                hidden
+                >View source on GitHub ↗</a
               >
-              <button id="logCopy" class="secondary">Copy JSON</button>
-              <button id="logDownload" class="secondary">Download JSON</button>
             </div>
-            <p id="logStatus" role="status">
-              Logs load only while this view is open and the tab is visible.
+            <p class="hint">
+              Pause the worker and finish or cancel previews and Operator chat
+              before upgrading. Configuration and credentials stay in your data
+              directory. The worker remains stopped after restart.
             </p>
-            <div id="logRows" aria-label="Diagnostic entries"></div>
-          </details>
-        </section>
-        <section class="card diagnostics" id="updates">
-          <div class="eyebrow">05 / SOURCE UPDATES</div>
-          <h2>Keep your Coach current.</h2>
-          <p>
-            Updates come from the official Kata.fit Coach repository on GitHub.
-            Checking never installs an update.
-          </p>
-          <div class="update-versions">
+            <div id="updateConfirm" class="update-confirm" hidden>
+              <h3>Install this source revision?</h3>
+              <code id="updateTarget"></code>
+              <p>
+                This downloads and builds code from the official repository,
+                then briefly restarts Studio. Only continue if you trust this
+                source. Keep this tab open; a disconnect is not confirmation of
+                success.
+              </p>
+              <button id="updateConfirmApply">Install and restart</button>
+              <button id="updateCancel" class="secondary">Not now</button>
+            </div>
+          </section>
+          <section class="runbar">
             <div>
-              <span class="hint">INSTALLED SOURCE</span
-              ><code id="updateInstalled">Unknown</code>
+              <h2>Ready when you are.</h2>
+              <p>
+                Keep this service running. An asleep laptop is an offline Coach.
+              </p>
             </div>
             <div>
-              <span class="hint">LATEST ON MAIN</span
-              ><code id="updateLatest">Not checked</code>
+              <button id="run">Run Coach</button
+              ><button id="stop" class="secondary">Stop worker</button>
             </div>
-          </div>
-          <p id="updateStatus" role="status" aria-live="polite">
-            Check for a newer source revision.
-          </p>
-          <p class="hint" id="updateChecked">Not checked yet.</p>
-          <p id="updateOutcome" class="hint" role="status" hidden></p>
-          <div class="log-controls">
-            <button id="updateCheck" class="secondary">
-              Check for updates
-            </button>
-            <button id="updateApply" disabled>Upgrade…</button>
-            <button id="updateReload" class="secondary" hidden>
-              Reload upgraded Studio
-            </button>
-            <a
-              id="updateSource"
-              target="_blank"
-              rel="noopener noreferrer"
-              hidden
-              >View source on GitHub ↗</a
-            >
-          </div>
-          <p class="hint">
-            Pause the worker and finish previews before upgrading. Configuration
-            and credentials stay in your data directory. The worker remains
-            stopped after restart.
-          </p>
-          <div id="updateConfirm" class="update-confirm" hidden>
-            <h3>Install this source revision?</h3>
-            <code id="updateTarget"></code>
-            <p>
-              This downloads and builds code from the official repository, then
-              briefly restarts Studio. Only continue if you trust this source.
-              Keep this tab open; a disconnect is not confirmation of success.
-            </p>
-            <button id="updateConfirmApply">Install and restart</button>
-            <button id="updateCancel" class="secondary">Not now</button>
-          </div>
-        </section>
-        <section class="runbar">
-          <div>
-            <h2>Ready when you are.</h2>
-            <p>
-              Keep this service running. An asleep laptop is an offline Coach.
-            </p>
-          </div>
-          <div>
-            <button id="run">Run Coach</button
-            ><button id="stop" class="secondary">Stop worker</button>
-          </div>
+          </section>
         </section>
       </div>
       <p id="notice" role="status" aria-live="polite"></p>

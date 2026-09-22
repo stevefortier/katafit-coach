@@ -1,3 +1,5 @@
+import { OperatorChat } from "../chat/operator.js";
+import { StudioReads } from "../katafit/studio.js";
 import { Updates } from "../update/updates.js";
 import { Diagnostics } from "../diagnostics/log.js";
 import { SafeError, safeError } from "../runtime/errors.js";
@@ -16,12 +18,14 @@ export async function admin(
   onShutdown?: () => void,
   updates = new Updates(null, null),
 ) {
+  const chat = new OperatorChat(store, infer);
   const logs = new Diagnostics(store.dir);
   logs.record({ source: "studio", stage: "studio-started" });
   let worker: Worker | undefined;
   let preview: AbortController | undefined;
   let busy = false;
   let origin = "";
+  const memberReads = new Set<AbortController>();
   const server = createServer(async (req, res) => {
     const ref = randomUUID();
     const started = Date.now();
@@ -66,6 +70,66 @@ export async function admin(
         return send(403, { error: "ORIGIN_REJECTED" });
       if (req.method === "POST" && req.headers.origin !== origin)
         return send(403, { error: "ORIGIN_REQUIRED" });
+      if (
+        req.method === "GET" &&
+        path.split("?")[0] &&
+        ["/api/members", "/api/members/feed"].includes(path.split("?")[0])
+      ) {
+        if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+        if (Buffer.byteLength(path) > 20000)
+          return send(413, { error: "TOO_LARGE" });
+        if (memberReads.size >= 4)
+          return send(429, { error: "OPERATION_IN_PROGRESS" });
+        const url = new URL(path, origin);
+        const feed = url.pathname === "/api/members/feed";
+        const allowed = feed ? ["member_ref", "cursor"] : ["cursor"];
+        for (const key of url.searchParams.keys()) {
+          const values = url.searchParams.getAll(key);
+          if (
+            !allowed.includes(key) ||
+            values.length !== 1 ||
+            !values[0] ||
+            values[0].length > 8192
+          )
+            throw new SafeError("ARGUMENTS_REJECTED");
+        }
+        const member_ref = url.searchParams.get("member_ref");
+        if (feed && !member_ref) throw new SafeError("ARGUMENTS_REJECTED");
+        const token = store.secrets.token;
+        if (!token) throw new SafeError("TOKEN_REQUIRED");
+        const c = store.publicConfig();
+        const controller = new AbortController();
+        memberReads.add(controller);
+        const cancel = () => controller.abort();
+        res.once("close", cancel);
+        try {
+          const signal = AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(10000),
+          ]);
+          const reads = new StudioReads(
+            new Client(c.origin, token, signal),
+            Object.values(store.secrets),
+          );
+          const cursor = url.searchParams.get("cursor") ?? undefined;
+          const result = feed
+            ? await reads.feed({ member_ref: member_ref!, cursor })
+            : await reads.members({ cursor });
+          signal.throwIfAborted();
+          if (
+            store.publicConfig().revision !== c.revision ||
+            store.secrets.token !== token ||
+            updates.applying
+          )
+            throw new SafeError("CANCELLED");
+          return send(200, result);
+        } finally {
+          res.removeListener("close", cancel);
+          memberReads.delete(controller);
+        }
+      }
+      if (req.method === "GET" && path === "/api/operator/chat")
+        return send(200, chat.snapshot());
       if (req.method === "GET" && path === "/api/update")
         return send(200, updates.snapshot());
       if (req.method === "GET" && path === "/api/config")
@@ -80,6 +144,7 @@ export async function admin(
         return send(200, {
           state: worker?.state ?? "stopped",
           preview: !!preview,
+          operatorChat: chat.active,
           lastError: logs.lastError,
           revision: store.publicConfig().revision,
         });
@@ -94,6 +159,41 @@ export async function admin(
       }
       const body = JSON.parse(raw || "{}");
       if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+      if (path === "/api/operator/cancel") {
+        chat.cancel();
+        return send(200, { ok: true });
+      }
+      if (path === "/api/operator/clear") {
+        chat.clear();
+        return send(200, { ok: true });
+      }
+      if (
+        chat.active &&
+        [
+          "/api/operator/chat",
+          "/api/config",
+          "/api/rollback",
+          "/api/update/check",
+          "/api/update/apply",
+        ].includes(path)
+      )
+        return send(409, { error: "OPERATOR_CHAT_IN_PROGRESS" });
+      if (path === "/api/operator/chat") {
+        if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
+        if (
+          !body ||
+          Array.isArray(body) ||
+          Object.keys(body).join(",") !== "text"
+        )
+          throw new SafeError("INVALID_PREVIEW");
+        const cancel = () => chat.cancel();
+        res.once("close", cancel);
+        try {
+          return send(200, await chat.turn(body.text));
+        } finally {
+          res.removeListener("close", cancel);
+        }
+      }
       if (path === "/api/update/check") return send(200, await updates.check());
       if (path === "/api/update/apply") {
         if (busy || preview || (worker && worker.state !== "stopped"))
@@ -124,6 +224,7 @@ export async function admin(
         return send(202, { ok: true });
       }
       if (path === "/api/shutdown" && onShutdown) {
+        chat.cancel();
         preview?.abort();
         send(200, { ok: true });
         setImmediate(onShutdown);
@@ -139,8 +240,15 @@ export async function admin(
         if (path === "/api/config" || path === "/api/rollback") {
           if (worker && worker.state !== "stopped")
             return send(409, { error: "STOP_WORKER_BEFORE_CONFIGURE" });
-          if (path === "/api/config") await store.save(body);
-          else await store.rollback();
+          if (path === "/api/config") {
+            chat.assertSecrets([
+              ...Object.values(store.secrets),
+              ...[body?.apiKey, body?.token].filter(
+                (v): v is string => typeof v === "string",
+              ),
+            ]);
+            await store.save(body);
+          } else await store.rollback();
           return send(200, { ok: true });
         }
         if (path === "/api/connect") {
@@ -295,6 +403,8 @@ export async function admin(
   return {
     origin,
     async close() {
+      for (const controller of memberReads) controller.abort();
+      chat.cancel();
       preview?.abort();
       await worker?.stop();
       server.closeAllConnections();
