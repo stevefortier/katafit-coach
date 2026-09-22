@@ -310,6 +310,7 @@ try {
     });
   });
   let memberDenied = false,
+    memberEmpty = false,
     slowMember = false,
     delayedMember: any;
   await page.route("**/api/members/feed?*", (route) => {
@@ -327,9 +328,11 @@ try {
           ? { error: "PRIVATE_DENIAL" }
           : {
               member_ref: ref,
-              items: (more
-                ? ["older"]
-                : ["message", "activity_event", "insight", "proposal_summary"]
+              items: (memberEmpty
+                ? []
+                : more
+                  ? ["older"]
+                  : ["message", "activity_event", "insight", "proposal_summary"]
               ).map((type, i) => ({
                 id: type,
                 type: type === "older" ? "message" : type,
@@ -338,8 +341,8 @@ try {
                 created_at: "2026-09-22T12:00:00Z",
                 status: "completed",
               })),
-              has_more: !more,
-              next_cursor: more ? null : "feed-next",
+              has_more: !memberEmpty && !more,
+              next_cursor: memberEmpty || more ? null : "feed-next",
             },
       ),
     });
@@ -447,6 +450,18 @@ try {
     (await page.locator("#memberItems").innerText()).includes("a synthetic"),
     false,
   );
+  memberEmpty = true;
+  await page.locator("#memberRefresh").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#memberStatus")
+      ?.textContent?.startsWith("No retained"),
+  );
+  assert.match(
+    await page.locator("#memberStatus").innerText(),
+    /current sharing settings/,
+  );
+  memberEmpty = false;
   memberDenied = true;
   await page.locator("#memberRefresh").click();
   await page.waitForFunction(() =>

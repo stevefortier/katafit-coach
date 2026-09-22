@@ -920,7 +920,7 @@ async function loadMemberFeed(more = false, validate = false) {
     renderMemberFeed();
     $("memberStatus").textContent = memberItems.length
       ? "Read-only · refreshed from Kata.fit"
-      : "No retained Coach feed items yet. Refresh after the member chats in Kata.fit.";
+      : "No retained Coach feed items are visible under current sharing settings. Mixed chat history may be omitted when a category is private.";
   } catch (error) {
     if (epoch !== memberEpoch || generation !== authGeneration) return;
     memberItems = [];
