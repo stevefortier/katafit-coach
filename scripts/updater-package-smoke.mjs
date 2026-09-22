@@ -25,7 +25,7 @@ const env = {
   KATAFIT_COACH_PORT: "0",
   TEST_BUILD_SECRET: "must-not-inherit",
 };
-let cli, preload;
+let cli, preload, failure;
 const run = (...args) =>
   execFileSync(process.execPath, ["--import", preload, cli, ...args], {
     env,
@@ -251,10 +251,44 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       2,
     ),
   );
+} catch (error) {
+  failure = error;
+  // Preserve the bounded lifecycle diagnostic even if fixture cleanup fails.
+  if (
+    error instanceof Error &&
+    error.message.startsWith("UPDATE_NOT_COMPLETED ")
+  )
+    console.error(error.message);
+  throw error;
 } finally {
+  const owned = await readFile(join(home, "service.json"), "utf8")
+    .then(JSON.parse)
+    .catch(() => undefined);
   if (cli && preload)
     try {
       run("stop");
     } catch {}
-  await rm(root, { recursive: true, force: true });
+  // A failed test can interrupt an accepted upgrade, which correctly fences the
+  // public shutdown route. Terminate only this fixture's recorded processes.
+  for (const pid of [owned?.pid, owned?.runtimePid]) {
+    if (!Number.isInteger(pid)) continue;
+    const command = await readFile("/proc/" + pid + "/cmdline", "utf8").catch(
+      () => "",
+    );
+    if (command.includes(join(root, "install")))
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {}
+  }
+  await rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 20,
+    retryDelay: 100,
+  }).catch((error) => {
+    if (!failure) throw error;
+    console.error(
+      "Fixture cleanup failed after the reported lifecycle failure.",
+    );
+  });
 }
