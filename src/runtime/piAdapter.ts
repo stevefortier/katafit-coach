@@ -1,7 +1,10 @@
+import { SafeError, safeError, providerFailure } from "./errors.js";
+import type { LogInput } from "../diagnostics/log.js";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { assertNoSecrets } from "../config/store.js";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 export interface Provider {
+  onDiagnostic?: (event: LogInput) => void;
   baseUrl: string;
   model: string;
   vision?: boolean;
@@ -56,7 +59,11 @@ export async function complete(
   signal: AbortSignal,
   tools: AgentTool[] = [],
 ): Promise<string> {
-  signal.throwIfAborted();
+  const cancellation = () =>
+    new SafeError(
+      signal.reason?.name === "TimeoutError" ? "PROVIDER_TIMEOUT" : "CANCELLED",
+    );
+  if (signal.aborted) throw cancellation();
   if (!provider.apiKey) throw new Error("PROVIDER_KEY_REQUIRED");
   if (
     provider.vision !== true &&
@@ -64,6 +71,8 @@ export async function complete(
   )
     throw new Error("VISION_UNSUPPORTED");
   const secrets = [provider.apiKey, ...(provider.secrets ?? [])];
+  let inputFailure: Error | undefined;
+  let transportFailure: SafeError | undefined;
   let turns = 0,
     calls = 0,
     exhausted = false,
@@ -94,15 +103,83 @@ export async function complete(
         // Pi has now assembled the actual request body (including model and
         // tool schemas). Never rely only on the pre-serialization context.
         onPayload: (payload) => {
-          assertNoSecrets(payload, secrets);
-          assertNoSecrets(JSON.stringify(payload), secrets);
-          const bytes = providerTextBytes(payload);
-          inputBytes += bytes;
-          if (bytes > 28000 || inputBytes > 120000) {
-            exhausted = true;
-            throw new Error("MODEL_BUDGET_EXHAUSTED");
+          try {
+            assertNoSecrets(payload, secrets);
+            assertNoSecrets(JSON.stringify(payload), secrets);
+            const bytes = providerTextBytes(payload);
+            inputBytes += bytes;
+            try {
+              provider.onDiagnostic?.({
+                source: "provider",
+                stage: "provider-payload",
+                metadata: {
+                  bytes,
+                  limit: 1024 * 1024,
+                  totalBytes: inputBytes,
+                  totalLimit: 6 * 1024 * 1024,
+                  turn: turns + 1,
+                },
+              });
+            } catch {}
+            if (bytes > 1024 * 1024 || inputBytes > 6 * 1024 * 1024) {
+              inputFailure = new SafeError(
+                bytes > 1024 * 1024
+                  ? "MODEL_INPUT_TOO_LARGE"
+                  : "MODEL_BUDGET_EXHAUSTED",
+                {
+                  bytes,
+                  limit: 1024 * 1024,
+                  totalBytes: inputBytes,
+                  totalLimit: 6 * 1024 * 1024,
+                },
+              );
+              throw inputFailure;
+            }
+          } catch (error) {
+            inputFailure = safeError(error);
+            throw inputFailure;
           }
         },
+        // Pi normalizes errors into free text. Capture only safe status/code at
+        // its actual HTTP boundary instead of parsing/logging that free text.
+        fetch: async (url, init) => {
+          let response: Response;
+          try {
+            response = await fetch(url, init);
+          } catch {
+            transportFailure = signal.aborted
+              ? cancellation()
+              : new SafeError("PROVIDER_CONNECTION_FAILED");
+            throw transportFailure;
+          }
+          if (!response.ok) {
+            let code: unknown;
+            // Bound error-body parsing; discard everything except an exact code.
+            const reader = response.body?.getReader();
+            try {
+              const chunks: Uint8Array[] = [];
+              let size = 0;
+              if (reader)
+                for (;;) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  size += value.length;
+                  if (size > 16384) break;
+                  chunks.push(value);
+                }
+              if (size <= 16384)
+                code = JSON.parse(Buffer.concat(chunks).toString("utf8"))?.error
+                  ?.code;
+            } catch {
+            } finally {
+              await reader?.cancel().catch(() => {});
+            }
+            transportFailure = providerFailure(response.status, code);
+            throw transportFailure;
+          }
+          return response;
+        },
+        maxRetries: 0,
         env: {},
         maxTokens: 2000,
       });
@@ -158,7 +235,20 @@ export async function complete(
   try {
     signal.throwIfAborted();
     await agent.prompt(context);
-    if (exhausted) throw new Error("MODEL_BUDGET_EXHAUSTED");
+    if (signal.aborted) throw cancellation();
+    if (inputFailure) throw safeError(inputFailure);
+    if (transportFailure) throw transportFailure;
+    if (exhausted)
+      throw new SafeError("MODEL_BUDGET_EXHAUSTED", {
+        turns,
+        turnLimit: 6,
+        calls,
+        callLimit: 12,
+        outputTokens,
+        outputTokenLimit: 12000,
+        totalBytes: inputBytes,
+        totalLimit: 6 * 1024 * 1024,
+      });
     signal.throwIfAborted();
     const message = [...agent.state.messages]
       .reverse()
@@ -175,8 +265,11 @@ export async function complete(
       .filter((c) => c.type === "text")
       .map((c) => c.text)
       .join("\n");
+    if (!text.trim()) throw new SafeError("MODEL_EMPTY_RESPONSE");
     if (text.includes(provider.apiKey)) throw new Error("OUTPUT_REJECTED");
     return text;
+  } catch (error) {
+    throw signal.aborted ? cancellation() : safeError(error);
   } finally {
     signal.removeEventListener("abort", abort);
     agent.abort();

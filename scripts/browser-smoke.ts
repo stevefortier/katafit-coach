@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 const dir = await mkdtemp(tmpdir() + "/coach-browser-");
+const evidence =
+  process.env.COACH_EVIDENCE_DIR ?? tmpdir() + "/coach-browser-evidence";
 let providerCalls = 0;
 const provider = createServer(async (req, res) => {
   providerCalls++;
@@ -118,12 +120,89 @@ try {
     (await page.locator("#notice").textContent()) ?? "",
     /no claimed-request data authority/,
   );
-  await mkdir("docs/evidence", { recursive: true });
+  await mkdir(evidence, { recursive: true });
+  assert.equal(await page.locator("#logsView").count(), 1);
+  let logRequests = 0;
+  page.on("request", (r) => {
+    if (r.url().endsWith("/api/logs")) logRequests++;
+  });
+  await page.locator("#logsView summary").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#logRows")
+      ?.textContent?.includes("preview-completed"),
+  );
+  await page.evaluate(async (key) => {
+    await fetch("/api/config", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + key,
+        "Content-Type": "application/json",
+      },
+      body: '{"private":"DO_NOT_LOG"}',
+    });
+  }, store.secrets.admin);
+  await page.locator("#logRefresh").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#logRows")
+      ?.textContent?.includes("INVALID_PERSONA"),
+  );
+  await page.locator("#logLevel").selectOption("error");
+  assert.ok(
+    !(await page.locator("#logRows").innerText()).includes("preview-completed"),
+  );
+  assert.ok(
+    !(await page.locator("#logRows").innerText()).includes("DO_NOT_LOG"),
+  );
+  await page.locator("#logPause").click();
+  await page.waitForTimeout(100);
+  const pausedCount = logRequests;
+  await page.waitForTimeout(2200);
+  assert.equal(logRequests, pausedCount);
+  assert.equal(
+    await page
+      .locator(".log-entry")
+      .first()
+      .evaluate((e) => getComputedStyle(e).backgroundColor),
+    "rgb(16, 23, 21)",
+  );
+  const downloadWait = page.waitForEvent("download");
+  await page.locator("#logDownload").click();
+  const download = await downloadWait;
+  await download.saveAs(evidence + "/logs-browser.json");
+  await page.locator("#logsView").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: evidence + "/studio-logs-desktop.png" });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.locator("#logCopy").click();
+  assert.ok(
+    (await page.evaluate(() => navigator.clipboard.readText())).includes(
+      "INVALID_PERSONA",
+    ),
+  );
+  await page.locator("#logPause").click();
+  await page.waitForTimeout(100);
+  await page.evaluate(
+    "Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange'));",
+  );
+  const hiddenCount = logRequests;
+  await page.waitForTimeout(2200);
+  assert.equal(logRequests, hiddenCount);
+  await page.evaluate(() => {
+    delete (document as any).hidden;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForTimeout(100);
+  await page.locator("#logsView summary").click();
+  await page.waitForTimeout(100);
+  const closedCount = logRequests;
+  await page.waitForTimeout(2200);
+  assert.equal(logRequests, closedCount);
   await page.evaluate(() => scrollTo(0, 0));
   await page.locator("#vision").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: "docs/evidence/data-vision-desktop.png" });
+  await page.screenshot({ path: evidence + "/data-vision-desktop.png" });
   await page.locator("#preview").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: "docs/evidence/data-preview.png" });
+  await page.screenshot({ path: evidence + "/data-preview.png" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => scrollTo(0, 0));
   assert.equal(
@@ -133,7 +212,16 @@ try {
     true,
   );
   await page.locator("#vision").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: "docs/evidence/data-vision-mobile.png" });
+  await page.screenshot({ path: evidence + "/data-vision-mobile.png" });
+  await page.locator("#logsView summary").click();
+  await page.locator("#logsView").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: evidence + "/studio-logs-mobile.png" });
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+    true,
+  );
   await page.locator("#rollback").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.includes("restored"),

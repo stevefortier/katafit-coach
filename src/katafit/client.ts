@@ -1,3 +1,4 @@
+import { SafeError, safeError } from "../runtime/errors.js";
 export class Client {
   private id = 0;
   constructor(
@@ -13,41 +14,53 @@ export class Client {
     );
   }
   async fetch(path: string, body?: unknown, budget = 10000, limit = 1048576) {
-    const response = await fetch(this.origin + path, {
-      method: body ? "POST" : "GET",
-      redirect: "error",
-      signal: AbortSignal.any([
-        this.signal,
-        AbortSignal.timeout(Math.max(1, budget)),
-      ]),
-      headers: body
-        ? {
-            "Content-Type": "application/json",
-            Accept: "application/json, text/event-stream",
-            Authorization: "Bearer " + this.token,
-            "MCP-Protocol-Version": "2025-03-26",
-          }
-        : {},
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!response.ok)
-      throw new Error(
-        [401, 403].includes(response.status)
-          ? "CREDENTIAL_REJECTED"
-          : "CONNECTIVITY_ERROR",
-      );
-    let size = 0;
-    const chunks = [];
-    if (response.body)
-      for await (const c of response.body) {
-        size += c.length;
-        if (size > limit) throw new Error("RESPONSE_TOO_LARGE");
-        chunks.push(c);
-      }
-    return {
-      text: Buffer.concat(chunks).toString("utf8"),
-      type: response.headers.get("content-type") ?? "",
-    };
+    const wireSignal = AbortSignal.any([
+      this.signal,
+      AbortSignal.timeout(Math.max(1, budget)),
+    ]);
+    try {
+      const response = await fetch(this.origin + path, {
+        method: body ? "POST" : "GET",
+        redirect: "error",
+        signal: wireSignal,
+        headers: body
+          ? {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/event-stream",
+              Authorization: "Bearer " + this.token,
+              "MCP-Protocol-Version": "2025-03-26",
+            }
+          : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!response.ok)
+        throw new Error(
+          [401, 403].includes(response.status)
+            ? "CREDENTIAL_REJECTED"
+            : "CONNECTIVITY_ERROR",
+        );
+      let size = 0;
+      const chunks = [];
+      if (response.body)
+        for await (const c of response.body) {
+          size += c.length;
+          if (size > limit) throw new Error("RESPONSE_TOO_LARGE");
+          chunks.push(c);
+        }
+      return {
+        text: Buffer.concat(chunks).toString("utf8"),
+        type: response.headers.get("content-type") ?? "",
+      };
+    } catch (error) {
+      if (wireSignal.aborted)
+        throw new SafeError(
+          wireSignal.reason?.name === "TimeoutError"
+            ? "BACKEND_TIMEOUT"
+            : "CANCELLED",
+        );
+      if (error instanceof TypeError) throw new SafeError("CONNECTIVITY_ERROR");
+      throw safeError(error);
+    }
   }
   async rpc(
     method: string,
@@ -101,6 +114,9 @@ export class Client {
       { name, arguments: args },
       false,
       budget,
+      // MCP may duplicate structured context into JSON text (with escaping).
+      // Only this context transport gets extra headroom; provider input is 1 MiB.
+      name === "coach_read_context" ? 4 * 1024 * 1024 : 1024 * 1024,
     );
     if (r.isError) throw new Error("MCP_TOOL_FAILED");
     const value =

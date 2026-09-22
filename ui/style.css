@@ -257,3 +257,52 @@ footer {
   padding: 0;
   accent-color: #d4f5a0;
 }
+
+.diagnostics {
+  margin-top: 24px;
+}
+.log-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  margin: 20px 0;
+}
+.log-controls label {
+  margin: 0;
+  min-width: 130px;
+}
+#logRows {
+  max-height: 520px;
+  overflow: auto;
+}
+.log-entry {
+  border-left: 3px solid #619888;
+  padding: 12px 16px;
+  margin: 12px 0;
+  background: var(--bg);
+  overflow-wrap: anywhere;
+}
+.log-entry strong,
+.log-entry small {
+  display: block;
+}
+.log-entry small {
+  margin-top: 8px;
+  font-family: monospace;
+}
+.log-entry p {
+  margin-bottom: 0;
+}
+.log-error {
+  border-color: #b34635;
+}
+.log-warn {
+  border-color: #a47d28;
+}
+#lastError {
+  overflow-wrap: anywhere;
+}
+nav {
+  flex-wrap: wrap;
+}
