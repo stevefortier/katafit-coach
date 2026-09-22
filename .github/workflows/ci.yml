@@ -19,6 +19,20 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run test:package
+      - name: Verify packed source upgrade, rollback and restart
+        run: node scripts/updater-package-smoke.mjs
       - run: npm run test:browser
         if: matrix.node == 22
+      - run: npm run test:updates-browser
+        if: matrix.node == 22
       - run: npm audit --omit=dev --audit-level=high
+      - name: Build private non-root Docker image
+        if: matrix.node == 22
+        shell: bash
+        run: |
+          git archive HEAD | docker build \
+            --build-arg KATAFIT_BUILD_REVISION="$(git rev-parse HEAD)" \
+            -t katafit-coach:qa -
+      - name: Verify Docker ownership and persistent restart
+        if: matrix.node == 22
+        run: COACH_EXPECTED_REVISION="$(git rev-parse HEAD)" node scripts/docker-smoke.mjs

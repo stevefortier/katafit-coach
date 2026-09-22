@@ -130,14 +130,14 @@ try {
   let unlocked = false;
   for (let attempt = 0; attempt < 50; attempt++) {
     try {
-      await stat(join(env.KATAFIT_COACH_HOME, "service.lock"));
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        unlocked = true;
-        break;
-      }
-      throw error;
-    }
+      execFileSync(
+        "flock",
+        ["--nonblock", join(env.KATAFIT_COACH_HOME, "service.lock"), "true"],
+        { stdio: "ignore" },
+      );
+      unlocked = true;
+      break;
+    } catch {}
     await sleep(20);
   }
   assert.ok(unlocked, "stopped service releases its owned lock before restart");

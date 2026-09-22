@@ -35,7 +35,15 @@ Credential replacement is rejected if its value occurs in the new, current or pr
 
 Clear-generation/anchor completion fencing remains backend-owned. v2 reads require explicit credential scopes and requester grants; a persona cannot grant access. Enable original-image input only for a known vision-capable provider. Preview has no claimed-request authority and exposes no data tools. Renewable leases remain unsupported. See the v2 contract and limitations below; earlier text-only receipts do not certify this expansion or its deployment.
 
-## Operations
+## Studio source updates
+
+After one bootstrap install of this updater-capable build, managed **Linux** installs can check and upgrade from **05 Source updates** in Studio. It checks only `stevefortier/katafit-coach` `main`, shows exact Git revisions (not npm `0.1.0`), and requires explicit confirmation of the displayed SHA. Pause the worker and finish preview first. The stable launcher stages pinned source/lockfile dependencies, probes an isolated runtime, replaces its child on the same port, and rolls back startup failure. Config, credentials and user data remain in the existing home; the worker stays stopped. macOS keeps legacy Studio serving but does not apply source upgrades.
+
+Source changes execute trusted repository code on your machine. This is not an npm update, an arbitrary URL installer, or a promise that immutable containers can rewrite themselves. See [source upgrades, bootstrap, safety limits and recovery](docs/source-updates.md) and the [managed nonroot Docker recipe](docs/docker.md).
+
+Successful Studio login now keeps the admin key in per-origin **sessionStorage** so this tab can reload after upgrades. **Lock studio** clears it without stopping the service/worker. Lock and close Studio on shared browsers; it is not stored in localStorage.
+
+## Service commands
 
 ```sh
 katafit-coach status  # authenticated health, no conversation or credentials
@@ -61,6 +69,8 @@ npm test
 npm run build
 npm run format:check
 npm run test:package
+npm run test:updates-package # actual packed CLI upgrade/rollback; synthetic trusted Git
+npm run test:updates-browser # source UI + synthetic GitHub; desktop/mobile evidence
 npm run test:browser   # requires /usr/bin/google-chrome, or CHROME_PATH
 ```
 
