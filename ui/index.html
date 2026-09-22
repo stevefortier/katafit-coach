@@ -36,7 +36,8 @@
       <div id="studio" hidden>
         <nav>
           <a href="#connection">01 Connection</a
-          ><a href="#persona">02 Persona</a><a href="#preview">03 Preview</a>
+          ><a href="#persona">02 Persona</a><a href="#preview">03 Preview</a
+          ><a href="#logsView">04 Diagnostics</a>
         </nav>
         <div class="grid">
           <section class="card" id="connection">
@@ -158,6 +159,40 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
           <details>
             <summary>Effective nonsecret instructions</summary>
             <pre id="prompt"></pre>
+          </details>
+        </section>
+        <section class="card diagnostics">
+          <div class="eyebrow">04 / PRIVATE DIAGNOSTICS</div>
+          <h2>See what happened.</h2>
+          <p id="lastError" role="status">No retained error.</p>
+          <details id="logsView">
+            <summary>Open diagnostic logs</summary>
+            <p class="hint">
+              Sanitized stages, local correlation references and numeric budgets
+              only. No conversations, images, persona, keys or upstream error
+              text. Recent history survives restart in the protected data
+              directory.
+            </p>
+            <div class="log-controls">
+              <button id="logRefresh" class="secondary">Refresh</button>
+              <button id="logPause" class="secondary" aria-pressed="false">
+                Pause live
+              </button>
+              <label
+                >Level<select id="logLevel">
+                  <option value="all">All levels</option>
+                  <option value="info">Info</option>
+                  <option value="warn">Warnings</option>
+                  <option value="error">Errors</option>
+                </select></label
+              >
+              <button id="logCopy" class="secondary">Copy JSON</button>
+              <button id="logDownload" class="secondary">Download JSON</button>
+            </div>
+            <p id="logStatus" role="status">
+              Logs load only while this view is open and the tab is visible.
+            </p>
+            <div id="logRows" aria-label="Diagnostic entries"></div>
           </details>
         </section>
         <section class="runbar">

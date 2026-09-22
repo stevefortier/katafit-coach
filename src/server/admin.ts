@@ -1,6 +1,8 @@
+import { Diagnostics } from "../diagnostics/log.js";
+import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, randomUUID } from "node:crypto";
 import { Store, compile } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
 import { Worker } from "../worker/runner.js";
@@ -12,11 +14,15 @@ export async function admin(
   infer = complete,
   onShutdown?: () => void,
 ) {
+  const logs = new Diagnostics(store.dir);
+  logs.record({ source: "studio", stage: "studio-started" });
   let worker: Worker | undefined;
   let preview: AbortController | undefined;
   let busy = false;
   let origin = "";
   const server = createServer(async (req, res) => {
+    const ref = randomUUID();
+    const started = Date.now();
     const send = (status: number, data: unknown) => {
       res.writeHead(status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(data));
@@ -64,10 +70,13 @@ export async function admin(
           hasToken: !!store.secrets.token,
           hasApiKey: !!store.secrets.apiKey,
         });
+      if (req.method === "GET" && path === "/api/logs")
+        return send(200, logs.snapshot());
       if (req.method === "GET" && path === "/api/status")
         return send(200, {
           state: worker?.state ?? "stopped",
           preview: !!preview,
+          lastError: logs.lastError,
           revision: store.publicConfig().revision,
         });
       if (req.method !== "POST") return send(404, { error: "NOT_FOUND" });
@@ -125,6 +134,12 @@ export async function admin(
           )
             throw new Error("INVALID_PREVIEW");
           preview = new AbortController();
+          const previewRef = ref;
+          logs.record({
+            source: "studio",
+            stage: "preview-started",
+            ref: previewRef,
+          });
           const controller = preview;
           const cancel = () => controller.abort();
           res.once("close", cancel);
@@ -137,6 +152,7 @@ export async function admin(
             const instructions = await fetchInstructions(
               new Client(c.origin, store.secrets.token, signal),
             ).catch(() => {
+              if (controller.signal.aborted) throw new SafeError("CANCELLED");
               throw new Error("BACKEND_INSTRUCTIONS_UNAVAILABLE");
             });
             const prompt = effectivePrompt(
@@ -147,6 +163,8 @@ export async function admin(
             const text = await infer(
               {
                 ...c.provider,
+                onDiagnostic: (event) =>
+                  logs.record({ ...event, ref: previewRef }),
                 apiKey: store.secrets.apiKey,
                 secrets: Object.values(store.secrets),
               },
@@ -161,6 +179,11 @@ export async function admin(
             ])
               if (secret && text.includes(secret))
                 throw new Error("OUTPUT_REJECTED");
+            logs.record({
+              source: "studio",
+              stage: "preview-completed",
+              ref: previewRef,
+            });
             return send(200, {
               text,
               prompt,
@@ -186,10 +209,12 @@ export async function admin(
               system: compile(c, Object.values(store.secrets)),
               secrets: Object.values(store.secrets),
               vision: c.provider.vision === true,
-              complete: (context, signal, system, tools) =>
+              onDiagnostic: (event) => logs.record(event),
+              complete: (context, signal, system, tools, ref) =>
                 infer(
                   {
                     ...c.provider,
+                    onDiagnostic: (event) => logs.record({ ...event, ref }),
                     apiKey: store.secrets.apiKey,
                     secrets: Object.values(store.secrets),
                   },
@@ -212,25 +237,19 @@ export async function admin(
         busy = false;
       }
     } catch (e: any) {
-      const allowed = [
-        "INVALID_CONFIG",
-        "INVALID_PERSONA",
-        "INVALID_URL",
-        "TOKEN_REQUIRED",
-        "CREDENTIAL_REJECTED",
-        "CONNECTION_AND_PROVIDER_REQUIRED",
-        "STOP_WORKER_BEFORE_PREVIEW",
-        "PROVIDER_KEY_REQUIRED",
-        "NO_PREVIOUS_REVISION",
-        "BACKEND_INSTRUCTIONS_UNAVAILABLE",
-        "SECRET_IN_CONFIG",
-      ];
+      const failure = safeError(e);
+      logs.record({
+        source: "studio",
+        stage: failure.code === "CANCELLED" ? "cancelled" : "operation-failed",
+        level: failure.code === "CANCELLED" ? "warn" : "error",
+        ref,
+        metadata: { elapsedMs: Date.now() - started },
+        error: failure,
+      });
       send(400, {
-        error: allowed.includes(e.message) ? e.message : "REQUEST_FAILED",
-        hint:
-          e.message === "BACKEND_INSTRUCTIONS_UNAVAILABLE"
-            ? "Exact preview unavailable: backend instructions could not be fetched or validated. No inference ran. Check the saved Kata.fit origin."
-            : "Check connection, provider key/model and endpoint. No raw provider errors are logged.",
+        error: failure.code,
+        hint: failure.hint,
+        metadata: failure.metadata,
       });
     }
   });

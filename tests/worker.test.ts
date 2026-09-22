@@ -66,7 +66,12 @@ test("preview and running worker receive byte-identical saved effective instruct
 });
 
 export async function fixture(
-  options: { dropReply?: boolean; rejectFence?: boolean; data?: boolean } = {},
+  options: {
+    dropReply?: boolean;
+    rejectFence?: boolean;
+    data?: boolean;
+    failureMismatch?: "code" | "generation";
+  } = {},
 ) {
   let history: any[] = [];
   let current: any = null;
@@ -126,7 +131,17 @@ export async function fixture(
           value = {
             requests:
               current && (!a.statuses || a.statuses.includes(current.status))
-                ? [current]
+                ? [
+                    {
+                      ...current,
+                      ...(a.statuses?.includes("failed") &&
+                      options.failureMismatch
+                        ? options.failureMismatch === "code"
+                          ? { failure_code: "OTHER_FAILURE" }
+                          : { lease_generation: current.lease_generation + 1 }
+                        : {}),
+                    },
+                  ]
                 : [],
           };
           break;
@@ -172,6 +187,8 @@ export async function fixture(
           value = { request: current };
           break;
         case "coach_fail_request":
+          current.failure = a;
+          current.failure_code = a.code;
           current.status = "failed";
           value = { request: current };
       }
@@ -519,3 +536,171 @@ test("request model deadline fences a non-cooperative completion without publica
     await f.close();
   }
 });
+
+test("safe worker failure reaches fenced backend and Studio logs survives idle", async () => {
+  const { SafeError } = await import("../src/runtime/errors.js");
+  const f = await fixture();
+  const dir = await mkdtemp(tmpdir() + "/coach-worker-logs-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-provider",
+  });
+  f.enqueue("PRIVATE question");
+  const app = await admin(store, 0, async () => {
+    throw new SafeError("PROVIDER_CONTEXT_LIMIT", { status: 400 });
+  });
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  try {
+    await fetch(app.origin + "/api/run", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    for (let i = 0; i < 200 && f.current.status !== "failed"; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.equal(f.current.failure.code, "PROVIDER_CONTEXT_LIMIT");
+    assert.match(f.current.failure.message, /context window/);
+    assert.equal(f.current.failure.lease_generation, 1);
+    const logs = await (
+      await fetch(app.origin + "/api/logs", { headers })
+    ).json();
+    assert.ok(
+      logs.entries.some(
+        (e: any) => e.stage === "context-read" && e.metadata.bytes > 0,
+      ),
+    );
+    const failed = logs.entries.find((e: any) => e.stage === "request-failed");
+    assert.equal(failed.code, "PROVIDER_CONTEXT_LIMIT");
+    assert.ok(failed.ref);
+    assert.ok(!JSON.stringify(logs).includes("PRIVATE"));
+    // The default backoff is 10s; test direct idle transition separately below.
+    const events: any[] = [];
+    const worker = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      complete: async () => {
+        throw new SafeError("PROVIDER_AUTH_FAILED");
+      },
+      onDiagnostic: (e) => events.push(e),
+    });
+    f.enqueue("Second question");
+    await assert.rejects(worker.pollOnce());
+    await worker.pollOnce();
+    await worker.pollOnce();
+    assert.equal(worker.state, "idle");
+    assert.equal(worker.lastError?.code, "PROVIDER_AUTH_FAILED");
+    assert.equal(events.filter((e) => e.stage === "idle").length, 1);
+    await worker.stop();
+  } finally {
+    await app.close();
+    await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("real Pi provider rejection is correlated through worker backend failure and authenticated logs", async () => {
+  const f = await fixture();
+  const dir = await mkdtemp(tmpdir() + "/coach-wire-diagnostics-");
+  const provider = createServer((req, res) => {
+    req.resume();
+    res.writeHead(429, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: {
+          code: "insufficient_quota",
+          message: "PRIVATE upstream echoed context",
+        },
+      }),
+    );
+  });
+  await new Promise<void>((r) => provider.listen(0, "127.0.0.1", r));
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-key",
+    provider: {
+      baseUrl: `http://127.0.0.1:${(provider.address() as any).port}/v1`,
+      model: "synthetic",
+    },
+  });
+  const app = await admin(store, 0);
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  try {
+    f.enqueue("x".repeat(60000));
+    await fetch(app.origin + "/api/run", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    for (let i = 0; i < 200 && f.current.status !== "failed"; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.equal(f.current.failure.code, "PROVIDER_QUOTA_EXCEEDED");
+    const data = await (
+      await fetch(app.origin + "/api/logs", { headers })
+    ).json();
+    const failure = data.entries.find((e: any) => e.stage === "request-failed");
+    const payload = data.entries.find(
+      (e: any) => e.stage === "provider-payload",
+    );
+    assert.ok(payload, "actual serialized provider payload metadata is logged");
+    assert.equal(payload.ref, failure.ref);
+    assert.ok(payload.metadata.bytes > 60000);
+    assert.equal(payload.metadata.limit, 1048576);
+    assert.equal(payload.metadata.totalLimit, 6291456);
+    assert.equal(failure.metadata.status, 429);
+    assert.ok(!JSON.stringify(data).includes("PRIVATE"));
+  } finally {
+    await app.close();
+    await f.close();
+    provider.closeAllConnections();
+    await new Promise<void>((r) => provider.close(() => r()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+for (const mismatch of ["code", "generation"] as const) {
+  test(`failure readback ${mismatch} mismatch is warning, not confirmed failure`, async () => {
+    const f = await fixture({ failureMismatch: mismatch });
+    const events: any[] = [];
+    const worker = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      complete: async () => {
+        throw new Error("MODEL_FAILED");
+      },
+      onDiagnostic: (e) => events.push(e),
+    });
+    try {
+      f.enqueue("Synthetic failure");
+      await assert.rejects(worker.pollOnce(), /MODEL_FAILED/);
+      assert.equal(
+        events.some((e) => e.stage === "failure-reported"),
+        false,
+      );
+      assert.equal(
+        events.find((e) => e.stage === "failure-report-unverified")?.level,
+        "warn",
+      );
+    } finally {
+      await worker.stop();
+      await f.close();
+    }
+  });
+}

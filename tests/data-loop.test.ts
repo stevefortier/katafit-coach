@@ -517,8 +517,14 @@ for (const type of ["image_url", "ordinary"]) {
       );
       assert.equal(reads.tools.length, 3);
       await assert.rejects(
-        complete(p.config, "Coach", "Read", signal, reads.tools),
-        /MODEL_BUDGET_EXHAUSTED/,
+        complete(
+          p.config,
+          "Coach",
+          "x".repeat(1024 * 1024 - 20000),
+          signal,
+          reads.tools,
+        ),
+        /MODEL_INPUT_TOO_LARGE/,
       );
       assert.equal(p.bodies.length, 0);
     } finally {
@@ -657,12 +663,12 @@ test("wire budget includes outbound model metadata before any dispatch", async (
   try {
     await assert.rejects(
       complete(
-        { ...p.config, model: "m".repeat(28001) },
+        { ...p.config, model: "m".repeat(1024 * 1024 + 1) },
         "Coach",
         "Read",
         AbortSignal.timeout(5000),
       ),
-      /MODEL_BUDGET_EXHAUSTED/,
+      /MODEL_INPUT_TOO_LARGE/,
     );
     assert.equal(p.bodies.length, 0);
   } finally {

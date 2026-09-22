@@ -49,6 +49,10 @@ Default studio: `http://127.0.0.1:4317`. Data: `~/.katafit-coach` (directory 070
 
 Local runtime does **not** mean local inference. Server-authorized context and opt-in original images go to your configured provider. Private-file storage is a documented server-secret mechanism, not an OS keychain or encryption-at-rest claim. Protect/back up the directory as credentials; persona export intentionally omits secrets.
 
+## Private diagnostics and request budgets
+
+Studio's **04 Diagnostics** shows sanitized request stages, byte/turn budgets and fixed actionable error hints. Logs are authenticated, bounded, private and retained across restart in the data directory. Live polling pauses when the log view closes or the tab is hidden; Refresh, level filtering and sanitized JSON copy/download are available. The serialized provider input limit is now **1 MiB per turn / 6 MiB per request**, distinct from provider context windows. Image validation, access grants, turn/tool/output/time budgets and fenced publication remain intact. See [budgets, error codes, retention/privacy and secure headless/Docker access](docs/diagnostics.md).
+
 ## Development and proof
 
 ```sh

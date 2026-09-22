@@ -15,10 +15,10 @@ test("Pi rejects text budget overflow before network dispatch", async () => {
         apiKey: "private",
       },
       "Coach",
-      "x".repeat(30000),
+      "x".repeat(1024 * 1024),
       AbortSignal.timeout(1000),
     ),
-    /BUDGET_EXHAUSTED/,
+    /MODEL_INPUT_TOO_LARGE/,
   );
 });
 for (const mode of ["cancel", "timeout"])
