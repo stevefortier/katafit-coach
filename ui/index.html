@@ -11,6 +11,7 @@
       <header>
         <a class="brand" href="/">kata<span>fit</span><b>COACH STUDIO</b></a
         ><span class="pill" id="state">LOCKED</span>
+        <button id="lockStudio" class="secondary" hidden>Lock studio</button>
       </header>
       <section class="hero">
         <div class="eyebrow">YOUR COACH. YOUR RUNTIME.</div>
@@ -23,8 +24,9 @@
       <section id="login" class="card">
         <h2>Open your local studio</h2>
         <p>
-          Enter the admin key from your protected installation. It stays in this
-          tab's memory.
+          Enter the admin key from your protected installation. This tab retains
+          it in session storage so you can reload after upgrades. Lock studio
+          clears it; avoid shared browser sessions.
         </p>
         <label
           >Admin key<input
@@ -38,6 +40,7 @@
           <a href="#connection">01 Connection</a
           ><a href="#persona">02 Persona</a><a href="#preview">03 Preview</a
           ><a href="#logsView">04 Diagnostics</a>
+          <a href="#updates">05 Updates</a>
         </nav>
         <div class="grid">
           <section class="card" id="connection">
@@ -194,6 +197,61 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             </p>
             <div id="logRows" aria-label="Diagnostic entries"></div>
           </details>
+        </section>
+        <section class="card diagnostics" id="updates">
+          <div class="eyebrow">05 / SOURCE UPDATES</div>
+          <h2>Keep your Coach current.</h2>
+          <p>
+            Updates come from the official Kata.fit Coach repository on GitHub.
+            Checking never installs an update.
+          </p>
+          <div class="update-versions">
+            <div>
+              <span class="hint">INSTALLED SOURCE</span
+              ><code id="updateInstalled">Unknown</code>
+            </div>
+            <div>
+              <span class="hint">LATEST ON MAIN</span
+              ><code id="updateLatest">Not checked</code>
+            </div>
+          </div>
+          <p id="updateStatus" role="status" aria-live="polite">
+            Check for a newer source revision.
+          </p>
+          <p class="hint" id="updateChecked">Not checked yet.</p>
+          <p id="updateOutcome" class="hint" role="status" hidden></p>
+          <div class="log-controls">
+            <button id="updateCheck" class="secondary">
+              Check for updates
+            </button>
+            <button id="updateApply" disabled>Upgrade…</button>
+            <button id="updateReload" class="secondary" hidden>
+              Reload upgraded Studio
+            </button>
+            <a
+              id="updateSource"
+              target="_blank"
+              rel="noopener noreferrer"
+              hidden
+              >View source on GitHub ↗</a
+            >
+          </div>
+          <p class="hint">
+            Pause the worker and finish previews before upgrading. Configuration
+            and credentials stay in your data directory. The worker remains
+            stopped after restart.
+          </p>
+          <div id="updateConfirm" class="update-confirm" hidden>
+            <h3>Install this source revision?</h3>
+            <code id="updateTarget"></code>
+            <p>
+              This downloads and builds code from the official repository, then
+              briefly restarts Studio. Only continue if you trust this source.
+              Keep this tab open; a disconnect is not confirmation of success.
+            </p>
+            <button id="updateConfirmApply">Install and restart</button>
+            <button id="updateCancel" class="secondary">Not now</button>
+          </div>
         </section>
         <section class="runbar">
           <div>

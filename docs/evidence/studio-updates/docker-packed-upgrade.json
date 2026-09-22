@@ -1,0 +1,12 @@
+{
+  "packedUpdate": "PASS",
+  "syntheticTrustedGit": true,
+  "first": "04f1d79fa0a4d9c5a76a928669adce1c64bbce25",
+  "rollbackCandidate": "2364082f5e4aafeba403a19588f9d8e13c8167ce",
+  "second": "cc30e7b74750c44f0b71c061a93f5f2b4be9e3eb",
+  "stableOwner": true,
+  "configSecretsPreserved": true,
+  "multipleUpgrades": true,
+  "retainedVersions": 2,
+  "restartAndCrashRecovery": true
+}

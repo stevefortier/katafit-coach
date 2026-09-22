@@ -2,11 +2,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFile, open, unlink } from "node:fs/promises";
+import { readFile, open, unlink, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Store } from "./config/store.js";
-import { admin } from "./server/admin.js";
+import { supervise } from "./update/supervisor.js";
+import { legacyServe } from "./update/legacy.js";
 const dir = process.env.KATAFIT_COACH_HOME ?? join(homedir(), ".katafit-coach");
 const store = new Store(dir);
 const command = process.argv[2] ?? "help";
@@ -38,47 +39,67 @@ async function main() {
     );
     return;
   }
-  await store.init();
   if (command === "serve") {
-    const lockPath = join(dir, "service.lock");
-    let lock;
-    try {
-      lock = await open(lockPath, "wx", 0o600);
-    } catch (e: any) {
-      if (e.code !== "EEXIST") throw e;
-      const pid = Number(await readFile(lockPath, "utf8"));
-      try {
-        process.kill(pid, 0);
-        throw new Error("ALREADY_RUNNING");
-      } catch (check: any) {
-        if (check.code !== "ESRCH") throw check;
-      }
-      await unlink(lockPath);
-      lock = await open(lockPath, "wx", 0o600);
-    }
-    await lock.writeFile(String(process.pid));
-    await lock.close();
-    let app: Awaited<ReturnType<typeof admin>> | undefined;
+    if (process.platform !== "linux")
+      return legacyServe(store, Number(process.env.KATAFIT_COACH_PORT ?? 4317));
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    // Kernel lock survives PID reuse and is released on crashes. Never unlink
+    // this inode: deleting it would allow a second owner to lock a new file.
+    const owner = spawn(
+      "flock",
+      [
+        "--nonblock",
+        "--no-fork",
+        join(dir, "service.lock"),
+        process.execPath,
+        ...process.execArgv,
+        fileURLToPath(import.meta.url),
+        "__serve",
+      ],
+      { stdio: ["inherit", "inherit", "inherit", "ipc"], env: process.env },
+    );
+    process.once("SIGTERM", () => owner.kill("SIGTERM"));
+    process.once("SIGINT", () => owner.kill("SIGINT"));
+    await new Promise<void>((resolve, reject) => {
+      owner.once("error", reject);
+      owner.once("exit", (code) => {
+        process.exitCode = code ?? 1;
+        resolve();
+      });
+    });
+    return;
+  }
+  await store.init();
+  if (command === "__serve") {
+    let app: Awaited<ReturnType<typeof supervise>> | undefined;
     let closing = false;
     const close = async () => {
       if (closing) return;
       closing = true;
       await app?.close();
       await unlink(join(dir, "service.json")).catch(() => {});
-      await unlink(lockPath).catch(() => {});
+      if (process.connected) process.disconnect();
     };
+    process.once("SIGTERM", () => void close());
+    process.once("SIGINT", () => void close());
+    process.once("disconnect", () => void close());
     try {
-      app = await admin(
+      app = await supervise(
         store,
         Number(process.env.KATAFIT_COACH_PORT ?? 4317),
-        undefined,
         () => {
           void close();
         },
       );
-      await store.atomic("service", { origin: app.origin, pid: process.pid });
-      process.once("SIGTERM", () => void close());
-      process.once("SIGINT", () => void close());
+      if (closing) {
+        await app.close();
+        return;
+      }
+      await store.atomic("service", {
+        origin: app.origin,
+        pid: process.pid,
+        runtimePid: app.pid,
+      });
       console.log(
         "Kata.fit Coach studio listening at " +
           app.origin +

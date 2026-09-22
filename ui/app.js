@@ -1,6 +1,26 @@
 let key = "",
-  config;
+  config,
+  authGeneration = 0;
+function staleAuthentication() {
+  const error = new Error("Stale session response");
+  error.stale = true;
+  return error;
+}
 const $ = (id) => document.getElementById(id);
+const sessionKey = "katafit-coach-admin";
+function rememberedAdmin() {
+  try {
+    return sessionStorage.getItem(sessionKey) || "";
+  } catch {
+    return "";
+  }
+}
+function rememberAdmin(value) {
+  try {
+    if (value) sessionStorage.setItem(sessionKey, value);
+    else sessionStorage.removeItem(sessionKey);
+  } catch {}
+}
 const fields = [
   "name",
   "voice",
@@ -13,21 +33,49 @@ const fields = [
 ];
 const notice = (t) => ($("notice").textContent = t);
 async function api(path, body, signal) {
-  const r = await fetch("/api/" + path, {
-    method: body === undefined ? "GET" : "POST",
-    headers: {
-      Authorization: "Bearer " + key,
-      "Content-Type": "application/json",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error + (data.hint ? " — " + data.hint : ""));
+  const generation = authGeneration,
+    requestKey = key;
+  let r, data;
+  try {
+    r = await fetch("/api/" + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        Authorization: "Bearer " + requestKey,
+        "Content-Type": "application/json",
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+    });
+    data = await r.json();
+  } catch (error) {
+    if (generation !== authGeneration || requestKey !== key)
+      throw staleAuthentication();
+    throw error;
+  }
+  if (generation !== authGeneration || requestKey !== key)
+    throw staleAuthentication();
+  if (!r.ok) {
+    if (r.status === 401) {
+      lockSession(
+        "Studio authorization expired. Unlock again with the current admin key.",
+      );
+      const error = new Error(
+        "Studio authorization expired. Unlock again with the current admin key.",
+      );
+      error.status = 401;
+      throw error;
+    }
+    const error = new Error(data.error + (data.hint ? " — " + data.hint : ""));
+    error.status = r.status;
+    throw error;
+  }
   return data;
 }
 async function load() {
-  config = await api("config");
+  const generation = authGeneration;
+  const data = await api("config");
+  if (generation !== authGeneration) throw staleAuthentication();
+  config = data;
   for (const f of fields) $(f).value = config.persona[f];
   $("origin").value = config.origin;
   $("model").value = config.provider.model;
@@ -45,17 +93,22 @@ function action(id, fn) {
     try {
       await fn();
     } catch (e) {
-      notice(e.message);
+      if (!e.stale) notice(e.message);
     }
   };
 }
 action("unlock", async () => {
+  authGeneration++;
   key = $("adminKey").value;
   $("adminKey").value = "";
   await load();
+  rememberAdmin(key);
+  notice("");
   $("login").hidden = true;
   $("studio").hidden = false;
+  $("lockStudio").hidden = false;
   await status();
+  await refreshUpdate(true);
 });
 action("save", async () => {
   const persona = Object.fromEntries(fields.map((f) => [f, $(f).value]));
@@ -118,8 +171,10 @@ action("cancel", async () => {
 });
 for (const cmd of ["run", "stop"])
   action(cmd, async () => {
+    const generation = authGeneration;
     await api(cmd, {});
     await status();
+    if (generation !== authGeneration) return;
     notice(
       cmd === "run"
         ? "Worker started. Wait for persisted-reply status to confirm delivery."
@@ -147,9 +202,13 @@ $("preset").onchange = () => {
 };
 async function status() {
   if (!key || document.hidden) return;
+  const generation = authGeneration;
   try {
     const s = await api("status");
+    if (generation !== authGeneration) return;
     $("state").textContent = s.state.toUpperCase();
+    updateWorkerBlocked = s.state !== "stopped" || s.preview === true;
+    renderUpdate();
     $("lastError").textContent = s.lastError
       ? "Last error · " +
         s.lastError.time +
@@ -160,9 +219,12 @@ async function status() {
       : "No retained error.";
   } catch {}
 }
-if (location.hash) {
+if (/^[a-f0-9]{64}$/i.test(location.hash.slice(1))) {
   $("adminKey").value = location.hash.slice(1);
   history.replaceState(null, "", "/");
+  $("unlock").click();
+} else if (rememberedAdmin()) {
+  $("adminKey").value = rememberedAdmin();
   $("unlock").click();
 }
 setInterval(status, 4000);
@@ -263,3 +325,232 @@ action("logDownload", async () => {
   a.click();
   URL.revokeObjectURL(url);
 });
+
+let updateData,
+  updateRequest = false,
+  updatePending = false,
+  updateWorkerBlocked = true,
+  updateError = "",
+  updateTimer,
+  updateController,
+  updateTarget,
+  updateInitialRevision;
+const sourceSha = (value) =>
+  typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+function renderUpdate() {
+  const data = updateData;
+  if (!data) return;
+  const locked = updatePending || data.applying;
+  $("updateReload").hidden =
+    locked ||
+    !sourceSha(data.installed) ||
+    data.installed === updateInitialRevision;
+  $("updateInstalled").textContent = sourceSha(data.installed)
+    ? data.installed.slice(0, 12)
+    : "Unknown / local build";
+  $("updateInstalled").title = sourceSha(data.installed)
+    ? data.installed
+    : "This build has no verified source revision.";
+  $("updateLatest").textContent = sourceSha(data.latest)
+    ? data.latest.slice(0, 12)
+    : "Not available";
+  $("updateLatest").title = sourceSha(data.latest) ? data.latest : "";
+  $("updateStatus").textContent = updateError || data.guidance;
+  const outcome = data.lastOperation;
+  const outcomeNames = {
+    applying: "Upgrade accepted",
+    succeeded: "Last upgrade succeeded",
+    failed: "Last upgrade failed",
+    interrupted: "Last upgrade was interrupted",
+  };
+  const validOutcome =
+    outcome &&
+    sourceSha(outcome.sha) &&
+    typeof outcome.id === "string" &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
+      outcome.id,
+    ) &&
+    Object.hasOwn(outcomeNames, outcome.state) &&
+    Number.isSafeInteger(outcome.at) &&
+    outcome.at > 0 &&
+    Number.isFinite(new Date(outcome.at).getTime());
+  $("updateOutcome").hidden = !validOutcome;
+  $("updateOutcome").textContent = validOutcome
+    ? `${outcomeNames[outcome.state]} · ${outcome.sha.slice(0, 12)} · ${new Date(outcome.at).toLocaleString()}`
+    : "";
+  $("updateOutcome").title = validOutcome
+    ? `Operation ${outcome.id}; target ${outcome.sha}`
+    : "";
+  $("updateChecked").textContent = data.checkedAt
+    ? "Last check · " + new Date(data.checkedAt).toLocaleString()
+    : "Not checked yet.";
+  $("updateCheck").disabled = updateRequest || locked;
+  $("updateApply").disabled =
+    updateRequest ||
+    locked ||
+    updateWorkerBlocked ||
+    !data.supported ||
+    !sourceSha(data.latest) ||
+    data.latest === data.installed;
+  $("updateConfirmApply").disabled =
+    locked || updateRequest || updateWorkerBlocked;
+  for (const id of [
+    "run",
+    "stop",
+    "save",
+    "rollback",
+    "previewButton",
+    "connect",
+    "cancel",
+  ])
+    $(id).disabled = locked;
+  for (const input of document.querySelectorAll(
+    "#connection input, #connection select, #persona input, #persona textarea, #persona select",
+  ))
+    input.disabled = locked;
+  $("updateSource").hidden = !sourceSha(data.latest);
+  if (sourceSha(data.latest))
+    $("updateSource").href =
+      "https://github.com/stevefortier/katafit-coach/commit/" + data.latest;
+}
+async function refreshUpdate(check = false) {
+  clearTimeout(updateTimer);
+  if (!key || updateRequest || document.hidden || $("studio").hidden) return;
+  const generation = authGeneration;
+  updateRequest = true;
+  const controller = new AbortController();
+  updateController = controller;
+  renderUpdate();
+  try {
+    const data = await api(
+      check ? "update/check" : "update",
+      check ? {} : undefined,
+      AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+    );
+    if (controller.signal.aborted || generation !== authGeneration) return;
+    if (updateInitialRevision === undefined)
+      updateInitialRevision = data.installed;
+    updateData = data;
+    updatePending = data.applying;
+    updateError = "";
+  } catch {
+    if (!controller.signal.aborted && generation === authGeneration)
+      updateError =
+        "Studio is unavailable. Reconnecting; verify the installed revision before assuming an upgrade succeeded.";
+  } finally {
+    if (generation !== authGeneration || updateController !== controller)
+      return;
+    updateRequest = false;
+    updateController = undefined;
+    renderUpdate();
+    if (key && !document.hidden && !$("studio").hidden)
+      updateTimer = setTimeout(
+        () => refreshUpdate(),
+        updatePending || updateData?.applying || updateError ? 2000 : 30000,
+      );
+  }
+}
+action("updateCheck", async () => {
+  $("updateConfirm").hidden = true;
+  await refreshUpdate(true);
+});
+action("updateApply", async () => {
+  const generation = authGeneration;
+  if (hasUnsavedEdits()) {
+    notice("Unsaved edits: save or revert changes before upgrading.");
+    return;
+  }
+  await status();
+  if (generation !== authGeneration) return;
+  if (updateWorkerBlocked) {
+    notice("Pause the worker and finish or cancel preview before upgrading.");
+    return;
+  }
+  if (!sourceSha(updateData?.latest) || updatePending || updateData.applying)
+    return;
+  updateTarget = updateData.latest;
+  $("updateTarget").textContent = updateTarget;
+  $("updateConfirm").hidden = false;
+  $("updateConfirmApply").focus();
+});
+action("updateCancel", async () => {
+  $("updateConfirm").hidden = true;
+  updateTarget = undefined;
+});
+action("updateReload", async () => {
+  if (hasUnsavedEdits()) {
+    notice("Unsaved edits: save or revert changes before reloading.");
+    return;
+  }
+  location.reload();
+});
+action("updateConfirmApply", async () => {
+  const generation = authGeneration;
+  if (
+    !sourceSha(updateTarget) ||
+    updateTarget !== updateData?.latest ||
+    updatePending ||
+    updateData.applying
+  )
+    return;
+  if (hasUnsavedEdits()) {
+    notice("Unsaved edits: save or revert changes before upgrading.");
+    return;
+  }
+  updatePending = true;
+  updateError = "Upgrade requested. Waiting for verified runtime status…";
+  $("updateConfirm").hidden = true;
+  renderUpdate();
+  try {
+    await api(
+      "update/apply",
+      { sha: updateTarget, confirm: true },
+      AbortSignal.timeout(15000),
+    );
+  } catch (error) {
+    if (generation !== authGeneration) return;
+    if (error.status) {
+      updatePending = false;
+      notice(error.message);
+    } else
+      updateError =
+        "Studio is unavailable. The upgrade may have been accepted; reconnecting to verify.";
+  }
+  if (generation === authGeneration) await refreshUpdate();
+});
+document.addEventListener("visibilitychange", () => {
+  clearTimeout(updateTimer);
+  if (document.hidden) updateController?.abort();
+  else void refreshUpdate();
+});
+window.addEventListener("pagehide", () => {
+  clearTimeout(updateTimer);
+  updateController?.abort();
+});
+function lockSession(message) {
+  authGeneration++;
+  key = "";
+  rememberAdmin("");
+  config = undefined;
+  clearTimeout(updateTimer);
+  updateController?.abort();
+  updateController = undefined;
+  updateRequest = false;
+  updatePending = false;
+  updateWorkerBlocked = true;
+  updateData = undefined;
+  updateTarget = undefined;
+  $("updateConfirm").hidden = true;
+  clearTimeout(logTimer);
+  logController?.abort();
+  $("studio").hidden = true;
+  $("login").hidden = false;
+  $("lockStudio").hidden = true;
+  $("state").textContent = "LOCKED";
+  notice(message);
+}
+action("lockStudio", async () =>
+  lockSession(
+    "Studio locked. This does not stop the worker or an accepted upgrade.",
+  ),
+);

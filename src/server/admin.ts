@@ -1,3 +1,4 @@
+import { Updates } from "../update/updates.js";
 import { Diagnostics } from "../diagnostics/log.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
@@ -13,6 +14,7 @@ export async function admin(
   port = 4317,
   infer = complete,
   onShutdown?: () => void,
+  updates = new Updates(null, null),
 ) {
   const logs = new Diagnostics(store.dir);
   logs.record({ source: "studio", stage: "studio-started" });
@@ -64,6 +66,8 @@ export async function admin(
         return send(403, { error: "ORIGIN_REJECTED" });
       if (req.method === "POST" && req.headers.origin !== origin)
         return send(403, { error: "ORIGIN_REQUIRED" });
+      if (req.method === "GET" && path === "/api/update")
+        return send(200, updates.snapshot());
       if (req.method === "GET" && path === "/api/config")
         return send(200, {
           ...store.publicConfig(),
@@ -89,6 +93,36 @@ export async function admin(
           return send(413, { error: "TOO_LARGE" });
       }
       const body = JSON.parse(raw || "{}");
+      if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+      if (path === "/api/update/check") return send(200, await updates.check());
+      if (path === "/api/update/apply") {
+        if (busy || preview || (worker && worker.state !== "stopped"))
+          return send(409, {
+            error: "PAUSE_BEFORE_UPGRADE",
+            hint: "Pause the worker and finish or cancel preview first.",
+          });
+        if (
+          !body ||
+          body.confirm !== true ||
+          Object.keys(body).sort().join(",") !== "confirm,sha"
+        )
+          return send(400, { error: "CONFIRM_PINNED_SOURCE" });
+        try {
+          updates.validate(body.sha);
+        } catch (e: any) {
+          return send(400, { error: e.message });
+        }
+        void updates.apply(body.sha).catch(() => {});
+        try {
+          await updates.accepted;
+        } catch {
+          return send(503, {
+            error: "UPDATE_NOT_ACCEPTED",
+            hint: "Could not persist the update request. Check protected home storage.",
+          });
+        }
+        return send(202, { ok: true });
+      }
       if (path === "/api/shutdown" && onShutdown) {
         preview?.abort();
         send(200, { ok: true });
