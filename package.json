@@ -20,6 +20,7 @@
     "test": "npm run build && tsx --test tests/*.test.ts",
     "prepack": "npm run build",
     "test:browser": "tsx scripts/browser-smoke.ts",
+    "test:coach-browser": "tsx scripts/coach-browser-smoke.ts",
     "test:updates-browser": "tsx scripts/updater-browser-smoke.ts",
     "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" \"spike/*.ts\" \"ui/*\" package.json tsconfig.json",
     "test:updates-package": "node scripts/updater-package-smoke.mjs",

@@ -71,6 +71,7 @@ try {
   await page.locator("#adminKey").fill(store.secrets.admin);
   await page.locator("#unlock").click();
   await page.locator("#studio").waitFor({ state: "visible" });
+  await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#vision").isChecked(), false);
   assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
   await page.locator("#vision").check();

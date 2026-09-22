@@ -23,6 +23,8 @@ jobs:
         run: node scripts/updater-package-smoke.mjs
       - run: npm run test:browser
         if: matrix.node == 22
+      - run: npm run test:coach-browser
+        if: matrix.node == 22
       - run: npm run test:updates-browser
         if: matrix.node == 22
       - run: npm audit --omit=dev --audit-level=high

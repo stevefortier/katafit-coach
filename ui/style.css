@@ -354,3 +354,116 @@ header {
     grid-template-columns: 1fr;
   }
 }
+
+[hidden] {
+  display: none !important;
+}
+body:has(#studio:not([hidden])) .hero {
+  padding: 24px 0 12px;
+}
+body:has(#studio:not([hidden])) .hero h1 {
+  font-size: 30px;
+}
+body:has(#studio:not([hidden])) .hero h1 br {
+  display: none;
+}
+body:has(#studio:not([hidden])) .hero p {
+  display: none;
+}
+.studio-tabs {
+  gap: 10px;
+}
+.conversation-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  max-width: 100%;
+  flex-wrap: nowrap;
+}
+.conversation-tabs button {
+  flex: 0 0 auto;
+}
+#coachPanel,
+#settingsPanel {
+  min-width: 0;
+}
+.chat-messages {
+  height: clamp(220px, 36vh, 460px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.chat-message {
+  padding: 12px 16px;
+  border-radius: 12px;
+  margin: 10px 0;
+  max-width: 85%;
+  width: fit-content;
+  background: var(--panel);
+}
+.chat-message strong {
+  font-size: 11px;
+  color: var(--accent);
+}
+.chat-message p {
+  white-space: pre-wrap;
+  margin: 6px 0 0;
+  color: inherit;
+}
+.chat-user {
+  margin-left: auto;
+  background: #2c3d2e;
+}
+.chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.chat-pending {
+  display: flex;
+  gap: 5px;
+  padding: 16px;
+}
+.chat-pending span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: thinking 1s infinite alternate;
+}
+.chat-pending span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.chat-pending span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes thinking {
+  to {
+    opacity: 0.25;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-pending span {
+    animation: none;
+  }
+}
+@media (max-width: 480px) {
+  #coachPanel {
+    padding: 14px;
+  }
+  .chat-message {
+    max-width: 95%;
+  }
+}
+
+.member-item small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+  font-size: 11px;
+}

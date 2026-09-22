@@ -57,6 +57,7 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(app.origin + "/#" + store.secrets.admin);
   await page.locator("#studio").waitFor({ state: "visible" });
+  await page.locator("#settingsTab").click();
   assert.equal(
     await page.locator("#updates").count(),
     1,
@@ -74,6 +75,22 @@ try {
     /aaaaaaaaaaaa/,
   );
   assert.equal(await page.locator("#updateApply").isEnabled(), true);
+  await page.route("**/api/status", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ state: "stopped", operatorChat: true }),
+    }),
+  );
+  await page.waitForTimeout(4300);
+  assert.equal(
+    await page.locator("#updateApply").isDisabled(),
+    true,
+    "active operator turn blocks source upgrades",
+  );
+  await page.unroute("**/api/status");
+  await page.waitForFunction(
+    () => !document.querySelector<HTMLButtonElement>("#updateApply")?.disabled,
+  );
   await page
     .locator("#updates")
     .screenshot({ path: evidence + "/studio-updates-desktop.png" });
@@ -172,6 +189,7 @@ try {
     page.locator("#updateReload").click(),
   ]);
   await page.locator("#studio").waitFor({ state: "visible", timeout: 5000 });
+  await page.locator("#settingsTab").click();
   assert.equal(
     await page.locator("#updateOutcome").count(),
     1,
@@ -242,6 +260,7 @@ try {
       !document.querySelector<HTMLButtonElement>("#updateCheck")?.disabled &&
       !document.querySelector<HTMLElement>("#studio")?.hidden,
   );
+  await page.locator("#settingsTab").click();
   await page.route("**/api/update/check", (route) =>
     route.fulfill({
       status: 401,
@@ -283,6 +302,7 @@ try {
   await page.locator("#adminKey").fill(store.secrets.admin);
   await page.locator("#unlock").click();
   await page.locator("#studio").waitFor({ state: "visible" });
+  await page.locator("#settingsTab").click();
   const oldConfigResponse = page.waitForResponse("**/api/config");
   await oldConfig.fulfill({
     status: 401,
