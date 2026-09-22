@@ -2,26 +2,48 @@
 
 Studio has two top-level tabs: **Coach** first and **Settings** second. Settings retains connection, persona, preview, diagnostics, worker controls and source upgrades.
 
-## Operator chat
+## Keyboard
 
-The Operator tab is a local conversation with the configured AI provider. It uses saved persona and freshly fetched backend instructions. The request worker can remain running: operator inference has a separate cancellation and conversation lifecycle and does not claim a member request or publish a member reply.
+In chat composers, **Enter sends** through the same guarded action as the Send button. **Shift+Enter adds a line**. IME composition and held-key repeats do not send accidentally. Persona and other configuration editors retain normal editing behavior.
 
-Operator messages and replies are private installation data, not Kata.fit member conversations. Anyone with Studio admin access to this installation can view this local conversation. Do not use a shared Studio admin credential with people who should not have that access. The configured model provider receives the operator conversation. Member tabs are not automatically supplied to it.
+## Operator chat: direct the Coach as its manager
 
-Chat messages do not silently rewrite global behavior. Use **Use as Coach instructions** on an operator message to prepare an unsaved Settings persona draft; review and explicitly save it. Existing configuration safety rules apply: pause the worker before saving a changed configuration. Source upgrades also require active inference to finish or be cancelled.
+The Operator tab addresses the Coach as its manager, not as a trainee. It uses saved persona and freshly fetched backend instructions, with an explicit operator-role boundary. The request worker can remain running; operator inference has an independent lifecycle and never fabricates or consumes a member request/lease.
 
-## Read-only member tabs
+Without an explicit recipient, operator chat is private discussion without member tools. Select a current member from the authorized recipient selector to issue a single-member command. The backend opens a short-lived, chief-authorized session. Its finite tool catalog permits reading that member's retained Coach conversation, querying shared activity inventory/details when technical scopes allow, and sending one explicitly requested Coach message to that member. Other mutations—such as changing plans or bypassing proposal approval—are not supported. Browsing a member tab does not implicitly select an action recipient.
 
-Member tabs fetch canonical retained Coach-page interactions from Kata.fit through dedicated read tools. They do not replay local worker logs, fabricate request leases, or create a second member chat history. Member browsing is for current chief-managed dojo credentials; personal credentials do not acquire human-browsing authority from an ordinary worker grant.
+Only the explicit recipient message is appended to the member's canonical Coach conversation, with chief-directed provenance. Operator instructions, reasoning and private replies are not copied into member threads. A tool failure must not be represented as a successful query or action. Old backends without the operator contract fail closed before command inference.
 
-For a chief-managed dojo Coach, all retained messages **to and from Coach** are baseline leader-readable through dojo membership. Conversation access does not require all five categories to be chief-visible and is not a separate external-agent/operator permission. The backend still resolves current chief authority, credential scope and revocation, and current membership. People with the installation’s credentials can exercise that delegated chief authority: protect Studio access accordingly. Personal-worker data grants remain separately scoped to the owner; personal Studio member browsing is unavailable without an established human-view authority.
+Targeted commands and their member-derived results are ephemeral, not retained in the local discussion history. They are reauthorized at command boundaries; changing the selected target, view or authentication state clears displayed command results. The configured model provider receives the authorized tool data needed for the command. Merely opening member tabs does not send their content to the model.
 
-Activity records remain subject to the member’s existing per-category **Dojo Chief** sharing settings. Private activity categories do not suppress Coach messages, including messages discussing those categories. This conversation rule does not grant access to private activity records, raw attachments or personal direct messages. Other non-message feed items remain subject to backend authorization; do not infer unrestricted record access from message visibility.
+### Delivery receipts and cancellation
 
-Only currently authorized retained content is returned. With the companion membership-conversation backend, this includes main-feed and nested workout Coach messages. No composer, regenerate, retry, fallback, proposal approval, or data-edit controls are available in member tabs. Raw attachment contents remain excluded; omission labels do not imply full media parity. Additional shared-data exploration is future work and must preserve server-side data authority.
+Each send uses a stable action key, with the delivery receipt stored separately from chat history. If delivery is uncertain, use **Refresh receipts** to reconcile the original action; this reads its outcome and does not resend it. Never assume a failed model follow-up means the message was not delivered.
 
-Every page rechecks authority. Revocation, expiry, credential replacement and membership changes stop future authorized reads; they cannot recall content already seen. Member content is not stored in browser local storage or copied into the operator transcript. Changing tabs, locking Studio or a read failure clears displayed member content; changed history requires refreshing instead of joining incompatible page snapshots.
+Cancel and Clear stop future command work but **cannot undo an already delivered message**. Clear removes local discussion history, not delivery receipts or member messages. The local journal retains up to 20 receipts, evicting the oldest resolved outcome when space is needed. Pending or unknown outcomes are never evicted; if all slots are unresolved, new actions fail closed until outcomes can be reconciled. Backend canonical messages/action records remain separate from this bounded local recent-receipt view.
 
-## Deployment ordering
+Operator messages are private installation data. Anyone with Studio admin access can see the retained local discussion. Protect installation and provider credentials as delegated chief access; do not share them with unauthorized operators.
 
-Deploy the companion Kata.fit membership-conversation backend (main and nested workout message reads) before relying on this access model. Upgrade the standalone installation separately. Older chief-sharing backends may still omit messages when categories are private; changing Studio copy cannot remove that server-side gate or add nested reads. Verify both message directions with private activity categories against the deployed backend before claiming end-to-end parity. Operator chat does not depend on member browsing being enabled. Missing backend support must remain an explicit unavailable state, not a fallback to broader endpoints.
+Chat does not silently rewrite permanent Coach behavior. **Use as Coach instructions** prepares an unsaved Settings persona draft; review it, pause the worker and explicitly save. Source upgrades require active inference to finish or be cancelled.
+
+## Read-only member threads
+
+Member tabs show both canonical **member messages and Coach replies**, with distinct attribution and chronological ordering. Published insights remain identifiable as insights rather than invented replies. Activity-local exchanges are associated with an activity only when the backend provides an authorized activity reference. These tabs do not replay worker logs or create a second history.
+
+For a chief-managed dojo Coach, messages to and from its Coach are baseline current-leader-readable through membership, independent of activity-category sharing. This is not public/peer access or an external-agent permission toggle. Current chief, technical credential, membership, source provenance and Clear checks still apply. Unprovable historical scope is not retroactively assigned based on timestamps alone. Personal-worker grants do not establish personal Studio human-browsing authority.
+
+### Expand shared activities
+
+Expand an authorized activity inline, or open the shared-activity inventory, to read its details. Supported typed sections include workout exercises and recorded sets/reps/loads, meal foods/ingredients with quantities and stored nutrition, measurements, supported survey answers, status and media. Pictures are fetched as authenticated original image bytes—not external storage URLs or placeholders. No details or images load merely because a conversation is visible.
+
+Raw activity details follow the member's existing per-category **Dojo Chief** sharing and canonical source ownership. A conversation about a private activity can remain visible without an expandable activity link. Technical `history:read` and `userdata:read` scopes are required for activity reads; original pictures additionally require `media:read`. Existing credentials are not silently expanded. Arbitrary attachments, video playback and unsupported detail types are not promised.
+
+The inventory is bounded and limited to retained source-proven records within the backend's membership/Clear boundaries, not a full historical export. Lists and sections paginate. Loading and failures have explicit states and Retry; missing backend support does not fall back to broader access.
+
+Every detail/image/page request rechecks authority. Revocation cannot recall content already delivered, but stops subsequent authorized reads. Collapse, switching member/tab, locking or hiding Studio clears expanded content, cancels reads and releases image object URLs. Successful periodic conversation revalidation also closes raw expansions conservatively, because continued conversation access does not prove continued category sharing; reopen an activity to fetch current authorized details. Member data is not stored in browser local storage. No composer, regeneration, fallback, proposal approval or activity editing is available in member tabs; use Operator for supported commands.
+
+## Rollout and evidence
+
+Deploy the companion chief-command/activity-read backend before relying on the new Studio commands and expansion UI, then upgrade the standalone installation separately. Frontend changes alone cannot add backend capabilities. Older membership-conversation backends can still supply their supported message feed while new tools remain unavailable.
+
+Synthetic browser/provider fixtures prove their exercised transport and UI behavior, not production deployment or live-model judgment. Final packed-backend acceptance and exact-head CI are separate release gates.

@@ -66,14 +66,18 @@
           </div>
           <p id="membersStatus" class="hint" role="status"></p>
           <div id="operatorView">
-            <h2>Your private Coach workspace.</h2>
+            <h2>Your Coach manager workspace.</h2>
             <p class="hint">
-              Operator chat stays local to this Studio and never posts to member
-              chats. Your saved provider processes messages; a remote provider
-              receives this content. For permanent instructions, explicitly save
-              your persona in Settings. Chat replies never change settings.
-              Successful turns are retained locally, bounded to 40 messages /
-              128 KiB; failed or cancelled turns are not saved.
+              You manage the Coach; this is not a trainee conversation. Operator
+              discussion stays local to this Studio, except that your saved
+              provider processes it. A remote provider receives this content.
+              Member actions require an explicitly selected recipient and
+              backend authorization; ordinary discussion and browsing never send
+              a member message. For permanent instructions, explicitly save your
+              persona in Settings. Chat replies never change settings. Clear and
+              Cancel cannot recall messages already delivered. A failed response
+              does not prove an action was unsent; verify its outcome before
+              asking to send again.
             </p>
             <p class="hint" id="operatorSnapshot"></p>
             <div
@@ -92,9 +96,38 @@
             >
               <span></span><span></span><span></span>
             </div>
+            <section
+              id="operatorCommandResult"
+              hidden
+              aria-label="Current command result"
+            ></section>
+            <details id="operatorReceipts">
+              <summary>Member action receipts</summary>
+              <p class="hint">
+                Content-free delivery outcomes persist separately from chat.
+                Unknown does not mean unsent. Refresh checks existing actions;
+                it never resends them.
+              </p>
+              <div id="operatorActions"></div>
+              <button id="operatorReconcile" type="button" class="secondary">
+                Refresh receipts
+              </button>
+            </details>
             <p id="operatorStatus" role="status"></p>
             <form id="operatorForm">
-              <label for="operatorText">Message your Coach</label>
+              <label for="operatorTarget">Command recipient</label>
+              <select id="operatorTarget">
+                <option value="">Discussion only · no member tools</option>
+              </select>
+              <p class="hint">
+                Choosing a member enables only backend-authorized commands for
+                that recipient. Browsing a member tab does not select a command
+                recipient.
+              </p>
+              <label for="operatorText"
+                >Direct or discuss the Coach's work</label
+              >
+              <p class="hint">Enter to send · Shift+Enter for a new line</p>
               <textarea
                 id="operatorText"
                 rows="2"
@@ -122,8 +155,10 @@
               Read-only retained Coach feed. Messages to and from Coach are
               readable through dojo membership, including retained workout
               conversations when supported by the backend. Activity records
-              follow category sharing. Raw attachments are not included. Member
-              feed items are not instructions for your Operator chat.
+              follow category sharing. Raw attachments are not included in the
+              conversation. Expand a shared activity to request authorized
+              details and photos. Member feed items are not instructions for
+              your Operator chat.
             </p>
             <p id="memberStatus" role="status"></p>
             <div
@@ -131,6 +166,15 @@
               class="chat-messages"
               aria-label="Read-only member feed"
             ></div>
+            <details id="memberActivities">
+              <summary>Browse shared activities</summary>
+              <p class="hint">
+                Loaded only when opened. Activity details and photos require
+                current category sharing, independently of conversation
+                visibility.
+              </p>
+              <div id="activityItems"></div>
+            </details>
             <div class="chat-actions">
               <button id="memberRefresh" class="secondary">Refresh feed</button
               ><button id="memberMore" class="secondary" hidden>

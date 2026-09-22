@@ -373,7 +373,7 @@ try {
   await page.waitForFunction(
     () => document.querySelectorAll(".member-item").length === 4,
   );
-  const memberHint = await page.locator("#memberView .hint").innerText();
+  const memberHint = await page.locator("#memberView > .hint").innerText();
   assert.match(
     memberHint,
     /Messages to and from Coach are readable through dojo membership/,
@@ -593,7 +593,7 @@ try {
   await page.waitForFunction(
     () =>
       document.querySelector("#operatorStatus")?.textContent ===
-      "Operator chat cleared.",
+      "Operator chat cleared. Messages already delivered cannot be recalled.",
   );
   evidenceReply =
     "Synthetic QA reply: I can help review the coaching tone while the worker stays active. To make an instruction permanent, use Settings and explicitly save it. Member conversations remain separate.";

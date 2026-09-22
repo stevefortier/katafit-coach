@@ -461,6 +461,53 @@ body:has(#studio:not([hidden])) .hero p {
   }
 }
 
+.member-thread {
+  border-left: 2px solid var(--line);
+  padding: 4px 10px;
+  margin: 12px 0;
+}
+.member-thread h3 {
+  font-size: 12px;
+  color: var(--muted);
+}
+.member-event {
+  border: 1px solid var(--line);
+  background: transparent;
+}
+.activity-card {
+  margin: 10px 0;
+  padding: 10px;
+  overflow-wrap: anywhere;
+}
+.activity-card summary {
+  cursor: pointer;
+}
+.activity-card article {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.activity-card dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 8px 0;
+}
+.activity-card dt {
+  color: var(--muted);
+}
+.activity-card dd {
+  margin: 0;
+}
+.activity-card img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  margin: 12px 0;
+}
+#operatorTarget {
+  max-width: 100%;
+}
 .member-item small {
   display: block;
   color: var(--muted);

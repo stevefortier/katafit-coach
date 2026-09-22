@@ -97,12 +97,15 @@ test("operator HTTP chat supplies explicit multi-turn local context and shared s
       { role: "assistant", text: "Synthetic answer 1" },
       { role: "user", text: "Be more specific" },
     ]);
-    assert.equal(
-      calls[0].system,
-      effectivePrompt(
-        compile(f.store.publicConfig(), Object.values(f.store.secrets)),
-        policy,
-        Object.values(f.store.secrets),
+    assert.match(calls[0].system, /operator is your manager, not a trainee/);
+    assert.match(calls[0].system, /Member data.*lower-trust/);
+    assert.ok(
+      calls[0].system.includes(
+        effectivePrompt(
+          compile(f.store.publicConfig(), Object.values(f.store.secrets)),
+          policy,
+          Object.values(f.store.secrets),
+        ),
       ),
     );
     assert.deepEqual(calls[0].tools, []);
