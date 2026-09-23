@@ -92,6 +92,14 @@ try {
     await page.locator("#localMcpList").innerText(),
     /browser-private-bearer/,
   );
+  await page
+    .locator("#localMcp")
+    .screenshot({ path: tmpdir() + "/local-mcp-studio-desktop.png" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .locator("#localMcp")
+    .screenshot({ path: tmpdir() + "/local-mcp-studio-mobile.png" });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   page.once("dialog", (dialog) => void dialog.accept());
   await page.locator("#localMcpList button").click();
   await page.waitForFunction(() =>
