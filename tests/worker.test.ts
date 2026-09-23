@@ -6,6 +6,52 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
+import { photoReviewGuidance } from "../src/worker/photoReviewGuidance.js";
+
+test("photo requests guide native media reads at the original request anchor", () => {
+  const asOf = "2026-09-23T21:05:00.000Z";
+  const guidance = photoReviewGuidance("Please judge my last photos", asOf);
+  assert.match(guidance, /coach_list_activities/);
+  assert.match(guidance, /types.*media/);
+  assert.match(guidance, /omit statuses, start_date and end_date/is);
+  assert.doesNotMatch(guidance, /statuses:\[/);
+  assert.match(guidance, /coach_read_activity.*media_files/s);
+  assert.match(guidance, /coach_read_media.*media_ref/s);
+  assert.match(guidance, /2026-09-23T21:05:00\.000Z/);
+  assert.match(guidance, /No image bytes read.*do not judge/is);
+  assert.equal(photoReviewGuidance("How did my meal go?", asOf), "");
+  assert.equal(photoReviewGuidance("Review my photos", "not a timestamp"), "");
+});
+
+test("worker gives photo-request guidance only to a claimed media judgment", async () => {
+  const f = await fixture();
+  const systems: string[] = [];
+  try {
+    const worker = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      complete: async (_context, _signal, system) => {
+        systems.push(system);
+        return "Images unavailable in synthetic fixture; no visual judgment.";
+      },
+    });
+    f.enqueue("Judge my last photos");
+    f.current.message = f.current.text;
+    f.current.created_at = "2026-09-23T21:05:00.000Z";
+    await worker.pollOnce();
+    assert.equal(f.publications, 1);
+    assert.match(systems[0], /types:\["media"\]/);
+    assert.match(systems[0], /2026-09-23T21:05:00\.000Z/);
+    f.enqueue("How was my meal?");
+    f.current.created_at = "2026-09-23T21:06:00.000Z";
+    await worker.pollOnce();
+    assert.equal(f.publications, 2);
+    assert.doesNotMatch(systems[1], /Photo review read path/);
+  } finally {
+    await f.close();
+  }
+});
 
 test("preview and running worker receive byte-identical saved effective instructions", async () => {
   const f = await fixture();
