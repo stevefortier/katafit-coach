@@ -215,7 +215,7 @@ export async function discoverReads(
         async execute(_id, args: any, signal) {
           client.signal.throwIfAborted();
           signal?.throwIfAborted();
-          if (++calls > 12) throw new Error("TOOL_BUDGET_EXHAUSTED");
+          if (++calls > 24) throw new Error("TOOL_BUDGET_EXHAUSTED");
           const resolved = checkArgs(args);
           const result = await client.withSignal(signal).rpc(
             "tools/call",

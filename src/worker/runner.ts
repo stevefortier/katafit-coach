@@ -240,7 +240,7 @@ export class Worker {
       )
         throw new Error("CONTEXT_REJECTED");
       const ms = Math.min(
-        this.options.modelMs ?? 60000,
+        this.options.modelMs ?? 90000,
         deadline - Date.now() - 10000,
       );
       if (ms <= 0) throw new Error("LEASE_EXPIRED");

@@ -9,7 +9,7 @@ export const hints = {
   ARGUMENTS_REJECTED:
     "Read-tool arguments failed scoped validation. No unauthorized read was dispatched.",
   TOOL_BUDGET_EXHAUSTED:
-    "The request exceeded its twelve read-tool call budget. Reduce the request.",
+    "The request exceeded its 24 read-tool call budget. Reduce the request.",
   RESULT_REJECTED: "A read result failed safety, size or structure validation.",
   READ_UNAVAILABLE:
     "The scoped read was unavailable. Check request authority, grants and supported capabilities.",
@@ -18,7 +18,7 @@ export const hints = {
   MODEL_INPUT_TOO_LARGE:
     "The serialized provider input exceeds 1 MiB. Reduce context or tool metadata; this is a local byte limit, not the model context window.",
   MODEL_BUDGET_EXHAUSTED:
-    "The bounded inference budget was exhausted (6 MiB cumulative input, six turns, twelve tool calls or 12000 output tokens). Reduce the request.",
+    "The bounded inference budget was exhausted (24 MiB cumulative input, 24 turns, 48 tool calls or 48000 output tokens). Reduce the request.",
   PROVIDER_AUTH_FAILED:
     "Check the saved provider API key and its model permissions.",
   PROVIDER_RATE_LIMITED:

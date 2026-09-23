@@ -2,8 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { complete } from "../src/runtime/piAdapter.js";
+import { hints } from "../src/runtime/errors.js";
 
-for (const mode of ["turns", "calls", "output", "six-turn-success"] as const) {
+for (const mode of [
+  "turns",
+  "calls",
+  "output",
+  "seven-turn-success",
+] as const) {
   test(`real Pi retains bounded ${mode} with diagnostic counters`, async () => {
     let requests = 0,
       executions = 0;
@@ -13,13 +19,13 @@ for (const mode of ["turns", "calls", "output", "six-turn-success"] as const) {
       }
       requests++;
       const finish =
-        mode === "output" || (mode === "six-turn-success" && requests === 6);
+        mode === "output" || (mode === "seven-turn-success" && requests === 7);
       const delta = finish
         ? { role: "assistant", content: "Safe final" }
         : {
             role: "assistant",
             tool_calls: Array.from(
-              { length: mode === "calls" ? 13 : 1 },
+              { length: mode === "calls" ? 49 : 1 },
               (_, i) => ({
                 index: i,
                 id: `call_${requests}_${i}`,
@@ -42,8 +48,8 @@ for (const mode of ["turns", "calls", "output", "six-turn-success"] as const) {
             ],
             usage: {
               prompt_tokens: 1,
-              completion_tokens: mode === "output" ? 12001 : 1,
-              total_tokens: mode === "output" ? 12002 : 2,
+              completion_tokens: mode === "output" ? 48001 : 1,
+              total_tokens: mode === "output" ? 48002 : 2,
             },
           }) +
           "\n\ndata: [DONE]\n\n",
@@ -77,31 +83,38 @@ for (const mode of ["turns", "calls", "output", "six-turn-success"] as const) {
           },
         ],
       );
-      if (mode === "six-turn-success") {
+      if (mode === "seven-turn-success") {
         assert.equal(await promise, "Safe final");
-        assert.equal(requests, 6);
-        assert.ok(events.at(-1).metadata.totalBytes > 4 * 1024 * 1024);
-        assert.ok(events.at(-1).metadata.totalBytes <= 6 * 1024 * 1024);
+        assert.equal(requests, 7);
+        assert.ok(events.at(-1).metadata.totalBytes > 5 * 1024 * 1024);
+        assert.ok(events.at(-1).metadata.totalBytes <= 24 * 1024 * 1024);
+        assert.equal(events.at(-1).metadata.totalLimit, 24 * 1024 * 1024);
       } else {
         await assert.rejects(promise, (e: any) => {
           assert.equal(e.code, "MODEL_BUDGET_EXHAUSTED");
+          assert.equal(e.hint, hints.MODEL_BUDGET_EXHAUSTED);
+          assert.match(
+            e.hint,
+            /24 MiB.*24 turns.*48 tool calls.*48000 output tokens/,
+          );
           if (mode === "turns") {
-            assert.equal(e.metadata.turns, 6);
-            assert.equal(e.metadata.turnLimit, 6);
+            assert.equal(e.metadata.turns, 24);
+            assert.equal(e.metadata.turnLimit, 24);
           }
           if (mode === "calls") {
-            assert.equal(e.metadata.calls, 13);
-            assert.equal(e.metadata.callLimit, 12);
+            assert.equal(e.metadata.calls, 49);
+            assert.equal(e.metadata.callLimit, 48);
           }
           if (mode === "output") {
-            assert.equal(e.metadata.outputTokens, 12001);
-            assert.equal(e.metadata.outputTokenLimit, 12000);
+            assert.equal(e.metadata.outputTokens, 48001);
+            assert.equal(e.metadata.outputTokenLimit, 48000);
           }
+          assert.equal(e.metadata.totalLimit, 24 * 1024 * 1024);
           return true;
         });
       }
-      assert.ok(requests <= 6);
-      assert.ok(executions <= 12);
+      assert.ok(requests <= 24);
+      assert.ok(executions <= 48);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));

@@ -26,16 +26,16 @@ The private per-request map holds at most 256 distinct originals, each at most 4
 | Boundary | Limit |
 | --- | --- |
 | Claimed lease | Request 120 seconds, no renewal; original backend deadline retained |
-| Discovery + model + reads | Existing 60-second default model budget, bounded by lease with delivery reserve |
+| Discovery + model + reads | 90-second default main-chat model budget, bounded by the earlier request/lease deadline with a 12-second publication margin; typed-task leases remain shorter |
 | Each HTTP operation | 10 seconds, also cancelled by enclosing request/tool signal |
-| Provider turns | 6 maximum; exhaustion fails rather than publishing a partial tool turn |
-| Tool executions | 12 per request, sequential; discovery separate and bounded |
+| Provider turns | 24 maximum; exhaustion fails rather than publishing a partial tool turn |
+| Tool calls | 48 Pi-level attempts; 24 request-scoped read executions, sequential; Studio Operator retains its separate 12-execution/one-send guard; discovery separate and bounded |
 | Discovery | 100 tools, 10 continuation cursors, no duplicate names/cursors |
 | Schema / arguments | 16 KiB each; bounded schema depth; no remote references |
 | Descriptions | 4,096 characters |
 | Result text | 256 KiB per result; 512 KiB cumulative |
-| Provider text envelope | 28,000 UTF-8 bytes per call; 120,000 cumulative, excluding image bytes |
-| Provider output | `maxTokens: 2000` each turn; reported output usage capped at 12,000 |
+| Provider text envelope | 1 MiB of serialized input per call; 24 MiB cumulative, excluding only validated base64 image data at provider image-part paths |
+| Provider output | `maxTokens: 2000` each turn; reported output usage capped at 48,000; streamed response transport capped at 2 MiB per call |
 | Image | 8 MiB decoded bytes each; 12 MiB encoded HTTP response |
 | Images per request | 4 total (stricter than the contract's per-turn maximum); 16 MiB total decoded bytes |
 
@@ -60,7 +60,7 @@ COACH_BACKEND_ROOT=/absolute/path/to/regimen-backend npm run test:package
 COACH_CDP=http://127.0.0.1:9222 npm run test:browser
 ```
 
-- `tests/data-loop.test.ts`: installed Pi 0.86.1 emits a real tool call, runs the HTTP MCP bridge, sends original fixture bytes in the next provider payload, and consumes a final model response. Repeated/burst tool calls hit the six-turn/twelve-execution limits. Raw string-to-number coercion, forged fences, malformed and oversized media are covered.
+- `tests/data-loop.test.ts`: installed Pi 0.86.1 emits a real tool call, runs the HTTP MCP bridge, sends original fixture bytes in the next provider payload, and consumes a final model response. Repeated/burst tool calls hit the 24-turn/48-attempt limit while scoped reads stop at 24 executions. Raw string-to-number coercion, forged fences, malformed and oversized media are covered.
 - `tests/data-tools.test.ts`, `data-limits.test.ts`, `data-security.test.ts`: fixed allowlist, lifecycle exclusion, schemas, scopes, pagination, per-request isolation, secrets, result budgets and cancellation of a real streaming HTTP body.
 - `tests/worker.test.ts`: request-fenced media exposure plus existing v1, lease, stop, context mismatch, duplicate poll and ambiguous publication regressions.
 - `tests/media-handles.test.ts` and `data-loop.test.ts`: exact 243-character original resolution through real Pi/HTTP MCP, multiple references, JSON/structured duplication, wrong/stale/cross-request handles, cancellation, backend denial, secret rejection, bounded storage and original text limits. Worker tests reject late reads after successful request disposal.
@@ -70,4 +70,4 @@ COACH_CDP=http://127.0.0.1:9222 npm run test:browser
 - `docs/evidence/data-*-receipt.json`: actual package acceptance receipts, including original byte counts and SHA-256 values.
 - `docs/evidence/data-vision-desktop.png`, `data-vision-mobile.png`, `data-preview.png`: real studio UI, vision save/rollback, explicit preview authority wording; browser asserts narrow-screen containment and no page errors.
 
-The broader backend all-domain/cross-user/Dojo/Clear/grant-revocation matrix belongs to the backend change and parent integration. These receipts establish the standalone path, not blanket backend coverage. Final packed/backend proof and authorized live-model original-image validation are documented in `docs/evidence/data-final-integration.md` and `data-live-packed-receipt.json`, including an unsuccessful bounded live attempt and catalog-budget limits. Earlier text-only live receipts remain historical evidence. Standalone PR #2 is draft pending parent readiness closeout; no merge, deployment or npm publication.
+The broader backend all-domain/cross-user/Dojo/Clear/grant-revocation matrix belongs to the backend change and parent integration. These receipts establish the standalone path, not blanket backend coverage. Final packed/backend proof and authorized live-model original-image validation are documented in `docs/evidence/data-final-integration.md` and `data-live-packed-receipt.json`, including an unsuccessful bounded live attempt under the prior limits. Earlier text-only live receipts remain historical evidence, not verification of this budget change or a deployed Studio instance.

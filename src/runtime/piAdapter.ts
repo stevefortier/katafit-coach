@@ -52,6 +52,11 @@ export function providerTextBytes(payload: unknown): number {
   return Buffer.byteLength(wire) - exemptBytes;
 }
 
+const TURN_LIMIT = 24;
+const CALL_LIMIT = 48;
+const TOTAL_INPUT_LIMIT = 24 * 1024 * 1024;
+const OUTPUT_TOKEN_LIMIT = 48000;
+
 // The core has no resource loader/discovery. Only this explicit state exists.
 export async function complete(
   provider: Provider,
@@ -117,12 +122,12 @@ export async function complete(
                   bytes,
                   limit: 1024 * 1024,
                   totalBytes: inputBytes,
-                  totalLimit: 6 * 1024 * 1024,
+                  totalLimit: TOTAL_INPUT_LIMIT,
                   turn: turns + 1,
                 },
               });
             } catch {}
-            if (bytes > 1024 * 1024 || inputBytes > 6 * 1024 * 1024) {
+            if (bytes > 1024 * 1024 || inputBytes > TOTAL_INPUT_LIMIT) {
               inputFailure = new SafeError(
                 bytes > 1024 * 1024
                   ? "MODEL_INPUT_TOO_LARGE"
@@ -131,7 +136,7 @@ export async function complete(
                   bytes,
                   limit: 1024 * 1024,
                   totalBytes: inputBytes,
-                  totalLimit: 6 * 1024 * 1024,
+                  totalLimit: TOTAL_INPUT_LIMIT,
                 },
               );
               throw inputFailure;
@@ -230,7 +235,7 @@ export async function complete(
           : m,
       ),
     beforeToolCall: async () => {
-      if (++calls > 12) {
+      if (++calls > CALL_LIMIT) {
         exhausted = true;
         return { block: true, reason: "TOOL_BUDGET_EXHAUSTED" };
       }
@@ -255,8 +260,9 @@ export async function complete(
     shouldStopAfterTurn: ({ message }) => {
       outputTokens += message.usage.output;
       if (
-        (++turns >= 6 && message.content.some((c) => c.type === "toolCall")) ||
-        outputTokens > 12000
+        (++turns >= TURN_LIMIT &&
+          message.content.some((c) => c.type === "toolCall")) ||
+        outputTokens > OUTPUT_TOKEN_LIMIT
       )
         exhausted = true;
       return exhausted;
@@ -273,13 +279,13 @@ export async function complete(
     if (exhausted)
       throw new SafeError("MODEL_BUDGET_EXHAUSTED", {
         turns,
-        turnLimit: 6,
+        turnLimit: TURN_LIMIT,
         calls,
-        callLimit: 12,
+        callLimit: CALL_LIMIT,
         outputTokens,
-        outputTokenLimit: 12000,
+        outputTokenLimit: OUTPUT_TOKEN_LIMIT,
         totalBytes: inputBytes,
-        totalLimit: 6 * 1024 * 1024,
+        totalLimit: TOTAL_INPUT_LIMIT,
       });
     signal.throwIfAborted();
     const message = [...agent.state.messages]
