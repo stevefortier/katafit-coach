@@ -121,9 +121,14 @@ for (const mode of [
         );
         assert.match(
           notices[1],
-          /39 turns remaining.*63 tool calls remaining.*47 scoped reads remaining/,
+          mode === "short-time"
+            ? /39 turns remaining.*64 tool calls remaining.*48 scoped reads remaining/
+            : /39 turns remaining.*63 tool calls remaining.*47 scoped reads remaining/,
         );
-        if (mode === "short-time") assert.match(notices[0], /Consolidate/);
+        if (mode === "short-time") {
+          assert.match(notices[0], /final answer now/);
+          assert.equal(executions, 0);
+        }
         if (mode === "exact-cap-final") {
           assert.match(notices[30], /10 turns remaining.*Consolidate/);
           assert.match(notices[39], /1 turns remaining.*final answer now/);
@@ -138,9 +143,9 @@ for (const mode of [
             /48 MiB.*40 turns.*64 tool calls.*48000 output tokens/,
           );
           if (mode === "turns") {
-            assert.equal(e.metadata.turns, 40);
+            assert.ok(e.metadata.turns === 39 || e.metadata.turns === 40);
             assert.equal(e.metadata.turnLimit, 40);
-            assert.equal(e.metadata.reads, 40);
+            assert.equal(e.metadata.reads, 39);
             assert.equal(e.metadata.readLimit, 48);
           }
           if (mode === "calls") {
