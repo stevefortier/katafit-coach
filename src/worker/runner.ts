@@ -516,8 +516,11 @@ export class Worker {
       phase = "provider";
       const system =
         effectivePrompt(this.options.system, context.instructions, secrets) +
-        "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON matching this local result schema: " +
-        JSON.stringify(taskSchema(task.kind));
+        "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON as an object, with no prose or Markdown code fences, matching this local result schema: " +
+        JSON.stringify(taskSchema(task.kind)) +
+        (task.kind === "activity_reaction"
+          ? "\nSemantic constraint: activity_feedback.reply_worthwhile must equal Boolean(general_advice). If you write nonempty general_advice, set reply_worthwhile to true; if reply_worthwhile is false, general_advice must be empty."
+          : "");
       let result: any;
       for (let attempt = 0; attempt < 2; attempt++) {
         const text = await bounded(
@@ -527,7 +530,7 @@ export class Worker {
               signal,
               system +
                 (attempt === 1
-                  ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose or tools. The rejected result is not available."
+                  ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose, tools or Markdown code fences. The rejected result is not available."
                   : ""),
               [],
               ref,

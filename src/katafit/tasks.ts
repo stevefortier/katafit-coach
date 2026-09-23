@@ -242,7 +242,12 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
   }
   let value: any;
   try {
-    value = JSON.parse(text);
+    const trimmed = text.trim();
+    // Accept only one complete JSON Markdown block, never a preamble, suffix,
+    // or embedded block. The raw response was screened and size-bounded above;
+    // the parsed value is screened again below before it can be published.
+    const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed);
+    value = JSON.parse(fenced ? fenced[1] : trimmed);
   } catch (error) {
     throw new TaskOutputError(
       "JSON",
