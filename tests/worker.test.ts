@@ -13,7 +13,8 @@ test("photo requests guide native media reads at the original request anchor", (
   const guidance = photoReviewGuidance("Please judge my last photos", asOf);
   assert.match(guidance, /coach_list_activities/);
   assert.match(guidance, /types.*media/);
-  assert.match(guidance, /omit.*start_date.*end_date/is);
+  assert.match(guidance, /omit statuses, start_date and end_date/is);
+  assert.doesNotMatch(guidance, /statuses:\[/);
   assert.match(guidance, /coach_read_activity.*media_files/s);
   assert.match(guidance, /coach_read_media.*media_ref/s);
   assert.match(guidance, /2026-09-23T21:05:00\.000Z/);
