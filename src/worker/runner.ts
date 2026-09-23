@@ -17,6 +17,7 @@ import { discoverReads } from "../katafit/readTools.js";
 import { assertNoSecrets } from "../config/store.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "../katafit/client.js";
+import { backendWireBudget } from "../katafit/wireBudget.js";
 import { serializeContext } from "../katafit/context.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 export async function bounded<T>(
@@ -150,7 +151,7 @@ export class Worker {
       signal.throwIfAborted();
       const n = deadline - Date.now();
       if (!Number.isFinite(n) || n <= 0) throw new Error("LEASE_EXPIRED");
-      return Math.min(10000, n);
+      return backendWireBudget(n);
     };
     try {
       await c.connect();
@@ -484,7 +485,7 @@ export class Worker {
       this.controller.signal.throwIfAborted();
       const left = deadline - Date.now();
       if (!Number.isFinite(left) || left <= 0) throw new Error("LEASE_EXPIRED");
-      return Math.min(10000, left);
+      return backendWireBudget(left);
     };
     let phase = "context";
     let taskModelSignal: AbortSignal | undefined;
