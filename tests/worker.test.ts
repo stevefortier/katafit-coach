@@ -72,6 +72,7 @@ export async function fixture(
     data?: boolean;
     failureMismatch?: "code" | "generation";
     leaseMs?: number;
+    discoveryDelayMs?: number;
   } = {},
 ) {
   let history: any[] = [];
@@ -97,7 +98,11 @@ export async function fixture(
     let value: any = {};
     const a = msg.params?.arguments;
     if (msg.method === "initialize") value = { protocolVersion: "2025-03-26" };
-    else if (msg.method === "tools/list")
+    else if (msg.method === "tools/list") {
+      if (options.discoveryDelayMs)
+        await new Promise((resolve) =>
+          setTimeout(resolve, options.discoveryDelayMs),
+        );
       value = {
         tools: options.data
           ? [
@@ -118,7 +123,7 @@ export async function fixture(
             ]
           : [],
       };
-    else {
+    } else {
       switch (msg.params.name) {
         case "coach_get_capabilities":
           value = {
@@ -335,6 +340,39 @@ test("main-chat model deadline is clamped below a short lease with publication r
     }).pollOnce();
     assert.ok(seen.some((ms) => ms > 17000 && ms < 18000));
     assert.equal(f.publications, 1);
+  } finally {
+    AbortSignal.timeout = original;
+    await f.close();
+  }
+});
+
+test("model deadline includes time spent discovering read tools", async () => {
+  const f = await fixture({ discoveryDelayMs: 80 });
+  const original = AbortSignal.timeout;
+  let timeoutStarted = 0;
+  let observedDeadline = 0;
+  let discoveryElapsed = 0;
+  AbortSignal.timeout = ((ms: number) => {
+    if (ms === 1000) timeoutStarted = Date.now();
+    return original(ms);
+  }) as typeof AbortSignal.timeout;
+  try {
+    f.enqueue("Delayed discovery");
+    await new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      modelMs: 1000,
+      complete: async (_context, _signal, _system, _tools, _ref, budget) => {
+        discoveryElapsed = Date.now() - timeoutStarted;
+        observedDeadline = budget?.deadlineAt ?? 0;
+        return "Bounded reply";
+      },
+    }).pollOnce();
+    assert.equal(f.publications, 1);
+    assert.ok(timeoutStarted);
+    assert.ok(discoveryElapsed >= 70);
+    assert.ok(observedDeadline <= timeoutStarted + 1010);
   } finally {
     AbortSignal.timeout = original;
     await f.close();

@@ -256,6 +256,7 @@ export class Worker {
         deadline - Date.now() - 10000,
       );
       if (ms <= 0) throw new Error("LEASE_EXPIRED");
+      const deadlineAt = Date.now() + ms;
       const timeout = AbortSignal.timeout(ms);
       modelSignal = AbortSignal.any([signal, timeout]);
       const inferenceSignal = modelSignal;
@@ -298,7 +299,7 @@ export class Worker {
             ]),
             reads.tools,
             ref,
-            { deadlineAt: Date.now() + ms, readBudget: reads.readBudget },
+            { deadlineAt, readBudget: reads.readBudget },
           ),
         modelSignal,
       );
