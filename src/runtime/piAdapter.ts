@@ -1,7 +1,9 @@
 import { SafeError, safeError, providerFailure } from "./errors.js";
+import { createHash } from "node:crypto";
 import {
   safeProviderPreview,
   screenedModelText,
+  screenedNativeArguments,
   type LogInput,
   type ModelText,
   type NativeCall,
@@ -168,6 +170,37 @@ export function providerDiagnostic(payload: unknown, secrets: string[] = []) {
 }
 
 const TURN_LIMIT = 40;
+
+const readCodes = new Set([
+  "ARGUMENTS_REJECTED",
+  "READ_NOT_FOUND",
+  "READ_NOT_AUTHORIZED",
+  "READ_LIMIT",
+  "READ_UNAVAILABLE",
+  "BACKEND_TIMEOUT",
+  "TOOL_BUDGET_EXHAUSTED",
+  "RESULT_REJECTED",
+  "READ_REPEAT_BLOCKED",
+]);
+function readCode(result: { content: any[] }): string | undefined {
+  const text = result.content.find((part) => part.type === "text")?.text;
+  return readCodes.has(text) ? text : undefined;
+}
+function readGuidance(code?: string): string {
+  if (code === "READ_NOT_FOUND")
+    return "No record found in the authorized scope. Check the requested date range; end_date must be at or before the original request.created_at (UTC), not the retry time. Do not infer missing records.";
+  if (code === "ARGUMENTS_REJECTED")
+    return "Read arguments were rejected locally. Check required fields against the tool schema. For date-range reads, end_date must not exceed the original request.created_at (UTC); never change authorization.";
+  if (code === "READ_NOT_AUTHORIZED")
+    return "Read access denied by backend. Do not change permissions or scope to work around this denial; state that the evidence is unavailable.";
+  if (code === "READ_LIMIT")
+    return "The backend read limit was reached. Do not repeat this read or change authorization; answer from verified evidence only.";
+  if (code === "BACKEND_TIMEOUT")
+    return "The authorized read timed out. Report the evidence as unverified; retry later only if appropriate.";
+  if (code === "READ_REPEAT_BLOCKED")
+    return "The same failed read was already attempted. Do not repeat it; answer from verified evidence and state uncertainty.";
+  return "Read unavailable within the authorized scope. Do not change authorization or infer inaccessible records; state what remains unverified.";
+}
 const CALL_LIMIT = 64;
 const TOTAL_INPUT_LIMIT = 48 * 1024 * 1024;
 const OUTPUT_TOKEN_LIMIT = 48000;
@@ -205,11 +238,65 @@ export async function complete(
     outputTokens = 0,
     inputBytes = 0;
   let synthesizing = false;
+  const failedReads = new Set<string>();
+  let repeatedFailures = 0;
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => [k, canonical(v)]),
+      );
+    return value;
+  };
+  const fingerprint = (name: string, args: unknown) =>
+    createHash("sha256")
+      .update(JSON.stringify([name, canonical(args)]))
+      .digest("hex");
+  const rememberFailure = (name: string, args: unknown) => {
+    failedReads.add(fingerprint(name, args));
+    if (failedReads.size >= CALL_LIMIT) exhausted = true;
+  };
   let recentHighLatencyMs = 0;
   const agent = new Agent({
     initialState: {
       systemPrompt: system,
-      tools,
+      tools: tools.map((tool) =>
+        tool.name.startsWith("coach_")
+          ? {
+              ...tool,
+              prepareArguments: (args: any) => {
+                try {
+                  if (failedReads.has(fingerprint(tool.name, args))) {
+                    synthesizing = true;
+                    if (++repeatedFailures >= 16) exhausted = true;
+                    throw new SafeError("READ_REPEAT_BLOCKED");
+                  }
+                  return tool.prepareArguments?.(args) ?? args;
+                } catch (error) {
+                  const code = safeError(error).code;
+                  try {
+                    provider.onDiagnostic?.({
+                      source: "provider",
+                      stage: "tool-execution",
+                      metadata: { turn: turns },
+                      receipt: {
+                        name: tool.name,
+                        outcome: "error",
+                        media: false,
+                        phase: "arguments",
+                        code,
+                      },
+                    });
+                  } catch {}
+                  rememberFailure(tool.name, args);
+                  throw error;
+                }
+              },
+            }
+          : tool,
+      ),
       model: {
         id: provider.model,
         name: provider.model,
@@ -224,6 +311,7 @@ export async function complete(
       },
     },
     streamFn: (model, context, options) => {
+      if (exhausted) throw new SafeError("MODEL_BUDGET_EXHAUSTED");
       // Once the remaining window can fit only a conservatively timed final
       // provider call, synthesis is one-way. Keep the cap below the ordinary
       // worker deadline so early turns still have room for useful reads.
@@ -420,7 +508,22 @@ export async function complete(
                     (t) => t.name === "studio_operator_send_message",
                   )
                     ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
-                    : "Read unavailable: access, arguments or budget rejected.",
+                    : m.content[0]?.type === "text" &&
+                        [
+                          "READ_NOT_FOUND",
+                          "READ_NOT_AUTHORIZED",
+                          "READ_LIMIT",
+                          "ARGUMENTS_REJECTED",
+                          "BACKEND_TIMEOUT",
+                          "READ_REPEAT_BLOCKED",
+                          "READ_UNAVAILABLE",
+                        ].some(
+                          (code) =>
+                            m.content[0].type === "text" &&
+                            m.content[0].text === readGuidance(code),
+                        )
+                      ? (m.content[0] as { type: "text"; text: string }).text
+                      : readGuidance(readCode({ content: m.content })),
                 },
               ],
               details: {},
@@ -428,6 +531,15 @@ export async function complete(
           : m,
       ),
     beforeToolCall: async ({ toolCall }) => {
+      if (
+        toolCall.name.startsWith("coach_") &&
+        failedReads.has(fingerprint(toolCall.name, toolCall.arguments))
+      ) {
+        if (++calls > CALL_LIMIT) exhausted = true;
+        if (++repeatedFailures >= 16) exhausted = true;
+        synthesizing = true;
+        return { block: true, reason: "READ_REPEAT_BLOCKED" };
+      }
       // A non-compliant provider can still return tool calls despite
       // tool_choice:none; never let those calls reach Operator mutations.
       if (synthesizing) {
@@ -456,6 +568,9 @@ export async function complete(
       return undefined;
     },
     afterToolCall: async ({ toolCall, result, isError }) => {
+      const code = isError ? readCode(result) : undefined;
+      if (isError && toolCall.name.startsWith("coach_"))
+        rememberFailure(toolCall.name, toolCall.arguments);
       try {
         provider.onDiagnostic?.({
           source: "provider",
@@ -466,6 +581,9 @@ export async function complete(
             outcome: isError ? "error" : "ok",
             media:
               !isError && result.content.some((part) => part.type === "image"),
+            ...(isError && toolCall.name.startsWith("coach_")
+              ? { phase: "backend" as const, code: code ?? "READ_UNAVAILABLE" }
+              : {}),
           },
         });
       } catch {}
@@ -478,7 +596,7 @@ export async function complete(
                   (t) => t.name === "studio_operator_send_message",
                 )
                   ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
-                  : "Read unavailable: access, arguments or budget rejected.",
+                  : readGuidance(code),
               },
             ],
             details: {},
@@ -507,6 +625,7 @@ export async function complete(
                       !Array.isArray(part.arguments)
                         ? Object.keys(part.arguments)
                         : [],
+                    arguments: screenedNativeArguments(part.arguments, secrets),
                   },
                 ]
               : [],

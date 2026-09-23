@@ -68,11 +68,14 @@ export interface ModelText {
 export interface NativeCall {
   name: string;
   argumentKeys: string[];
+  arguments?: string;
 }
 export interface ToolReceipt {
   name: string;
   outcome: "ok" | "error" | "blocked";
   media: boolean;
+  phase?: "arguments" | "backend" | "execution";
+  code?: string;
 }
 export interface ProviderShape {
   toolChoice: "auto" | "none" | "required" | "default-auto";
@@ -109,6 +112,7 @@ const toolNamePattern = /^(?:coach_|studio_operator_)[a-z_]{1,48}$/;
 export function screenedModelText(
   value: unknown,
   secrets: string[] = [],
+  maxBytes = 512,
 ): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   let text = value.replace(/\\u([0-9a-f]{4})/gi, (_, hex: string) =>
@@ -143,9 +147,9 @@ export function screenedModelText(
   const bytes = Buffer.from(text);
   return (
     bytes
-      .subarray(0, 512)
+      .subarray(0, maxBytes)
       .toString("utf8")
-      .replace(/\uFFFD$/, "") + (bytes.length > 512 ? "…" : "")
+      .replace(/\uFFFD$/, "") + (bytes.length > maxBytes ? "…" : "")
   );
 }
 function safeTexts(value: unknown): ModelText[] | undefined {
@@ -157,6 +161,42 @@ function safeTexts(value: unknown): ModelText[] | undefined {
     return text ? [{ role: item.role, text }] : [];
   });
   return texts.length ? texts : undefined;
+}
+export function screenedNativeArguments(
+  value: unknown,
+  secrets: string[] = [],
+): string | undefined {
+  try {
+    const raw = typeof value === "string" ? value : JSON.stringify(value);
+    if (!raw || Buffer.byteLength(raw) > 2048) return undefined;
+    const parsed = JSON.parse(raw);
+    const scrub = (item: any, depth = 0): any => {
+      if (depth > 8) return "[omitted]";
+      if (Array.isArray(item))
+        return item.slice(0, 32).map((v) => scrub(v, depth + 1));
+      if (item && typeof item === "object")
+        return Object.fromEntries(
+          Object.entries(item)
+            .slice(0, 32)
+            .map(([key, v]) =>
+              /key|token|secret|password|authorization|credential|image|photo|base64|data|url/i.test(
+                key,
+              )
+                ? ["[redacted field]", "[redacted]"]
+                : [
+                    screenedModelText(key, secrets, 2048) ?? "[redacted field]",
+                    scrub(v, depth + 1),
+                  ],
+            ),
+        );
+      return typeof item === "string"
+        ? screenedModelText(item, secrets, 2048)
+        : item;
+    };
+    return screenedModelText(JSON.stringify(scrub(parsed)), secrets, 2048);
+  } catch {
+    return undefined;
+  }
 }
 function safeCalls(value: unknown): NativeCall[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -177,6 +217,9 @@ function safeCalls(value: unknown): NativeCall[] | undefined {
                   ? "[redacted]"
                   : key,
               ),
+            ...(screenedNativeArguments(call.arguments)
+              ? { arguments: screenedNativeArguments(call.arguments) }
+              : {}),
           },
         ]
       : [],
@@ -193,6 +236,15 @@ function safeReceipt(value: unknown): ToolReceipt | undefined {
         name: r.name as string,
         outcome: r.outcome as ToolReceipt["outcome"],
         media: r.media,
+        ...(["arguments", "backend", "execution"].includes(r.phase as string)
+          ? { phase: r.phase as ToolReceipt["phase"] }
+          : {}),
+        ...(typeof r.code === "string" &&
+        /^(?:ARGUMENTS_REJECTED|READ_NOT_FOUND|READ_NOT_AUTHORIZED|READ_LIMIT|READ_UNAVAILABLE|BACKEND_TIMEOUT|TOOL_BUDGET_EXHAUSTED|RESULT_REJECTED|READ_REPEAT_BLOCKED)$/.test(
+          r.code,
+        )
+          ? { code: r.code }
+          : {}),
       }
     : undefined;
 }

@@ -111,7 +111,7 @@ for (const mode of ["structured-key", "escaped-json-key", "outbound-body"]) {
       assert.equal(reads, 1);
       assert.equal(
         payloads[1].messages.find((m) => m.role === "tool").content,
-        "Read unavailable: access, arguments or budget rejected.",
+        "Read unavailable within the authorized scope. Do not change authorization or infer inaccessible records; state what remains unverified.",
       );
     }
     // Independent of the production secret checker: inspect raw/escaped bytes

@@ -400,10 +400,16 @@ function renderLogs() {
         const line = document.createElement("p");
         line.textContent = `Native ${call.name} · argument keys: ${call.argumentKeys.join(", ") || "none"}`;
         details.append(line);
+        if (call.arguments) {
+          const args = document.createElement("pre");
+          args.className = "model-text";
+          args.textContent = `Screened native arguments: ${call.arguments}`;
+          details.append(args);
+        }
       }
       if (e.receipt) {
         const line = document.createElement("p");
-        line.textContent = `${e.receipt.name} · ${e.receipt.outcome} · media received: ${e.receipt.media ? "yes" : "no"}`;
+        line.textContent = `${e.receipt.name} · ${e.receipt.outcome} · ${e.receipt.phase ?? "execution"}${e.receipt.code ? ` · ${e.receipt.code}` : ""} · media received: ${e.receipt.media ? "yes" : "no"}`;
         details.append(line);
       }
       row.append(details);

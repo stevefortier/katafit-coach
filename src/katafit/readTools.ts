@@ -245,7 +245,43 @@ export async function discoverReads(
                 result.content.some((c: any) => !c || typeof c !== "object")))
           )
             throw new Error("RESULT_REJECTED");
-          if (result.isError) throw new Error("READ_UNAVAILABLE");
+          if (result.isError) {
+            // MCP error prose and data are untrusted. Accept only a fixed code
+            // from a small structured result; never forward its text or fields.
+            const text =
+              result.content?.length === 1 && result.content[0]?.type === "text"
+                ? result.content[0].text
+                : undefined;
+            let shape = result.structuredContent;
+            if (
+              shape === undefined &&
+              typeof text === "string" &&
+              Buffer.byteLength(text) <= 4096
+            ) {
+              try {
+                shape = JSON.parse(text);
+              } catch {
+                /* Untrusted prose is not a safe code. */
+              }
+            }
+            const code =
+              shape &&
+              typeof shape === "object" &&
+              !Array.isArray(shape) &&
+              Buffer.byteLength(JSON.stringify(shape)) <= 4096
+                ? shape.code
+                : undefined;
+            throw new Error(
+              [
+                "READ_NOT_FOUND",
+                "READ_NOT_AUTHORIZED",
+                "READ_LIMIT",
+                "BACKEND_TIMEOUT",
+              ].includes(code)
+                ? code
+                : "READ_UNAVAILABLE",
+            );
+          }
           assertNoSecrets(result, options.secrets);
           const content = result.content ? [...result.content] : [];
           if (result.structuredContent !== undefined) {
