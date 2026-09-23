@@ -6,6 +6,7 @@ import {
   taskContext,
   taskSchema,
   parseTaskResult,
+  TaskOutputError,
   verifyTaskReceipt,
   verifyTaskFailure,
   verifyTaskResolution,
@@ -509,28 +510,55 @@ export class Worker {
         AbortSignal.timeout(ms),
       ]);
       taskModelSignal = signal;
+      const deadlineAt = Date.now() + ms;
       phase = "provider";
-      const text = await bounded(
-        () =>
-          this.options.complete(
-            serialized,
-            signal,
-            effectivePrompt(
-              this.options.system,
-              context.instructions,
-              secrets,
-            ) +
-              "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON matching this local result schema: " +
-              JSON.stringify(taskSchema(task.kind)),
-            [],
+      const system =
+        effectivePrompt(this.options.system, context.instructions, secrets) +
+        "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON matching this local result schema: " +
+        JSON.stringify(taskSchema(task.kind));
+      let result: any;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const text = await bounded(
+          () =>
+            this.options.complete(
+              serialized,
+              signal,
+              system +
+                (attempt === 1
+                  ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose or tools. The rejected result is not available."
+                  : ""),
+              [],
+              ref,
+            ),
+          signal,
+        );
+        signal.throwIfAborted();
+        budget();
+        phase = "output";
+        try {
+          result = parseTaskResult(task.kind, text, secrets);
+          break;
+        } catch (error) {
+          if (!(error instanceof TaskOutputError)) throw error;
+          this.diagnostic({
+            source: "worker",
+            stage: "task-output-correction",
+            level: "warn",
             ref,
-          ),
-        signal,
-      );
-      signal.throwIfAborted();
-      budget();
-      phase = "output";
-      const result = parseTaskResult(task.kind, text, secrets);
+            error: new SafeError(`TASK_OUTPUT_${error.category}`),
+          });
+          // Reuse the original inference timer and fence, never renew a lease.
+          // Keep time for a backend failure receipt if correction cannot finish.
+          if (
+            attempt === 1 ||
+            !["JSON", "SCHEMA", "SEMANTIC"].includes(error.category) ||
+            signal.aborted ||
+            Math.min(deadline, deadlineAt) - Date.now() < 5000
+          )
+            throw error;
+          phase = "provider";
+        }
+      }
       budget();
       completing = true;
       // Retain only identity/digest, never generated/member content. Reconciliation

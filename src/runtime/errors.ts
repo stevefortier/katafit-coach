@@ -49,6 +49,12 @@ export const hints = {
     "Request authority expired. Refresh its canonical state in Kata.fit before retrying.",
   OUTPUT_REJECTED:
     "The generated output failed local safety or size validation.",
+  TASK_OUTPUT_JSON: "Typed task output was not valid JSON.",
+  TASK_OUTPUT_SCHEMA: "Typed task output did not match its strict schema.",
+  TASK_OUTPUT_SEMANTIC: "Typed task output failed a semantic constraint.",
+  TASK_OUTPUT_SECURITY:
+    "Typed task output failed credential safety validation.",
+  TASK_OUTPUT_SIZE: "Typed task output exceeded the size limit.",
   MEDIA_REJECTED: "Image input failed type, encoding or size validation.",
   VISION_UNSUPPORTED:
     "Original images require an explicitly enabled vision-capable provider.",

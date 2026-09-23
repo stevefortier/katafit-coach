@@ -34,6 +34,7 @@ export const stages = [
   "task-failure-reported",
   "task-failure-unverified",
   "task-failed",
+  "task-output-correction",
   "task-result-unknown",
   "failure-reported",
   "failure-report-unverified",
