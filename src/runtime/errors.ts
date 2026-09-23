@@ -13,6 +13,14 @@ export const hints = {
   RESULT_REJECTED: "A read result failed safety, size or structure validation.",
   READ_UNAVAILABLE:
     "The scoped read was unavailable. Check request authority, grants and supported capabilities.",
+  READ_NOT_FOUND:
+    "No record matched within the authorized read scope; check date bounds without expanding access.",
+  READ_NOT_AUTHORIZED:
+    "The backend denied this read. Do not retry by changing authorization or scope.",
+  READ_LIMIT:
+    "The backend read limit was reached. Do not bypass request scope or grants.",
+  READ_REPEAT_BLOCKED:
+    "An identical failed read was suppressed; use verified evidence or state uncertainty.",
   BACKEND_TIMEOUT:
     "The Kata.fit backend operation exceeded its time budget. Check backend connectivity and request authority.",
   MODEL_INPUT_TOO_LARGE:

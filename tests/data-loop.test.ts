@@ -178,7 +178,7 @@ for (const encoded of [false, true])
       const tool = p.bodies[1].messages.find((m: any) => m.role === "tool");
       assert.equal(
         tool.content,
-        "Read unavailable: access, arguments or budget rejected.",
+        "Read unavailable within the authorized scope. Do not change authorization or infer inaccessible records; state what remains unverified.",
       );
       assert.equal(
         JSON.stringify(p.bodies).includes(JSON.stringify(token).slice(1, -1)),
@@ -490,7 +490,7 @@ test("real Pi selects the exact second media handle and cannot repair an unknown
         (m: any) =>
           m.role === "tool" &&
           m.content ===
-            "Read unavailable: access, arguments or budget rejected.",
+            "Read arguments were rejected locally. Check required fields against the tool schema. For date-range reads, end_date must not exceed the original request.created_at (UTC); never change authorization.",
       ),
     );
     assert.ok(JSON.stringify(p.bodies[3]).includes(image));
