@@ -1,6 +1,8 @@
 # Internal Kata.fit wire protocol
 
 > The lifecycle below is preserved for v1. Optional v2 request-scoped reads, original images and limits are specified in [request-scoped data access](request-data-access.md).
+>
+> Separate negotiated `coach.tasks.v1` generation, its eight finite result contracts, fair scheduling and independent receipt reconciliation are documented in [typed generation tasks](typed-generation-tasks.md). Task completion is not main-chat publication; producer coverage remains explicitly limited.
 
 Reference implementations: official `katafit-hermes/katafit/worker.py`, `katafit-openclaw/src/worker.js`, and backend `core/personalExternalCoach.js` / `routes/personalExternalCoach.js`. Local real-backend acceptance used `/home/kai/regimen-clear-fence/regimen-backend` with the app PR 771 Clear fence; see [artifact provenance](verification.md). No application source files were changed.
 

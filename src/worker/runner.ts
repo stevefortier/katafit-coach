@@ -1,4 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  discoverTasks,
+  validateTask,
+  TASK_PROTOCOL,
+  taskContext,
+  taskSchema,
+  parseTaskResult,
+  verifyTaskReceipt,
+  verifyTaskFailure,
+} from "../katafit/tasks.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -45,6 +55,8 @@ export interface WorkerOptions {
 export class Worker {
   private controller = new AbortController();
   private active?: Promise<void>;
+  private preferTask = true;
+  private pendingTask?: { task: any; digest: string };
   private loop?: Promise<void>;
   state = "stopped";
   lastError: SafeError | null = null;
@@ -56,7 +68,19 @@ export class Worker {
   constructor(private options: WorkerOptions) {}
   private update(s: string) {
     if (this.state === s) return;
-    if (["connecting", "idle", "stopped"].includes(s))
+    if (
+      [
+        "connecting",
+        "idle",
+        "stopped",
+        "task-working",
+        "task-result-stored",
+        "task-publication-confirmed",
+        "task-failure-reported",
+        "task-failure-unverified",
+        "task-result-unknown",
+      ].includes(s)
+    )
       this.diagnostic({ source: "worker", stage: s as Stage });
     this.state = s;
     this.options.onState?.(s);
@@ -84,6 +108,7 @@ export class Worker {
       });
     let modelSignal: AbortSignal | undefined;
     let inferenceStarted = false;
+    let taskAttempt = false;
     let fence: any;
     let deadline = 0;
     let publishing = false;
@@ -96,20 +121,47 @@ export class Worker {
     };
     try {
       await c.connect();
+      const taskKinds = await discoverTasks(c);
+      let triedTasks = false;
+      const tryTasks = async () => {
+        if (triedTasks || !taskKinds.length) return false;
+        triedTasks = true;
+        // Flip before work so provider/task errors cannot starve main chat.
+        this.preferTask = false;
+        if (this.pendingTask) {
+          try {
+            await this.reconcileTask();
+            return true;
+          } catch {
+            return false;
+          }
+        }
+        taskAttempt = true;
+        const handled = await this.pollTask(c, taskKinds, ref);
+        if (!handled) taskAttempt = false;
+        return handled;
+      };
+      if (this.preferTask && (await tryTasks())) return;
+      // Alternate attempted work as well as successful work: a failing main
+      // listing must not pin priority forever and starve the task queue.
+      this.preferTask = true;
       const listed = await c.call("coach_list_requests", { limit: 10 });
       if (
         !listed.requests?.some((r: any) =>
           ["queued", "claimed", "working"].includes(r.status),
         )
       ) {
+        if (await tryTasks()) return;
         this.update("idle");
         return;
       }
+      this.preferTask = true;
       const instructions = await fetchInstructions(c);
       const { request } = await c.call("coach_claim_request", {
         lease_seconds: 120,
       });
       if (!request) {
+        if (await tryTasks()) return;
         this.update("idle");
         return;
       }
@@ -237,7 +289,11 @@ export class Worker {
       if (failure.code !== "CANCELLED") this.lastError = failure;
       this.diagnostic({
         source: "worker",
-        stage: failure.code === "CANCELLED" ? "cancelled" : "request-failed",
+        stage: taskAttempt
+          ? "task-failed"
+          : failure.code === "CANCELLED"
+            ? "cancelled"
+            : "request-failed",
         level: failure.code === "CANCELLED" ? "warn" : "error",
         ref,
         error: failure,
@@ -277,6 +333,149 @@ export class Worker {
       throw failure;
     } finally {
       disposeReads?.();
+    }
+  }
+  private async reconcileTask() {
+    const pending = this.pendingTask;
+    if (!pending) return;
+    const control = new Client(
+      this.options.origin,
+      this.options.token,
+      AbortSignal.timeout(3000),
+    );
+    const checked = await control.call(
+      "coach_read_task_receipt",
+      {
+        protocol: TASK_PROTOCOL,
+        task_id: pending.task.id,
+        lease_generation: pending.task.lease_generation,
+      },
+      3000,
+    );
+    const status = verifyTaskReceipt(pending.task, checked, pending.digest);
+    this.pendingTask = undefined;
+    this.update(
+      status === "consumed"
+        ? "task-publication-confirmed"
+        : "task-result-stored",
+    );
+  }
+  private async pollTask(c: Client, kinds: string[], ref: string) {
+    const { task } = await c.call("coach_claim_task", {
+      protocol: TASK_PROTOCOL,
+      kinds,
+      lease_seconds: 60,
+    });
+    if (!task) return false;
+    validateTask(task, kinds);
+    const fence = {
+      protocol: TASK_PROTOCOL,
+      task_id: task.id,
+      lease_generation: task.lease_generation,
+    };
+    const deadline =
+      Math.min(Date.parse(task.timeout_at), Date.parse(task.lease_expires_at)) -
+      2000;
+    const budget = () => {
+      this.controller.signal.throwIfAborted();
+      const left = deadline - Date.now();
+      if (!Number.isFinite(left) || left <= 0) throw new Error("LEASE_EXPIRED");
+      return Math.min(10000, left);
+    };
+    let phase = "context";
+    let taskModelSignal: AbortSignal | undefined;
+    let completing = false;
+    try {
+      const context = await c.call("coach_read_task_context", fence, budget());
+      const secrets = [this.options.token, ...(this.options.secrets ?? [])];
+      const serialized = taskContext(task, context, secrets);
+      this.update("task-working");
+      const ms = Math.min(
+        this.options.modelMs ?? 60000,
+        deadline - Date.now() - 10000,
+      );
+      if (ms <= 0) throw new Error("LEASE_EXPIRED");
+      const signal = AbortSignal.any([
+        this.controller.signal,
+        AbortSignal.timeout(ms),
+      ]);
+      taskModelSignal = signal;
+      phase = "provider";
+      const text = await bounded(
+        () =>
+          this.options.complete(
+            serialized,
+            signal,
+            effectivePrompt(
+              this.options.system,
+              context.instructions,
+              secrets,
+            ) +
+              "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON matching this local result schema: " +
+              JSON.stringify(taskSchema(task.kind)),
+            [],
+            ref,
+          ),
+        signal,
+      );
+      signal.throwIfAborted();
+      budget();
+      phase = "output";
+      const result = parseTaskResult(task.kind, text, secrets);
+      budget();
+      completing = true;
+      // Retain only identity/digest, never generated/member content. Reconciliation
+      // has its own live transport even if stop aborted the completion transport.
+      this.pendingTask = {
+        task,
+        digest: createHash("sha256")
+          .update(JSON.stringify(result))
+          .digest("hex"),
+      };
+      try {
+        const receipt = await c.call(
+          "coach_complete_task",
+          { ...fence, result },
+          budget(),
+        );
+        verifyTaskReceipt(task, receipt, this.pendingTask.digest);
+        this.pendingTask.digest = receipt.result_sha256;
+      } catch {
+        /* The read, never a repeated write, decides the outcome. */
+      }
+      await this.reconcileTask();
+      return true;
+    } catch (error) {
+      if (
+        !completing &&
+        !this.controller.signal.aborted &&
+        deadline > Date.now()
+      ) {
+        const code =
+          phase === "context"
+            ? "TASK_CONTEXT_UNAVAILABLE"
+            : phase === "output"
+              ? "TASK_INVALID_OUTPUT"
+              : "TASK_PROVIDER_FAILED";
+        try {
+          await c.call("coach_fail_task", { ...fence, code }, budget());
+          const checked = await c.call(
+            "coach_read_task_receipt",
+            fence,
+            budget(),
+          );
+          verifyTaskFailure(task, checked, code);
+          this.update("task-failure-reported");
+        } catch {
+          this.update("task-failure-unverified");
+        }
+      }
+      if (completing) this.update("task-result-unknown");
+      throw completing
+        ? new SafeError("DELIVERY_UNVERIFIED")
+        : taskModelSignal?.aborted && !this.controller.signal.aborted
+          ? new SafeError("PROVIDER_TIMEOUT")
+          : error;
     }
   }
   start() {
