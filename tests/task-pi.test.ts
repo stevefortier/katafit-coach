@@ -258,6 +258,57 @@ for (const [category, first] of [
     }
   });
 
+test("actual Pi publishes corrected fenced JSON after a semantic meal-reaction rejection", async () => {
+  const f = await taskFixture();
+  const first =
+    '{"activity_feedback":{"reaction":"check","reply_worthwhile":false},"general_advice":"Synthetic meal feedback."}';
+  const corrected = {
+    activity_feedback: { reaction: "check", reply_worthwhile: true },
+    general_advice: "Synthetic meal feedback.",
+  };
+  const p = await provider(() =>
+    p.bodies.length === 1
+      ? first
+      : `\`\`\`json\n${JSON.stringify(corrected)}\n\`\`\``,
+  );
+  const w = new Worker({
+    origin: f.origin,
+    token: "synthetic-worker-credential",
+    system: "Coach",
+    complete: (context, signal, system, tools) =>
+      complete(p.config, system, context, signal, tools),
+  });
+  try {
+    f.enqueue("activity_reaction");
+    await w.pollOnce();
+    assert.equal(p.bodies.length, 2);
+    assert.deepEqual(f.saved[0].result, corrected);
+    assert.ok(
+      JSON.stringify(p.bodies[0]).includes(
+        "reply_worthwhile must equal Boolean(general_advice)",
+      ),
+    );
+    assert.ok(
+      JSON.stringify(p.bodies[1]).includes(
+        "reply_worthwhile must equal Boolean(general_advice)",
+      ),
+    );
+    assert.ok(
+      JSON.stringify(p.bodies[1]).includes(
+        "no prose, tools or Markdown code fences",
+      ),
+    );
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      1,
+    );
+    assert.equal(f.calls.filter((c) => c.name === "coach_fail_task").length, 0);
+  } finally {
+    await w.stop();
+    await f.close();
+    await p.close();
+  }
+});
 test("actual Pi records both rejected candidates and precise reasons locally, never sends them to backend", async () => {
   const f = await taskFixture();
   const raw = "private-invalid-output-do-not-log";

@@ -26,6 +26,33 @@ test("decoded JSON credentials cannot hide behind escapes and become loggable sc
     );
   }
 });
+test("typed task accepts only an entire JSON code fence after raw and decoded credential screening", () => {
+  const value = {
+    activity_feedback: { reaction: "check", reply_worthwhile: true },
+    general_advice: "Synthetic meal note.",
+  };
+  const fenced = `\`\`\`json\n${JSON.stringify(value)}\n\`\`\``;
+  assert.deepEqual(parseTaskResult("activity_reaction", fenced, []), value);
+  for (const text of [
+    `Here is the result:\n${fenced}`,
+    `${fenced}\nExtra text`,
+    `~~~json\n${JSON.stringify(value)}\n~~~`,
+    `${fenced}\n${fenced}`,
+  ])
+    assert.throws(
+      () => parseTaskResult("activity_reaction", text, []),
+      (e: any) => e instanceof TaskOutputError && e.category === "JSON",
+    );
+  assert.throws(
+    () =>
+      parseTaskResult(
+        "activity_followup",
+        '```json\n{"text":"\\u006bcoach_synthetic_secret"}\n```',
+        [],
+      ),
+    (e: any) => e instanceof TaskOutputError && e.category === "SECURITY",
+  );
+});
 test("typed output explains the exact JSON, schema, and semantic rejection", () => {
   for (const [kind, text, category, reason] of [
     ["activity_followup", "not JSON", "JSON", /JSON|Unexpected|token/i],
@@ -904,7 +931,7 @@ test("strict local schemas deny coerced numbers, unknown fields, enums, secrets 
     );
   for (const raw of [
     "null",
-    '```json\n{"text":"ok"}\n```',
+    '```json\n{"text":"ok"}\n``` extra text',
     '{"text":"ok","unknown":true}',
   ])
     assert.throws(() => parseTaskResult("activity_followup", raw, []));
