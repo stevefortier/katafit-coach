@@ -1,4 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  discoverTasks,
+  validateTask,
+  TASK_PROTOCOL,
+  taskContext,
+  taskSchema,
+  parseTaskResult,
+  verifyTaskReceipt,
+  verifyTaskFailure,
+  verifyTaskResolution,
+} from "../katafit/tasks.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -41,10 +52,35 @@ export interface WorkerOptions {
   onDiagnostic?: (event: LogInput) => void;
   pollMs?: number;
   modelMs?: number;
+  isolationMs?: number;
 }
+type PendingTask = { task: any; digest: string };
+type Incident = PendingTask & { reason: string; nextCheck: number };
+const DENIAL_CODES = new Set([
+  "TASK_SOURCE_CHANGED",
+  "TASK_ROUTING_CHANGED",
+  "CONVERSATION_CLEARED",
+  "SCOPE_CHANGED",
+  "REQUESTER_SCOPE_CHANGED",
+  "EXTERNAL_COACH_AUTO_ACCEPTANCE_CONFLICT",
+  "CREDENTIAL_REJECTED",
+]);
+const MAX_INCIDENTS = 32;
 export class Worker {
   private controller = new AbortController();
   private active?: Promise<void>;
+  private preferTask = true;
+  private pendingTask?: PendingTask;
+  private isolated: Incident[] = [];
+  get incidents() {
+    return this.isolated.map(({ task, digest, reason, nextCheck }) => ({
+      taskId: task.id,
+      leaseGeneration: task.lease_generation,
+      digest,
+      reason,
+      nextCheck,
+    }));
+  }
   private loop?: Promise<void>;
   state = "stopped";
   lastError: SafeError | null = null;
@@ -56,7 +92,19 @@ export class Worker {
   constructor(private options: WorkerOptions) {}
   private update(s: string) {
     if (this.state === s) return;
-    if (["connecting", "idle", "stopped"].includes(s))
+    if (
+      [
+        "connecting",
+        "idle",
+        "stopped",
+        "task-working",
+        "task-result-stored",
+        "task-publication-confirmed",
+        "task-failure-reported",
+        "task-failure-unverified",
+        "task-result-unknown",
+      ].includes(s)
+    )
       this.diagnostic({ source: "worker", stage: s as Stage });
     this.state = s;
     this.options.onState?.(s);
@@ -84,6 +132,7 @@ export class Worker {
       });
     let modelSignal: AbortSignal | undefined;
     let inferenceStarted = false;
+    let taskAttempt = false;
     let fence: any;
     let deadline = 0;
     let publishing = false;
@@ -96,20 +145,60 @@ export class Worker {
     };
     try {
       await c.connect();
+      const taskKinds = await discoverTasks(c);
+      const due = this.isolated.find(
+        (incident) => incident.nextCheck <= Date.now(),
+      );
+      if (due) {
+        due.nextCheck = Date.now() + (this.options.isolationMs ?? 60000);
+        try {
+          await this.reconcileTask(due);
+        } catch {
+          /* No read is a proof. */
+        }
+      }
+      let triedTasks = false;
+      const tryTasks = async () => {
+        if (triedTasks || !taskKinds.length) return false;
+        triedTasks = true;
+        // Flip before work so provider/task errors cannot starve main chat.
+        this.preferTask = false;
+        if (this.pendingTask) {
+          try {
+            await this.reconcileTask();
+          } catch {
+            // A failed read is not evidence of completion or noncompletion.
+            this.update("task-result-unknown");
+          }
+          return true;
+        }
+        if (this.isolated.length >= MAX_INCIDENTS) return false;
+        taskAttempt = true;
+        const handled = await this.pollTask(c, taskKinds, ref);
+        if (!handled) taskAttempt = false;
+        return handled;
+      };
+      if (this.preferTask && (await tryTasks())) return;
+      // Alternate attempted work as well as successful work: a failing main
+      // listing must not pin priority forever and starve the task queue.
+      this.preferTask = true;
       const listed = await c.call("coach_list_requests", { limit: 10 });
       if (
         !listed.requests?.some((r: any) =>
           ["queued", "claimed", "working"].includes(r.status),
         )
       ) {
+        if (await tryTasks()) return;
         this.update("idle");
         return;
       }
+      this.preferTask = true;
       const instructions = await fetchInstructions(c);
       const { request } = await c.call("coach_claim_request", {
         lease_seconds: 120,
       });
       if (!request) {
+        if (await tryTasks()) return;
         this.update("idle");
         return;
       }
@@ -237,7 +326,11 @@ export class Worker {
       if (failure.code !== "CANCELLED") this.lastError = failure;
       this.diagnostic({
         source: "worker",
-        stage: failure.code === "CANCELLED" ? "cancelled" : "request-failed",
+        stage: taskAttempt
+          ? "task-failed"
+          : failure.code === "CANCELLED"
+            ? "cancelled"
+            : "request-failed",
         level: failure.code === "CANCELLED" ? "warn" : "error",
         ref,
         error: failure,
@@ -277,6 +370,207 @@ export class Worker {
       throw failure;
     } finally {
       disposeReads?.();
+    }
+  }
+  private async reconcileTask(
+    pending: PendingTask | Incident | undefined = this.pendingTask,
+  ) {
+    if (!pending) return;
+    const control = new Client(
+      this.options.origin,
+      this.options.token,
+      AbortSignal.timeout(3000),
+    );
+    let checked: any;
+    try {
+      const result = await control.rpc(
+        "tools/call",
+        {
+          name: "coach_reconcile_task",
+          arguments: {
+            protocol: TASK_PROTOCOL,
+            task_id: pending.task.id,
+            lease_generation: pending.task.lease_generation,
+          },
+        },
+        false,
+        3000,
+      );
+      if (result.isError) {
+        let code: unknown;
+        try {
+          code = JSON.parse(
+            result.content?.find((v: any) => v.type === "text")?.text,
+          ).code;
+        } catch {}
+        if (typeof code === "string" && DENIAL_CODES.has(code))
+          throw new Error(code);
+        throw new Error("MCP_TOOL_FAILED");
+      }
+      checked =
+        result.structuredContent ??
+        JSON.parse(result.content?.find((v: any) => v.type === "text")?.text);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "";
+      if (
+        DENIAL_CODES.has(reason) &&
+        pending === this.pendingTask &&
+        this.isolated.length < MAX_INCIDENTS
+      ) {
+        this.isolated.push({
+          ...pending,
+          reason,
+          nextCheck: Date.now() + (this.options.isolationMs ?? 60000),
+        });
+        this.pendingTask = undefined;
+        this.diagnostic({
+          source: "worker",
+          stage: "task-result-unknown",
+          level: "warn",
+          metadata: { leaseGeneration: pending.task.lease_generation },
+        });
+      }
+      throw error;
+    }
+    const status = verifyTaskResolution(pending.task, checked, pending.digest);
+    if (status === "claimed") {
+      this.update("task-result-unknown");
+      return;
+    }
+    if (pending === this.pendingTask) this.pendingTask = undefined;
+    else
+      this.isolated = this.isolated.filter((incident) => incident !== pending);
+    if (status === "completed" || status === "consumed") {
+      this.update(
+        status === "consumed"
+          ? "task-publication-confirmed"
+          : "task-result-stored",
+      );
+    } else {
+      this.diagnostic({
+        source: "worker",
+        stage: "task-result-unknown",
+        level: "warn",
+      });
+      this.update("task-result-unverified");
+    }
+  }
+  private async pollTask(c: Client, kinds: string[], ref: string) {
+    const { task } = await c.call("coach_claim_task", {
+      protocol: TASK_PROTOCOL,
+      kinds,
+      lease_seconds: 60,
+    });
+    if (!task) return false;
+    validateTask(task, kinds);
+    const fence = {
+      protocol: TASK_PROTOCOL,
+      task_id: task.id,
+      lease_generation: task.lease_generation,
+    };
+    const deadline =
+      Math.min(Date.parse(task.timeout_at), Date.parse(task.lease_expires_at)) -
+      2000;
+    const budget = () => {
+      this.controller.signal.throwIfAborted();
+      const left = deadline - Date.now();
+      if (!Number.isFinite(left) || left <= 0) throw new Error("LEASE_EXPIRED");
+      return Math.min(10000, left);
+    };
+    let phase = "context";
+    let taskModelSignal: AbortSignal | undefined;
+    let completing = false;
+    try {
+      const context = await c.call("coach_read_task_context", fence, budget());
+      const secrets = [this.options.token, ...(this.options.secrets ?? [])];
+      const serialized = taskContext(task, context, secrets);
+      this.update("task-working");
+      const ms = Math.min(
+        this.options.modelMs ?? 60000,
+        deadline - Date.now() - 10000,
+      );
+      if (ms <= 0) throw new Error("LEASE_EXPIRED");
+      const signal = AbortSignal.any([
+        this.controller.signal,
+        AbortSignal.timeout(ms),
+      ]);
+      taskModelSignal = signal;
+      phase = "provider";
+      const text = await bounded(
+        () =>
+          this.options.complete(
+            serialized,
+            signal,
+            effectivePrompt(
+              this.options.system,
+              context.instructions,
+              secrets,
+            ) +
+              "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON matching this local result schema: " +
+              JSON.stringify(taskSchema(task.kind)),
+            [],
+            ref,
+          ),
+        signal,
+      );
+      signal.throwIfAborted();
+      budget();
+      phase = "output";
+      const result = parseTaskResult(task.kind, text, secrets);
+      budget();
+      completing = true;
+      // Retain only identity/digest, never generated/member content. Reconciliation
+      // has its own live transport even if stop aborted the completion transport.
+      this.pendingTask = {
+        task,
+        digest: createHash("sha256")
+          .update(JSON.stringify(result))
+          .digest("hex"),
+      };
+      try {
+        const receipt = await c.call(
+          "coach_complete_task",
+          { ...fence, result },
+          budget(),
+        );
+        verifyTaskReceipt(task, receipt, this.pendingTask.digest);
+        this.pendingTask.digest = receipt.result_sha256;
+      } catch {
+        /* The read, never a repeated write, decides the outcome. */
+      }
+      await this.reconcileTask();
+      return true;
+    } catch (error) {
+      if (
+        !completing &&
+        !this.controller.signal.aborted &&
+        deadline > Date.now()
+      ) {
+        const code =
+          phase === "context"
+            ? "TASK_CONTEXT_UNAVAILABLE"
+            : phase === "output"
+              ? "TASK_INVALID_OUTPUT"
+              : "TASK_PROVIDER_FAILED";
+        try {
+          await c.call("coach_fail_task", { ...fence, code }, budget());
+          const checked = await c.call(
+            "coach_read_task_receipt",
+            fence,
+            budget(),
+          );
+          verifyTaskFailure(task, checked, code);
+          this.update("task-failure-reported");
+        } catch {
+          this.update("task-failure-unverified");
+        }
+      }
+      if (completing) this.update("task-result-unknown");
+      throw completing
+        ? new SafeError("DELIVERY_UNVERIFIED")
+        : taskModelSignal?.aborted && !this.controller.signal.aborted
+          ? new SafeError("PROVIDER_TIMEOUT")
+          : error;
     }
   }
   start() {

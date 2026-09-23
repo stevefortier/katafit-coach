@@ -180,7 +180,28 @@ export async function complete(
             transportFailure = providerFailure(response.status, code);
             throw transportFailure;
           }
-          return response;
+          // Bound streamed provider bytes before the SDK accumulates SSE/JSON.
+          // Token limits are requests to the provider, not a transport boundary.
+          let responseBytes = 0;
+          return new Response(
+            response.body?.pipeThrough(
+              new TransformStream<Uint8Array, Uint8Array>({
+                transform(chunk, controller) {
+                  responseBytes += chunk.byteLength;
+                  if (responseBytes > 2 * 1024 * 1024) {
+                    transportFailure = new SafeError("OUTPUT_REJECTED");
+                    throw transportFailure;
+                  }
+                  controller.enqueue(chunk);
+                },
+              }),
+            ),
+            {
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers,
+            },
+          );
         },
         maxRetries: 0,
         env: {},
