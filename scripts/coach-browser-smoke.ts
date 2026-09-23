@@ -29,7 +29,9 @@ const backend = createServer(async (req, res) => {
       result:
         rpc.method === "initialize"
           ? { protocolVersion: "2025-03-26" }
-          : { structuredContent: { requests: [] } },
+          : rpc.method === "tools/list"
+            ? { tools: [] } // Pre-presence backend: polling remains available.
+            : { structuredContent: { requests: [] } },
     }),
   );
 });

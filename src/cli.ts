@@ -142,8 +142,14 @@ async function main() {
     return;
   }
   if (command === "run" || command === "pause") {
-    await call(command === "run" ? "run" : "stop", true);
-    console.log(command === "run" ? "Worker started." : "Worker paused.");
+    const result = await call(command === "run" ? "run" : "stop", true);
+    console.log(
+      command === "run"
+        ? result.presence === "reported"
+          ? "Worker started; presence reported."
+          : "Worker started; explicit presence unsupported by backend."
+        : "Worker paused.",
+    );
     return;
   }
   if (command === "stop") {

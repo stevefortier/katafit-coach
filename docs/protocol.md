@@ -8,6 +8,12 @@ Reference implementations: official `katafit-hermes/katafit/worker.py`, `katafit
 
 The connector internally uses stateless Streamable HTTP JSON-RPC at `/api/agents/coach/mcp`, Bearer credential, `MCP-Protocol-Version: 2025-03-26`, and Accept JSON or SSE. Redirects are rejected, HTTP calls bounded to 10 seconds, response bytes to 1 MiB. JSON-RPC version/ID and tool errors are checked; both structuredContent and JSON text content are accepted.
 
+## Optional explicit worker presence
+
+Before Run Coach returns success, the worker discovers `coach_report_worker_presence` through `tools/list` and, when advertised, awaits `coach_report_worker_presence {instance_id, state:"running"}` using its existing bearer MCP connection. The instance ID is a new random UUID for each worker start. While running it reports again every 10 seconds, independent of polling or model inference. Stop and service shutdown abort inference/polling and best-effort report `{instance_id, state:"stopped"}` with a bounded request before completing. If a running report fails on an advertised tool, Run fails without starting the poll loop; a later retry creates a new worker/instance. A failed heartbeat or stop report is marked unconfirmed, not a claim that the backend saw it.
+
+On an older backend without the tool, polling remains available, but Run and Studio status explicitly mark presence `unsupported`; no presence report is fabricated. This is a connectivity signal, **not** a lease renewal, delivery confirmation, or a claim that the worker will survive an abrupt process crash. The backend must expire stale running heartbeats and fence old instance IDs against newer starts.
+
 One polling cycle:
 
 1. `initialize` for 2025-03-26; `notifications/initialized`.
