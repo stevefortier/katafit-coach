@@ -71,6 +71,7 @@ export async function fixture(
     rejectFence?: boolean;
     data?: boolean;
     failureMismatch?: "code" | "generation";
+    leaseMs?: number;
   } = {},
 ) {
   let history: any[] = [];
@@ -151,7 +152,9 @@ export async function fixture(
               ...current,
               status: "claimed",
               lease_generation: current.lease_generation + 1,
-              lease_expires_at: new Date(Date.now() + 120000).toISOString(),
+              lease_expires_at: new Date(
+                Date.now() + (options.leaseMs ?? 120000),
+              ).toISOString(),
             };
             value = { request: current };
           } else value = { request: null };
@@ -273,6 +276,61 @@ test("real wire claim/context/persist/followup and restart deduplicate with cano
     assert.equal(JSON.parse(seen[1]).request.text, "More detail please");
     assert.equal(f.history.length, 4);
   } finally {
+    await f.close();
+  }
+});
+
+test("main-chat default inference timeout is 90s and explicit shorter modelMs still wins", async () => {
+  const f = await fixture();
+  const original = AbortSignal.timeout;
+  const seen: number[] = [];
+  AbortSignal.timeout = ((ms: number) => {
+    seen.push(ms);
+    return original(ms);
+  }) as typeof AbortSignal.timeout;
+  try {
+    const make = (modelMs?: number) =>
+      new Worker({
+        origin: f.origin,
+        token: "synthetic-token",
+        system: "Coach",
+        modelMs,
+        complete: async () => "Bounded reply",
+      });
+    f.enqueue("Default budget");
+    await make().pollOnce();
+    assert.ok(seen.some((ms) => ms > 89000 && ms <= 90000));
+    seen.length = 0;
+    f.enqueue("Short override");
+    await make(1000).pollOnce();
+    assert.ok(seen.includes(1000));
+    assert.equal(f.publications, 2);
+  } finally {
+    AbortSignal.timeout = original;
+    await f.close();
+  }
+});
+
+test("main-chat model deadline is clamped below a short lease with publication reserve", async () => {
+  const f = await fixture({ leaseMs: 30000 });
+  const original = AbortSignal.timeout;
+  const seen: number[] = [];
+  AbortSignal.timeout = ((ms: number) => {
+    seen.push(ms);
+    return original(ms);
+  }) as typeof AbortSignal.timeout;
+  try {
+    f.enqueue("Short lease");
+    await new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      complete: async () => "Bounded reply",
+    }).pollOnce();
+    assert.ok(seen.some((ms) => ms > 17000 && ms < 18000));
+    assert.equal(f.publications, 1);
+  } finally {
+    AbortSignal.timeout = original;
     await f.close();
   }
 });
@@ -662,7 +720,7 @@ test("real Pi provider rejection is correlated through worker backend failure an
     assert.equal(payload.ref, failure.ref);
     assert.ok(payload.metadata.bytes > 60000);
     assert.equal(payload.metadata.limit, 1048576);
-    assert.equal(payload.metadata.totalLimit, 6291456);
+    assert.equal(payload.metadata.totalLimit, 25165824);
     assert.equal(failure.metadata.status, 429);
     assert.ok(!JSON.stringify(data).includes("PRIVATE"));
   } finally {

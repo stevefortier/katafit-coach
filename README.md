@@ -67,7 +67,7 @@ Local runtime does **not** mean local inference. Server-authorized context and o
 
 ## Private diagnostics and request budgets
 
-Studio's **04 Diagnostics** shows sanitized request stages, byte/turn budgets and fixed actionable error hints. Logs are authenticated, bounded, private and retained across restart in the data directory. Live polling pauses when the log view closes or the tab is hidden; Refresh, level filtering and sanitized JSON copy/download are available. The serialized provider input limit is now **1 MiB per turn / 6 MiB per request**, distinct from provider context windows. Image validation, access grants, turn/tool/output/time budgets and fenced publication remain intact. See [budgets, error codes, retention/privacy and secure headless/Docker access](docs/diagnostics.md).
+Studio's **04 Diagnostics** shows sanitized request stages, byte/turn budgets and fixed actionable error hints. Logs are authenticated, bounded, private and retained across restart in the data directory. Live polling pauses when the log view closes or the tab is hidden; Refresh, level filtering and sanitized JSON copy/download are available. The serialized provider input limit is now **1 MiB per turn / 24 MiB per request**, distinct from provider context windows. Image validation, access grants, turn/tool/output/time budgets and fenced publication remain intact. See [budgets, error codes, retention/privacy and secure headless/Docker access](docs/diagnostics.md).
 
 ## Development and proof
 

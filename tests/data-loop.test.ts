@@ -230,7 +230,7 @@ test("real Pi model -> MCP media -> next provider payload preserves original PNG
     await f.close();
   }
 });
-test("real Pi stops repeated model tool calls at six turns without returning a partial answer", async () => {
+test("real Pi stops repeated model tool calls at 24 turns without returning a partial answer", async () => {
   const f = await readFixture();
   const p = await providerFixture(() => toolCall("coach_list_activities"));
   try {
@@ -244,7 +244,7 @@ test("real Pi stops repeated model tool calls at six turns without returning a p
       complete(p.config, "Coach", "Loop", signal, reads.tools),
       /BUDGET_EXHAUSTED/,
     );
-    assert.equal(p.bodies.length, 6);
+    assert.equal(p.bodies.length, 24);
   } finally {
     await p.close();
     await f.close();
@@ -323,10 +323,10 @@ for (const args of [
       await f.close();
     }
   });
-test("real Pi blocks a burst beyond twelve read executions", async () => {
+test("real Pi blocks a burst beyond 48 calls while scoped reads retain their 12-execution cap", async () => {
   const f = await readFixture();
   const p = await providerFixture(() => ({
-    tool_calls: Array.from({ length: 13 }, (_, i) => ({
+    tool_calls: Array.from({ length: 49 }, (_, i) => ({
       index: i,
       id: "call" + i,
       type: "function",
