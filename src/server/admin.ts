@@ -192,6 +192,7 @@ export async function admin(
       if (req.method === "GET" && path === "/api/status")
         return send(200, {
           state: worker?.state ?? "stopped",
+          presence: worker?.presence ?? "unconfirmed",
           preview: !!preview,
           operatorChat: chat.active,
           lastError: logs.lastError,
@@ -420,9 +421,14 @@ export async function admin(
                   tools,
                 ),
             });
-            worker.start();
+            try {
+              await worker.start();
+            } catch (error) {
+              await worker.stop();
+              throw error;
+            }
           }
-          return send(200, { ok: true });
+          return send(200, { ok: true, presence: worker.presence });
         }
         if (path === "/api/stop") {
           await worker?.stop();

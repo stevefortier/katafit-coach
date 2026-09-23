@@ -51,6 +51,7 @@ export interface WorkerOptions {
   onState?: (state: string) => void;
   onDiagnostic?: (event: LogInput) => void;
   pollMs?: number;
+  presenceMs?: number;
   modelMs?: number;
   isolationMs?: number;
 }
@@ -82,6 +83,13 @@ export class Worker {
     }));
   }
   private loop?: Promise<void>;
+  private startup?: Promise<"reported" | "unsupported">;
+  private stopping?: Promise<void>;
+  private presenceTimer?: ReturnType<typeof setInterval>;
+  private presenceCall?: Promise<void>;
+  private readonly instanceId = randomUUID();
+  private presenceAttempted = false;
+  presence: "unconfirmed" | "reported" | "unsupported" = "unconfirmed";
   state = "stopped";
   lastError: SafeError | null = null;
   private diagnostic(event: LogInput) {
@@ -573,10 +581,67 @@ export class Worker {
           : error;
     }
   }
-  start() {
-    if (this.loop) return;
-    this.update("connecting");
-    this.loop = this.run();
+  start(): Promise<"reported" | "unsupported"> {
+    if (this.controller.signal.aborted)
+      return Promise.reject(new Error("CANCELLED"));
+    if (this.startup) return this.startup;
+    this.startup = (async () => {
+      const signal = this.controller.signal;
+      const c = new Client(this.options.origin, this.options.token, signal);
+      try {
+        await c.connect();
+        const catalog = await c.rpc("tools/list", {});
+        if (!Array.isArray(catalog?.tools))
+          throw new Error("MCP_PROTOCOL_ERROR");
+        if (
+          !catalog.tools.some(
+            (tool: any) => tool?.name === "coach_report_worker_presence",
+          )
+        ) {
+          this.presence = "unsupported";
+        } else {
+          this.presenceAttempted = true;
+          await this.report("running", signal);
+          this.presence = "reported";
+        }
+        signal.throwIfAborted();
+        this.update("connecting");
+        this.loop = this.run();
+        if (this.presence === "reported") {
+          this.presenceTimer = setInterval(() => {
+            if (this.controller.signal.aborted || this.presenceCall) return;
+            this.presenceCall = this.report("running", signal)
+              .then(() => {
+                this.presence = "reported";
+              })
+              .catch(() => {
+                this.presence = "unconfirmed";
+              })
+              .finally(() => {
+                this.presenceCall = undefined;
+              });
+          }, this.options.presenceMs ?? 10000);
+        }
+        return this.presence;
+      } catch (error) {
+        this.controller.abort();
+        this.update("stopped");
+        throw error;
+      }
+    })();
+    return this.startup;
+  }
+  private async report(state: "running" | "stopped", signal: AbortSignal) {
+    const c = new Client(this.options.origin, this.options.token, signal);
+    await c.connect();
+    await c.call(
+      "coach_report_worker_presence",
+      {
+        instance_id: this.instanceId,
+        state,
+      },
+      2000,
+    );
   }
   private async run() {
     let delay = this.options.pollMs ?? 5000;
@@ -600,8 +665,25 @@ export class Worker {
     this.update("stopped");
   }
   async stop() {
-    this.controller.abort();
-    await Promise.allSettled([this.active, this.loop]);
-    this.update("stopped");
+    if (this.stopping) return this.stopping;
+    this.stopping = (async () => {
+      this.controller.abort();
+      if (this.presenceTimer) clearInterval(this.presenceTimer);
+      await Promise.allSettled([
+        this.startup,
+        this.presenceCall,
+        this.active,
+        this.loop,
+      ]);
+      if (this.presenceAttempted) {
+        try {
+          await this.report("stopped", AbortSignal.timeout(2500));
+        } catch {
+          this.presence = "unconfirmed";
+        }
+      }
+      this.update("stopped");
+    })();
+    return this.stopping;
   }
 }
