@@ -232,7 +232,17 @@ export async function complete(
         ...context,
         messages: [
           ...context.messages,
-          { role: "system" as const, content: guidance, timestamp: Date.now() },
+          // Pi replays tool declarations from system messages independently of
+          // toolChoice. Remove them only for this one-way provider turn; the
+          // agent's executed call/result history remains intact.
+          {
+            role: "system" as const,
+            content: guidance,
+            ...(synthesizing && {
+              toolsRemoved: tools.map((tool) => ({ name: tool.name })),
+            }),
+            timestamp: Date.now(),
+          },
         ],
       };
       assertNoSecrets(current, secrets);
@@ -244,15 +254,29 @@ export async function complete(
         // tool schemas). Never rely only on the pre-serialization context.
         onPayload: (payload) => {
           try {
-            assertNoSecrets(payload, secrets);
-            assertNoSecrets(JSON.stringify(payload), secrets);
-            const bytes = providerTextBytes(payload);
+            // Pi emits tools:[] for historical native calls even after the
+            // transcript removes every declaration. The final wire payload must
+            // omit the field entirely; retain the historical messages untouched.
+            let outbound = payload;
+            if (
+              synthesizing &&
+              payload &&
+              typeof payload === "object" &&
+              !Array.isArray(payload)
+            ) {
+              const { tools: _declarations, ...withoutTools } =
+                payload as Record<string, unknown>;
+              outbound = withoutTools;
+            }
+            assertNoSecrets(outbound, secrets);
+            assertNoSecrets(JSON.stringify(outbound), secrets);
+            const bytes = providerTextBytes(outbound);
             inputBytes += bytes;
             try {
               provider.onDiagnostic?.({
                 source: "provider",
                 stage: "provider-payload",
-                ...providerDiagnostic(payload, secrets),
+                ...providerDiagnostic(outbound, secrets),
                 metadata: {
                   bytes,
                   limit: 1024 * 1024,
@@ -276,6 +300,7 @@ export async function complete(
               );
               throw inputFailure;
             }
+            return outbound;
           } catch (error) {
             inputFailure = safeError(error);
             throw inputFailure;
