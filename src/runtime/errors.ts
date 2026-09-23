@@ -35,6 +35,8 @@ export const hints = {
     "Provider credits or quota are exhausted. Check billing and available credits before retrying.",
   PROVIDER_CONTEXT_LIMIT:
     "The provider rejected its model context window. Reduce context or choose a larger-context model; the local byte limit is separate.",
+  PROVIDER_PAYLOAD_TOO_LARGE:
+    "The provider rejected the multimodal request size. Reduce image size or image count before retrying; changing the model context window alone will not fix HTTP 413.",
   PROVIDER_REQUEST_REJECTED:
     "The provider rejected the request. Check model, endpoint and supported input capabilities.",
   PROVIDER_UNAVAILABLE:
@@ -103,6 +105,8 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
   for (const key of [
     "status",
     "bytes",
+    "wireBytes",
+    "wireLimit",
     "limit",
     "totalBytes",
     "totalLimit",
@@ -164,12 +168,15 @@ export function providerFailure(status: number, code?: unknown) {
           ? "PROVIDER_RATE_LIMITED"
           : status === 408 || status === 504
             ? "PROVIDER_TIMEOUT"
-            : status >= 500
-              ? "PROVIDER_UNAVAILABLE"
-              : ["context_length_exceeded", "context_window_exceeded"].includes(
-                    typeof code === "string" ? code : "",
-                  )
-                ? "PROVIDER_CONTEXT_LIMIT"
-                : "PROVIDER_REQUEST_REJECTED";
+            : status === 413
+              ? "PROVIDER_PAYLOAD_TOO_LARGE"
+              : status >= 500
+                ? "PROVIDER_UNAVAILABLE"
+                : [
+                      "context_length_exceeded",
+                      "context_window_exceeded",
+                    ].includes(typeof code === "string" ? code : "")
+                  ? "PROVIDER_CONTEXT_LIMIT"
+                  : "PROVIDER_REQUEST_REJECTED";
   return new SafeError(kind, { status });
 }

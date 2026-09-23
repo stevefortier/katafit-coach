@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Ajv } from "ajv";
 import { Client } from "./client.js";
 import { MediaHandles } from "./mediaHandles.js";
+import { prepareModelImage } from "./providerImage.js";
 import { assertNoSecrets } from "../config/store.js";
 
 export const READ_NAMES = new Set([
@@ -291,53 +292,67 @@ export async function discoverReads(
           }
           if (!Array.isArray(content) || !content.length || content.length > 32)
             throw new Error("RESULT_REJECTED");
-          const safe = content.map((c: any) => {
-            if (c.type === "text" && typeof c.text === "string") {
-              let decoded;
-              try {
-                decoded = JSON.parse(c.text);
-              } catch {
-                /* MCP permits plain text. */
-              }
-              assertNoSecrets(decoded, options.secrets);
-              return {
-                type: "text" as const,
-                text: c.text,
-              };
-            }
-            if (
-              c.type !== "image" ||
-              t.name !== "coach_read_media" ||
-              !options.vision
-            )
-              throw new Error("RESULT_REJECTED");
-            if (
-              !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
-                c.mimeType,
-              ) ||
-              typeof c.data !== "string" ||
-              c.data.length > 11184812 ||
-              /[^A-Za-z0-9+/=]/.test(c.data)
-            )
-              throw new Error("MEDIA_REJECTED");
-            const decoded = Buffer.from(c.data, "base64");
-            if (decoded.toString("base64") !== c.data)
-              throw new Error("MEDIA_REJECTED");
-            imageCount++;
-            mediaBytes += decoded.length;
-            if (
-              !decoded.length ||
-              decoded.length > 8 * 1024 * 1024 ||
-              imageCount > 4 ||
-              mediaBytes > 16 * 1024 * 1024
-            )
-              throw new Error("MEDIA_REJECTED");
-            return {
-              type: "image" as const,
-              data: c.data,
-              mimeType: c.mimeType,
-            };
-          });
+          const safe: Array<
+            | { type: "text"; text: string }
+            | { type: "image"; data: string; mimeType: string }
+          > = [];
+          for (const c of content) {
+            safe.push(
+              await (async () => {
+                if (c.type === "text" && typeof c.text === "string") {
+                  let decoded;
+                  try {
+                    decoded = JSON.parse(c.text);
+                  } catch {
+                    /* MCP permits plain text. */
+                  }
+                  assertNoSecrets(decoded, options.secrets);
+                  return {
+                    type: "text" as const,
+                    text: c.text,
+                  };
+                }
+                if (
+                  c.type !== "image" ||
+                  t.name !== "coach_read_media" ||
+                  !options.vision
+                )
+                  throw new Error("RESULT_REJECTED");
+                if (
+                  ![
+                    "image/png",
+                    "image/jpeg",
+                    "image/webp",
+                    "image/gif",
+                  ].includes(c.mimeType) ||
+                  typeof c.data !== "string" ||
+                  c.data.length > 11184812 ||
+                  /[^A-Za-z0-9+/=]/.test(c.data)
+                )
+                  throw new Error("MEDIA_REJECTED");
+                const decoded = Buffer.from(c.data, "base64");
+                if (decoded.toString("base64") !== c.data)
+                  throw new Error("MEDIA_REJECTED");
+                imageCount++;
+                mediaBytes += decoded.length;
+                if (
+                  !decoded.length ||
+                  decoded.length > 8 * 1024 * 1024 ||
+                  imageCount > 4 ||
+                  mediaBytes > 16 * 1024 * 1024
+                )
+                  throw new Error("MEDIA_REJECTED");
+                signal?.throwIfAborted();
+                const prepared = await prepareModelImage(decoded, c.mimeType);
+                signal?.throwIfAborted();
+                return {
+                  type: "image" as const,
+                  data: prepared.data.toString("base64"),
+                  mimeType: prepared.mimeType,
+                };
+              })(),
+            );
+          }
           const bytes = Buffer.byteLength(
             JSON.stringify(safe.filter((c: any) => c.type === "text")),
           );

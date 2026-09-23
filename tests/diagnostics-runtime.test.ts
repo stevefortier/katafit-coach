@@ -54,6 +54,7 @@ for (const [status, code, expected] of [
   [401, "invalid_api_key", "PROVIDER_AUTH_FAILED"],
   [404, "model_not_found", "PROVIDER_REQUEST_REJECTED"],
   [408, "unknown", "PROVIDER_TIMEOUT"],
+  [413, "unknown", "PROVIDER_PAYLOAD_TOO_LARGE"],
   [504, "unknown", "PROVIDER_TIMEOUT"],
   [429, "quota_exceeded", "PROVIDER_QUOTA_EXCEEDED"],
   [400, "max_tokens_exceeded", "PROVIDER_REQUEST_REJECTED"],

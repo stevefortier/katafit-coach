@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 const dir = await mkdtemp(join(tmpdir(), "coach-package-"));
 let cli;
@@ -38,6 +39,30 @@ try {
     { stdio: "pipe", timeout: 120000 },
   );
   cli = join(dir, "install/node_modules/@katafit/coach/dist/cli.js");
+  // Exercise the native decoder in the production-only, ignore-scripts install.
+  const installedRoot = join(dir, "install/node_modules/@katafit/coach");
+  const installedSharp = createRequire(join(installedRoot, "package.json"))(
+    "sharp",
+  );
+  const { prepareModelImage } = await import(
+    join(installedRoot, "dist/katafit/providerImage.js")
+  );
+  const raw = Buffer.alloc(1600 * 1600 * 3);
+  let seed = 7;
+  for (let i = 0; i < raw.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
+    raw[i] = seed >>> 24;
+  }
+  const source = await installedSharp(raw, {
+    raw: { width: 1600, height: 1600, channels: 3 },
+  })
+    .jpeg({ quality: 97 })
+    .toBuffer();
+  assert.ok(source.length > 512 * 1024);
+  const prepared = await prepareModelImage(source, "image/jpeg");
+  assert.ok(prepared.data.length > 0 && prepared.data.length <= 768 * 1024);
+  assert.equal(prepared.mimeType, "image/jpeg");
+  assert.ok((await installedSharp(prepared.data).metadata()).width <= 1280);
   const receipt = execFileSync(
     process.execPath,
     [

@@ -22,6 +22,39 @@ export interface Provider {
   secrets?: string[];
   apiKey: string;
 }
+// Provider-only compaction: keep the latest four authorized image parts, while
+// leaving tool receipts in the agent transcript untouched. Earlier images are
+// not silently described as evidence in this request.
+export function compactProviderImages(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload))
+    return payload;
+  const body = payload as Record<string, unknown>;
+  if (!Array.isArray(body.messages)) return payload;
+  let remaining = 4;
+  const messages = [...body.messages];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (
+      !message ||
+      typeof message !== "object" ||
+      !Array.isArray(message.content)
+    )
+      continue;
+    const content = [...message.content];
+    for (let j = content.length - 1; j >= 0; j--) {
+      const part = content[j];
+      if (part?.type !== "image_url") continue;
+      if (remaining-- > 0) continue;
+      content[j] = {
+        type: "text",
+        text: "[Earlier image omitted from this provider turn; read it again if needed.]",
+      };
+    }
+    messages[i] = { ...message, content };
+  }
+  return { ...body, messages };
+}
+
 // Count the serialized envelope in full, exempting only validated image DATA at
 // the provider's actual messages[].content[] path. Schema defaults, text, URL
 // prefixes and every image metadata/extra field remain in the text budget.
@@ -58,6 +91,8 @@ export function providerTextBytes(payload: unknown): number {
       exemptBytes += data.length;
     }
   }
+  if (Buffer.byteLength(wire) > 6 * 1024 * 1024)
+    throw new Error("PROVIDER_PAYLOAD_TOO_LARGE");
   return Buffer.byteLength(wire) - exemptBytes;
 }
 
@@ -382,6 +417,7 @@ export async function complete(
                 payload as Record<string, unknown>;
               outbound = withoutTools;
             }
+            outbound = compactProviderImages(outbound);
             assertNoSecrets(outbound, secrets);
             assertNoSecrets(JSON.stringify(outbound), secrets);
             const bytes = providerTextBytes(outbound);
@@ -393,6 +429,8 @@ export async function complete(
                 ...providerDiagnostic(outbound, secrets),
                 metadata: {
                   bytes,
+                  wireBytes: Buffer.byteLength(JSON.stringify(outbound)),
+                  wireLimit: 6 * 1024 * 1024,
                   limit: 1024 * 1024,
                   totalBytes: inputBytes,
                   totalLimit: TOTAL_INPUT_LIMIT,
