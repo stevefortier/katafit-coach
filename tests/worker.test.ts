@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
+import { LocalMcp } from "../src/mcp/local.js";
 
 test("preview and running worker receive byte-identical saved effective instructions", async () => {
   const f = await fixture();
@@ -806,3 +807,70 @@ for (const mismatch of ["code", "generation"] as const) {
     }
   });
 }
+
+test("claimed Dojo worker sees local tools; personal claim and later turn cannot reuse them", async () => {
+  const backend = await fixture();
+  const dir = await mkdtemp(tmpdir() + "/coach-mcp-worker-");
+  const store = new Store(dir);
+  await store.init();
+  const local = new LocalMcp(store);
+  const peer = createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const input = JSON.parse(raw);
+    if (input.method === "notifications/initialized") {
+      res.writeHead(202).end();
+      return;
+    }
+    const result =
+      input.method === "tools/list"
+        ? {
+            tools: [
+              {
+                name: "change",
+                description: "Fixture change",
+                inputSchema: {
+                  type: "object",
+                  properties: {},
+                  additionalProperties: false,
+                },
+              },
+            ],
+          }
+        : { protocolVersion: "2025-03-26" };
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: input.id, result }));
+  });
+  await new Promise<void>((resolve) => peer.listen(0, "127.0.0.1", resolve));
+  try {
+    await local.add({
+      label: "fixture",
+      url: `http://127.0.0.1:${(peer.address() as any).port}/mcp`,
+    });
+    const seen: string[][] = [];
+    const worker = new Worker({
+      origin: backend.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      localMcp: local,
+      complete: async (_context, _signal, _system, tools) => {
+        seen.push(tools.map((tool) => tool.name));
+        return "Synthetic reply";
+      },
+    });
+    backend.enqueue("Dojo turn");
+    await worker.pollOnce();
+    assert.equal(seen[0].length, 1);
+    assert.match(seen[0][0], /^local_mcp__/);
+    backend.enqueue("Personal turn");
+    backend.current.scope = "personal";
+    await worker.pollOnce();
+    assert.deepEqual(seen[1], []);
+    await worker.stop();
+  } finally {
+    peer.closeAllConnections();
+    await new Promise<void>((resolve) => peer.close(() => resolve()));
+    await backend.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

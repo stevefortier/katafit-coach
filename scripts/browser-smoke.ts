@@ -72,6 +72,33 @@ try {
   await page.locator("#unlock").click();
   await page.locator("#studio").waitFor({ state: "visible" });
   await page.locator("#settingsTab").click();
+  assert.match(
+    await page.locator("#localMcp").innerText(),
+    /without per-call approval/,
+  );
+  await page.locator("#localMcpLabel").fill("Browser fixture");
+  await page
+    .locator("#localMcpUrl")
+    .fill(`http://127.0.0.1:${(provider.address() as any).port}/mcp`);
+  await page.locator("#localMcpBearer").fill("browser-private-bearer");
+  await page.locator("#localMcpForm button").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#localMcpList")
+      ?.textContent?.includes("Browser fixture"),
+  );
+  assert.equal(await page.locator("#localMcpBearer").inputValue(), "");
+  assert.doesNotMatch(
+    await page.locator("#localMcpList").innerText(),
+    /browser-private-bearer/,
+  );
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.locator("#localMcpList button").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#localMcpList")
+      ?.textContent?.includes("No local servers"),
+  );
   assert.equal(await page.locator("#vision").isChecked(), false);
   assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
   await page.locator("#vision").check();
@@ -232,7 +259,7 @@ try {
   assert.equal(store.publicConfig().provider.vision, false);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser PASS: unlock, config persistence, actual Pi + synthetic HTTP preview, cleared secret inputs, desktop/mobile no overflow; 0 page errors.",
+    "Browser PASS: authenticated local MCP add/remove, private bearer clearing, disclosure, config persistence, actual Pi + synthetic HTTP preview, desktop/mobile no overflow; 0 page errors.",
   );
   await page.close();
 } finally {

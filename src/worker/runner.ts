@@ -14,6 +14,7 @@ import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { discoverReads } from "../katafit/readTools.js";
+import type { LocalMcp } from "../mcp/local.js";
 import type { InferenceBudget } from "../runtime/piAdapter.js";
 import { assertNoSecrets } from "../config/store.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -38,6 +39,7 @@ export async function bounded<T>(
   }
 }
 export interface WorkerOptions {
+  localMcp?: LocalMcp;
   origin: string;
   token: string;
   system: string;
@@ -149,6 +151,7 @@ export class Worker {
     let deadline = 0;
     let publishing = false;
     let disposeReads: (() => void) | undefined;
+    let disposeLocal: (() => void) | undefined;
     const budget = () => {
       signal.throwIfAborted();
       const n = deadline - Date.now();
@@ -245,6 +248,7 @@ export class Worker {
       assertNoSecrets(context, [
         this.options.token,
         ...(this.options.secrets ?? []),
+        ...(this.options.localMcp?.secrets() ?? []),
       ]);
       if (
         serialized.includes(this.options.token) ||
@@ -277,6 +281,14 @@ export class Worker {
         modelSignal,
       );
       disposeReads = reads.dispose;
+      const local = this.options.localMcp
+        ? await bounded(
+            () =>
+              this.options.localMcp!.discover(current.scope, inferenceSignal),
+            inferenceSignal,
+          )
+        : { tools: [] as AgentTool[], dispose: () => {} };
+      disposeLocal = local.dispose;
       stage("reads-ready");
       if (
         current.attachment_count !== 0 &&
@@ -291,13 +303,16 @@ export class Worker {
             JSON.stringify({
               ...JSON.parse(serialized),
               "Request data capabilities": reads.status,
+              "Local dojo MCP tools": local.tools.length
+                ? "Installation-admin-registered local tools; calls may change external state. Disclose intended actions to the member. No per-call approval is requested."
+                : "none",
             }),
             inferenceSignal,
             effectivePrompt(this.options.system, instructions, [
               this.options.token,
               ...(this.options.secrets ?? []),
             ]),
-            reads.tools,
+            reads.tools.concat(local.tools),
             ref,
             { deadlineAt, readBudget: reads.readBudget },
           ),
@@ -383,6 +398,7 @@ export class Worker {
       }
       throw failure;
     } finally {
+      disposeLocal?.();
       disposeReads?.();
     }
   }

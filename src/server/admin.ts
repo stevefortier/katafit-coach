@@ -9,6 +9,7 @@ import { timingSafeEqual, randomUUID } from "node:crypto";
 import { Store, compile } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
 import { Worker } from "../worker/runner.js";
+import { LocalMcp } from "../mcp/local.js";
 import { Client } from "../katafit/client.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 export async function admin(
@@ -18,6 +19,8 @@ export async function admin(
   onShutdown?: () => void,
   updates = new Updates(null, null),
 ) {
+  const localMcp = new LocalMcp(store);
+  await localMcp.init();
   const chat = new OperatorChat(store, infer);
   const logs = new Diagnostics(store.dir);
   logs.record({ source: "studio", stage: "studio-started" });
@@ -187,6 +190,8 @@ export async function admin(
           hasToken: !!store.secrets.token,
           hasApiKey: !!store.secrets.apiKey,
         });
+      if (req.method === "GET" && path === "/api/mcp")
+        return send(200, { registrations: localMcp.list() });
       if (req.method === "GET" && path === "/api/logs")
         return send(200, logs.snapshot());
       if (req.method === "GET" && path === "/api/status")
@@ -209,6 +214,23 @@ export async function admin(
       }
       const body = JSON.parse(raw || "{}");
       if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+      if (path === "/api/mcp" || path === "/api/mcp/remove") {
+        if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
+        busy = true;
+        try {
+          if (path === "/api/mcp") return send(200, await localMcp.add(body));
+          if (
+            !body ||
+            Object.keys(body).join(",") !== "id" ||
+            typeof body.id !== "string"
+          )
+            throw new Error("INVALID_MCP_REGISTRATION");
+          await localMcp.remove(body.id);
+          return send(200, { ok: true });
+        } finally {
+          busy = false;
+        }
+      }
       if (path === "/api/operator/cancel") {
         await chat.cancel();
         return send(200, { ok: true, ...chat.snapshot() });
@@ -406,6 +428,7 @@ export async function admin(
               system: compile(c, Object.values(store.secrets)),
               secrets: Object.values(store.secrets),
               vision: c.provider.vision === true,
+              localMcp,
               onDiagnostic: (event) => logs.record(event),
               complete: (context, signal, system, tools, ref, budget) =>
                 infer(
@@ -413,7 +436,10 @@ export async function admin(
                     ...c.provider,
                     onDiagnostic: (event) => logs.record({ ...event, ref }),
                     apiKey: store.secrets.apiKey,
-                    secrets: Object.values(store.secrets),
+                    secrets: [
+                      ...Object.values(store.secrets),
+                      ...localMcp.secrets(),
+                    ],
                   },
                   system,
                   context,

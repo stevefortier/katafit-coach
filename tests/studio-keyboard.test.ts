@@ -57,6 +57,7 @@ test("Studio composers: Enter sends through the real UI", async () => {
             ].map((name) => [name, name === "verbosity" ? "Balanced" : ""]),
           ),
         };
+      if (path === "/api/mcp") body = { registrations: [] };
       if (path === "/api/status") body = { state: "stopped" };
       if (path === "/api/members")
         body = {

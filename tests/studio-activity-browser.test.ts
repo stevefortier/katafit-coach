@@ -95,6 +95,7 @@ test("activity expansion is lazy, authenticated, bounded to its view, and retrya
             ].map((n) => [n, n === "verbosity" ? "Balanced" : ""]),
           ),
         };
+      if (p === "/api/mcp") body = { registrations: [] };
       if (p === "/api/status") body = { state: "stopped" };
       if (p === "/api/operator/chat") body = { messages: [] };
       if (p === "/api/members")

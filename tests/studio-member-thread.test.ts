@@ -58,6 +58,7 @@ test("member threads retain both canonical directions in chronological chat orde
             ].map((n) => [n, n === "verbosity" ? "Balanced" : ""]),
           ),
         };
+      if (url.pathname === "/api/mcp") body = { registrations: [] };
       if (url.pathname === "/api/status") body = { state: "stopped" };
       if (url.pathname === "/api/operator/chat") body = { messages: [] };
       if (url.pathname === "/api/members")

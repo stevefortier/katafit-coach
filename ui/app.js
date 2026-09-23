@@ -137,7 +137,66 @@ async function load() {
   $("prompt").textContent =
     "Preview the saved revision with freshly fetched backend instructions. Unsaved edits are not previewed.";
   $("answer").textContent = "Your preview will appear here.";
+  await loadLocalMcp().catch((error) => {
+    if (error.status !== 404) throw error;
+    $("localMcpList").textContent =
+      "Local MCP registration unavailable in this Studio.";
+  });
 }
+async function loadLocalMcp() {
+  const { registrations } = await api("mcp");
+  const list = $("localMcpList");
+  list.replaceChildren();
+  for (const record of registrations) {
+    const row = document.createElement("p");
+    row.setAttribute("role", "listitem");
+    row.append(
+      document.createTextNode(`${record.label} · ${record.url} · Dojo only · `),
+    );
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "Remove";
+    remove.onclick = async () => {
+      if (
+        !confirm(
+          `Remove ${record.label}? Calls already delivered cannot be undone.`,
+        )
+      )
+        return;
+      try {
+        await api("mcp/remove", { id: record.id });
+        await loadLocalMcp();
+        $("localMcpStatus").textContent = "Registration removed.";
+      } catch (error) {
+        $("localMcpStatus").textContent = error.message;
+      }
+    };
+    row.append(remove);
+    list.append(row);
+  }
+  if (!registrations.length) list.textContent = "No local servers registered.";
+}
+$("localMcpForm").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    await api("mcp", {
+      label: $("localMcpLabel").value,
+      url: $("localMcpUrl").value,
+      bearer: $("localMcpBearer").value,
+    });
+    $("localMcpBearer").value = "";
+    $("localMcpLabel").value = "";
+    $("localMcpUrl").value = "";
+    await loadLocalMcp();
+    $("localMcpStatus").textContent =
+      "Registered. Tools are discovered on authorized Dojo requests.";
+  } catch (error) {
+    $("localMcpBearer").value = "";
+    $("localMcpStatus").textContent = error.message;
+  }
+};
+
 function action(id, fn) {
   $(id).onclick = async () => {
     try {

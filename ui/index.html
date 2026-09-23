@@ -189,7 +189,8 @@
             <a href="#connection">01 Connection</a
             ><a href="#persona">02 Persona</a><a href="#preview">03 Preview</a
             ><a href="#logsView">04 Diagnostics</a>
-            <a href="#updates">05 Updates</a>
+            <a href="#updates">05 Updates</a
+            ><a href="#localMcp">06 Local MCP</a>
           </nav>
           <div class="grid">
             <section class="card" id="connection">
@@ -291,6 +292,45 @@
               Export nonsecret configuration</button
             ><span id="revision"></span>
           </div>
+          <section class="card" id="localMcp">
+            <div class="eyebrow">06 / INSTALLATION-LOCAL DOJO TOOLS</div>
+            <h2>Local MCP servers</h2>
+            <p class="hint">
+              Installation admin only. Register an already-running MCP
+              Streamable HTTP JSON endpoint bound to 127.0.0.1 on a
+              nonprivileged port. No shell commands or remote addresses are
+              accepted. Only authorized Dojo worker requests receive these
+              tools; Operator, preview, personal requests, and backend-managed
+              personal/Dojo integrations do not. A chosen tool may change
+              external state automatically without per-call approval. The Coach
+              discloses intended actions; review each server's tool permissions
+              before registering. Removing a server blocks subsequent calls but
+              cannot undo a call already delivered.
+            </p>
+            <div id="localMcpList" role="list"></div>
+            <form id="localMcpForm">
+              <label
+                >Server label<input id="localMcpLabel" maxlength="80" required
+              /></label>
+              <label
+                >Loopback MCP URL<input
+                  id="localMcpUrl"
+                  type="url"
+                  placeholder="http://127.0.0.1:8765/mcp"
+                  required
+              /></label>
+              <label
+                >Bearer token (optional, saved privately; never shown
+                again)<input
+                  id="localMcpBearer"
+                  type="password"
+                  autocomplete="off"
+                  maxlength="4096"
+              /></label>
+              <button type="submit">Register local server</button>
+            </form>
+            <p id="localMcpStatus" role="status"></p>
+          </section>
           <section class="card" id="preview">
             <div class="eyebrow">03 / TRY BEFORE YOU RUN</div>
             <h2>Hear your Coach.</h2>
