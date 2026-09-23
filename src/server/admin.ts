@@ -432,7 +432,10 @@ export async function admin(
         }
         if (path === "/api/stop") {
           await worker?.stop();
-          return send(200, { ok: true });
+          return send(200, {
+            ok: true,
+            presence: worker?.presence ?? "unconfirmed",
+          });
         }
         return send(404, { error: "NOT_FOUND" });
       } finally {

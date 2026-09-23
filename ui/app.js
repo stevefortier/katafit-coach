@@ -264,7 +264,9 @@ for (const cmd of ["run", "stop"])
         ? result.presence === "reported"
           ? "Worker started and presence reported. Wait for persisted-reply status to confirm delivery."
           : "Worker started; this backend does not support explicit presence. Connectivity is not confirmed by a heartbeat."
-        : "Worker stopped.",
+        : result.presence === "reported"
+          ? "Worker stopped; backend stop reported."
+          : "Worker stopped locally; backend stop unconfirmed. Chat may not fail immediately while the backend still considers this worker online.",
     );
   });
 action("export", async () => {

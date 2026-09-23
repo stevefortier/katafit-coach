@@ -88,6 +88,7 @@ export class Worker {
   private presenceTimer?: ReturnType<typeof setInterval>;
   private presenceCall?: Promise<void>;
   private readonly instanceId = randomUUID();
+  private presenceGeneration?: string;
   private presenceAttempted = false;
   presence: "unconfirmed" | "reported" | "unsupported" = "unconfirmed";
   state = "stopped";
@@ -601,7 +602,9 @@ export class Worker {
           this.presence = "unsupported";
         } else {
           this.presenceAttempted = true;
-          await this.report("running", signal);
+          // Presence RPCs must finish even if Stop aborts polling mid-flight:
+          // the returned generation is needed to fence the final stop.
+          await this.report("running", AbortSignal.timeout(2500));
           this.presence = "reported";
         }
         signal.throwIfAborted();
@@ -610,7 +613,10 @@ export class Worker {
         if (this.presence === "reported") {
           this.presenceTimer = setInterval(() => {
             if (this.controller.signal.aborted || this.presenceCall) return;
-            this.presenceCall = this.report("running", signal)
+            this.presenceCall = this.report(
+              "running",
+              AbortSignal.timeout(2500),
+            )
               .then(() => {
                 this.presence = "reported";
               })
@@ -632,16 +638,30 @@ export class Worker {
     return this.startup;
   }
   private async report(state: "running" | "stopped", signal: AbortSignal) {
+    if (state === "stopped" && !this.presenceGeneration)
+      throw new Error("WORKER_PRESENCE_UNCONFIRMED");
     const c = new Client(this.options.origin, this.options.token, signal);
     await c.connect();
-    await c.call(
+    const result = await c.call(
       "coach_report_worker_presence",
       {
         instance_id: this.instanceId,
         state,
+        ...(state === "stopped" ? { generation: this.presenceGeneration } : {}),
       },
       2000,
     );
+    if (result.state !== state) throw new Error("MCP_PROTOCOL_ERROR");
+    if (state === "running") {
+      if (
+        typeof result.generation !== "string" ||
+        !/^[a-f0-9]{32}$/.test(result.generation)
+      )
+        throw new Error("MCP_PROTOCOL_ERROR");
+      this.presenceGeneration = result.generation;
+    } else {
+      this.presenceGeneration = undefined;
+    }
   }
   private async run() {
     let delay = this.options.pollMs ?? 5000;
@@ -678,6 +698,7 @@ export class Worker {
       if (this.presenceAttempted) {
         try {
           await this.report("stopped", AbortSignal.timeout(2500));
+          this.presence = "reported";
         } catch {
           this.presence = "unconfirmed";
         }

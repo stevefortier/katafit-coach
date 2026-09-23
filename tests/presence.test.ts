@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { Worker } from "../src/worker/runner.js";
+import { Client } from "../src/katafit/client.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -24,10 +25,19 @@ async function backend(
     supported?: boolean;
     failRunning?: boolean;
     holdRunning?: boolean;
+    holdFirstRunning?: boolean;
     queued?: boolean;
+    refuseStopped?: boolean;
   } = {},
 ) {
-  const reports: Array<{ instance_id: string; state: string }> = [];
+  const reports: Array<{
+    instance_id: string;
+    state: string;
+    generation?: string;
+  }> = [];
+  const accepted: typeof reports = [];
+  const generations = new Map<string, string>();
+  let sequence = 0;
   const calls: string[] = [];
   const entered = deferred<void>();
   const release = deferred<void>();
@@ -63,13 +73,42 @@ async function backend(
       };
     else if (name === "coach_report_worker_presence") {
       reports.push(args);
-      if (args.state === "running" && options.holdRunning) {
+      if (
+        args.state === "running" &&
+        ((options.holdRunning &&
+          reports.filter((r) => r.state === "running").length > 1) ||
+          (options.holdFirstRunning &&
+            reports.filter((r) => r.state === "running").length === 1))
+      ) {
         entered.resolve();
         await release.promise;
       }
+      const valid =
+        args.state === "running"
+          ? args.generation === undefined
+          : args.state === "stopped" &&
+            args.generation === generations.get(args.instance_id) &&
+            !options.refuseStopped;
+      if (valid) {
+        accepted.push(args);
+        if (args.state === "running")
+          generations.set(
+            args.instance_id,
+            (++sequence).toString(16).padStart(32, "0"),
+          );
+        else generations.delete(args.instance_id);
+      }
       result = {
-        structuredContent: { ok: true },
-        ...(args.state === "running" && options.failRunning
+        structuredContent: valid
+          ? {
+              ok: true,
+              state: args.state,
+              ...(args.state === "running"
+                ? { generation: generations.get(args.instance_id) }
+                : {}),
+            }
+          : { code: "WORKER_PRESENCE_STALE" },
+        ...(!valid || (args.state === "running" && options.failRunning)
           ? { isError: true }
           : {}),
       };
@@ -114,6 +153,7 @@ async function backend(
     origin: `http://127.0.0.1:${(server.address() as any).port}`,
     calls,
     reports,
+    accepted,
     entered: entered.promise,
     release: () => release.resolve(),
     async close() {
@@ -134,7 +174,7 @@ function worker(origin: string, options: Record<string, unknown> = {}) {
   });
 }
 
-test("start awaits authenticated running report; stop sends same instance stopped; restart uses new ID", async () => {
+test("start and stop use the issued generation; restart has a new incarnation", async () => {
   const f = await backend();
   try {
     const first = worker(f.origin);
@@ -143,17 +183,25 @@ test("start awaits authenticated running report; stop sends same instance stoppe
     assert.equal(f.reports[0].state, "running");
     assert.match(f.reports[0].instance_id, /^[0-9a-f-]{36}$/);
     await first.stop();
+    assert.equal(first.presence, "reported");
     await assert.rejects(first.start(), /CANCELLED/);
     assert.deepEqual(f.reports.slice(0, 2), [
       { ...f.reports[0], state: "running" },
-      { ...f.reports[0], state: "stopped" },
+      {
+        ...f.reports[0],
+        state: "stopped",
+        generation: "00000000000000000000000000000001",
+      },
     ]);
+    assert.equal(f.accepted.length, 2);
     const second = worker(f.origin);
     await second.start();
     await waitFor(() => f.calls.includes("coach_list_requests"));
     assert.notEqual(f.reports[2].instance_id, f.reports[0].instance_id);
     await second.stop();
     assert.equal(f.reports[3].instance_id, f.reports[2].instance_id);
+    assert.equal(f.reports[3].generation, "00000000000000000000000000000002");
+    assert.equal(f.accepted.length, 4);
     assert.ok(f.calls.includes("coach_list_requests"), "polling still runs");
   } finally {
     await f.close();
@@ -188,7 +236,7 @@ test("failed advertised report rejects start without polling or false running st
 });
 
 test("concurrent stop and start cannot report running after stopped", async () => {
-  const f = await backend({ holdRunning: true });
+  const f = await backend({ holdFirstRunning: true });
   try {
     const w = worker(f.origin);
     const start = w.start();
@@ -225,10 +273,98 @@ test("heartbeat reports running while inference is busy, then stops cleanly", as
     const n = f.reports.length;
     await w.stop();
     assert.equal(f.reports.at(-1)?.state, "stopped");
+    assert.equal(
+      f.reports.at(-1)?.generation,
+      f.reports
+        .filter((r) => r.state === "running")
+        .length.toString(16)
+        .padStart(32, "0"),
+    );
+    assert.equal(f.accepted.length, f.reports.length);
     await new Promise((r) => setTimeout(r, 60));
     assert.equal(f.reports.length, n + 1);
   } finally {
     inference.resolve("reply");
+    await f.close();
+  }
+});
+
+test("stale stop cannot erase a restarted incarnation with the same instance ID", async () => {
+  const f = await backend();
+  try {
+    const c = new Client(
+      f.origin,
+      "synthetic-token",
+      AbortSignal.timeout(3000),
+    );
+    await c.connect();
+    const first = await c.call("coach_report_worker_presence", {
+      instance_id: "same",
+      state: "running",
+    });
+    const second = await c.call("coach_report_worker_presence", {
+      instance_id: "same",
+      state: "running",
+    });
+    assert.notEqual(first.generation, second.generation);
+    await assert.rejects(
+      c.call("coach_report_worker_presence", {
+        instance_id: "same",
+        state: "stopped",
+        generation: first.generation,
+      }),
+      /MCP_TOOL_FAILED/,
+    );
+    assert.equal(f.accepted.length, 2);
+    await c.call("coach_report_worker_presence", {
+      instance_id: "same",
+      state: "stopped",
+      generation: second.generation,
+    });
+    assert.equal(f.accepted.at(-1)?.state, "stopped");
+  } finally {
+    await f.close();
+  }
+});
+
+test("stop waits for in-flight heartbeat rotation before sending latest generation", async () => {
+  const f = await backend({ holdRunning: true });
+  try {
+    const w = worker(f.origin, { presenceMs: 20 });
+    await w.start();
+    await f.entered;
+    const stopping = w.stop();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(
+      f.reports.some((r) => r.state === "stopped"),
+      false,
+    );
+    f.release();
+    await stopping;
+    assert.equal(
+      f.reports.at(-1)?.generation,
+      "00000000000000000000000000000002",
+    );
+    assert.equal(f.accepted.length, 3);
+    assert.equal(w.presence, "reported");
+  } finally {
+    await f.close();
+  }
+});
+
+test("refused stop remains unconfirmed rather than showing server-confirmed offline", async () => {
+  const f = await backend({ refuseStopped: true });
+  try {
+    const w = worker(f.origin);
+    await w.start();
+    await w.stop();
+    assert.equal(w.state, "stopped");
+    assert.equal(w.presence, "unconfirmed");
+    assert.deepEqual(
+      f.accepted.map((r) => r.state),
+      ["running"],
+    );
+  } finally {
     await f.close();
   }
 });
@@ -269,6 +405,55 @@ test("Studio run and shutdown report presence through real MCP before success", 
     assert.equal(shutdown.status, 200);
     await app.close();
     assert.equal(f.reports.at(-1)?.state, "stopped");
+    assert.equal(f.accepted.at(-1)?.state, "stopped");
+  } finally {
+    await app.close();
+    await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Studio Stop exposes refused backend stop as unconfirmed", async () => {
+  const f = await backend({ refuseStopped: true });
+  const dir = await mkdtemp(tmpdir() + "/coach-presence-refused-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-key",
+  });
+  const app = await admin(store, 0, async () => "reply");
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  try {
+    assert.equal(
+      (
+        await fetch(app.origin + "/api/run", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    const stop = await fetch(app.origin + "/api/stop", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    assert.equal(stop.status, 200);
+    assert.equal((await stop.json()).presence, "unconfirmed");
+    const status = await (
+      await fetch(app.origin + "/api/status", { headers })
+    ).json();
+    assert.equal(status.state, "stopped");
+    assert.equal(status.presence, "unconfirmed");
+    assert.equal(f.accepted.at(-1)?.state, "running");
   } finally {
     await app.close();
     await f.close();
