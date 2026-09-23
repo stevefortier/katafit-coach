@@ -162,7 +162,7 @@ async function loadLocalMcp() {
     remove.onclick = async () => {
       if (
         !confirm(
-          `Remove ${record.label}? Calls already delivered cannot be undone.`,
+          `Remove ${record.label}? This disables this saved endpoint. Local MCP tools are currently inactive and are not called by this Coach.`,
         )
       )
         return;

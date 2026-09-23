@@ -110,8 +110,17 @@ try {
     .locator("#localMcp")
     .screenshot({ path: tmpdir() + "/local-mcp-studio-mobile.png" });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  page.once("dialog", (dialog) => void dialog.accept());
+  let removePrompt = "";
+  page.once("dialog", (dialog) => {
+    removePrompt = dialog.message();
+    void dialog.accept();
+  });
   await page.locator("#localMcpList button").click();
+  assert.equal(
+    removePrompt,
+    "Remove Browser fixture? This disables this saved endpoint. Local MCP tools are currently inactive and are not called by this Coach.",
+  );
+  assert.doesNotMatch(removePrompt, /browser-private-bearer/);
   await page.waitForFunction(() =>
     document
       .querySelector("#localMcpList")
