@@ -22,6 +22,7 @@ import { Client } from "../katafit/client.js";
 import { backendWireBudget } from "../katafit/wireBudget.js";
 import { serializeContext } from "../katafit/context.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
+import { photoReviewGuidance } from "./photoReviewGuidance.js";
 export async function bounded<T>(
   action: () => Promise<T>,
   signal: AbortSignal,
@@ -297,7 +298,7 @@ export class Worker {
             effectivePrompt(this.options.system, instructions, [
               this.options.token,
               ...(this.options.secrets ?? []),
-            ]),
+            ]) + photoReviewGuidance(current.message, current.created_at),
             reads.tools,
             ref,
             { deadlineAt, readBudget: reads.readBudget },
