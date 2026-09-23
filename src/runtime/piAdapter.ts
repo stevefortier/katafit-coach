@@ -366,6 +366,22 @@ export async function complete(
       .map((c) => c.text)
       .join("\n");
     if (!text.trim()) throw new SafeError("MODEL_EMPTY_RESPONSE");
+    // Text is never a tool invocation. A provider that prints command markup
+    // instead of native tool_calls cannot supply an evidence-backed final reply.
+    // Exempt only syntactically quoted inline examples or an explicitly
+    // attributed, closed and followed-up quotation; never interpret markup.
+    // A standalone/incomplete fence or a subsequent command still fails.
+    const unquoted = text
+      .replace(
+        /(?:the member|the document) quoted[^\n]*:\s*\n```[^\n]*\n[\s\S]*?\n```\n(?=\S)/gi,
+        "",
+      )
+      .replace(
+        /\b(?:the document literally says|the member quoted)\s+"[^"\n]*"/gi,
+        "",
+      );
+    if (/<tool_cal(?:l(?:[\s>]|$)|$)|<function=|<\|tool_call/i.test(unquoted))
+      throw new SafeError("MODEL_TOOL_FORMAT_UNSUPPORTED");
     if (text.includes(provider.apiKey)) throw new Error("OUTPUT_REJECTED");
     return text;
   } catch (error) {

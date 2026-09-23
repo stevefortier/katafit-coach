@@ -37,6 +37,8 @@ export const hints = {
     "The provider connection failed. Check endpoint, network and TLS configuration.",
   MODEL_EMPTY_RESPONSE:
     "The provider returned no usable text. Check the model and retry.",
+  MODEL_TOOL_FORMAT_UNSUPPORTED:
+    "The model emitted tool-command text instead of native tool calls. This text was not executed or published; check the installed model's tool parser and provider compatibility.",
   MODEL_FAILED:
     "Inference did not complete successfully. Check provider compatibility and retry.",
   CONTEXT_REJECTED:
