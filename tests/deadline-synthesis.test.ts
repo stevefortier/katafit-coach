@@ -208,13 +208,21 @@ test("real short deadline synthesizes before the same-clock abort, with no tools
     () => controller.abort(new DOMException("deadline", "TimeoutError")),
     deadlineMs,
   );
-  const requests: { choice: string | undefined; arrivedAt: number }[] = [];
+  const requests: {
+    choice: string | undefined;
+    arrivedAt: number;
+    hasTools: boolean;
+  }[] = [];
   let executions = 0;
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
     const payload = JSON.parse(Buffer.concat(chunks).toString());
-    requests.push({ choice: payload.tool_choice, arrivedAt: Date.now() });
+    requests.push({
+      choice: payload.tool_choice,
+      arrivedAt: Date.now(),
+      hasTools: Object.hasOwn(payload, "tools"),
+    });
     // Actual elapsed provider time, on the same clock as deadlineAt and abort.
     await new Promise((resolve) => setTimeout(resolve, 200));
     const finish = payload.tool_choice === "none";
@@ -287,6 +295,7 @@ test("real short deadline synthesizes before the same-clock abort, with no tools
       ["none"],
     );
     assert.equal(executions, 0);
+    assert.equal(requests[0].hasTools, false);
     assert.ok(requests[0].arrivedAt >= started);
     assert.ok(Date.now() - started >= 150); // provider's 200ms turn elapsed
     assert.ok(Date.now() < started + deadlineMs);
