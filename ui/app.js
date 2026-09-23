@@ -151,7 +151,9 @@ async function loadLocalMcp() {
     const row = document.createElement("p");
     row.setAttribute("role", "listitem");
     row.append(
-      document.createTextNode(`${record.label} · ${record.url} · Dojo only · `),
+      document.createTextNode(
+        `${record.label} · ${record.url} · Unbound · inactive · `,
+      ),
     );
     const remove = document.createElement("button");
     remove.type = "button";
@@ -190,7 +192,7 @@ $("localMcpForm").onsubmit = async (event) => {
     $("localMcpUrl").value = "";
     await loadLocalMcp();
     $("localMcpStatus").textContent =
-      "Registered. Tools are discovered on authorized Dojo requests.";
+      "Registered, but inactive. No local tools are discovered or called until backend chief/Dojo binding, per-dispatch lease authority, and durable mutation receipts are implemented.";
   } catch (error) {
     $("localMcpBearer").value = "";
     $("localMcpStatus").textContent = error.message;

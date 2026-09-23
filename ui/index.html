@@ -297,13 +297,15 @@
             <h2>Local MCP servers</h2>
             <p class="hint">
               Installation admin only. Registration storage is available, but
-              runtime disabled pending backend chief and lease authority: no
-              local tools are discovered or called by the Coach. Only canonical
-              127.0.0.1 endpoints on nonprivileged ports can be saved. If a
-              future backend-authorized version enables these tools, the model
-              may select mutations automatically without per-call approval. A
-              failed mutation may have committed: outcome unknown; never retry
-              automatically. Inspect the external system first.
+              runtime disabled pending backend chief/Dojo binding, per-dispatch
+              lease authority, and durable mutation receipts: no local tools are
+              discovered or called by the Coach. Saved entries are unbound and
+              inactive. Only canonical 127.0.0.1 endpoints on nonprivileged
+              ports can be saved. If a future backend-authorized version enables
+              these tools, the model may select mutations automatically without
+              per-call approval. A failed mutation may have committed: outcome
+              unknown; never retry automatically. Inspect the external system
+              first.
             </p>
             <div id="localMcpList" role="list"></div>
             <form id="localMcpForm">

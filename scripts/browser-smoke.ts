@@ -74,7 +74,7 @@ try {
   await page.locator("#settingsTab").click();
   assert.match(
     await page.locator("#localMcp").innerText(),
-    /runtime disabled pending backend chief and lease authority/,
+    /runtime disabled pending backend chief\/Dojo binding, per-dispatch lease authority, and durable mutation receipts/,
   );
   assert.match(
     await page.locator("#localMcp").innerText(),
@@ -92,10 +92,16 @@ try {
       ?.textContent?.includes("Browser fixture"),
   );
   assert.equal(await page.locator("#localMcpBearer").inputValue(), "");
-  assert.doesNotMatch(
-    await page.locator("#localMcpList").innerText(),
-    /browser-private-bearer/,
-  );
+  const registrationRow = await page.locator("#localMcpList").innerText();
+  assert.doesNotMatch(registrationRow, /browser-private-bearer|Dojo only/);
+  assert.match(registrationRow, /Unbound · inactive/);
+  await page
+    .locator("#localMcpStatus")
+    .getByText(
+      "Registered, but inactive. No local tools are discovered or called until backend chief/Dojo binding, per-dispatch lease authority, and durable mutation receipts are implemented.",
+      { exact: true },
+    )
+    .waitFor();
   await page
     .locator("#localMcp")
     .screenshot({ path: tmpdir() + "/local-mcp-studio-desktop.png" });
