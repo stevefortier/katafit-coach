@@ -213,7 +213,10 @@ export type TaskOutputCategory =
   | "SECURITY"
   | "SIZE";
 export class TaskOutputError extends Error {
-  constructor(readonly category: TaskOutputCategory) {
+  constructor(
+    readonly category: TaskOutputCategory,
+    readonly reason: string,
+  ) {
     super("OUTPUT_REJECTED");
   }
 }
@@ -221,24 +224,50 @@ const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
 export function parseTaskResult(kind: string, text: string, secrets: string[]) {
   if (typeof text !== "string" || Buffer.byteLength(text) > limits.result_bytes)
-    throw new TaskOutputError("SIZE");
+    throw new TaskOutputError(
+      "SIZE",
+      `Output exceeded ${limits.result_bytes} UTF-8 bytes`,
+    );
   // Scan the raw response first: malformed JSON must not turn a leaked secret
   // into a repairable parse error or send it back to the provider.
-  if (credentialPattern.test(text)) throw new TaskOutputError("SECURITY");
+  if (credentialPattern.test(text))
+    throw new TaskOutputError(
+      "SECURITY",
+      "Credential-shaped text in raw output",
+    );
   try {
     assertNoSecrets(text, secrets);
   } catch {
-    throw new TaskOutputError("SECURITY");
+    throw new TaskOutputError("SECURITY", "Known credential in raw output");
   }
   let value: any;
   try {
     value = JSON.parse(text);
-  } catch {
-    throw new TaskOutputError("JSON");
+  } catch (error) {
+    throw new TaskOutputError(
+      "JSON",
+      error instanceof Error ? error.message : "JSON parser rejected output",
+    );
   }
-  if (!validators.get(kind)?.(value)) throw new TaskOutputError("SCHEMA");
+  // JSON escapes can conceal credentials from the raw-text scan. Recheck the
+  // decoded tree before validation, diagnostics, correction or publication.
+  try {
+    const decoded = JSON.stringify(value);
+    if (credentialPattern.test(decoded))
+      throw new Error("Credential-shaped decoded output");
+    assertNoSecrets(value, secrets);
+  } catch {
+    throw new TaskOutputError("SECURITY", "Credential in decoded JSON output");
+  }
+  const validator = validators.get(kind);
+  if (!validator?.(value))
+    throw new TaskOutputError(
+      "SCHEMA",
+      JSON.stringify(validator?.errors ?? [{ message: "Unknown task kind" }]),
+    );
   value = normalize(value, taskSchema(kind));
-  if (!validators.get(kind)?.(value)) throw new TaskOutputError("SCHEMA");
+  if (!validator(value))
+    throw new TaskOutputError("SCHEMA", JSON.stringify(validator.errors ?? []));
   if (
     (kind === "activity_reaction" &&
       value.activity_feedback.reply_worthwhile !==
@@ -247,7 +276,12 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
       (Object.keys(value.recommendations).length < 1 ||
         Object.keys(value.recommendations).length > 40))
   )
-    throw new TaskOutputError("SEMANTIC");
+    throw new TaskOutputError(
+      "SEMANTIC",
+      kind === "activity_reaction"
+        ? "activity_feedback.reply_worthwhile must equal Boolean(general_advice)"
+        : "recommendations must have between 1 and 40 entries",
+    );
   return value;
 }
 export function verifyTaskResolution(task: any, response: any, digest: string) {

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Worker } from "../src/worker/runner.js";
-import { parseTaskResult } from "../src/katafit/tasks.js";
+import { parseTaskResult, TaskOutputError } from "../src/katafit/tasks.js";
 import { taskFixture, names } from "./task-fixtures.js";
 test("task output rejects backend-denied credential-shaped text locally", () => {
   for (const text of [
@@ -14,6 +14,42 @@ test("task output rejects backend-denied credential-shaped text locally", () => 
       () => parseTaskResult("activity_followup", JSON.stringify({ text }), []),
       /OUTPUT_REJECTED/,
     );
+});
+test("decoded JSON credentials cannot hide behind escapes and become loggable schema errors", () => {
+  for (const text of [
+    '{"text":"\\u0042earer synthetic-secret"}',
+    '{"text":"\\u006bcoach_synthetic_secret"}',
+  ]) {
+    assert.throws(
+      () => parseTaskResult("activity_followup", text, []),
+      (e: any) => e instanceof TaskOutputError && e.category === "SECURITY",
+    );
+  }
+});
+test("typed output explains the exact JSON, schema, and semantic rejection", () => {
+  for (const [kind, text, category, reason] of [
+    ["activity_followup", "not JSON", "JSON", /JSON|Unexpected|token/i],
+    [
+      "activity_followup",
+      '{"text":"ok","extra":true}',
+      "SCHEMA",
+      /additionalProperties|extra/,
+    ],
+    [
+      "activity_reaction",
+      '{"activity_feedback":{"reaction":"flex","reply_worthwhile":false},"general_advice":"not silent"}',
+      "SEMANTIC",
+      /reply_worthwhile.*general_advice/,
+    ],
+  ] as const) {
+    assert.throws(
+      () => parseTaskResult(kind, text, []),
+      (e: any) =>
+        e instanceof TaskOutputError &&
+        e.category === category &&
+        reason.test(e.reason),
+    );
+  }
 });
 test("strict task output rejects whitespace-only, semantic silent mismatch and empty recommendations", () => {
   for (const [kind, value] of [

@@ -60,6 +60,138 @@ test("bounded structured history rotates, strips arbitrary data and retains last
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("protected task-output log retains a full safe rejected candidate and exact reason across restart", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-rejected-");
+  try {
+    const log = new Diagnostics(dir);
+    const text =
+      "model returned XML rather than JSON: <tool_call>read</tool_call>";
+    log.record({
+      source: "worker",
+      stage: "task-output-correction",
+      level: "warn",
+      error: new Error("TASK_OUTPUT_JSON"),
+      rejection: {
+        kind: "activity_reaction",
+        attempt: 1,
+        reason: "Unexpected token '<' at position 0",
+        text,
+      },
+    });
+    assert.equal(log.snapshot().entries.at(-1)?.rejection?.text, text);
+    assert.equal(
+      new Diagnostics(dir).snapshot().entries.at(-1)?.rejection?.reason,
+      "Unexpected token '<' at position 0",
+    );
+    assert.equal((await stat(dir + "/diagnostics.jsonl")).mode & 0o777, 0o600);
+    log.record({
+      source: "worker",
+      stage: "idle",
+      rejection: {
+        kind: "activity_reaction",
+        attempt: 1,
+        reason: "oops",
+        text,
+      },
+    });
+    assert.equal(log.snapshot().entries.at(-1)?.rejection, undefined);
+    log.record({
+      source: "worker",
+      stage: "task-output-correction",
+      error: new Error("TASK_OUTPUT_SECURITY"),
+      rejection: {
+        kind: "activity_reaction",
+        attempt: 1,
+        reason: "secret",
+        text: "Bearer leaked-secret",
+      },
+    });
+    assert.equal(log.snapshot().entries.at(-1)?.rejection, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("long schema reasons retain the full rejected text across restart", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-schema-rejected-");
+  try {
+    const text = '{"text":"ok","extra":true}';
+    const reason = "schema detail ".repeat(850);
+    const log = new Diagnostics(dir);
+    log.record({
+      source: "worker",
+      stage: "task-output-correction",
+      error: new Error("TASK_OUTPUT_SCHEMA"),
+      rejection: { kind: "activity_reaction", attempt: 2, reason, text },
+    });
+    assert.deepEqual(
+      new Diagnostics(dir).snapshot().entries.at(-1)?.rejection,
+      { kind: "activity_reaction", attempt: 2, reason, text },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("benign escaped Unicode in schema-invalid JSON retains full candidate; decoded credentials do not", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-benign-escape-");
+  try {
+    const log = new Diagnostics(dir);
+    const text = '{"text":"caf\\u00e9","unexpected":true}';
+    log.record({
+      source: "worker",
+      stage: "task-output-correction",
+      error: new Error("TASK_OUTPUT_SCHEMA"),
+      rejection: {
+        kind: "activity_followup",
+        attempt: 1,
+        reason: "additional property unexpected",
+        text,
+      },
+    });
+    assert.equal(
+      new Diagnostics(dir).snapshot().entries.at(-1)?.rejection?.text,
+      text,
+    );
+    const disguised = '{"text":"kco\\u0061ch_private-token","unexpected":true}';
+    log.record({
+      source: "worker",
+      stage: "task-output-correction",
+      error: new Error("TASK_OUTPUT_SCHEMA"),
+      rejection: {
+        kind: "activity_followup",
+        attempt: 2,
+        reason: "additional property unexpected",
+        text: disguised,
+      },
+    });
+    assert.equal(log.snapshot().entries.at(-1)?.rejection, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("malformed JSON with Unicode-escaped credential bytes never enters protected logs", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-escaped-secret-");
+  try {
+    const log = new Diagnostics(dir);
+    const text = '{"text":"kco\\u0061ch_private-token"} extra';
+    log.record({
+      source: "worker",
+      stage: "task-output-correction",
+      error: new Error("TASK_OUTPUT_JSON"),
+      rejection: {
+        kind: "activity_reaction",
+        attempt: 1,
+        reason: "invalid JSON",
+        text,
+      },
+    });
+    assert.equal(log.snapshot().entries.at(-1)?.rejection, undefined);
+    assert.ok(
+      !(await readFile(dir + "/diagnostics.jsonl", "utf8")).includes(text),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 for (const kind of ["symlink", "fifo", "malformed"] as const) {
   test(`log storage ${kind} is bounded, sanitized and cannot block startup`, async () => {
     const dir = await mkdtemp(tmpdir() + "/coach-log-storage-");

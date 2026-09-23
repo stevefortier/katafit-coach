@@ -373,6 +373,18 @@ function renderLogs() {
       hint.textContent = e.hint;
       row.append(hint);
     }
+    if (e.rejection) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `Rejected ${e.rejection.kind} output · attempt ${e.rejection.attempt} · view full reason and text (private)`;
+      const reason = document.createElement("p");
+      reason.textContent = `Reject reason: ${e.rejection.reason}`;
+      const text = document.createElement("pre");
+      text.className = "rejected-output";
+      text.textContent = e.rejection.text;
+      details.append(summary, reason, text);
+      row.append(details);
+    }
     $("logRows").append(row);
   }
   if (!rows.length) $("logRows").textContent = "No entries match this level.";
@@ -421,7 +433,9 @@ const logJSON = () =>
   JSON.stringify({ ...logData, entries: filteredLogs() }, null, 2);
 action("logCopy", async () => {
   await navigator.clipboard.writeText(logJSON());
-  notice("Sanitized diagnostic JSON copied.");
+  notice(
+    "Diagnostic JSON copied. Rejected output may contain private meal or health details; share carefully.",
+  );
 });
 action("logDownload", async () => {
   const url = URL.createObjectURL(
