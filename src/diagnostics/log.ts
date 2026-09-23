@@ -24,6 +24,7 @@ export const stages = [
   "reads-ready",
   "inference",
   "provider-payload",
+  "provider-response",
   "publishing",
   "verifying",
   "reply-persisted",
@@ -53,6 +54,17 @@ export interface LogInput {
   error?: unknown;
   metadata?: Record<string, unknown>;
   rejection?: { kind: string; attempt: number; reason: string; text: string };
+  preview?: string;
+  shape?: ProviderShape;
+}
+export interface ProviderShape {
+  toolChoice: "auto" | "none" | "required" | "default-auto";
+  toolCount: number;
+  toolNames: string[];
+  messageCount: number;
+  lastRole: "system" | "user" | "assistant" | "tool";
+  lastContentShape: "text" | "text-parts" | "multimodal" | "other";
+  previewSource: "last-message";
 }
 export interface Entry {
   time: string;
@@ -64,11 +76,71 @@ export interface Entry {
   hint?: string;
   metadata: Record<string, number>;
   rejection?: { kind: string; attempt: number; reason: string; text: string };
+  preview?: string;
+  shape?: ProviderShape;
 }
 export const LOG_ENTRIES = 500;
 export const LOG_FILE_BYTES = 256 * 1024;
 const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
+const operationalWords = new Set([
+  "please",
+  "list",
+  "available",
+  "tools",
+  "tool",
+  "read",
+  "status",
+  "show",
+  "the",
+  "current",
+  "result",
+  "results",
+  "now",
+  "and",
+  "count",
+]);
+export function safeProviderPreview(text: unknown): text is string {
+  return (
+    typeof text === "string" &&
+    text.length > 0 &&
+    text.length <= 100 &&
+    !credentialPattern.test(text) &&
+    !/[\\<>/@_={}\[\]0-9]/.test(text) &&
+    /^[A-Za-z .,?!:'"\n-]+$/.test(text) &&
+    !!text.trim() &&
+    !!text
+      .match(/[A-Za-z]+/g)
+      ?.every((word) => operationalWords.has(word.toLowerCase()))
+  );
+}
+function safeProviderShape(value: unknown): value is ProviderShape {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const s = value as Record<string, unknown>;
+  return (
+    ["auto", "none", "required", "default-auto"].includes(
+      s.toolChoice as string,
+    ) &&
+    Number.isInteger(s.toolCount) &&
+    (s.toolCount as number) >= 0 &&
+    (s.toolCount as number) <= 64 &&
+    Array.isArray(s.toolNames) &&
+    s.toolNames.length === s.toolCount &&
+    s.toolNames.every(
+      (name: unknown) =>
+        typeof name === "string" &&
+        /^(?:coach_|studio_operator_)[a-z_]{1,48}$/.test(name),
+    ) &&
+    Number.isInteger(s.messageCount) &&
+    (s.messageCount as number) > 0 &&
+    (s.messageCount as number) <= 100 &&
+    ["system", "user", "assistant", "tool"].includes(s.lastRole as string) &&
+    ["text", "text-parts", "multimodal", "other"].includes(
+      s.lastContentShape as string,
+    ) &&
+    s.previewSource === "last-message"
+  );
+}
 function safeRejectionText(text: string, code: ErrorCode | undefined) {
   if (credentialPattern.test(text)) return false;
   if (code === "TASK_OUTPUT_JSON") return !/\\u[0-9a-f]{4}/i.test(text);
@@ -119,6 +191,24 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
       : {}),
     ...(error ? { code: error.code, hint: error.hint } : {}),
     metadata: numericMetadata({ ...error?.metadata, ...input.metadata }),
+    ...(input.source === "provider" &&
+    input.stage === "provider-payload" &&
+    safeProviderShape(input.shape)
+      ? {
+          shape: {
+            toolChoice: input.shape.toolChoice,
+            toolCount: input.shape.toolCount,
+            toolNames: [...input.shape.toolNames],
+            messageCount: input.shape.messageCount,
+            lastRole: input.shape.lastRole,
+            lastContentShape: input.shape.lastContentShape,
+            previewSource: input.shape.previewSource,
+          },
+          ...(safeProviderPreview(input.preview)
+            ? { preview: input.preview }
+            : {}),
+        }
+      : {}),
     ...(showRejection
       ? {
           rejection: {

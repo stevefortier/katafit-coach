@@ -60,6 +60,72 @@ test("bounded structured history rotates, strips arbitrary data and retains last
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("provider diagnostic preview and shape survive protected restart but unsafe input is omitted", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-payload-");
+  try {
+    const log = new Diagnostics(dir);
+    log.record({
+      source: "provider",
+      stage: "provider-payload",
+      preview: "Please list available tools.",
+      shape: {
+        toolChoice: "auto",
+        toolCount: 1,
+        toolNames: ["coach_list_activities"],
+        messageCount: 2,
+        lastRole: "user",
+        lastContentShape: "text",
+        previewSource: "last-message",
+      },
+    });
+    assert.equal(
+      new Diagnostics(dir).snapshot().entries.at(-1)?.preview,
+      "Please list available tools.",
+    );
+    log.record({
+      source: "provider",
+      stage: "provider-payload",
+      preview: "Bearer synthetic-private-key",
+      shape: {
+        toolChoice: "auto",
+        toolCount: 0,
+        toolNames: [],
+        messageCount: 1,
+        lastRole: "user",
+        lastContentShape: "text",
+        previewSource: "last-message",
+      },
+    });
+    assert.equal(log.snapshot().entries.at(-1)?.preview, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("inbound response shape counters survive protected restart without content", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-response-");
+  try {
+    const log = new Diagnostics(dir);
+    log.record({
+      source: "provider",
+      stage: "provider-response",
+      metadata: {
+        turn: 2,
+        nativeCalls: 1,
+        textParts: 0,
+        rawText: "PRIVATE",
+      },
+    });
+    assert.deepEqual(new Diagnostics(dir).snapshot().entries.at(-1)?.metadata, {
+      turn: 2,
+      nativeCalls: 1,
+      textParts: 0,
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("protected task-output log retains a full safe rejected candidate and exact reason across restart", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-rejected-");
   try {

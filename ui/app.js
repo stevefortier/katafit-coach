@@ -368,6 +368,16 @@ function renderLogs() {
       " · " +
       JSON.stringify(e.metadata);
     row.append(title, meta);
+    if (e.shape) {
+      const shape = document.createElement("p");
+      shape.textContent = `Outbound: ${e.shape.toolChoice} · ${e.shape.toolCount} native tools (${e.shape.toolNames.join(", ")}) · ${e.shape.messageCount} messages · last ${e.shape.lastRole}/${e.shape.lastContentShape}`;
+      row.append(shape);
+    }
+    if (e.preview) {
+      const preview = document.createElement("p");
+      preview.textContent = `Screened outbound excerpt (not raw JSON): ${e.preview}`;
+      row.append(preview);
+    }
     if (e.hint) {
       const hint = document.createElement("p");
       hint.textContent = e.hint;

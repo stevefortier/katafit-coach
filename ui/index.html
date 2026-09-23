@@ -321,12 +321,14 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             <details id="logsView">
               <summary>Open diagnostic logs</summary>
               <p class="hint">
-                Protected local diagnostics include full rejected typed-task
-                text and its validation reason when credential screening passes.
-                This may contain private meal or health details; do not share
-                exported JSON casually. Credential-shaped or oversized output is
-                not recorded. Recent history survives restart in the protected
-                data directory.
+                Protected local diagnostics may include screened outbound
+                excerpts (at most 100 characters), structural provider metadata,
+                and full rejected typed-task text and reasons. They may still
+                contain private meal or health details. Exported/copied JSON is
+                outside Studio's protected local storage: inspect and redact it
+                before sharing, and never upload it publicly. Unsafe or unknown
+                payload text is omitted, not blindly prefixed. Recent history
+                survives restart in the protected data directory.
               </p>
               <div class="log-controls">
                 <button id="logRefresh" class="secondary">Refresh</button>

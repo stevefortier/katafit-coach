@@ -120,9 +120,10 @@ test("native delta.tool_calls still executes and returns grounded reply", async 
       : { content: "Read receipt confirms ten activities; media unverified." },
   );
   let executions = 0;
+  const events: any[] = [];
   try {
     const result = await complete(
-      model.config,
+      { ...model.config, onDiagnostic: (event: any) => events.push(event) },
       "Coach",
       "Review",
       AbortSignal.timeout(5000),
@@ -142,6 +143,24 @@ test("native delta.tool_calls still executes and returns grounded reply", async 
     );
     assert.equal(executions, 1);
     assert.equal(model.requests.length, 2);
+    assert.deepEqual(
+      events
+        .filter((e) => e.stage === "provider-response")
+        .map((e) => e.metadata.nativeCalls),
+      [1, 0],
+    );
+    assert.equal(
+      events.filter((e) => e.stage === "provider-payload").length,
+      2,
+    );
+    assert.equal(
+      events.filter((e) => e.stage === "provider-payload")[0].shape?.toolCount,
+      1,
+    );
+    assert.equal(
+      events.filter((e) => e.stage === "provider-payload")[0].shape?.toolChoice,
+      "default-auto",
+    );
     assert.ok(
       model.requests[1].messages.some(
         (message: any) =>

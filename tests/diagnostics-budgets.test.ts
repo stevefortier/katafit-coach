@@ -114,7 +114,11 @@ for (const mode of [
               ? 25
               : 40,
         );
-        assert.equal(events.at(-1).metadata.totalLimit, 48 * 1024 * 1024);
+        assert.equal(
+          events.filter((e) => e.stage === "provider-payload").at(-1).metadata
+            .totalLimit,
+          48 * 1024 * 1024,
+        );
         assert.match(
           notices[0],
           /40 turns remaining.*64 tool calls remaining.*48 scoped reads remaining.*approximately \d+ seconds/,

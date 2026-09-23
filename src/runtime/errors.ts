@@ -100,6 +100,8 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     "totalLimit",
     "elapsedMs",
     "turn",
+    "nativeCalls",
+    "textParts",
     "leaseGeneration",
     "turns",
     "turnLimit",
