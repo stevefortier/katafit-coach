@@ -1,4 +1,5 @@
 import { SafeError, safeError } from "../runtime/errors.js";
+import { backendWireBudget } from "./wireBudget.js";
 export class Client {
   private id = 0;
   constructor(
@@ -13,7 +14,12 @@ export class Client {
       signal ? AbortSignal.any([this.signal, signal]) : this.signal,
     );
   }
-  async fetch(path: string, body?: unknown, budget = 10000, limit = 1048576) {
+  async fetch(
+    path: string,
+    body?: unknown,
+    budget = backendWireBudget(Infinity),
+    limit = 1048576,
+  ) {
     const wireSignal = AbortSignal.any([
       this.signal,
       AbortSignal.timeout(Math.max(1, budget)),
@@ -66,7 +72,7 @@ export class Client {
     method: string,
     params?: unknown,
     notification = false,
-    budget = 10000,
+    budget = backendWireBudget(Infinity),
     limit = 1048576,
   ): Promise<any> {
     const id = ++this.id;
@@ -108,7 +114,11 @@ export class Client {
       throw new Error("CONTRACT_UNSUPPORTED");
     await this.rpc("notifications/initialized", undefined, true);
   }
-  async call(name: string, args: unknown, budget = 10000): Promise<any> {
+  async call(
+    name: string,
+    args: unknown,
+    budget = backendWireBudget(Infinity),
+  ): Promise<any> {
     const r = await this.rpc(
       "tools/call",
       { name, arguments: args },
