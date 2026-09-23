@@ -1,5 +1,9 @@
 import { SafeError, safeError, providerFailure } from "./errors.js";
-import type { LogInput } from "../diagnostics/log.js";
+import {
+  safeProviderPreview,
+  type LogInput,
+  type ProviderShape,
+} from "../diagnostics/log.js";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { assertNoSecrets } from "../config/store.js";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
@@ -50,6 +54,91 @@ export function providerTextBytes(payload: unknown): number {
     }
   }
   return Buffer.byteLength(wire) - exemptBytes;
+}
+
+// Only operational vocabulary may leave the provider envelope for protected
+// local diagnostics. Arbitrary conversation/health prose is never previewed.
+export function providerDiagnostic(payload: unknown, secrets: string[] = []) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload))
+    return undefined;
+  const body = payload as Record<string, unknown>;
+  if (
+    !Array.isArray(body.messages) ||
+    !body.messages.length ||
+    body.messages.length > 100 ||
+    (body.tool_choice !== undefined &&
+      !["auto", "none", "required"].includes(body.tool_choice as string))
+  )
+    return undefined;
+  const messages = body.messages as unknown[];
+  const suffix = messages.at(-1) as Record<string, unknown> | undefined;
+  const last =
+    suffix?.role === "system" &&
+    typeof suffix.content === "string" &&
+    suffix.content.startsWith("[Runtime budget: ")
+      ? messages.at(-2)
+      : suffix;
+  if (!last || typeof last !== "object" || Array.isArray(last))
+    return undefined;
+  const message = last as Record<string, unknown>;
+  if (!["system", "user", "assistant", "tool"].includes(message.role as string))
+    return undefined;
+  const tools = body.tools === undefined ? [] : body.tools;
+  if (!Array.isArray(tools) || tools.length > 64) return undefined;
+  const names = tools.map((tool) => tool?.function?.name);
+  // Never copy provider IDs, URLs, schemas or arbitrary tool names into logs.
+  if (
+    names.some(
+      (name) =>
+        typeof name !== "string" ||
+        !/^(?:coach_|studio_operator_)[a-z_]{1,48}$/.test(name),
+    )
+  )
+    return undefined;
+  const content = message.content;
+  const lastContentShape =
+    typeof content === "string"
+      ? "text"
+      : Array.isArray(content) &&
+          content.every(
+            (part) =>
+              part &&
+              typeof part === "object" &&
+              ["text", "image_url"].includes(part.type),
+          )
+        ? content.some((part) => part.type === "image_url")
+          ? "multimodal"
+          : "text-parts"
+        : "other";
+  const shape: ProviderShape = {
+    toolChoice:
+      body.tool_choice === undefined
+        ? "default-auto"
+        : (body.tool_choice as ProviderShape["toolChoice"]),
+    toolCount: names.length,
+    toolNames: names as string[],
+    messageCount: messages.length,
+    lastRole: message.role as ProviderShape["lastRole"],
+    lastContentShape: lastContentShape as ProviderShape["lastContentShape"],
+    previewSource: "last-message",
+  };
+  // No prefixes of JSON, media, IDs, URLs, escaped strings or arbitrary prose.
+  // Screen the full candidate (not its first 100 chars) before truncation.
+  if (
+    typeof content !== "string" ||
+    content.length > 4096 ||
+    !safeProviderPreview(content.slice(0, 100)) ||
+    !/^[A-Za-z .,?!:'"\n-]+$/.test(content) ||
+    !content.match(/[A-Za-z]+/g)?.every((word) => safeProviderPreview(word))
+  )
+    return { shape };
+  try {
+    assertNoSecrets(content, secrets);
+    const preview = content.slice(0, 100);
+    return { shape, preview };
+  } catch {
+    return { shape };
+  }
 }
 
 const TURN_LIMIT = 40;
@@ -163,6 +252,7 @@ export async function complete(
               provider.onDiagnostic?.({
                 source: "provider",
                 stage: "provider-payload",
+                ...providerDiagnostic(payload, secrets),
                 metadata: {
                   bytes,
                   limit: 1024 * 1024,
@@ -314,6 +404,22 @@ export async function complete(
           }
         : undefined,
     shouldStopAfterTurn: ({ message }) => {
+      // Inbound Pi result shape is separate from the outbound provider payload.
+      // No response content, arguments, tool IDs or upstream finish strings.
+      try {
+        provider.onDiagnostic?.({
+          source: "provider",
+          stage: "provider-response",
+          metadata: {
+            turn: turns + 1,
+            nativeCalls: message.content.filter(
+              (part) => part.type === "toolCall",
+            ).length,
+            textParts: message.content.filter((part) => part.type === "text")
+              .length,
+          },
+        });
+      } catch {}
       outputTokens += message.usage.output;
       if (
         (++turns >= TURN_LIMIT &&
