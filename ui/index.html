@@ -321,14 +321,16 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             <details id="logsView">
               <summary>Open diagnostic logs</summary>
               <p class="hint">
-                Protected local diagnostics may include screened outbound
-                excerpts (at most 100 characters), structural provider metadata,
-                and full rejected typed-task text and reasons. They may still
-                contain private meal or health details. Exported/copied JSON is
-                outside Studio's protected local storage: inspect and redact it
-                before sharing, and never upload it publicly. Unsafe or unknown
-                payload text is omitted, not blindly prefixed. Recent history
-                survives restart in the protected data directory.
+                Protected local diagnostics include bounded, screened
+                model-visible user/system/tool text and model output (including
+                rejected pseudo-tool text), native tool names/argument keys and
+                execution/media receipts. They may contain private health or
+                meal details. Screening removes known credentials,
+                credential-like fields, URLs and image bytes, but cannot
+                identify every arbitrary secret embedded in prose. Exported or
+                copied JSON loses Studio's local storage protection: inspect and
+                redact it before sharing; never upload it publicly. Recent
+                history survives restart in the protected data directory.
               </p>
               <div class="log-controls">
                 <button id="logRefresh" class="secondary">Refresh</button>
