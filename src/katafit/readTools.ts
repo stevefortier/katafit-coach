@@ -18,6 +18,7 @@ export const READ_NAMES = new Set([
   "coach_read_catalog",
   "coach_read_media",
 ]);
+export const READ_CALL_LIMIT = 48;
 const AUTHORITY = new Set([
   "request_id",
   "lease_generation",
@@ -107,7 +108,12 @@ export async function discoverReads(
   client: Client,
   fence: Fence,
   options: ReadOptions,
-): Promise<{ tools: AgentTool[]; status: string; dispose: () => void }> {
+): Promise<{
+  tools: AgentTool[];
+  status: string;
+  dispose: () => void;
+  readBudget: () => { used: number; limit: number };
+}> {
   const listed: any[] = [];
   const cursors = new Set<string>();
   let cursor: string | undefined;
@@ -135,6 +141,7 @@ export async function discoverReads(
       tools: [],
       status: "v1: no request-scoped reads; text-only",
       dispose: () => {},
+      readBudget: () => ({ used: 0, limit: 0 }),
     };
   const cap = await client.call("coach_get_capabilities", fence);
   assertNoSecrets(cap, options.secrets);
@@ -215,7 +222,8 @@ export async function discoverReads(
         async execute(_id, args: any, signal) {
           client.signal.throwIfAborted();
           signal?.throwIfAborted();
-          if (++calls > 24) throw new Error("TOOL_BUDGET_EXHAUSTED");
+          if (++calls > READ_CALL_LIMIT)
+            throw new Error("TOOL_BUDGET_EXHAUSTED");
           const resolved = checkArgs(args);
           const result = await client.withSignal(signal).rpc(
             "tools/call",
@@ -330,7 +338,12 @@ export async function discoverReads(
     });
     if (Buffer.byteLength(status) > 16384)
       throw new Error("CAPABILITIES_REJECTED");
-    return { tools, status, dispose: handles.dispose };
+    return {
+      tools,
+      status,
+      dispose: handles.dispose,
+      readBudget: () => ({ used: calls, limit: READ_CALL_LIMIT }),
+    };
   } catch (error) {
     handles.dispose();
     throw error;

@@ -15,7 +15,7 @@ Only `coach_read_context` has a 4 MiB MCP response transport cap to accommodate 
 Important codes:
 
 - `MODEL_INPUT_TOO_LARGE`: local 1 MiB input limit.
-- `MODEL_BUDGET_EXHAUSTED`: cumulative input, turn, call or output-token resource budget; compare numeric counters against limits.
+- `MODEL_BUDGET_EXHAUSTED`: cumulative input (48 MiB), turn (40), call (64) or output-token (48000) resource budget; compare numeric counters against limits. Request-scoped reads have a separate 48-attempt cap; failed attempts count. Provider requests receive a fresh remaining-budget notice on every turn, but provider compliance is not guaranteed. Main-chat inference defaults to 100 seconds and remains clamped to the shorter request/lease deadline with a publication reserve; increasing turn capacity does not extend a backend request.
 - `PROVIDER_AUTH_FAILED`, `PROVIDER_RATE_LIMITED`, `PROVIDER_QUOTA_EXCEEDED`: check provider authorization, rate limits, or billing/credits respectively. Quota uses only exact `insufficient_quota` / `quota_exceeded` codes on HTTP 429.
 - `PROVIDER_CONTEXT_LIMIT`: exact `context_length_exceeded` / `context_window_exceeded`, separate from local bytes.
 - `PROVIDER_REQUEST_REJECTED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_CONNECTION_FAILED`, `PROVIDER_TIMEOUT`: provider compatibility, availability, transport or inference deadline.

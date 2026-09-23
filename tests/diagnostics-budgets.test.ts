@@ -9,23 +9,35 @@ for (const mode of [
   "calls",
   "output",
   "seven-turn-success",
+  "beyond-old-cap",
+  "exact-cap-final",
+  "short-time",
 ] as const) {
   test(`real Pi retains bounded ${mode} with diagnostic counters`, async () => {
     let requests = 0,
       executions = 0;
     const events: any[] = [];
+    const notices: string[] = [];
     const server = createServer(async (req, res) => {
-      for await (const _ of req) {
-      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const payload = JSON.parse(Buffer.concat(chunks).toString());
+      notices.push(
+        payload.messages?.find((m: any) => m.role === "system")?.content ?? "",
+      );
       requests++;
       const finish =
-        mode === "output" || (mode === "seven-turn-success" && requests === 7);
+        mode === "output" ||
+        ((mode === "seven-turn-success" || mode === "short-time") &&
+          requests === 7) ||
+        (mode === "beyond-old-cap" && requests === 25) ||
+        (mode === "exact-cap-final" && requests === 40);
       const delta = finish
         ? { role: "assistant", content: "Safe final" }
         : {
             role: "assistant",
             tool_calls: Array.from(
-              { length: mode === "calls" ? 49 : 1 },
+              { length: mode === "calls" ? 65 : 1 },
               (_, i) => ({
                 index: i,
                 id: `call_${requests}_${i}`,
@@ -82,39 +94,69 @@ for (const mode of [
             },
           },
         ],
+        {
+          deadlineAt: Date.now() + (mode === "short-time" ? 25000 : 120000),
+          readBudget: () => ({ used: executions, limit: 48 }),
+        },
       );
-      if (mode === "seven-turn-success") {
+      if (
+        mode === "seven-turn-success" ||
+        mode === "short-time" ||
+        mode === "beyond-old-cap" ||
+        mode === "exact-cap-final"
+      ) {
         assert.equal(await promise, "Safe final");
-        assert.equal(requests, 7);
-        assert.ok(events.at(-1).metadata.totalBytes > 5 * 1024 * 1024);
-        assert.ok(events.at(-1).metadata.totalBytes <= 24 * 1024 * 1024);
-        assert.equal(events.at(-1).metadata.totalLimit, 24 * 1024 * 1024);
+        assert.equal(
+          requests,
+          mode === "seven-turn-success" || mode === "short-time"
+            ? 7
+            : mode === "beyond-old-cap"
+              ? 25
+              : 40,
+        );
+        assert.equal(events.at(-1).metadata.totalLimit, 48 * 1024 * 1024);
+        assert.match(
+          notices[0],
+          /40 turns remaining.*64 tool calls remaining.*48 scoped reads remaining.*approximately \d+ seconds/,
+        );
+        assert.match(
+          notices[1],
+          /39 turns remaining.*63 tool calls remaining.*47 scoped reads remaining/,
+        );
+        if (mode === "short-time") assert.match(notices[0], /Consolidate/);
+        if (mode === "exact-cap-final") {
+          assert.match(notices[30], /10 turns remaining.*Consolidate/);
+          assert.match(notices[39], /1 turns remaining.*final answer now/);
+          assert.match(notices[39], /9 scoped reads remaining/);
+        }
       } else {
         await assert.rejects(promise, (e: any) => {
           assert.equal(e.code, "MODEL_BUDGET_EXHAUSTED");
           assert.equal(e.hint, hints.MODEL_BUDGET_EXHAUSTED);
           assert.match(
             e.hint,
-            /24 MiB.*24 turns.*48 tool calls.*48000 output tokens/,
+            /48 MiB.*40 turns.*64 tool calls.*48000 output tokens/,
           );
           if (mode === "turns") {
-            assert.equal(e.metadata.turns, 24);
-            assert.equal(e.metadata.turnLimit, 24);
+            assert.equal(e.metadata.turns, 40);
+            assert.equal(e.metadata.turnLimit, 40);
+            assert.equal(e.metadata.reads, 40);
+            assert.equal(e.metadata.readLimit, 48);
           }
           if (mode === "calls") {
-            assert.equal(e.metadata.calls, 49);
-            assert.equal(e.metadata.callLimit, 48);
+            assert.equal(e.metadata.calls, 65);
+            assert.equal(e.metadata.callLimit, 64);
           }
           if (mode === "output") {
             assert.equal(e.metadata.outputTokens, 48001);
             assert.equal(e.metadata.outputTokenLimit, 48000);
           }
-          assert.equal(e.metadata.totalLimit, 24 * 1024 * 1024);
+          assert.equal(e.metadata.totalLimit, 48 * 1024 * 1024);
           return true;
         });
       }
-      assert.ok(requests <= 24);
-      assert.ok(executions <= 48);
+      assert.ok(requests <= 40);
+      assert.ok(executions <= 64);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));

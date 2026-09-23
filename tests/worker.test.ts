@@ -280,7 +280,7 @@ test("real wire claim/context/persist/followup and restart deduplicate with cano
   }
 });
 
-test("main-chat default inference timeout is 90s and explicit shorter modelMs still wins", async () => {
+test("main-chat default inference timeout is 100s and explicit shorter modelMs still wins", async () => {
   const f = await fixture();
   const original = AbortSignal.timeout;
   const seen: number[] = [];
@@ -299,7 +299,7 @@ test("main-chat default inference timeout is 90s and explicit shorter modelMs st
       });
     f.enqueue("Default budget");
     await make().pollOnce();
-    assert.ok(seen.some((ms) => ms > 89000 && ms <= 90000));
+    assert.ok(seen.some((ms) => ms > 99000 && ms <= 100000));
     seen.length = 0;
     f.enqueue("Short override");
     await make(1000).pollOnce();
@@ -325,7 +325,13 @@ test("main-chat model deadline is clamped below a short lease with publication r
       origin: f.origin,
       token: "synthetic-token",
       system: "Coach",
-      complete: async () => "Bounded reply",
+      complete: async (_context, _signal, _system, _tools, _ref, budget) => {
+        assert.ok(budget);
+        assert.ok(budget.deadlineAt! - Date.now() > 17000);
+        assert.ok(budget.deadlineAt! - Date.now() < 18000);
+        assert.deepEqual(budget.readBudget?.(), { used: 0, limit: 0 });
+        return "Bounded reply";
+      },
     }).pollOnce();
     assert.ok(seen.some((ms) => ms > 17000 && ms < 18000));
     assert.equal(f.publications, 1);
@@ -720,7 +726,7 @@ test("real Pi provider rejection is correlated through worker backend failure an
     assert.equal(payload.ref, failure.ref);
     assert.ok(payload.metadata.bytes > 60000);
     assert.equal(payload.metadata.limit, 1048576);
-    assert.equal(payload.metadata.totalLimit, 25165824);
+    assert.equal(payload.metadata.totalLimit, 50331648);
     assert.equal(failure.metadata.status, 429);
     assert.ok(!JSON.stringify(data).includes("PRIVATE"));
   } finally {

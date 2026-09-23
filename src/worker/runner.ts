@@ -14,6 +14,7 @@ import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { discoverReads } from "../katafit/readTools.js";
+import type { InferenceBudget } from "../runtime/piAdapter.js";
 import { assertNoSecrets } from "../config/store.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "../katafit/client.js";
@@ -48,6 +49,7 @@ export interface WorkerOptions {
     system: string,
     tools: AgentTool[],
     ref: string,
+    budget?: InferenceBudget,
   ) => Promise<string>;
   onState?: (state: string) => void;
   onDiagnostic?: (event: LogInput) => void;
@@ -250,7 +252,7 @@ export class Worker {
       )
         throw new Error("CONTEXT_REJECTED");
       const ms = Math.min(
-        this.options.modelMs ?? 90000,
+        this.options.modelMs ?? 100000,
         deadline - Date.now() - 10000,
       );
       if (ms <= 0) throw new Error("LEASE_EXPIRED");
@@ -296,6 +298,7 @@ export class Worker {
             ]),
             reads.tools,
             ref,
+            { deadlineAt: Date.now() + ms, readBudget: reads.readBudget },
           ),
         modelSignal,
       );
