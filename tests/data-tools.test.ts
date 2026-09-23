@@ -114,7 +114,7 @@ test("discovery pages, no capability v1 fallback and call budget", async () => {
       fence,
       { vision: false, secrets: [] },
     );
-    for (let i = 0; i < 24; i++) await r.tools[0].execute("x", {});
+    for (let i = 0; i < 48; i++) await r.tools[0].execute("x", {});
     await assert.rejects(r.tools[0].execute("x", {}), /TOOL_BUDGET_EXHAUSTED/);
   } finally {
     await f.close();

@@ -407,7 +407,7 @@ export async function admin(
               secrets: Object.values(store.secrets),
               vision: c.provider.vision === true,
               onDiagnostic: (event) => logs.record(event),
-              complete: (context, signal, system, tools, ref) =>
+              complete: (context, signal, system, tools, ref, budget) =>
                 infer(
                   {
                     ...c.provider,
@@ -419,6 +419,7 @@ export async function admin(
                   context,
                   signal,
                   tools,
+                  budget,
                 ),
             });
             try {

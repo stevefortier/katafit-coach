@@ -44,7 +44,10 @@ test("embedded Pi emits only explicit instructions, no tools, and disposes", asy
     );
     assert.equal(text, "Take a recovery day.");
     assert.equal(body.tools, undefined);
-    assert.equal(body.messages[0].content, "You are Coach.");
+    assert.match(
+      body.messages[0].content,
+      /^You are Coach\.[\s\S]*40 turns remaining/,
+    );
     assert.equal(body.messages.filter((m: any) => m.role === "user").length, 1);
   } finally {
     server.closeAllConnections();

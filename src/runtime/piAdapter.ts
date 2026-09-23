@@ -52,10 +52,14 @@ export function providerTextBytes(payload: unknown): number {
   return Buffer.byteLength(wire) - exemptBytes;
 }
 
-const TURN_LIMIT = 24;
-const CALL_LIMIT = 48;
-const TOTAL_INPUT_LIMIT = 24 * 1024 * 1024;
+const TURN_LIMIT = 40;
+const CALL_LIMIT = 64;
+const TOTAL_INPUT_LIMIT = 48 * 1024 * 1024;
 const OUTPUT_TOKEN_LIMIT = 48000;
+export interface InferenceBudget {
+  deadlineAt?: number;
+  readBudget?: () => { used: number; limit: number };
+}
 
 // The core has no resource loader/discovery. Only this explicit state exists.
 export async function complete(
@@ -64,6 +68,7 @@ export async function complete(
   context: string,
   signal: AbortSignal,
   tools: AgentTool[] = [],
+  budget: InferenceBudget = {},
 ): Promise<string> {
   const cancellation = () =>
     new SafeError(
@@ -102,8 +107,32 @@ export async function complete(
       },
     },
     streamFn: (model, context, options) => {
-      assertNoSecrets(context, secrets);
-      return streamSimple(model, context, {
+      const read = budget.readBudget?.();
+      const time =
+        budget.deadlineAt === undefined
+          ? "deadline unavailable"
+          : `approximately ${Math.max(0, Math.floor((budget.deadlineAt - Date.now()) / 1000))} seconds until inference deadline`;
+      const remaining = TURN_LIMIT - turns;
+      const guidance =
+        `\n\n[Runtime budget: ${remaining} turns remaining, ${Math.max(0, CALL_LIMIT - calls)} tool calls remaining, ${read ? Math.max(0, read.limit - read.used) + " scoped reads remaining" : "scoped read count unavailable"}, ${time}. ` +
+        (remaining <= 1
+          ? "Give the final answer now; do not request tools."
+          : remaining <= 10 ||
+              (budget.deadlineAt !== undefined &&
+                budget.deadlineAt - Date.now() < 30000)
+            ? "Consolidate findings and prepare the final answer now; avoid new searches unless essential."
+            : "Reserve time and turns to synthesize a final answer.") +
+        "]";
+      // Replace, rather than accumulate, the ephemeral notice at each provider call.
+      const current = {
+        ...context,
+        messages: [
+          ...context.messages,
+          { role: "system" as const, content: guidance, timestamp: Date.now() },
+        ],
+      };
+      assertNoSecrets(current, secrets);
+      return streamSimple(model, current, {
         ...options,
         apiKey: provider.apiKey,
         // Pi has now assembled the actual request body (including model and
@@ -282,6 +311,12 @@ export async function complete(
         turnLimit: TURN_LIMIT,
         calls,
         callLimit: CALL_LIMIT,
+        ...(budget.readBudget
+          ? {
+              reads: budget.readBudget().used,
+              readLimit: budget.readBudget().limit,
+            }
+          : {}),
         outputTokens,
         outputTokenLimit: OUTPUT_TOKEN_LIMIT,
         totalBytes: inputBytes,

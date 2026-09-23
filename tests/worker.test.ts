@@ -72,6 +72,7 @@ export async function fixture(
     data?: boolean;
     failureMismatch?: "code" | "generation";
     leaseMs?: number;
+    discoveryDelayMs?: number;
   } = {},
 ) {
   let history: any[] = [];
@@ -97,7 +98,11 @@ export async function fixture(
     let value: any = {};
     const a = msg.params?.arguments;
     if (msg.method === "initialize") value = { protocolVersion: "2025-03-26" };
-    else if (msg.method === "tools/list")
+    else if (msg.method === "tools/list") {
+      if (options.discoveryDelayMs)
+        await new Promise((resolve) =>
+          setTimeout(resolve, options.discoveryDelayMs),
+        );
       value = {
         tools: options.data
           ? [
@@ -118,7 +123,7 @@ export async function fixture(
             ]
           : [],
       };
-    else {
+    } else {
       switch (msg.params.name) {
         case "coach_get_capabilities":
           value = {
@@ -280,7 +285,7 @@ test("real wire claim/context/persist/followup and restart deduplicate with cano
   }
 });
 
-test("main-chat default inference timeout is 90s and explicit shorter modelMs still wins", async () => {
+test("main-chat default inference timeout is 100s and explicit shorter modelMs still wins", async () => {
   const f = await fixture();
   const original = AbortSignal.timeout;
   const seen: number[] = [];
@@ -299,7 +304,7 @@ test("main-chat default inference timeout is 90s and explicit shorter modelMs st
       });
     f.enqueue("Default budget");
     await make().pollOnce();
-    assert.ok(seen.some((ms) => ms > 89000 && ms <= 90000));
+    assert.ok(seen.some((ms) => ms > 99000 && ms <= 100000));
     seen.length = 0;
     f.enqueue("Short override");
     await make(1000).pollOnce();
@@ -325,10 +330,49 @@ test("main-chat model deadline is clamped below a short lease with publication r
       origin: f.origin,
       token: "synthetic-token",
       system: "Coach",
-      complete: async () => "Bounded reply",
+      complete: async (_context, _signal, _system, _tools, _ref, budget) => {
+        assert.ok(budget);
+        assert.ok(budget.deadlineAt! - Date.now() > 17000);
+        assert.ok(budget.deadlineAt! - Date.now() < 18000);
+        assert.deepEqual(budget.readBudget?.(), { used: 0, limit: 0 });
+        return "Bounded reply";
+      },
     }).pollOnce();
     assert.ok(seen.some((ms) => ms > 17000 && ms < 18000));
     assert.equal(f.publications, 1);
+  } finally {
+    AbortSignal.timeout = original;
+    await f.close();
+  }
+});
+
+test("model deadline includes time spent discovering read tools", async () => {
+  const f = await fixture({ discoveryDelayMs: 80 });
+  const original = AbortSignal.timeout;
+  let timeoutStarted = 0;
+  let observedDeadline = 0;
+  let discoveryElapsed = 0;
+  AbortSignal.timeout = ((ms: number) => {
+    if (ms === 1000) timeoutStarted = Date.now();
+    return original(ms);
+  }) as typeof AbortSignal.timeout;
+  try {
+    f.enqueue("Delayed discovery");
+    await new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      modelMs: 1000,
+      complete: async (_context, _signal, _system, _tools, _ref, budget) => {
+        discoveryElapsed = Date.now() - timeoutStarted;
+        observedDeadline = budget?.deadlineAt ?? 0;
+        return "Bounded reply";
+      },
+    }).pollOnce();
+    assert.equal(f.publications, 1);
+    assert.ok(timeoutStarted);
+    assert.ok(discoveryElapsed >= 70);
+    assert.ok(observedDeadline <= timeoutStarted + 1010);
   } finally {
     AbortSignal.timeout = original;
     await f.close();
@@ -720,7 +764,7 @@ test("real Pi provider rejection is correlated through worker backend failure an
     assert.equal(payload.ref, failure.ref);
     assert.ok(payload.metadata.bytes > 60000);
     assert.equal(payload.metadata.limit, 1048576);
-    assert.equal(payload.metadata.totalLimit, 25165824);
+    assert.equal(payload.metadata.totalLimit, 50331648);
     assert.equal(failure.metadata.status, 429);
     assert.ok(!JSON.stringify(data).includes("PRIVATE"));
   } finally {

@@ -6,6 +6,33 @@ import { Client } from "../src/katafit/client.js";
 import { discoverReads } from "../src/katafit/readTools.js";
 import { readFixture, fence } from "./data-fixtures.js";
 
+test("request-scoped read budget permits 48 attempts and reports the rejected 49th", async () => {
+  const f = await readFixture({ content: [{ type: "text", text: "ok" }] });
+  const signal = AbortSignal.timeout(10000);
+  try {
+    const reads = await discoverReads(
+      new Client(f.origin, "synthetic-private-token", signal),
+      fence,
+      {
+        vision: false,
+        secrets: ["synthetic-private-token"],
+      },
+    );
+    const tool = reads.tools.find((t) => t.name === "coach_list_activities")!;
+    assert.deepEqual(reads.readBudget(), { used: 0, limit: 48 });
+    for (let n = 0; n < 48; n++) await tool.execute(`read_${n}`, {}, signal);
+    assert.deepEqual(reads.readBudget(), { used: 48, limit: 48 });
+    await assert.rejects(
+      tool.execute("read_49", {}, signal),
+      /TOOL_BUDGET_EXHAUSTED/,
+    );
+    assert.deepEqual(reads.readBudget(), { used: 49, limit: 48 });
+    reads.dispose();
+  } finally {
+    await f.close();
+  }
+});
+
 // Original 1x1 PNG fixture; equality asserts bytes, not a caption or resized image.
 const image =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=";
@@ -230,7 +257,7 @@ test("real Pi model -> MCP media -> next provider payload preserves original PNG
     await f.close();
   }
 });
-test("real Pi stops repeated model tool calls at 24 turns without returning a partial answer", async () => {
+test("real Pi stops repeated model tool calls at 40 turns without returning a partial answer", async () => {
   const f = await readFixture();
   const p = await providerFixture(() => toolCall("coach_list_activities"));
   try {
@@ -244,7 +271,7 @@ test("real Pi stops repeated model tool calls at 24 turns without returning a pa
       complete(p.config, "Coach", "Loop", signal, reads.tools),
       /BUDGET_EXHAUSTED/,
     );
-    assert.equal(p.bodies.length, 24);
+    assert.equal(p.bodies.length, 40);
   } finally {
     await p.close();
     await f.close();
@@ -323,10 +350,10 @@ for (const args of [
       await f.close();
     }
   });
-test("real Pi blocks a burst beyond 48 calls while scoped reads retain their 24-execution cap", async () => {
+test("real Pi blocks a burst beyond 64 calls while scoped reads retain their 48-execution cap", async () => {
   const f = await readFixture();
   const p = await providerFixture(() => ({
-    tool_calls: Array.from({ length: 49 }, (_, i) => ({
+    tool_calls: Array.from({ length: 65 }, (_, i) => ({
       index: i,
       id: "call" + i,
       type: "function",
@@ -346,7 +373,7 @@ test("real Pi blocks a burst beyond 48 calls while scoped reads retain their 24-
     );
     assert.equal(
       f.calls.filter((c) => c.params?.name === "coach_list_activities").length,
-      24,
+      48,
     );
     assert.equal(p.bodies.length, 1);
   } finally {
