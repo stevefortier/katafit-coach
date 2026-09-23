@@ -258,7 +258,7 @@ for (const [category, first] of [
     }
   });
 
-test("actual Pi stops after one invalid correction and reports only safe category", async () => {
+test("actual Pi records both rejected candidates and precise reasons locally, never sends them to backend", async () => {
   const f = await taskFixture();
   const raw = "private-invalid-output-do-not-log";
   const p = await provider(() => raw);
@@ -284,7 +284,20 @@ test("actual Pi stops after one invalid correction and reports only safe categor
       f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
       1,
     );
-    assert.ok(!JSON.stringify(events).includes(raw));
+    const rejections = events.filter(
+      (e) => e.stage === "task-output-correction",
+    );
+    assert.deepEqual(
+      rejections.map((e) => e.rejection?.attempt),
+      [1, 2],
+    );
+    assert.ok(
+      rejections.every(
+        (e) =>
+          e.rejection?.text === raw &&
+          /Unexpected|JSON|token/i.test(e.rejection.reason),
+      ),
+    );
     assert.ok(!JSON.stringify(f.calls).includes(raw));
     assert.ok(
       events.some(

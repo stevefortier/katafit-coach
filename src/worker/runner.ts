@@ -337,7 +337,9 @@ export class Worker {
             ? new SafeError(
                 inferenceStarted ? "PROVIDER_TIMEOUT" : "BACKEND_TIMEOUT",
               )
-            : safeError(error);
+            : error instanceof TaskOutputError
+              ? new SafeError(`TASK_OUTPUT_${error.category}`)
+              : safeError(error);
       if (failure.code !== "CANCELLED") this.lastError = failure;
       this.diagnostic({
         source: "worker",
@@ -540,12 +542,41 @@ export class Worker {
           break;
         } catch (error) {
           if (!(error instanceof TaskOutputError)) throw error;
+          const reason =
+            Buffer.byteLength(error.reason) <= 24000
+              ? error.reason
+              : Buffer.from(error.reason).subarray(0, 16000).toString("utf8") +
+                "… [validation detail truncated; full rejected candidate retained]";
+          const safeCandidate =
+            ["JSON", "SCHEMA", "SEMANTIC"].includes(error.category) &&
+            typeof text === "string" &&
+            Buffer.byteLength(text) <= 24000 &&
+            // Malformed JSON may hide credentials behind Unicode escapes;
+            // schema/semantic failures already passed decoded JSON screening.
+            (error.category !== "JSON" || !/\\u[0-9a-f]{4}/i.test(text)) &&
+            // The parser rejects credential-shaped/known-secret text before
+            // reaching these categories; recheck the known secrets here too.
+            !secrets.some(
+              (secret) =>
+                secret &&
+                (text.includes(secret) || error.reason.includes(secret)),
+            );
           this.diagnostic({
             source: "worker",
             stage: "task-output-correction",
             level: "warn",
             ref,
             error: new SafeError(`TASK_OUTPUT_${error.category}`),
+            ...(safeCandidate
+              ? {
+                  rejection: {
+                    kind: task.kind,
+                    attempt: attempt + 1,
+                    reason,
+                    text,
+                  },
+                }
+              : {}),
           });
           // Reuse the original inference timer and fence, never renew a lease.
           // Keep time for a backend failure receipt if correction cannot finish.

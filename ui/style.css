@@ -294,6 +294,15 @@ footer {
 .log-entry p {
   margin-bottom: 0;
 }
+.rejected-output {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  background: #0d1513;
+  font-size: 0.85rem;
+}
 .log-error {
   border-color: #b34635;
 }

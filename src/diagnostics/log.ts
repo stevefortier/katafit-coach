@@ -52,6 +52,7 @@ export interface LogInput {
   ref?: string;
   error?: unknown;
   metadata?: Record<string, unknown>;
+  rejection?: { kind: string; attempt: number; reason: string; text: string };
 }
 export interface Entry {
   time: string;
@@ -62,12 +63,41 @@ export interface Entry {
   code?: ErrorCode;
   hint?: string;
   metadata: Record<string, number>;
+  rejection?: { kind: string; attempt: number; reason: string; text: string };
 }
 export const LOG_ENTRIES = 500;
 export const LOG_FILE_BYTES = 256 * 1024;
-// No user strings, remote IDs, URLs, prompts or errors are accepted as log text.
+const credentialPattern =
+  /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
+function safeRejectionText(text: string, code: ErrorCode | undefined) {
+  if (credentialPattern.test(text)) return false;
+  if (code === "TASK_OUTPUT_JSON") return !/\\u[0-9a-f]{4}/i.test(text);
+  try {
+    return !credentialPattern.test(JSON.stringify(JSON.parse(text)));
+  } catch {
+    return false;
+  }
+}
+// The sole content exception is a bounded, credential-screened typed-task
+// rejection. Studio logs are owner-authenticated and stored mode 0600; copies
+// and downloads can contain private meal/health data and must be treated as such.
 function entry(input: LogInput, time = new Date().toISOString()): Entry {
   const error = input.error === undefined ? undefined : safeError(input.error);
+  const rejection = input.rejection;
+  const showRejection =
+    input.stage === "task-output-correction" &&
+    ["TASK_OUTPUT_JSON", "TASK_OUTPUT_SCHEMA", "TASK_OUTPUT_SEMANTIC"].includes(
+      error?.code ?? "",
+    ) &&
+    rejection &&
+    /^[a-z_]{1,40}$/.test(rejection.kind) &&
+    [1, 2].includes(rejection.attempt) &&
+    typeof rejection.reason === "string" &&
+    Buffer.byteLength(rejection.reason) <= 24000 &&
+    typeof rejection.text === "string" &&
+    Buffer.byteLength(rejection.text) <= 24000 &&
+    safeRejectionText(rejection.text, error?.code) &&
+    !credentialPattern.test(rejection.reason);
   return {
     time,
     source: ["studio", "worker", "provider"].includes(input.source)
@@ -89,6 +119,16 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
       : {}),
     ...(error ? { code: error.code, hint: error.hint } : {}),
     metadata: numericMetadata({ ...error?.metadata, ...input.metadata }),
+    ...(showRejection
+      ? {
+          rejection: {
+            kind: rejection.kind,
+            attempt: rejection.attempt,
+            reason: rejection.reason,
+            text: rejection.text,
+          },
+        }
+      : {}),
   };
 }
 export class Diagnostics {

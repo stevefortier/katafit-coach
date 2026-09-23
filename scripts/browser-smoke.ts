@@ -4,6 +4,7 @@ import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { Store } from "../src/config/store.js";
+import { Diagnostics } from "../src/diagnostics/log.js";
 import { admin } from "../src/server/admin.js";
 const dir = await mkdtemp(tmpdir() + "/coach-browser-");
 const evidence =
@@ -41,6 +42,19 @@ const provider = createServer(async (req, res) => {
 await new Promise<void>((r) => provider.listen(0, "127.0.0.1", r));
 const store = new Store(dir);
 await store.init();
+const syntheticRejected = "<tool_call>synthetic-not-json</tool_call>";
+new Diagnostics(dir).record({
+  source: "worker",
+  stage: "task-output-correction",
+  level: "warn",
+  error: new Error("TASK_OUTPUT_JSON"),
+  rejection: {
+    kind: "activity_reaction",
+    attempt: 2,
+    reason: "Unexpected token '<' at position 0",
+    text: syntheticRejected,
+  },
+});
 const backend = createServer((_req, res) =>
   res.end(
     "# Kata.fit external Coach agent v1\nSynthetic browser backend policy",
@@ -133,6 +147,20 @@ try {
       .querySelector("#logRows")
       ?.textContent?.includes("preview-completed"),
   );
+  const rejected = page.locator(".log-entry", {
+    hasText: "task-output-correction",
+  });
+  assert.equal(
+    await rejected.locator(".rejected-output").textContent(),
+    syntheticRejected,
+  );
+  assert.match(
+    (await rejected.locator("details summary").textContent()) ?? "",
+    /attempt 2.*private/,
+  );
+  await rejected.locator("details summary").click();
+  assert.match(await rejected.innerText(), /Reject reason: Unexpected token/);
+  await rejected.locator("details summary").click();
   await page.evaluate(async (key) => {
     await fetch("/api/config", {
       method: "POST",
