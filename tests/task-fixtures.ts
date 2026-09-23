@@ -14,6 +14,7 @@ export const names = [
   "coach_read_task_context",
   "coach_complete_task",
   "coach_read_task_receipt",
+  "coach_reconcile_task",
   "coach_fail_task",
 ];
 const limits = {
@@ -28,6 +29,9 @@ export async function taskFixture(options: any = {}) {
   const calls: any[] = [];
   const queue: any[] = [];
   const saved: any[] = [];
+  const retired: any[] = [];
+  const denied = new Set<string>();
+  const byId = new Map<string, any>();
   let current: any;
   let main = 0;
   const server = createServer(async (req, res) => {
@@ -75,8 +79,30 @@ export async function taskFixture(options: any = {}) {
         completion_is_publication: false,
       };
     else if (n === "coach_claim_task") {
+      // Backend orders queued before expired claims and invalidates source-denied
+      // reclaim candidates instead of returning them forever.
       current = queue.shift() ?? null;
+      if (!current) {
+        while (retired.length) {
+          const candidate = retired.shift();
+          if (denied.has(candidate.id)) {
+            candidate.status = "invalidated";
+            continue;
+          }
+          current = candidate;
+          break;
+        }
+      }
+      if (current?.status === "expired") {
+        current = {
+          ...current,
+          status: "claimed",
+          lease_generation: current.lease_generation + 1,
+          lease_expires_at: new Date(Date.now() + 60000).toISOString(),
+        };
+      }
       value = { task: current };
+      if (current) byId.set(current.id, current);
     } else if (n === "coach_read_task_context")
       value = {
         task: { ...current, ...options.contextTask },
@@ -110,6 +136,54 @@ export async function taskFixture(options: any = {}) {
       value = receipt(true);
     } else if (n === "coach_read_task_receipt") {
       value = { ...receipt(false), ...options.receipt };
+      if (options.receiptHash) value.result_sha256 = options.receiptHash;
+      if (options.receiptError) {
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: m.id,
+            result: {
+              isError: true,
+              content: [{ type: "text", text: '{"code":"LEASE_LOST"}' }],
+            },
+          }),
+        );
+        return;
+      }
+    } else if (n === "coach_reconcile_task") {
+      current = byId.get(a.task_id) ?? current;
+      options.onReconcile?.(current);
+      if (options.reconcileDenial && denied.has(a.task_id)) {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: m.id,
+            result: {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ code: options.reconcileDenial }),
+                },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      if (
+        current.status === "claimed" &&
+        Date.now() >= Date.parse(current.lease_expires_at)
+      ) {
+        current.status = "expired";
+        retired.push(current);
+      }
+      value = {
+        ...receipt(false),
+        ...options.receipt,
+        resolution: current.status === "expired" ? "reclaimable" : "observed",
+      };
       if (options.receiptHash) value.result_sha256 = options.receiptHash;
       if (options.receiptError) {
         res.end(
@@ -183,6 +257,9 @@ export async function taskFixture(options: any = {}) {
     origin: `http://127.0.0.1:${(server.address() as any).port}`,
     calls,
     saved,
+    deny(id: string) {
+      denied.add(id);
+    },
     enqueue(kind = "activity_followup", patch: any = {}) {
       const task = {
         id: String(queue.length + saved.length + 1).padStart(24, "0"),
@@ -203,6 +280,7 @@ export async function taskFixture(options: any = {}) {
         ...patch,
       };
       queue.push(task);
+      byId.set(task.id, task);
       return task;
     },
     async close() {

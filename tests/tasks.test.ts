@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { Worker } from "../src/worker/runner.js";
 import { parseTaskResult } from "../src/katafit/tasks.js";
 import { taskFixture, names } from "./task-fixtures.js";
@@ -207,9 +208,375 @@ test("dropped completion response reconciles original receipt without resubmit o
       1,
     );
     assert.equal(
-      f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+      f.calls.filter((c) => c.name === "coach_reconcile_task").length,
       1,
     );
+    assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+test("pre-write drop uses atomic resolution and then serves the unrelated queued identity", async () => {
+  const f = await taskFixture();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    if (
+      init?.body &&
+      JSON.parse(String(init.body)).params?.name === "coach_complete_task"
+    )
+      throw new TypeError("pre-write drop");
+    return original(input, init);
+  }) as typeof fetch;
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"generated"}',
+  });
+  const clock = Date.now;
+  try {
+    const first = f.enqueue();
+    const second = f.enqueue();
+    await w.pollOnce();
+    Date.now = () => Date.parse(first.lease_expires_at) + 1;
+    await w.pollOnce();
+    Date.now = clock;
+    await w.pollOnce();
+    const claims = f.calls.filter((c) => c.name === "coach_claim_task");
+    assert.deepEqual(claims.length, 2);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+      0,
+    );
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_reconcile_task").length >= 2,
+      true,
+    );
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_read_task_context")[1]?.args
+        .task_id,
+      second.id,
+    );
+    assert.notEqual(first.id, second.id);
+    assert.equal(f.saved.length, 0);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      0,
+    );
+    assert.equal(f.calls.filter((c) => c.name === "coach_fail_task").length, 0);
+  } finally {
+    Date.now = clock;
+    globalThis.fetch = original;
+    await w.stop();
+    await f.close();
+  }
+});
+test("late completion before authoritative resolution is stored, not retired by clock", async () => {
+  const options: any = {};
+  const f = await taskFixture(options);
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    if (
+      init?.body &&
+      JSON.parse(String(init.body)).params?.name === "coach_complete_task"
+    )
+      throw new TypeError("pre-write drop");
+    return original(input, init);
+  }) as typeof fetch;
+  const clock = Date.now;
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"generated"}',
+  });
+  try {
+    const first = f.enqueue();
+    await w.pollOnce();
+    options.onReconcile = (task: any) => {
+      task.status = "completed";
+      task.hash = createHash("sha256")
+        .update(JSON.stringify({ text: "generated" }))
+        .digest("hex");
+      Date.now = () => Date.parse(first.lease_expires_at) + 1;
+    };
+    await w.pollOnce();
+    assert.equal(w.state, "task-result-stored");
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      1,
+    );
+  } finally {
+    Date.now = clock;
+    globalThis.fetch = original;
+    await w.stop();
+    await f.close();
+  }
+});
+test("pre-write drop with authoritative failure releases the task slot without a second write", async () => {
+  const options: any = {};
+  const f = await taskFixture(options);
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    if (
+      init?.body &&
+      JSON.parse(String(init.body)).params?.name === "coach_complete_task"
+    )
+      throw new TypeError("synthetic pre-write drop");
+    return fetchOriginal(input, init);
+  }) as typeof fetch;
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"generated"}',
+  });
+  try {
+    const first = f.enqueue();
+    f.enqueue();
+    await w.pollOnce();
+    assert.equal(w.state, "task-result-unknown");
+    options.receipt = {
+      task: { ...first, status: "failed" },
+      status: "failed",
+      failure_code: "TASK_PROVIDER_FAILED",
+    };
+    await w.pollOnce();
+    assert.equal(w.state, "task-result-unverified");
+    options.receipt = undefined;
+    await w.pollOnce();
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      2,
+    );
+    assert.equal(f.saved.length, 0);
+    assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    await w.stop();
+    await f.close();
+  }
+});
+test("authoritative expiry fence releases unrelated queued work without a second completion", async () => {
+  const f = await taskFixture();
+  const fetchOriginal = globalThis.fetch;
+  const nowOriginal = Date.now;
+  globalThis.fetch = (async (input, init) => {
+    if (
+      init?.body &&
+      JSON.parse(String(init.body)).params?.name === "coach_complete_task"
+    )
+      throw new TypeError("synthetic pre-write drop");
+    return fetchOriginal(input, init);
+  }) as typeof fetch;
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"generated"}',
+  });
+  try {
+    const first = f.enqueue();
+    f.enqueue();
+    await w.pollOnce();
+    await w.pollOnce();
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      1,
+    );
+    Date.now = () => Date.parse(first.lease_expires_at) + 1;
+    await w.pollOnce();
+    assert.equal(w.state, "task-result-unverified");
+    Date.now = nowOriginal;
+    await w.pollOnce();
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      2,
+    );
+    assert.equal(f.saved.length, 0);
+    assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
+  } finally {
+    Date.now = nowOriginal;
+    globalThis.fetch = fetchOriginal;
+    await w.stop();
+    await f.close();
+  }
+});
+test("transient receipt read error does not clear uncertain completion", async () => {
+  const options = { receiptError: true };
+  const f = await taskFixture(options);
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    if (
+      init?.body &&
+      JSON.parse(String(init.body)).params?.name === "coach_complete_task"
+    )
+      throw new TypeError("synthetic pre-write drop");
+    return fetchOriginal(input, init);
+  }) as typeof fetch;
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"generated"}',
+  });
+  try {
+    f.enqueue();
+    f.enqueue();
+    await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    await w.pollOnce();
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      1,
+    );
+    assert.equal(w.state, "task-result-unknown");
+    options.receiptError = false;
+    await w.pollOnce();
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      1,
+    );
+    assert.equal(w.state, "task-result-unknown");
+    assert.equal(f.saved.length, 0);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    await w.stop();
+    await f.close();
+  }
+});
+test("source denial isolates uncertain digest while queued tasks take priority over expired source", async () => {
+  const options = {
+    dropComplete: true,
+    reconcileDenial: "TASK_SOURCE_CHANGED",
+  };
+  const f = await taskFixture(options);
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    isolationMs: 1,
+    complete: async () => '{"text":"generated"}',
+  });
+  try {
+    const first = f.enqueue();
+    f.deny(first.id);
+    await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    const second = f.enqueue();
+    await w.pollOnce();
+    assert.equal(w.incidents.length, 1);
+    assert.equal(w.incidents[0].taskId, first.id);
+    assert.match(w.incidents[0].digest, /^[0-9a-f]{64}$/);
+    assert.equal(w.incidents[0].reason, "TASK_SOURCE_CHANGED");
+    assert.equal(w.state, "task-result-stored");
+    assert.equal(f.saved.length, 2);
+    assert.equal(f.saved[1].task_id, second.id);
+    await new Promise((r) => setTimeout(r, 2));
+    await w.pollOnce();
+    assert.equal(w.incidents.length, 1);
+    assert.ok(
+      f.calls.filter(
+        (c) => c.name === "coach_reconcile_task" && c.args.task_id === first.id,
+      ).length >= 2,
+    );
+    assert.equal(
+      f.calls.filter(
+        (c) => c.name === "coach_complete_task" && c.args.task_id === first.id,
+      ).length,
+      1,
+    );
+    assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+test("transient reconcile error never isolates an unknown completion", async () => {
+  const options = { dropComplete: true, receiptError: true };
+  const f = await taskFixture(options);
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"generated"}',
+  });
+  try {
+    f.enqueue();
+    f.enqueue();
+    await assert.rejects(w.pollOnce());
+    await w.pollOnce();
+    assert.equal(w.incidents.length, 0);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      1,
+    );
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+test("isolated denial stays unknown past expiry and resolves only on restored authoritative receipt", async () => {
+  const options: any = {
+    dropComplete: true,
+    reconcileDenial: "TASK_ROUTING_CHANGED",
+  };
+  const f = await taskFixture(options);
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    isolationMs: 1,
+    complete: async () => '{"text":"generated"}',
+  });
+  try {
+    const first = f.enqueue();
+    f.deny(first.id);
+    await assert.rejects(w.pollOnce());
+    assert.equal(w.incidents.length, 1);
+    assert.equal(w.incidents[0].reason, "TASK_ROUTING_CHANGED");
+    await new Promise((r) => setTimeout(r, 2));
+    await w.pollOnce();
+    assert.equal(w.incidents.length, 1);
+    options.reconcileDenial = undefined;
+    await new Promise((r) => setTimeout(r, 2));
+    await w.pollOnce();
+    assert.equal(w.incidents.length, 0);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      1,
+    );
+    assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+test("bounded incident capacity stops new typed claims rather than discarding uncertainty", async () => {
+  const f = await taskFixture({
+    dropComplete: true,
+    reconcileDenial: "TASK_SOURCE_CHANGED",
+  });
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"generated"}',
+  });
+  try {
+    for (let i = 0; i < 33; i++) {
+      const task = f.enqueue();
+      f.deny(task.id);
+    }
+    for (let i = 0; i < 32; i++)
+      await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    assert.equal(w.incidents.length, 32);
+    await w.pollOnce();
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      32,
+    );
+    assert.equal(f.saved.length, 32);
+    assert.equal(w.incidents.length, 32);
     assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
   } finally {
     await w.stop();
@@ -237,7 +604,7 @@ test("unknown completion outcome is reconciled on next poll without another comp
       1,
     );
     assert.equal(
-      f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+      f.calls.filter((c) => c.name === "coach_reconcile_task").length,
       2,
     );
     assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
@@ -317,7 +684,7 @@ test("all task context identity and original deadline fields are fenced byte for
     }
   }
 });
-test("missing each of six tools stays legacy main-only without claiming tasks", async () => {
+test("missing any required task tool stays main-only without claiming tasks", async () => {
   for (const missing of names) {
     const f = await taskFixture({
       tools: names.filter((n) => n !== missing),
@@ -455,7 +822,7 @@ test("stop during completion uses independent live receipt transport", async () 
     await stopped;
     assert.equal(f.saved.length, 1);
     assert.equal(
-      f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+      f.calls.filter((c) => c.name === "coach_reconcile_task").length,
       1,
     );
     assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
@@ -524,7 +891,7 @@ test("negotiated task lifecycle submits structured result once and independently
     assert.equal(f.saved.length, 1);
     assert.deepEqual(f.saved[0].result, { text: "Steady progress." });
     assert.equal(
-      f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+      f.calls.filter((c) => c.name === "coach_reconcile_task").length,
       1,
     );
     assert.deepEqual(seen.tools, []);

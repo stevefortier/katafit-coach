@@ -104,7 +104,7 @@ for (const [kind, result] of Object.entries(results))
       assert.ok(!payload.includes("requester_id"));
       assert.ok(!payload.includes("lease_generation"));
       assert.equal(
-        f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+        f.calls.filter((c) => c.name === "coach_reconcile_task").length,
         1,
       );
       assert.ok(

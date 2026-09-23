@@ -11,6 +11,7 @@ export const TASK_TOOLS = [
   "coach_read_task_context",
   "coach_complete_task",
   "coach_read_task_receipt",
+  "coach_reconcile_task",
   "coach_fail_task",
 ];
 const limits = {
@@ -234,6 +235,49 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
     throw new Error("OUTPUT_REJECTED");
   assertNoSecrets(value, secrets);
   return value;
+}
+export function verifyTaskResolution(task: any, response: any, digest: string) {
+  if (
+    !exactKeys(response, [
+      "task",
+      "status",
+      "result_sha256",
+      "completed_at",
+      "consumed_at",
+      "failure_code",
+      "resolution",
+    ])
+  )
+    throw new Error("DELIVERY_UNVERIFIED");
+  const { resolution, ...receipt } = response;
+  if (["completed", "consumed"].includes(receipt.status)) {
+    if (resolution !== "observed") throw new Error("DELIVERY_UNVERIFIED");
+    return verifyTaskReceipt(task, receipt, digest);
+  }
+  if (
+    !exactKeys(receipt.task, Object.keys(task)) ||
+    Object.keys(task).some(
+      (k) => k !== "status" && receipt.task[k] !== task[k],
+    ) ||
+    receipt.task.status !== receipt.status ||
+    receipt.result_sha256 !== null ||
+    receipt.completed_at !== null ||
+    receipt.consumed_at !== null ||
+    !(
+      (["failed", "cancelled", "invalidated"].includes(receipt.status) &&
+        resolution === "observed") ||
+      (receipt.status === "expired" && resolution === "reclaimable") ||
+      (receipt.status === "claimed" && resolution === "observed")
+    ) ||
+    !(
+      receipt.failure_code === null ||
+      (receipt.status === "failed" &&
+        typeof receipt.failure_code === "string" &&
+        receipt.failure_code.length > 0)
+    )
+  )
+    throw new Error("DELIVERY_UNVERIFIED");
+  return receipt.status;
 }
 export function verifyTaskFailure(task: any, receipt: any, code: string) {
   if (

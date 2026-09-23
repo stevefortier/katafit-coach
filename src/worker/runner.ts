@@ -8,6 +8,7 @@ import {
   parseTaskResult,
   verifyTaskReceipt,
   verifyTaskFailure,
+  verifyTaskResolution,
 } from "../katafit/tasks.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
@@ -51,12 +52,35 @@ export interface WorkerOptions {
   onDiagnostic?: (event: LogInput) => void;
   pollMs?: number;
   modelMs?: number;
+  isolationMs?: number;
 }
+type PendingTask = { task: any; digest: string };
+type Incident = PendingTask & { reason: string; nextCheck: number };
+const DENIAL_CODES = new Set([
+  "TASK_SOURCE_CHANGED",
+  "TASK_ROUTING_CHANGED",
+  "CONVERSATION_CLEARED",
+  "SCOPE_CHANGED",
+  "REQUESTER_SCOPE_CHANGED",
+  "EXTERNAL_COACH_AUTO_ACCEPTANCE_CONFLICT",
+  "CREDENTIAL_REJECTED",
+]);
+const MAX_INCIDENTS = 32;
 export class Worker {
   private controller = new AbortController();
   private active?: Promise<void>;
   private preferTask = true;
-  private pendingTask?: { task: any; digest: string };
+  private pendingTask?: PendingTask;
+  private isolated: Incident[] = [];
+  get incidents() {
+    return this.isolated.map(({ task, digest, reason, nextCheck }) => ({
+      taskId: task.id,
+      leaseGeneration: task.lease_generation,
+      digest,
+      reason,
+      nextCheck,
+    }));
+  }
   private loop?: Promise<void>;
   state = "stopped";
   lastError: SafeError | null = null;
@@ -122,6 +146,17 @@ export class Worker {
     try {
       await c.connect();
       const taskKinds = await discoverTasks(c);
+      const due = this.isolated.find(
+        (incident) => incident.nextCheck <= Date.now(),
+      );
+      if (due) {
+        due.nextCheck = Date.now() + (this.options.isolationMs ?? 60000);
+        try {
+          await this.reconcileTask(due);
+        } catch {
+          /* No read is a proof. */
+        }
+      }
       let triedTasks = false;
       const tryTasks = async () => {
         if (triedTasks || !taskKinds.length) return false;
@@ -131,11 +166,13 @@ export class Worker {
         if (this.pendingTask) {
           try {
             await this.reconcileTask();
-            return true;
           } catch {
-            return false;
+            // A failed read is not evidence of completion or noncompletion.
+            this.update("task-result-unknown");
           }
+          return true;
         }
+        if (this.isolated.length >= MAX_INCIDENTS) return false;
         taskAttempt = true;
         const handled = await this.pollTask(c, taskKinds, ref);
         if (!handled) taskAttempt = false;
@@ -335,30 +372,88 @@ export class Worker {
       disposeReads?.();
     }
   }
-  private async reconcileTask() {
-    const pending = this.pendingTask;
+  private async reconcileTask(
+    pending: PendingTask | Incident | undefined = this.pendingTask,
+  ) {
     if (!pending) return;
     const control = new Client(
       this.options.origin,
       this.options.token,
       AbortSignal.timeout(3000),
     );
-    const checked = await control.call(
-      "coach_read_task_receipt",
-      {
-        protocol: TASK_PROTOCOL,
-        task_id: pending.task.id,
-        lease_generation: pending.task.lease_generation,
-      },
-      3000,
-    );
-    const status = verifyTaskReceipt(pending.task, checked, pending.digest);
-    this.pendingTask = undefined;
-    this.update(
-      status === "consumed"
-        ? "task-publication-confirmed"
-        : "task-result-stored",
-    );
+    let checked: any;
+    try {
+      const result = await control.rpc(
+        "tools/call",
+        {
+          name: "coach_reconcile_task",
+          arguments: {
+            protocol: TASK_PROTOCOL,
+            task_id: pending.task.id,
+            lease_generation: pending.task.lease_generation,
+          },
+        },
+        false,
+        3000,
+      );
+      if (result.isError) {
+        let code: unknown;
+        try {
+          code = JSON.parse(
+            result.content?.find((v: any) => v.type === "text")?.text,
+          ).code;
+        } catch {}
+        if (typeof code === "string" && DENIAL_CODES.has(code))
+          throw new Error(code);
+        throw new Error("MCP_TOOL_FAILED");
+      }
+      checked =
+        result.structuredContent ??
+        JSON.parse(result.content?.find((v: any) => v.type === "text")?.text);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "";
+      if (
+        DENIAL_CODES.has(reason) &&
+        pending === this.pendingTask &&
+        this.isolated.length < MAX_INCIDENTS
+      ) {
+        this.isolated.push({
+          ...pending,
+          reason,
+          nextCheck: Date.now() + (this.options.isolationMs ?? 60000),
+        });
+        this.pendingTask = undefined;
+        this.diagnostic({
+          source: "worker",
+          stage: "task-result-unknown",
+          level: "warn",
+          metadata: { leaseGeneration: pending.task.lease_generation },
+        });
+      }
+      throw error;
+    }
+    const status = verifyTaskResolution(pending.task, checked, pending.digest);
+    if (status === "claimed") {
+      this.update("task-result-unknown");
+      return;
+    }
+    if (pending === this.pendingTask) this.pendingTask = undefined;
+    else
+      this.isolated = this.isolated.filter((incident) => incident !== pending);
+    if (status === "completed" || status === "consumed") {
+      this.update(
+        status === "consumed"
+          ? "task-publication-confirmed"
+          : "task-result-stored",
+      );
+    } else {
+      this.diagnostic({
+        source: "worker",
+        stage: "task-result-unknown",
+        level: "warn",
+      });
+      this.update("task-result-unverified");
+    }
   }
   private async pollTask(c: Client, kinds: string[], ref: string) {
     const { task } = await c.call("coach_claim_task", {
