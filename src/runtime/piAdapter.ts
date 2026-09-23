@@ -89,6 +89,8 @@ export async function complete(
     exhausted = false,
     outputTokens = 0,
     inputBytes = 0;
+  let synthesizing = false;
+  let recentHighLatencyMs = 0;
   const agent = new Agent({
     initialState: {
       systemPrompt: system,
@@ -107,6 +109,19 @@ export async function complete(
       },
     },
     streamFn: (model, context, options) => {
+      // Once the remaining window can fit only a conservatively timed final
+      // provider call, synthesis is one-way. Keep the cap below the ordinary
+      // worker deadline so early turns still have room for useful reads.
+      const reserveMs = Math.min(
+        75000,
+        Math.max(35000, 2 * recentHighLatencyMs + 5000),
+      );
+      if (
+        TURN_LIMIT - turns <= 1 ||
+        (budget.deadlineAt !== undefined &&
+          budget.deadlineAt - Date.now() <= reserveMs)
+      )
+        synthesizing = true;
       const read = budget.readBudget?.();
       const time =
         budget.deadlineAt === undefined
@@ -115,8 +130,8 @@ export async function complete(
       const remaining = TURN_LIMIT - turns;
       const guidance =
         `\n\n[Runtime budget: ${remaining} turns remaining, ${Math.max(0, CALL_LIMIT - calls)} tool calls remaining, ${read ? Math.max(0, read.limit - read.used) + " scoped reads remaining" : "scoped read count unavailable"}, ${time}. ` +
-        (remaining <= 1
-          ? "Give the final answer now; do not request tools."
+        (synthesizing
+          ? "Give the final answer now without requesting tools. State only established facts and explicitly mark what remains unverified. Do not invent a media assessment when media has not been read."
           : remaining <= 10 ||
               (budget.deadlineAt !== undefined &&
                 budget.deadlineAt - Date.now() < 30000)
@@ -134,6 +149,7 @@ export async function complete(
       assertNoSecrets(current, secrets);
       return streamSimple(model, current, {
         ...options,
+        toolChoice: synthesizing ? "none" : options?.toolChoice,
         apiKey: provider.apiKey,
         // Pi has now assembled the actual request body (including model and
         // tool schemas). Never rely only on the pre-serialization context.
@@ -181,6 +197,7 @@ export async function complete(
           let response: Response;
           await provider.authorize?.();
           signal.throwIfAborted();
+          const callStarted = performance.now();
           try {
             response = await fetch(url, init);
           } catch {
@@ -228,6 +245,12 @@ export async function complete(
                   }
                   controller.enqueue(chunk);
                 },
+                flush() {
+                  recentHighLatencyMs = Math.max(
+                    recentHighLatencyMs,
+                    performance.now() - callStarted,
+                  );
+                },
               }),
             ),
             {
@@ -264,6 +287,10 @@ export async function complete(
           : m,
       ),
     beforeToolCall: async () => {
+      // A non-compliant provider can still return tool calls despite
+      // tool_choice:none; never let those calls reach Operator mutations.
+      if (synthesizing)
+        return { block: true, reason: "SYNTHESIS_TOOLS_DISABLED" };
       if (++calls > CALL_LIMIT) {
         exhausted = true;
         return { block: true, reason: "TOOL_BUDGET_EXHAUSTED" };
