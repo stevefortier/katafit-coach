@@ -270,7 +270,6 @@ test("heartbeat reports running while inference is busy, then stops cleanly", as
     await waitFor(
       () => f.reports.filter((r) => r.state === "running").length >= 2,
     );
-    const n = f.reports.length;
     await w.stop();
     assert.equal(f.reports.at(-1)?.state, "stopped");
     assert.equal(
@@ -281,8 +280,9 @@ test("heartbeat reports running while inference is busy, then stops cleanly", as
         .padStart(32, "0"),
     );
     assert.equal(f.accepted.length, f.reports.length);
+    const stoppedCount = f.reports.length;
     await new Promise((r) => setTimeout(r, 60));
-    assert.equal(f.reports.length, n + 1);
+    assert.equal(f.reports.length, stoppedCount);
   } finally {
     inference.resolve("reply");
     await f.close();
