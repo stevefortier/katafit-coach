@@ -25,6 +25,7 @@ export const stages = [
   "inference",
   "provider-payload",
   "provider-response",
+  "tool-execution",
   "publishing",
   "verifying",
   "reply-persisted",
@@ -56,6 +57,22 @@ export interface LogInput {
   rejection?: { kind: string; attempt: number; reason: string; text: string };
   preview?: string;
   shape?: ProviderShape;
+  texts?: ModelText[];
+  calls?: NativeCall[];
+  receipt?: ToolReceipt;
+}
+export interface ModelText {
+  role: "system" | "user" | "assistant" | "tool";
+  text: string;
+}
+export interface NativeCall {
+  name: string;
+  argumentKeys: string[];
+}
+export interface ToolReceipt {
+  name: string;
+  outcome: "ok" | "error" | "blocked";
+  media: boolean;
 }
 export interface ProviderShape {
   toolChoice: "auto" | "none" | "required" | "default-auto";
@@ -78,11 +95,107 @@ export interface Entry {
   rejection?: { kind: string; attempt: number; reason: string; text: string };
   preview?: string;
   shape?: ProviderShape;
+  texts?: ModelText[];
+  calls?: NativeCall[];
+  receipt?: ToolReceipt;
 }
 export const LOG_ENTRIES = 500;
 export const LOG_FILE_BYTES = 256 * 1024;
 const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
+const toolNamePattern = /^(?:coach_|studio_operator_)[a-z_]{1,48}$/;
+// Screen the entire text before taking a prefix; repeat at the persistence
+// boundary and on restart, where even previously saved JSON is untrusted.
+export function screenedModelText(
+  value: unknown,
+  secrets: string[] = [],
+): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  let text = value.replace(/\\u([0-9a-f]{4})/gi, (_, hex: string) =>
+    String.fromCharCode(parseInt(hex, 16)),
+  );
+  for (const secret of secrets)
+    if (secret && secret.length >= 4)
+      text = text.split(secret).join("[redacted]");
+  text = text
+    .replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi,
+      "[redacted key]",
+    )
+    .replace(
+      /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
+      "[redacted token]",
+    )
+    .replace(
+      /data:(?:image|application)\/[^\s"']*;base64,[A-Za-z0-9+/=]+/gi,
+      "[redacted media]",
+    )
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted URL]")
+    .replace(
+      /(?:Bearer\s+|(?:kcoach_|rgn_coach_)[a-z0-9_-]*|sk-[a-z0-9_-]{12,})\S*/gi,
+      "[redacted]",
+    )
+    .replace(
+      /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|client[_-]?secret)\b["']?\s*[=:]\s*["']?[^\s,"'}]+["']?/gi,
+      "[redacted]",
+    )
+    .replace(/\b[A-Za-z0-9+/]{128,}={0,2}\b/g, "[redacted binary]");
+  const bytes = Buffer.from(text);
+  return (
+    bytes
+      .subarray(0, 512)
+      .toString("utf8")
+      .replace(/\uFFFD$/, "") + (bytes.length > 512 ? "…" : "")
+  );
+}
+function safeTexts(value: unknown): ModelText[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const texts = value.slice(0, 10).flatMap((item): ModelText[] => {
+    if (!item || !["system", "user", "assistant", "tool"].includes(item.role))
+      return [];
+    const text = screenedModelText(item.text);
+    return text ? [{ role: item.role, text }] : [];
+  });
+  return texts.length ? texts : undefined;
+}
+function safeCalls(value: unknown): NativeCall[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const calls = value.slice(0, 16).flatMap((call): NativeCall[] =>
+    call && toolNamePattern.test(call.name) && Array.isArray(call.argumentKeys)
+      ? [
+          {
+            name: call.name,
+            argumentKeys: call.argumentKeys
+              .slice(0, 16)
+              .filter(
+                (key: unknown) =>
+                  typeof key === "string" &&
+                  /^[a-zA-Z_][a-zA-Z_0-9]{0,48}$/.test(key),
+              )
+              .map((key: string) =>
+                /key|token|secret|password|authorization/i.test(key)
+                  ? "[redacted]"
+                  : key,
+              ),
+          },
+        ]
+      : [],
+  );
+  return calls.length ? calls : undefined;
+}
+function safeReceipt(value: unknown): ToolReceipt | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const r = value as Record<string, unknown>;
+  return toolNamePattern.test(r.name as string) &&
+    ["ok", "error", "blocked"].includes(r.outcome as string) &&
+    typeof r.media === "boolean"
+    ? {
+        name: r.name as string,
+        outcome: r.outcome as ToolReceipt["outcome"],
+        media: r.media,
+      }
+    : undefined;
+}
 const operationalWords = new Set([
   "please",
   "list",
@@ -191,6 +304,21 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
       : {}),
     ...(error ? { code: error.code, hint: error.hint } : {}),
     metadata: numericMetadata({ ...error?.metadata, ...input.metadata }),
+    ...(["provider-payload", "provider-response"].includes(input.stage) &&
+    input.source === "provider" &&
+    safeTexts(input.texts)
+      ? { texts: safeTexts(input.texts) }
+      : {}),
+    ...(input.stage === "provider-response" &&
+    input.source === "provider" &&
+    safeCalls(input.calls)
+      ? { calls: safeCalls(input.calls) }
+      : {}),
+    ...(input.stage === "tool-execution" &&
+    input.source === "provider" &&
+    safeReceipt(input.receipt)
+      ? { receipt: safeReceipt(input.receipt) }
+      : {}),
     ...(input.source === "provider" &&
     input.stage === "provider-payload" &&
     safeProviderShape(input.shape)

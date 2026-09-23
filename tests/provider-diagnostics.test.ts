@@ -43,7 +43,6 @@ for (const [name, text] of [
     "credential at start",
     "Bearer synthetic-private-key please list available tools",
   ],
-  ["health prose", "My blood sugar and medication changed today."],
   ["base64 image", "data:image/png;base64,aGVsbG8="],
   ["ambiguous unicode escape", "Please list \\u0061vailable tools."],
   ["provider URL and ID", "https://provider.example/v1/model?id=abc"],

@@ -1,7 +1,10 @@
 import { SafeError, safeError, providerFailure } from "./errors.js";
 import {
   safeProviderPreview,
+  screenedModelText,
   type LogInput,
+  type ModelText,
+  type NativeCall,
   type ProviderShape,
 } from "../diagnostics/log.js";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
@@ -122,6 +125,29 @@ export function providerDiagnostic(payload: unknown, secrets: string[] = []) {
     lastContentShape: lastContentShape as ProviderShape["lastContentShape"],
     previewSource: "last-message",
   };
+  // Preserve the initial policy and most recent serialized Pi messages. Never
+  // serialize image parts, tool IDs, schemas or transport fields.
+  const selected = [...messages.slice(0, 2), ...messages.slice(-8)].filter(
+    (item, index, all) => all.indexOf(item) === index,
+  );
+  const texts: ModelText[] = selected.flatMap((item): ModelText[] => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const m = item as Record<string, unknown>;
+    if (!["system", "user", "assistant", "tool"].includes(m.role as string))
+      return [];
+    const parts =
+      typeof m.content === "string"
+        ? [m.content]
+        : Array.isArray(m.content)
+          ? m.content.filter((p) => p?.type === "text").map((p) => p.text)
+          : [];
+    return parts
+      .flatMap((part): ModelText[] => {
+        const text = screenedModelText(part, secrets);
+        return text ? [{ role: m.role as ModelText["role"], text }] : [];
+      })
+      .slice(0, 1);
+  });
   // No prefixes of JSON, media, IDs, URLs, escaped strings or arbitrary prose.
   // Screen the full candidate (not its first 100 chars) before truncation.
   if (
@@ -131,13 +157,13 @@ export function providerDiagnostic(payload: unknown, secrets: string[] = []) {
     !/^[A-Za-z .,?!:'"\n-]+$/.test(content) ||
     !content.match(/[A-Za-z]+/g)?.every((word) => safeProviderPreview(word))
   )
-    return { shape };
+    return { shape, texts };
   try {
     assertNoSecrets(content, secrets);
     const preview = content.slice(0, 100);
-    return { shape, preview };
+    return { shape, preview, texts };
   } catch {
-    return { shape };
+    return { shape, texts };
   }
 }
 
@@ -376,19 +402,49 @@ export async function complete(
             }
           : m,
       ),
-    beforeToolCall: async () => {
+    beforeToolCall: async ({ toolCall }) => {
       // A non-compliant provider can still return tool calls despite
       // tool_choice:none; never let those calls reach Operator mutations.
-      if (synthesizing)
+      if (synthesizing) {
+        try {
+          provider.onDiagnostic?.({
+            source: "provider",
+            stage: "tool-execution",
+            metadata: { turn: turns },
+            receipt: { name: toolCall.name, outcome: "blocked", media: false },
+          });
+        } catch {}
         return { block: true, reason: "SYNTHESIS_TOOLS_DISABLED" };
+      }
       if (++calls > CALL_LIMIT) {
         exhausted = true;
+        try {
+          provider.onDiagnostic?.({
+            source: "provider",
+            stage: "tool-execution",
+            metadata: { turn: turns },
+            receipt: { name: toolCall.name, outcome: "blocked", media: false },
+          });
+        } catch {}
         return { block: true, reason: "TOOL_BUDGET_EXHAUSTED" };
       }
       return undefined;
     },
-    afterToolCall: async ({ isError }) =>
-      isError
+    afterToolCall: async ({ toolCall, result, isError }) => {
+      try {
+        provider.onDiagnostic?.({
+          source: "provider",
+          stage: "tool-execution",
+          metadata: { turn: turns },
+          receipt: {
+            name: toolCall.name,
+            outcome: isError ? "error" : "ok",
+            media:
+              !isError && result.content.some((part) => part.type === "image"),
+          },
+        });
+      } catch {}
+      return isError
         ? {
             content: [
               {
@@ -402,14 +458,34 @@ export async function complete(
             ],
             details: {},
           }
-        : undefined,
+        : undefined;
+    },
     shouldStopAfterTurn: ({ message }) => {
-      // Inbound Pi result shape is separate from the outbound provider payload.
-      // No response content, arguments, tool IDs or upstream finish strings.
+      // Inbound Pi result is separate from the outbound provider payload.
       try {
         provider.onDiagnostic?.({
           source: "provider",
           stage: "provider-response",
+          texts: message.content.flatMap((part): ModelText[] => {
+            if (part.type !== "text") return [];
+            const text = screenedModelText(part.text, secrets);
+            return text ? [{ role: "assistant", text }] : [];
+          }),
+          calls: message.content.flatMap((part): NativeCall[] =>
+            part.type === "toolCall"
+              ? [
+                  {
+                    name: part.name,
+                    argumentKeys:
+                      part.arguments &&
+                      typeof part.arguments === "object" &&
+                      !Array.isArray(part.arguments)
+                        ? Object.keys(part.arguments)
+                        : [],
+                  },
+                ]
+              : [],
+          ),
           metadata: {
             turn: turns + 1,
             nativeCalls: message.content.filter(

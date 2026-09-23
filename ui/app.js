@@ -378,6 +378,29 @@ function renderLogs() {
       preview.textContent = `Screened outbound excerpt (not raw JSON): ${e.preview}`;
       row.append(preview);
     }
+    if (e.texts?.length || e.calls?.length || e.receipt) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `Model turn ${e.metadata.turn ?? "?"} · screened text / native calls / execution (private)`;
+      details.append(summary);
+      for (const item of e.texts ?? []) {
+        const text = document.createElement("pre");
+        text.className = "model-text";
+        text.textContent = `${item.role}: ${item.text}`;
+        details.append(text);
+      }
+      for (const call of e.calls ?? []) {
+        const line = document.createElement("p");
+        line.textContent = `Native ${call.name} · argument keys: ${call.argumentKeys.join(", ") || "none"}`;
+        details.append(line);
+      }
+      if (e.receipt) {
+        const line = document.createElement("p");
+        line.textContent = `${e.receipt.name} · ${e.receipt.outcome} · media received: ${e.receipt.media ? "yes" : "no"}`;
+        details.append(line);
+      }
+      row.append(details);
+    }
     if (e.hint) {
       const hint = document.createElement("p");
       hint.textContent = e.hint;
@@ -444,7 +467,7 @@ const logJSON = () =>
 action("logCopy", async () => {
   await navigator.clipboard.writeText(logJSON());
   notice(
-    "Diagnostic JSON copied. Rejected output may contain private meal or health details; share carefully.",
+    "Diagnostic JSON copied. Model-visible health and meal text may remain even after screening; inspect and redact before sharing.",
   );
 });
 action("logDownload", async () => {

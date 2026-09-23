@@ -1,6 +1,6 @@
 import { chromium, type Browser, type BrowserContext } from "playwright-core";
 import { createServer } from "node:http";
-import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { Store } from "../src/config/store.js";
@@ -54,6 +54,24 @@ new Diagnostics(dir).record({
     reason: "Unexpected token '<' at position 0",
     text: syntheticRejected,
   },
+});
+new Diagnostics(dir).record({
+  source: "provider",
+  stage: "provider-response",
+  metadata: { turn: 3, nativeCalls: 0, textParts: 1 },
+  texts: [
+    {
+      role: "assistant",
+      text: "Synthetic assessment: steady progress <function=coach_read_media>",
+    },
+  ],
+  calls: [{ name: "coach_read_media", argumentKeys: ["activity_id"] }],
+});
+new Diagnostics(dir).record({
+  source: "provider",
+  stage: "tool-execution",
+  metadata: { turn: 2 },
+  receipt: { name: "coach_read_media", outcome: "error", media: false },
 });
 const backend = createServer((_req, res) =>
   res.end(
@@ -141,12 +159,23 @@ try {
   page.on("request", (r) => {
     if (r.url().endsWith("/api/logs")) logRequests++;
   });
-  await page.locator("#logsView summary").click();
+  await page.locator("#logsView > summary").click();
   await page.waitForFunction(() =>
     document
       .querySelector("#logRows")
       ?.textContent?.includes("preview-completed"),
   );
+  const modelRow = page.locator(".log-entry", {
+    hasText: "Synthetic assessment: steady progress",
+  });
+  await modelRow.locator("details summary").click();
+  assert.match(
+    await modelRow.innerText(),
+    /assistant.*Synthetic assessment.*coach_read_media/s,
+  );
+  const receiptRow = page.locator(".log-entry", { hasText: "tool-execution" });
+  await receiptRow.locator("details summary").click();
+  assert.match(await receiptRow.innerText(), /coach_read_media.*error/);
   const rejected = page.locator(".log-entry", {
     hasText: "task-output-correction",
   });
@@ -196,10 +225,26 @@ try {
       .evaluate((e) => getComputedStyle(e).backgroundColor),
     "rgb(16, 23, 21)",
   );
+  await page.locator("#logLevel").selectOption("all");
   const downloadWait = page.waitForEvent("download");
   await page.locator("#logDownload").click();
   const download = await downloadWait;
   await download.saveAs(evidence + "/logs-browser.json");
+  const exported = JSON.parse(
+    await readFile(evidence + "/logs-browser.json", "utf8"),
+  );
+  assert.ok(
+    exported.entries.some((e: any) =>
+      e.texts?.some((t: any) => t.text.includes("Synthetic assessment")),
+    ),
+  );
+  assert.ok(
+    exported.entries.some((e: any) => e.receipt?.name === "coach_read_media"),
+  );
+  await page
+    .locator(".log-entry", { hasText: "Synthetic assessment: steady progress" })
+    .locator("details summary")
+    .click();
   await page.locator("#logsView").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/studio-logs-desktop.png" });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -222,7 +267,7 @@ try {
     document.dispatchEvent(new Event("visibilitychange"));
   });
   await page.waitForTimeout(100);
-  await page.locator("#logsView summary").click();
+  await page.locator("#logsView > summary").click();
   await page.waitForTimeout(100);
   const closedCount = logRequests;
   await page.waitForTimeout(2200);
@@ -242,7 +287,7 @@ try {
   );
   await page.locator("#vision").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-vision-mobile.png" });
-  await page.locator("#logsView summary").click();
+  await page.locator("#logsView > summary").click();
   await page.locator("#logsView").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/studio-logs-mobile.png" });
   assert.equal(
