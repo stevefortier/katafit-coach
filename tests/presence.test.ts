@@ -28,6 +28,8 @@ async function backend(
     holdFirstRunning?: boolean;
     queued?: boolean;
     refuseStopped?: boolean;
+    loseRunningReply?: boolean;
+    invalidRunningGeneration?: boolean;
   } = {},
 ) {
   const reports: Array<{
@@ -37,10 +39,12 @@ async function backend(
   }> = [];
   const accepted: typeof reports = [];
   const generations = new Map<string, string>();
+  const seen = new Set<string>();
   let sequence = 0;
   const calls: string[] = [];
   const entered = deferred<void>();
   const release = deferred<void>();
+  const deferredWrite = deferred<void>();
   const server = createServer(async (req, res) => {
     if (
       req.method === "POST" &&
@@ -83,28 +87,57 @@ async function backend(
         entered.resolve();
         await release.promise;
       }
+      // Model the backend's atomic state+generation compare-and-swap at write
+      // time (after a deliberately deferred request), not request arrival.
+      const current = generations.get(args.instance_id);
       const valid =
         args.state === "running"
-          ? args.generation === undefined
+          ? current === undefined
+            ? !seen.has(args.instance_id) && args.generation === undefined
+            : args.generation === current
           : args.state === "stopped" &&
-            args.generation === generations.get(args.instance_id) &&
+            current !== undefined &&
+            args.generation === current &&
             !options.refuseStopped;
       if (valid) {
         accepted.push(args);
-        if (args.state === "running")
+        if (args.state === "running") {
+          seen.add(args.instance_id);
           generations.set(
             args.instance_id,
             (++sequence).toString(16).padStart(32, "0"),
           );
-        else generations.delete(args.instance_id);
+        } else generations.delete(args.instance_id);
       }
+      if (
+        valid &&
+        args.state === "running" &&
+        options.loseRunningReply &&
+        reports.filter((r) => r.state === "running").length > 1
+      ) {
+        // Commit succeeded but the transport lost the acknowledgment.
+        res.destroy();
+        return;
+      }
+      if (
+        options.holdRunning &&
+        args.state === "running" &&
+        reports.filter((r) => r.state === "running").length > 1
+      )
+        deferredWrite.resolve();
       result = {
         structuredContent: valid
           ? {
               ok: true,
               state: args.state,
               ...(args.state === "running"
-                ? { generation: generations.get(args.instance_id) }
+                ? {
+                    generation:
+                      options.invalidRunningGeneration &&
+                      reports.filter((r) => r.state === "running").length > 1
+                        ? "not-a-generation"
+                        : generations.get(args.instance_id),
+                  }
                 : {}),
             }
           : { code: "WORKER_PRESENCE_STALE" },
@@ -155,6 +188,7 @@ async function backend(
     reports,
     accepted,
     entered: entered.promise,
+    deferredWrite: deferredWrite.promise,
     release: () => release.resolve(),
     async close() {
       release.resolve();
@@ -305,6 +339,7 @@ test("stale stop cannot erase a restarted incarnation with the same instance ID"
     const second = await c.call("coach_report_worker_presence", {
       instance_id: "same",
       state: "running",
+      generation: first.generation,
     });
     assert.notEqual(first.generation, second.generation);
     await assert.rejects(
@@ -322,6 +357,121 @@ test("stale stop cannot erase a restarted incarnation with the same instance ID"
       generation: second.generation,
     });
     assert.equal(f.accepted.at(-1)?.state, "stopped");
+  } finally {
+    await f.close();
+  }
+});
+
+test("old instance heartbeat cannot recreate presence after its generation was stopped", async () => {
+  const f = await backend();
+  try {
+    const c = new Client(
+      f.origin,
+      "synthetic-token",
+      AbortSignal.timeout(3000),
+    );
+    await c.connect();
+    const first = await c.call("coach_report_worker_presence", {
+      instance_id: "old-instance",
+      state: "running",
+    });
+    await c.call("coach_report_worker_presence", {
+      instance_id: "old-instance",
+      state: "stopped",
+      generation: first.generation,
+    });
+    await assert.rejects(
+      c.call("coach_report_worker_presence", {
+        instance_id: "old-instance",
+        state: "running",
+        generation: first.generation,
+      }),
+      /MCP_TOOL_FAILED/,
+    );
+    assert.deepEqual(
+      f.accepted.map((r) => r.state),
+      ["running", "stopped"],
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("every heartbeat presents its current generation and rotates before Stop", async () => {
+  const f = await backend();
+  try {
+    const w = worker(f.origin, { presenceMs: 40 });
+    await w.start();
+    await waitFor(
+      () => f.accepted.filter((r) => r.state === "running").length >= 3,
+    );
+    await w.stop();
+    const running = f.accepted.filter((r) => r.state === "running");
+    assert.equal(running[0].generation, undefined);
+    for (let i = 1; i < running.length; i++)
+      assert.equal(running[i].generation, i.toString(16).padStart(32, "0"));
+    assert.equal(
+      f.accepted.at(-1)?.generation,
+      running.length.toString(16).padStart(32, "0"),
+    );
+    assert.equal(w.presence, "reported");
+  } finally {
+    await f.close();
+  }
+});
+
+test("timed-out heartbeat cannot revive a confirmed Stop when its backend write resumes", async () => {
+  const f = await backend({ holdRunning: true });
+  try {
+    const w = worker(f.origin, { presenceMs: 20 });
+    await w.start();
+    await f.entered;
+    const stopping = w.stop();
+    await stopping;
+    assert.equal(w.presence, "reported");
+    assert.equal(f.accepted.at(-1)?.state, "stopped");
+    f.release();
+    await f.deferredWrite;
+    assert.equal(f.accepted.at(-1)?.state, "stopped");
+    assert.equal(f.accepted.filter((r) => r.state === "running").length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("lost heartbeat reply leaves Stop unconfirmed instead of claiming offline", async () => {
+  const f = await backend({ loseRunningReply: true });
+  try {
+    const w = worker(f.origin, { presenceMs: 1000 });
+    await w.start();
+    await waitFor(
+      () => f.accepted.filter((r) => r.state === "running").length >= 2,
+    );
+    await waitFor(() => w.presence === "unconfirmed");
+    await w.stop();
+    assert.equal(f.accepted.at(-1)?.state, "running");
+    assert.equal(w.presence, "unconfirmed");
+  } finally {
+    await f.close();
+  }
+});
+
+test("invalid heartbeat generation is not retained as a Stop fence", async () => {
+  const f = await backend({ invalidRunningGeneration: true });
+  try {
+    const w = worker(f.origin, { presenceMs: 20 });
+    await w.start();
+    await waitFor(
+      () => f.accepted.filter((r) => r.state === "running").length >= 2,
+    );
+    await waitFor(() => w.presence === "unconfirmed");
+    await w.stop();
+    assert.equal(
+      f.reports.at(-1)?.generation,
+      "00000000000000000000000000000001",
+    );
+    assert.equal(f.accepted.at(-1)?.state, "running");
+    assert.equal(w.presence, "unconfirmed");
   } finally {
     await f.close();
   }

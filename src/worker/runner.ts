@@ -647,7 +647,9 @@ export class Worker {
       {
         instance_id: this.instanceId,
         state,
-        ...(state === "stopped" ? { generation: this.presenceGeneration } : {}),
+        ...(this.presenceGeneration
+          ? { generation: this.presenceGeneration }
+          : {}),
       },
       2000,
     );
