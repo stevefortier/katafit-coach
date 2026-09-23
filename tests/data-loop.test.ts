@@ -323,7 +323,7 @@ for (const args of [
       await f.close();
     }
   });
-test("real Pi blocks a burst beyond 48 calls while scoped reads retain their 12-execution cap", async () => {
+test("real Pi blocks a burst beyond 48 calls while scoped reads retain their 24-execution cap", async () => {
   const f = await readFixture();
   const p = await providerFixture(() => ({
     tool_calls: Array.from({ length: 49 }, (_, i) => ({
@@ -346,7 +346,7 @@ test("real Pi blocks a burst beyond 48 calls while scoped reads retain their 12-
     );
     assert.equal(
       f.calls.filter((c) => c.params?.name === "coach_list_activities").length,
-      12,
+      24,
     );
     assert.equal(p.bodies.length, 1);
   } finally {

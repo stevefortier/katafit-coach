@@ -9,7 +9,7 @@ export const hints = {
   ARGUMENTS_REJECTED:
     "Read-tool arguments failed scoped validation. No unauthorized read was dispatched.",
   TOOL_BUDGET_EXHAUSTED:
-    "The request exceeded its twelve read-tool call budget. Reduce the request.",
+    "The request exceeded its 24 read-tool call budget. Reduce the request.",
   RESULT_REJECTED: "A read result failed safety, size or structure validation.",
   READ_UNAVAILABLE:
     "The scoped read was unavailable. Check request authority, grants and supported capabilities.",
