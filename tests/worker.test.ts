@@ -808,7 +808,7 @@ for (const mismatch of ["code", "generation"] as const) {
   });
 }
 
-test("claimed Dojo worker sees local tools; personal claim and later turn cannot reuse them", async () => {
+test("claimed Dojo and personal worker turns exclude unverified local MCP tools", async () => {
   const backend = await fixture();
   const dir = await mkdtemp(tmpdir() + "/coach-mcp-worker-");
   const store = new Store(dir);
@@ -860,8 +860,7 @@ test("claimed Dojo worker sees local tools; personal claim and later turn cannot
     });
     backend.enqueue("Dojo turn");
     await worker.pollOnce();
-    assert.equal(seen[0].length, 1);
-    assert.match(seen[0][0], /^local_mcp__/);
+    assert.deepEqual(seen[0], []);
     backend.enqueue("Personal turn");
     backend.current.scope = "personal";
     await worker.pollOnce();

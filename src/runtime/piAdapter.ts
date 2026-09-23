@@ -84,6 +84,7 @@ export async function complete(
   const secrets = [provider.apiKey, ...(provider.secrets ?? [])];
   let inputFailure: Error | undefined;
   let transportFailure: SafeError | undefined;
+  let localMutationUnknown = false;
   let turns = 0,
     calls = 0,
     exhausted = false,
@@ -252,40 +253,47 @@ export async function complete(
               content: [
                 {
                   type: "text",
-                  text: tools.some(
-                    (t) => t.name === "studio_operator_send_message",
-                  )
-                    ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
-                    : "Read unavailable: access, arguments or budget rejected.",
+                  text: m.toolName.startsWith("local_mcp__")
+                    ? "Local MCP mutation outcome unknown. Inspect the external system before deciding what happened; never retry automatically."
+                    : tools.some(
+                          (t) => t.name === "studio_operator_send_message",
+                        )
+                      ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
+                      : "Read unavailable: access, arguments or budget rejected.",
                 },
               ],
               details: {},
             }
           : m,
       ),
-    beforeToolCall: async () => {
+    beforeToolCall: async ({ toolCall }) => {
+      if (localMutationUnknown && toolCall.name.startsWith("local_mcp__"))
+        return { block: true, reason: "MUTATION_OUTCOME_UNKNOWN_NO_RETRY" };
       if (++calls > CALL_LIMIT) {
         exhausted = true;
         return { block: true, reason: "TOOL_BUDGET_EXHAUSTED" };
       }
       return undefined;
     },
-    afterToolCall: async ({ isError }) =>
-      isError
+    afterToolCall: async ({ isError, toolCall }) => {
+      if (isError && toolCall.name.startsWith("local_mcp__"))
+        localMutationUnknown = true;
+      return isError
         ? {
             content: [
               {
                 type: "text",
-                text: tools.some(
-                  (t) => t.name === "studio_operator_send_message",
-                )
-                  ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
-                  : "Read unavailable: access, arguments or budget rejected.",
+                text: toolCall.name.startsWith("local_mcp__")
+                  ? "Local MCP mutation outcome unknown. Inspect the external system before deciding what happened; never retry automatically."
+                  : tools.some((t) => t.name === "studio_operator_send_message")
+                    ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
+                    : "Read unavailable: access, arguments or budget rejected.",
               },
             ],
             details: {},
           }
-        : undefined,
+        : undefined;
+    },
     shouldStopAfterTurn: ({ message }) => {
       outputTokens += message.usage.output;
       if (

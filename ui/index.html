@@ -296,16 +296,14 @@
             <div class="eyebrow">06 / INSTALLATION-LOCAL DOJO TOOLS</div>
             <h2>Local MCP servers</h2>
             <p class="hint">
-              Installation admin only. Register an already-running MCP
-              Streamable HTTP JSON endpoint bound to 127.0.0.1 on a
-              nonprivileged port. No shell commands or remote addresses are
-              accepted. Only authorized Dojo worker requests receive these
-              tools; Operator, preview, personal requests, and backend-managed
-              personal/Dojo integrations do not. A chosen tool may change
-              external state automatically without per-call approval. The Coach
-              discloses intended actions; review each server's tool permissions
-              before registering. Removing a server blocks subsequent calls but
-              cannot undo a call already delivered.
+              Installation admin only. Registration storage is available, but
+              runtime disabled pending backend chief and lease authority: no
+              local tools are discovered or called by the Coach. Only canonical
+              127.0.0.1 endpoints on nonprivileged ports can be saved. If a
+              future backend-authorized version enables these tools, the model
+              may select mutations automatically without per-call approval. A
+              failed mutation may have committed: outcome unknown; never retry
+              automatically. Inspect the external system first.
             </p>
             <div id="localMcpList" role="list"></div>
             <form id="localMcpForm">

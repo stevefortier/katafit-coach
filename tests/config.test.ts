@@ -18,6 +18,7 @@ test("save canonical persona revisions without exporting secrets, rollback and p
     assert.equal(s.publicConfig().revision, 2);
     assert.ok(!JSON.stringify(s.publicConfig()).includes("private-"));
     assert.ok(compile(s.publicConfig()).includes("Ada"));
+    assert.match(compile(s.publicConfig()), /Local MCP runtime is disabled/);
     assert.ok(compile(s.publicConfig()).includes("owner"));
     assert.equal((await stat(dir + "/secrets.json")).mode & 0o777, 0o600);
     await s.rollback();

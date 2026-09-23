@@ -74,6 +74,10 @@ try {
   await page.locator("#settingsTab").click();
   assert.match(
     await page.locator("#localMcp").innerText(),
+    /runtime disabled pending backend chief and lease authority/,
+  );
+  assert.match(
+    await page.locator("#localMcp").innerText(),
     /without per-call approval/,
   );
   await page.locator("#localMcpLabel").fill("Browser fixture");
