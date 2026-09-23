@@ -179,6 +179,13 @@ action("save", async () => {
   await load();
   notice("Saved. Preview this revision before starting the worker.");
 });
+action("resetPersona", async () => {
+  const { persona } = await api("persona-defaults");
+  for (const f of fields) $(f).value = persona[f];
+  notice(
+    "Restored stock persona in the editor. Save a new revision to apply it.",
+  );
+});
 action("rollback", async () => {
   await api("rollback", {});
   await load();

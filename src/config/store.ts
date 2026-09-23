@@ -41,6 +41,9 @@ const defaults: Config = {
     markdown: "",
   },
 };
+export function stockPersona(): Config["persona"] {
+  return structuredClone(defaults.persona);
+}
 export function assertNoSecrets(value: unknown, secrets: string[]) {
   if (typeof value === "string") {
     if (secrets.some((secret) => secret && value.includes(secret)))
