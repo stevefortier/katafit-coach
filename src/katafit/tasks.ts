@@ -206,19 +206,40 @@ function normalize(value: any, schema: any): any {
     );
   return value;
 }
+export type TaskOutputCategory =
+  | "JSON"
+  | "SCHEMA"
+  | "SEMANTIC"
+  | "SECURITY"
+  | "SIZE";
+export class TaskOutputError extends Error {
+  constructor(readonly category: TaskOutputCategory) {
+    super("OUTPUT_REJECTED");
+  }
+}
+const credentialPattern =
+  /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
 export function parseTaskResult(kind: string, text: string, secrets: string[]) {
   if (typeof text !== "string" || Buffer.byteLength(text) > limits.result_bytes)
-    throw new Error("OUTPUT_REJECTED");
+    throw new TaskOutputError("SIZE");
+  // Scan the raw response first: malformed JSON must not turn a leaked secret
+  // into a repairable parse error or send it back to the provider.
+  if (credentialPattern.test(text)) throw new TaskOutputError("SECURITY");
+  try {
+    assertNoSecrets(text, secrets);
+  } catch {
+    throw new TaskOutputError("SECURITY");
+  }
   let value: any;
   try {
     value = JSON.parse(text);
   } catch {
-    throw new Error("OUTPUT_REJECTED");
+    throw new TaskOutputError("JSON");
   }
-  if (!validators.get(kind)?.(value)) throw new Error("OUTPUT_REJECTED");
+  if (!validators.get(kind)?.(value)) throw new TaskOutputError("SCHEMA");
   value = normalize(value, taskSchema(kind));
+  if (!validators.get(kind)?.(value)) throw new TaskOutputError("SCHEMA");
   if (
-    !validators.get(kind)?.(value) ||
     (kind === "activity_reaction" &&
       value.activity_feedback.reply_worthwhile !==
         Boolean(value.general_advice)) ||
@@ -226,14 +247,7 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
       (Object.keys(value.recommendations).length < 1 ||
         Object.keys(value.recommendations).length > 40))
   )
-    throw new Error("OUTPUT_REJECTED");
-  if (
-    /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,})/i.test(
-      JSON.stringify(value),
-    )
-  )
-    throw new Error("OUTPUT_REJECTED");
-  assertNoSecrets(value, secrets);
+    throw new TaskOutputError("SEMANTIC");
   return value;
 }
 export function verifyTaskResolution(task: any, response: any, digest: string) {
