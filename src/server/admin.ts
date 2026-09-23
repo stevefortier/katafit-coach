@@ -6,7 +6,7 @@ import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { timingSafeEqual, randomUUID } from "node:crypto";
-import { Store, compile } from "../config/store.js";
+import { Store, compile, stockPersona } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
 import { Worker } from "../worker/runner.js";
 import { Client } from "../katafit/client.js";
@@ -187,6 +187,8 @@ export async function admin(
           hasToken: !!store.secrets.token,
           hasApiKey: !!store.secrets.apiKey,
         });
+      if (req.method === "GET" && path === "/api/persona-defaults")
+        return send(200, { persona: stockPersona() });
       if (req.method === "GET" && path === "/api/logs")
         return send(200, logs.snapshot());
       if (req.method === "GET" && path === "/api/status")

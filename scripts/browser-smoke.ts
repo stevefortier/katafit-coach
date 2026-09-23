@@ -117,6 +117,56 @@ try {
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
+  const savedBeforeReset = store.publicConfig();
+  await page.locator("#name").fill("Unsaved name");
+  await page.locator("#persona details > summary").click();
+  await page.locator("#markdown").fill("Unsaved custom instruction");
+  await page.locator("#resetPersona").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#notice")?.textContent?.includes("stock persona"),
+  );
+  const defaultResponse = await fetch(app.origin + "/api/persona-defaults", {
+    headers: { Authorization: "Bearer " + store.secrets.admin },
+  });
+  assert.equal(defaultResponse.status, 200);
+  assert.equal(
+    (await fetch(app.origin + "/api/persona-defaults")).status,
+    401,
+    "stock persona route must require Studio auth",
+  );
+  const stock = (await defaultResponse.json()).persona as Record<
+    string,
+    string
+  >;
+  assert.equal(
+    Object.keys(stock).length,
+    Object.keys(savedBeforeReset.persona).length,
+  );
+  for (const [field, value] of Object.entries(stock))
+    assert.equal(await page.locator("#" + field).inputValue(), value);
+  assert.deepEqual(
+    store.publicConfig(),
+    savedBeforeReset,
+    "reset must not save",
+  );
+  assert.equal(
+    await page.locator("#baseUrl").inputValue(),
+    savedBeforeReset.provider.baseUrl,
+  );
+  assert.equal(
+    await page.locator("#model").inputValue(),
+    savedBeforeReset.provider.model,
+  );
+  assert.equal(
+    await page.locator("#origin").inputValue(),
+    savedBeforeReset.origin,
+  );
+  assert.equal(await page.locator("#vision").isChecked(), true);
+  await page.locator("#previewButton").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#notice")?.textContent?.includes("Unsaved edits"),
+  );
+  assert.equal(providerCalls, 0);
   await page.locator("#name").fill("Unsaved name");
   assert.equal(store.publicConfig().provider.vision, true);
   await page.locator("#previewButton").click();
@@ -303,6 +353,29 @@ try {
   assert.equal(await page.locator("#vision").isChecked(), false);
   assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
   assert.equal(store.publicConfig().provider.vision, false);
+  const beforeSaveReset = store.publicConfig();
+  await page.locator("#name").fill("Another custom name");
+  await page.locator("#resetPersona").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#notice")?.textContent?.includes("stock persona"),
+  );
+  assert.deepEqual(store.publicConfig(), beforeSaveReset);
+  await page.locator("#persona").scrollIntoViewIfNeeded();
+  await page.evaluate(() => scrollBy(0, 220));
+  await page.screenshot({ path: evidence + "/persona-reset-mobile.png" });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator("#persona").scrollIntoViewIfNeeded();
+  await page.evaluate(() => scrollBy(0, 220));
+  await page.screenshot({ path: evidence + "/persona-reset-desktop.png" });
+  await page.locator("#save").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#notice")?.textContent?.startsWith("Saved."),
+  );
+  assert.deepEqual(store.publicConfig().persona, stock);
+  assert.equal(store.publicConfig().revision, beforeSaveReset.revision + 1);
+  assert.deepEqual(store.publicConfig().provider, beforeSaveReset.provider);
+  assert.equal(store.publicConfig().origin, beforeSaveReset.origin);
+  assert.equal(await page.locator("#apiKey").inputValue(), "");
   assert.deepEqual(errors, []);
   console.log(
     "Browser PASS: unlock, config persistence, actual Pi + synthetic HTTP preview, cleared secret inputs, desktop/mobile no overflow; 0 page errors.",
