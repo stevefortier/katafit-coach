@@ -35,7 +35,7 @@ test("request-scoped read budget permits 48 attempts and reports the rejected 49
 
 // Original 1x1 PNG fixture; equality asserts bytes, not a caption or resized image.
 const image =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=";
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4//8/AAX+Av5Y8msOAAAAAElFTkSuQmCC";
 async function providerFixture(reply: (body: any, n: number) => any) {
   const bodies: any[] = [];
   const server = createServer(async (req, res) => {

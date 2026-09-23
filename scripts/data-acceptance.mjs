@@ -10,7 +10,7 @@ const { complete } = await import(
   pathToFileURL(root + "/dist/runtime/piAdapter.js")
 );
 const image =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=";
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4//8/AAX+Av5Y8msOAAAAAElFTkSuQmCC";
 let request = {
   id: "synthetic-packed-request",
   requester_id: "synthetic-requester",
