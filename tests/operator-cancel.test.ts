@@ -16,6 +16,15 @@ test("Clear fences new turns until backend close settles and late model cannot r
     release = deferred(),
     reply = deferred<string>();
   const f = await operatorBackend(async (name, result) => {
+    if (name === "tools/list")
+      result.tools.push({ name: "studio_operator_list_members" });
+    if (name === "studio_operator_open_session")
+      result = {
+        ...result,
+        mode: "dojo_operator",
+        allowed_tools: ["studio_operator_list_members"],
+      };
+    if (name === "studio_operator_open_session") delete result.member_ref;
     if (name === "studio_operator_close_session") {
       closing.resolve();
       await release.promise;
@@ -36,7 +45,7 @@ test("Clear fences new turns until backend close settles and late model cannot r
     return reply.promise;
   });
   try {
-    const turn = chat.turn("Discuss selected member", "member-fixture");
+    const turn = chat.turn("Discuss manager work");
     const failed = assert.rejects(turn);
     await entered.promise;
     const clear = chat.clear();

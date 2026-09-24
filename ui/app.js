@@ -3,10 +3,90 @@ let key = "",
   config,
   authGeneration = 0,
   commandViewEpoch = 0;
+const commandImageUrls = new Set();
 function clearCommandResult() {
   ++commandViewEpoch;
+  for (const url of commandImageUrls) URL.revokeObjectURL(url);
+  commandImageUrls.clear();
   $("operatorCommandResult").replaceChildren();
   $("operatorCommandResult").hidden = true;
+}
+async function showOperatorImages(images, view, generation) {
+  for (const card of images.slice(0, 4)) {
+    if (
+      !card ||
+      typeof card.id !== "string" ||
+      !/^[0-9a-f-]{36}$/.test(card.id)
+    )
+      continue;
+    let url;
+    try {
+      const response = await fetch(
+        "/api/operator/image?id=" + encodeURIComponent(card.id),
+        {
+          headers: { Authorization: "Bearer " + key },
+          cache: "no-store",
+        },
+      );
+      if (
+        !response.ok ||
+        !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
+          response.headers.get("content-type"),
+        )
+      )
+        throw new Error("IMAGE_UNAVAILABLE");
+      const blob = await response.blob();
+      if (blob.size > 8 * 1024 * 1024 || !blob.size)
+        throw new Error("IMAGE_UNAVAILABLE");
+      if (
+        generation !== authGeneration ||
+        view !== commandViewEpoch ||
+        document.hidden
+      )
+        return;
+      url = URL.createObjectURL(blob);
+      const image = document.createElement("img");
+      image.alt = "Authorized check-in photo";
+      image.src = url;
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+      });
+      if (
+        generation !== authGeneration ||
+        view !== commandViewEpoch ||
+        document.hidden
+      )
+        return;
+      commandImageUrls.add(url);
+      const figure = document.createElement("figure");
+      figure.className = "operator-image-card";
+      figure.append(
+        image,
+        detailText(
+          "figcaption",
+          (typeof card.display_name === "string" &&
+          card.display_name.length <= 128
+            ? card.display_name
+            : "Authorized member") +
+            (typeof card.checkin_at === "string" &&
+            card.checkin_at.length <= 64 &&
+            Number.isFinite(Date.parse(card.checkin_at))
+              ? " · Media date " + card.checkin_at
+              : ""),
+        ),
+      );
+      $("operatorCommandResult").append(figure);
+      url = undefined;
+    } catch {
+      if (generation === authGeneration && view === commandViewEpoch)
+        $("operatorCommandResult").append(
+          detailText("p", "Photo unavailable or authorization changed."),
+        );
+    } finally {
+      if (url) URL.revokeObjectURL(url);
+    }
+  }
 }
 function renderOperatorActions(actions = []) {
   const labels = {
@@ -22,12 +102,15 @@ function renderOperatorActions(actions = []) {
       detailText(
         "p",
         labels[action.status] +
+          (action.member_ref ? " · member " + action.member_ref : "") +
           (action.action_id ? " · " + action.action_id : ""),
       ),
     );
   }
-  if (!actions.length)
-    $("operatorActions").textContent = "No retained member action receipts.";
+  if (!actions.length) $("operatorActions").textContent = "";
+  $("operatorReconcile").hidden = !actions.some((action) =>
+    ["pending", "unknown"].includes(action.status),
+  );
 }
 
 function staleAuthentication() {
@@ -117,6 +200,8 @@ async function api(path, body, signal) {
     }
     const error = new Error(data.error + (data.hint ? " — " + data.hint : ""));
     error.status = r.status;
+    if (path === "operator/chat" && Array.isArray(data.actions))
+      error.actions = data.actions;
     throw error;
   }
   return data;
@@ -804,11 +889,23 @@ document.addEventListener("visibilitychange", () => {
   else void refreshUpdate();
 });
 window.addEventListener("pagehide", () => {
+  clearCommandResult();
   clearTimeout(updateTimer);
   updateController?.abort();
 });
 function lockSession(message) {
+  if (key)
+    void fetch("/api/operator/cancel", {
+      method: "POST",
+      keepalive: true,
+      headers: {
+        Authorization: "Bearer " + key,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    }).catch(() => {});
   authGeneration++;
+  clearCommandResult();
   key = "";
   rememberAdmin("");
   config = undefined;
@@ -880,31 +977,7 @@ function renderOperator() {
     const text = document.createElement("p");
     text.textContent = message.text;
     bubble.append(label, text);
-    if (message.role === "user") {
-      const use = document.createElement("button");
-      use.type = "button";
-      use.className = "secondary";
-      use.textContent = "Use as Coach instructions";
-      use.onclick = () => {
-        const existing = $("markdown").value;
-        if (
-          existing.trim() &&
-          !confirm(
-            "Append this operator message to the existing persona Markdown draft? Nothing is saved until you review and Save.",
-          )
-        )
-          return;
-        $("markdown").value =
-          existing + (existing.trim() ? "\n\n" : "") + message.text;
-        selectStudioTab("settings");
-        $("markdown").closest("details").open = true;
-        $("markdown").focus();
-        notice(
-          "Instruction draft only. Review your persona, pause the worker, then Save new revision to apply. Chat has not changed your saved instructions.",
-        );
-      };
-      bubble.append(use);
-    }
+
     list.append(bubble);
   }
   if (!operatorMessages.length)
@@ -912,7 +985,7 @@ function renderOperator() {
   if (pinned) list.scrollTop = list.scrollHeight;
   operatorScrollMax = list.scrollHeight - list.clientHeight;
   $("operatorPending").hidden = !operatorBusy;
-  $("operatorTarget").disabled = operatorBusy || operatorControlPending;
+
   $("operatorSend").disabled = operatorBusy || operatorControlPending;
   $("operatorCancel").disabled = !operatorBusy || operatorControlPending;
   $("operatorClear").disabled = operatorControlPending;
@@ -950,11 +1023,7 @@ $("operatorForm").onsubmit = async (event) => {
   $("operatorStatus").textContent = "";
   renderOperator();
   try {
-    const member_ref = $("operatorTarget").value;
-    const data = await api("operator/chat", {
-      text,
-      ...(member_ref ? { member_ref } : {}),
-    });
+    const data = await api("operator/chat", { text });
     if (epoch !== operatorEpoch || generation !== authGeneration) return;
     operatorMessages = data.messages;
     renderOperatorActions(data.actions);
@@ -967,14 +1036,24 @@ $("operatorForm").onsubmit = async (event) => {
     ) {
       $("operatorCommandResult").hidden = false;
       $("operatorCommandResult").append(
-        detailText("h3", "Current command result · not retained in chat"),
+        detailText("h3", "Current Operator result · not retained in chat"),
         detailText("p", data.text),
       );
+      if (
+        typeof data.coverage_notice === "string" &&
+        data.coverage_notice.length <= 240
+      )
+        $("operatorCommandResult").append(
+          detailText("p", data.coverage_notice),
+        );
+      if (Array.isArray(data.images))
+        await showOperatorImages(data.images, view, generation);
     }
     operatorDraft = "";
   } catch (error) {
     if (epoch !== operatorEpoch || generation !== authGeneration) return;
     operatorMessages = previous;
+    if (Array.isArray(error.actions)) renderOperatorActions(error.actions);
     if (!$("operatorText").value) $("operatorText").value = text;
     $("operatorStatus").textContent =
       "Coach could not complete this response. A member action may already have been delivered; verify its receipt or recipient conversation before sending again.";
@@ -1018,7 +1097,7 @@ async function controlOperator(command) {
     }
   }
 }
-$("operatorTarget").onchange = clearCommandResult;
+
 $("operatorReconcile").onclick = async () => {
   if (operatorBusy || operatorControlPending) return;
   $("operatorReconcile").disabled = true;
@@ -1054,17 +1133,6 @@ function resetMembers() {
   $("membersStatus").textContent = "";
 }
 function renderMembers() {
-  const target = $("operatorTarget").value;
-  $("operatorTarget").replaceChildren(
-    new Option("Discussion only · no member tools", ""),
-  );
-  for (const member of members.filter((m) => m.access === "granted")) {
-    $("operatorTarget").append(
-      new Option(member.display_name, member.member_ref),
-    );
-  }
-  if (members.some((m) => m.member_ref === target && m.access === "granted"))
-    $("operatorTarget").value = target;
   for (const tab of $("conversationTabs").querySelectorAll(".member-tab"))
     tab.remove();
   for (const member of members) {

@@ -32,6 +32,7 @@ export class Actions {
             "status",
             "action_id",
             "message_id",
+            "member_ref",
           ].includes(k),
       ) ||
       !["pending", "unknown", "not_found", "delivered"].includes(v.status)
@@ -46,6 +47,13 @@ export class Actions {
         (typeof v[key] !== "string" || !v[key] || v[key].length > 8192)
       )
         throw new Error("UNSAFE_STORAGE");
+    if (
+      v.member_ref !== undefined &&
+      (typeof v.member_ref !== "string" ||
+        !v.member_ref ||
+        v.member_ref.length > 256)
+    )
+      throw new Error("UNSAFE_STORAGE");
     return v;
   }
   save(action: OperatorAction, scope = this.scope()) {
@@ -75,6 +83,8 @@ export class Actions {
         { role: "assistant", text: JSON.stringify(action) },
       );
     } else {
+      if (this.decode(next[index].text).member_ref !== action.member_ref)
+        throw new Error("UNSAFE_STORAGE");
       if (this.decode(next[index].text).status === "delivered") return;
       next[index].text = JSON.stringify(action);
     }
@@ -119,9 +129,14 @@ export class Actions {
         const v = await client.call("studio_operator_get_action", {
           session_id: action.session_id,
           idempotency_key: action.idempotency_key,
+          ...(action.member_ref ? { member_ref: action.member_ref } : {}),
         });
         assertNoSecrets(v, Object.values(this.store.secrets));
-        if (v.schema_version !== 1 || v.session_id !== action.session_id)
+        if (
+          v.schema_version !== 1 ||
+          v.session_id !== action.session_id ||
+          (v.member_ref !== undefined && v.member_ref !== action.member_ref)
+        )
           throw new Error("RESULT_REJECTED");
         if (v.status === "not_found")
           record({ ...action, status: "not_found" });

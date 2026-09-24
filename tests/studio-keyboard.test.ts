@@ -85,7 +85,7 @@ test("Studio composers: Enter sends through the real UI", async () => {
           prompt: "Synthetic instructions",
           revision: 1,
         };
-        if (route.request().postDataJSON().member_ref)
+        if (text === "Tell Alex to recover today")
           body = {
             messages: [],
             text: "Synthetic targeted command reply",
@@ -194,12 +194,9 @@ test("Studio composers: Enter sends through the real UI", async () => {
     }
     await page.locator("#coachTab").click();
     assert.equal(
-      await page.locator("#operatorTarget").count(),
-      1,
-      "explicit command target exists",
+      await page.locator("#operatorTarget, #operatorReceipts").count(),
+      0,
     );
-    assert.equal(await page.locator("#operatorTarget").inputValue(), "");
-    await page.locator("#operatorTarget").selectOption("synthetic-member");
     await page.locator("#operatorText").fill("Tell Alex to recover today");
     const targeted = page.waitForRequest(
       (r) => r.url().endsWith("/api/operator/chat") && r.method() === "POST",
@@ -207,19 +204,28 @@ test("Studio composers: Enter sends through the real UI", async () => {
     await page.locator("#operatorText").press("Enter");
     assert.deepEqual((await targeted).postDataJSON(), {
       text: "Tell Alex to recover today",
-      member_ref: "synthetic-member",
     });
     await page.waitForTimeout(100);
     assert.match(
       await page.locator("#operatorView").innerText(),
       /Synthetic targeted command reply/,
     );
-    await page.locator("#operatorReceipts > summary").click();
+
     assert.match(
       await page.locator("#operatorView").innerText(),
       /Delivered.*synthetic-action/,
     );
-    await page.locator("#operatorTarget").selectOption("");
+    await page.locator("#operatorClear").click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#operatorStatus")
+        ?.textContent?.includes("Operator chat cleared"),
+    );
+    await page.waitForFunction(
+      () =>
+        !(document.querySelector("#operatorSend") as HTMLButtonElement)
+          .disabled,
+    );
     assert.doesNotMatch(
       await page.locator("#operatorView").innerText(),
       /Synthetic targeted command reply/,

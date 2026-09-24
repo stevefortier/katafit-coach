@@ -36,7 +36,7 @@ for (const width of [320, 390]) {
           document.querySelector<HTMLElement>("#operatorMessages")!;
         messages.innerHTML =
           '<article class="chat-message chat-assistant"><strong>Coach</strong><p>What do you wish to build? What weakness do you need corrected? Speak,</p></article>' +
-          '<article class="chat-message chat-user"><strong>You · Manager</strong><p>Hello!</p><button class="secondary">Use as Coach instructions</button></article>';
+          '<article class="chat-message chat-user"><strong>You · Manager</strong><p>Hello!</p></article>';
         document.querySelector<HTMLElement>("#operatorStatus")!.textContent =
           "Receipt " + "a".repeat(150);
       });

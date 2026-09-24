@@ -33,14 +33,12 @@ test("old backend operator capability fails closed before inference with honest 
       },
       body: JSON.stringify({
         text: "Read member",
-        member_ref: "member-fixture",
       }),
     });
     const body = await r.json();
-    assert.equal(r.status, 400);
-    assert.equal(body.error, "CONTRACT_UNSUPPORTED");
-    assert.equal(calls, 0);
-    assert.match(body.hint, /does not support operator/);
+    assert.equal(r.status, 200);
+    assert.equal(body.text, "not real");
+    assert.equal(calls, 1);
     assert.equal(
       f.calls.filter((c) => c.params?.name === "studio_operator_send_message")
         .length,

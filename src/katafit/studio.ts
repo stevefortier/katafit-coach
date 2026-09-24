@@ -162,7 +162,7 @@ function header(value: unknown) {
   return r;
 }
 // Inspect original container dimensions, then bind bytes to trusted backend metadata.
-function dimensions(b: Buffer, mime: string): [number, number] {
+export function dimensions(b: Buffer, mime: string): [number, number] {
   if (
     mime === "image/png" &&
     b.length >= 33 &&
