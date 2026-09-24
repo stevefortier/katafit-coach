@@ -69,10 +69,15 @@ test("provider budget rejects an image envelope over the transport ceiling", () 
 });
 
 test("five prepared images fit only while the full serialized wire remains below 6 MiB", () => {
-  const prepared = image("data:image/jpeg;base64," + Buffer.alloc(768 * 1024).toString("base64"));
+  const prepared = image(
+    "data:image/jpeg;base64," + Buffer.alloc(768 * 1024).toString("base64"),
+  );
   const five = payload(Array.from({ length: 5 }, () => prepared));
   assert.ok(providerTextBytes(five) < 1024 * 1024);
-  assert.throws(() => providerTextBytes({ ...five, padding: "x".repeat(1024 * 1024) }), /PROVIDER_PAYLOAD_TOO_LARGE/);
+  assert.throws(
+    () => providerTextBytes({ ...five, padding: "x".repeat(1024 * 1024) }),
+    /PROVIDER_PAYLOAD_TOO_LARGE/,
+  );
 });
 
 test("provider payload evicts older images without changing the transcript", () => {
