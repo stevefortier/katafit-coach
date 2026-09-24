@@ -1033,6 +1033,7 @@ let members = [],
   membersCursor = null,
   membersEpoch = 0;
 let selectedMember = null,
+  memberView = "main_conversation",
   memberItems = [],
   memberCursor = null,
   memberValidationCursor = null,
@@ -1137,13 +1138,53 @@ async function loadMembers(more = false, routePages = 0) {
       $("membersMore").disabled = false;
   }
 }
+function renderMemberViewTabs() {
+  for (const [id, view] of [
+    ["memberMainTab", "main_conversation"],
+    ["memberAllTab", "all"],
+  ]) {
+    const button = $(id);
+    button.setAttribute("aria-pressed", String(memberView === view));
+    button.classList.toggle("secondary", memberView !== view);
+  }
+  $("memberHint").textContent =
+    memberView === "main_conversation"
+      ? "Read-only direct Coach conversation. Activity conversations and insights are available in All activity & Coach history."
+      : "Read-only Coach history, including shared activity conversations. Expand a shared activity for details and photos when available.";
+  $("memberItems").setAttribute(
+    "aria-label",
+    memberView === "main_conversation"
+      ? "Read-only main Coach chat"
+      : "Read-only member feed",
+  );
+}
+function selectMemberView(view) {
+  if (!selectedMember || memberView === view) return;
+  memberView = view;
+  ++memberEpoch;
+  clearTimeout(memberTimer);
+  clearActivities();
+  memberItems = [];
+  memberCursor = null;
+  memberValidationCursor = null;
+  disposeDetails($("memberItems"));
+  $("memberItems").replaceChildren();
+  $("memberMore").hidden = true;
+  $("memberStatus").textContent = "";
+  renderMemberViewTabs();
+  if (selectedMember.access === "granted") void loadMemberFeed();
+}
+$("memberMainTab").onclick = () => selectMemberView("main_conversation");
+$("memberAllTab").onclick = () => selectMemberView("all");
 function selectConversation(member, navigate = true) {
   clearCommandResult();
   clearActivities();
   ++memberEpoch;
   clearTimeout(memberTimer);
   selectedMember = member;
+  memberView = "main_conversation";
   memberItems = [];
+  renderMemberViewTabs();
   memberCursor = null;
   memberValidationCursor = null;
   $("memberItems").replaceChildren();
@@ -1245,6 +1286,8 @@ async function loadMemberFeed(more = false, validate = false) {
   $("memberMore").disabled = true;
   try {
     const params = new URLSearchParams({ member_ref: ref });
+    if (memberView === "main_conversation")
+      params.set("view", "main_conversation");
     if (requestedCursor) params.set("cursor", requestedCursor);
     const data = await api("members/feed?" + params);
     if (
@@ -1289,7 +1332,9 @@ async function loadMemberFeed(more = false, validate = false) {
     renderMemberFeed();
     $("memberStatus").textContent = memberItems.length
       ? "Read-only · refreshed from Kata.fit"
-      : "No retained Coach feed items are available. Conversation access follows dojo membership; activity records follow category sharing.";
+      : memberView === "main_conversation"
+        ? "No retained main Coach messages are available for this member and sharing grant. Check All activity & Coach history for activity-local exchanges."
+        : "No retained Coach feed items are available. Conversation access follows dojo membership; activity records follow category sharing.";
   } catch (error) {
     if (epoch !== memberEpoch || generation !== authGeneration) return;
     clearActivities();

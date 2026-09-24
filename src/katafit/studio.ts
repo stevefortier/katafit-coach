@@ -225,16 +225,25 @@ export class StudioReads {
     if (Buffer.byteLength(JSON.stringify(result)) > 256 * 1024) reject();
     return record(result);
   }
-  async feed(input: { member_ref: string; cursor?: string }) {
+  async feed(input: {
+    member_ref: string;
+    cursor?: string;
+    view?: "main_conversation";
+  }) {
     const member_ref = text(input.member_ref, 8192);
+    const view = input.view;
     const result = await this.read("studio_read_member_coach_feed", {
       member_ref,
       limit: 25,
+      ...(view ? { view } : {}),
       ...(input.cursor ? { cursor: text(input.cursor, 8192) } : {}),
     });
     if (
       result.member_ref !== member_ref ||
-      result.coverage !== "retained_main_coach_feed" ||
+      result.coverage !==
+        (view
+          ? "retained_main_coach_conversation"
+          : "retained_main_coach_feed") ||
       !Array.isArray(result.items) ||
       result.items.length > 25 ||
       !Array.isArray(result.limitations) ||
@@ -243,6 +252,8 @@ export class StudioReads {
       reject();
     const items = result.items.map((value: unknown) => {
       const row = record(value);
+      if (view && (row.type !== "message" || row.activity_ref !== undefined))
+        reject();
       if (
         !["message", "activity_event", "insight", "proposal_summary"].includes(
           row.type,

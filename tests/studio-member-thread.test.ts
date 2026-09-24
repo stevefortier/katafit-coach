@@ -86,45 +86,67 @@ test("member threads retain both canonical directions in chronological chat orde
           next_cursor: "second",
         };
       if (url.pathname === "/api/members/feed")
-        body = {
-          member_ref: "alex",
-          items: url.searchParams.has("cursor")
-            ? [
-                {
-                  id: "earlier",
-                  type: "message",
-                  role: "user",
-                  text: "Earlier question",
-                  created_at: "2026-09-20T12:00:00Z",
-                },
-              ]
-            : [
-                {
-                  id: "reply",
-                  activity_ref: "shared-workout",
-                  type: "message",
-                  role: "coach",
-                  text: "Keep the next set controlled.",
-                  created_at: "2026-09-22T12:02:00Z",
-                },
-                {
-                  id: "question",
-                  activity_ref: "shared-workout",
-                  type: "message",
-                  role: "user",
-                  text: "Should I increase the load?",
-                  created_at: "2026-09-22T12:01:00Z",
-                },
-                {
-                  id: "insight",
-                  type: "insight",
-                  text: "Your weekly consistency improved.",
-                  created_at: "2026-09-22T12:03:00Z",
-                },
-              ],
-          has_more: !url.searchParams.has("cursor"),
-          next_cursor: "older",
-        };
+        body =
+          url.searchParams.get("view") === "main_conversation"
+            ? {
+                member_ref: "alex",
+                items: [
+                  {
+                    id: "main-reply",
+                    type: "message",
+                    role: "coach",
+                    text: "Main chat reply",
+                    created_at: "2026-09-23T12:02:00Z",
+                  },
+                  {
+                    id: "main-question",
+                    type: "message",
+                    role: "user",
+                    text: "Main chat question",
+                    created_at: "2026-09-23T12:01:00Z",
+                  },
+                ],
+                has_more: false,
+              }
+            : {
+                member_ref: "alex",
+                items: url.searchParams.has("cursor")
+                  ? [
+                      {
+                        id: "earlier",
+                        type: "message",
+                        role: "user",
+                        text: "Earlier question",
+                        created_at: "2026-09-20T12:00:00Z",
+                      },
+                    ]
+                  : [
+                      {
+                        id: "reply",
+                        activity_ref: "shared-workout",
+                        type: "message",
+                        role: "coach",
+                        text: "Keep the next set controlled.",
+                        created_at: "2026-09-22T12:02:00Z",
+                      },
+                      {
+                        id: "question",
+                        activity_ref: "shared-workout",
+                        type: "message",
+                        role: "user",
+                        text: "Should I increase the load?",
+                        created_at: "2026-09-22T12:01:00Z",
+                      },
+                      {
+                        id: "insight",
+                        type: "insight",
+                        text: "Your weekly consistency improved.",
+                        created_at: "2026-09-22T12:03:00Z",
+                      },
+                    ],
+                has_more: !url.searchParams.has("cursor"),
+                next_cursor: "older",
+              };
       await route.fulfill({ json: body });
     });
     await page.goto(`http://127.0.0.1:${(server.address() as any).port}/`);
@@ -134,6 +156,29 @@ test("member threads retain both canonical directions in chronological chat orde
       .getByRole("button", { name: "Synthetic Alex", exact: true })
       .click();
     await page.locator(".member-item").first().waitFor();
+    assert.equal(
+      await page.locator("#memberMainTab").getAttribute("aria-pressed"),
+      "true",
+    );
+    assert.match(
+      await page.locator("#memberItems").innerText(),
+      /Main chat question[\s\S]*Main chat reply/,
+    );
+    assert.equal(await page.locator("#memberMore").isVisible(), false);
+    for (const width of [320, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        true,
+      );
+      await page.screenshot({
+        path: evidence + `/main-${width}.png`,
+        fullPage: true,
+      });
+    }
+    await page.setViewportSize({ width: 1280, height: 1000 });
     assert.equal(new URL(page.url()).pathname, "/chat/member/alex");
     await page.reload();
     await page.locator(".member-item").first().waitFor();
@@ -177,6 +222,12 @@ test("member threads retain both canonical directions in chronological chat orde
       `http://127.0.0.1:${(server.address() as any).port}/chat/member/alex`,
     );
     await page.locator(".member-item").first().waitFor();
+    await page.locator("#memberAllTab").click();
+    await page.locator(".member-thread .member-item").first().waitFor();
+    assert.equal(
+      await page.locator("#memberAllTab").getAttribute("aria-pressed"),
+      "true",
+    );
     await page.screenshot({
       path: evidence + "/thread-before.png",
       fullPage: true,
@@ -214,6 +265,26 @@ test("member threads retain both canonical directions in chronological chat orde
     );
     assert.match(
       await page.locator(".member-item").first().innerText(),
+      /Earlier question/,
+    );
+    await page.locator("#memberMainTab").click();
+    await page.waitForFunction(
+      () => document.querySelectorAll(".member-item").length === 2,
+    );
+    assert.match(
+      await page.locator("#memberItems").innerText(),
+      /Main chat question/,
+    );
+    assert.doesNotMatch(
+      await page.locator("#memberItems").innerText(),
+      /Earlier question/,
+    );
+    await page.locator("#memberAllTab").click();
+    await page.waitForFunction(
+      () => document.querySelectorAll(".member-item").length === 3,
+    );
+    assert.doesNotMatch(
+      await page.locator("#memberItems").innerText(),
       /Earlier question/,
     );
     for (const [name, width, height] of [

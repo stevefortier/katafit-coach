@@ -143,6 +143,12 @@ select:focus {
   font-size: 12px;
   line-height: 1.5;
 }
+.member-view-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
 .actions {
   display: flex;
   gap: 12px;
