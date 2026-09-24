@@ -361,6 +361,43 @@ try {
     true,
   );
   await page.locator("#lockStudio").click();
+  const oldLauncher = await admin(
+    store,
+    0,
+    undefined,
+    undefined,
+    new Updates(
+      installed,
+      async () => {},
+      async () => new Response(JSON.stringify({ object: { sha: installed } })),
+    ),
+  );
+  try {
+    const legacyPage = await context.newPage();
+    await legacyPage.goto(oldLauncher.origin + "/#" + store.secrets.admin);
+    await legacyPage.locator("#studio").waitFor({ state: "visible" });
+    await legacyPage.locator("#settingsTab").click();
+    await legacyPage.waitForFunction(
+      () =>
+        document
+          .querySelector("#updateAutoStatus")
+          ?.textContent?.includes("launcher"),
+      null,
+      { timeout: 3000 },
+    );
+    assert.equal(await legacyPage.locator("#updateAuto").isDisabled(), true);
+    assert.match(
+      await legacyPage.locator("#updateAutoStatus").innerText(),
+      /launcher/i,
+    );
+    await legacyPage.setViewportSize({ width: 360, height: 800 });
+    await legacyPage.locator("#updates").screenshot({
+      path: evidence + "/studio-old-launcher-mobile.png",
+    });
+    await legacyPage.close();
+  } finally {
+    await oldLauncher.close();
+  }
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({

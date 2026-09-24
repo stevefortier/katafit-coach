@@ -200,6 +200,16 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     good,
   );
   assert.equal((await (await api("status")).json()).state, "stopped");
+  const autoResponse = await api("update/auto", { enabled: true });
+  assert.equal(
+    autoResponse.status,
+    200,
+    `Auto-update setting after successful upgrade: ${autoResponse.status} ${JSON.stringify(await autoResponse.json())}`,
+  );
+  const autoState = (await (await api("update")).json()).auto;
+  assert.deepEqual(autoState, { enabled: true, available: true });
+  assert.equal((await api("update/auto", { enabled: false })).status, 200);
+  assert.equal((await (await api("update")).json()).auto.enabled, false);
   await apply(bad, 61000);
   const failed = await wait(
     (s) => !s.applying && s.guidance.includes("failed"),

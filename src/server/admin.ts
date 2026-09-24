@@ -30,6 +30,16 @@ export async function admin(
   let autoWasRunning = false;
   let autoQuiescePending: Promise<void> | undefined;
   let origin = "";
+  const updateSnapshot = async () => {
+    const state = updates.snapshot();
+    return {
+      ...state,
+      auto:
+        auto && state.supported
+          ? { ...(await auto.read()), available: true }
+          : { enabled: false, available: false },
+    };
+  };
   const memberReads = new Set<AbortController>();
   const server = createServer(async (req, res) => {
     const ref = randomUUID();
@@ -185,13 +195,7 @@ export async function admin(
       if (req.method === "GET" && path === "/api/operator/chat")
         return send(200, await chat.reconcile());
       if (req.method === "GET" && path === "/api/update")
-        return send(200, {
-          ...updates.snapshot(),
-          auto:
-            auto && updates.snapshot().supported
-              ? await auto.read()
-              : { enabled: false },
-        });
+        return send(200, await updateSnapshot());
       if (req.method === "GET" && path === "/api/config")
         return send(200, {
           ...store.publicConfig(),
@@ -225,6 +229,8 @@ export async function admin(
       }
       const body = JSON.parse(raw || "{}");
       if (path === "/api/update/auto") {
+        if (!auto && updates.snapshot().supported)
+          return send(409, { error: "LAUNCHER_UPGRADE_REQUIRED" });
         if (!auto || !updates.snapshot().supported)
           return send(409, { error: "UNSUPPORTED_INSTALLATION" });
         if (updates.applying && body?.enabled !== false)
@@ -334,7 +340,10 @@ export async function admin(
           res.removeListener("close", cancel);
         }
       }
-      if (path === "/api/update/check") return send(200, await updates.check());
+      if (path === "/api/update/check") {
+        await updates.check();
+        return send(200, await updateSnapshot());
+      }
       if (path === "/api/update/apply") {
         if (busy || preview || (worker && worker.state !== "stopped"))
           return send(409, {
