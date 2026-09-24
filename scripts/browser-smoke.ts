@@ -100,9 +100,39 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(app.origin);
+  await page.setViewportSize({ width: 320, height: 700 });
+  assert.ok(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  );
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator("#adminKey").fill(store.secrets.admin);
   await page.locator("#unlock").click();
   await page.locator("#studio").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".hero").count(), 0);
+  assert.equal(await page.locator("footer").count(), 0);
+  assert.equal(
+    (await page.locator("body").innerText()).includes("YOUR RUNTIME"),
+    false,
+  );
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 700 });
+    for (const panel of ["coachTab", "settingsTab"]) {
+      await page.locator("#" + panel).click();
+      const overflow = await page.evaluate(() => ({
+        viewport: document.documentElement.clientWidth,
+        document: document.documentElement.scrollWidth,
+        body: document.body.scrollWidth,
+      }));
+      assert.ok(
+        overflow.document <= overflow.viewport &&
+          overflow.body <= overflow.viewport,
+        `${panel} at ${width}px overflows: ${JSON.stringify(overflow)}`,
+      );
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#vision").isChecked(), false);
   assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
@@ -194,14 +224,10 @@ try {
     (await page.locator("#prompt").textContent()) ?? "",
     /Synthetic browser backend policy/,
   );
-  assert.match(
-    (await page.locator("#notice").textContent()) ?? "",
-    /fetched backend instructions/,
-  );
   assert.equal(await page.locator("#apiKey").inputValue(), "");
   assert.match(
     (await page.locator("#notice").textContent()) ?? "",
-    /no claimed-request data authority/,
+    /^Preview complete · revision \d+$/,
   );
   await mkdir(evidence, { recursive: true });
   assert.equal(await page.locator("#logsView").count(), 1);
@@ -215,6 +241,30 @@ try {
       .querySelector("#logRows")
       ?.textContent?.includes("preview-completed"),
   );
+  for (const width of [320, 360, 390]) {
+    await page.setViewportSize({ width, height: 700 });
+    const layout = await page.evaluate(() => {
+      const viewport = document.documentElement.clientWidth;
+      const wide = [...document.querySelectorAll("#settingsPanel *")]
+        .filter((node) => node.getClientRects().length)
+        .filter((node) => {
+          const box = node.getBoundingClientRect();
+          return box.left < -1 || box.right > viewport + 1;
+        })
+        .slice(0, 5)
+        .map((node) => ({
+          tag: node.tagName,
+          id: node.id,
+          className: node.className,
+        }));
+      return { viewport, document: document.documentElement.scrollWidth, wide };
+    });
+    assert.ok(
+      layout.document <= width && !layout.wide.length,
+      `Logs at ${width}px: ${JSON.stringify(layout)}`,
+    );
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const modelRow = page.locator(".log-entry", {
     hasText: "Synthetic assessment: steady progress",
   });

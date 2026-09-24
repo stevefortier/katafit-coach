@@ -106,12 +106,12 @@ test("Studio composers: Enter sends through the real UI", async () => {
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.match(
-      await page.locator("#operatorView").innerText(),
-      /Coach manager/,
+      await page.locator("#operatorView h2").innerText(),
+      /^Operator$/,
     );
     assert.match(
       await page.locator("#operatorView").innerText(),
-      /already delivered/,
+      /cannot recall a sent message/,
     );
     const evidence =
       process.env.COACH_EVIDENCE_DIR || `${tmpdir()}/katafit-studio-evidence`;

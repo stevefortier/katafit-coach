@@ -250,11 +250,7 @@ action("previewButton", async () => {
   }
   $("answer").textContent = r.text;
   $("prompt").textContent = r.prompt;
-  notice(
-    "Preview complete · revision " +
-      r.revision +
-      " · saved configuration + fetched backend instructions (snapshot) · no claimed-request data authority or read tools · nothing written to Kata.fit",
-  );
+  notice("Preview complete · revision " + r.revision);
 });
 action("cancel", async () => {
   await api("cancel", {});
