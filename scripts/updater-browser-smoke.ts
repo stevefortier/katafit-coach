@@ -159,6 +159,17 @@ try {
   await page.locator("#updateConfirmApply").click();
   assert.equal((await accepted).status(), 202);
   assert.equal(applies, 1);
+  await page.waitForFunction(
+    () => document.querySelector("#state")?.textContent === "UPGRADING",
+  );
+  assert.equal(await page.locator("#state").getAttribute("data-tone"), "busy");
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: evidence + "/studio-upgrading-mobile.png",
+    clip: { x: 0, y: 0, width: 360, height: 320 },
+  });
+  await page.setViewportSize({ width: 1280, height: 1000 });
   assert.equal(await page.locator("#run").isDisabled(), true);
   assert.equal(await page.locator("#save").isDisabled(), true);
   await page.route("**/api/update", (route) => route.abort());
@@ -181,6 +192,9 @@ try {
   );
   assert.equal(await page.locator("#updateApply").isDisabled(), true);
   assert.equal(await page.locator("#run").isEnabled(), true);
+  await page.waitForFunction(
+    () => document.querySelector("#state")?.textContent === "STOPPED",
+  );
   latest = "c".repeat(40);
   fixtureOperation = {
     id: "11111111-1111-1111-1111-111111111111",

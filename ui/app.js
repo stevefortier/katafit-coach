@@ -1,4 +1,5 @@
 let key = "",
+  workerState,
   config,
   authGeneration = 0,
   commandViewEpoch = 0;
@@ -296,8 +297,8 @@ async function status() {
   try {
     const s = await api("status");
     if (generation !== authGeneration) return;
-    $("state").textContent = s.state.toUpperCase();
-    $("state").dataset.tone = workerStatusTone(s.state);
+    workerState = s.state;
+    renderHeaderStatus();
     updateWorkerBlocked =
       s.state !== "stopped" || s.preview === true || s.operatorChat === true;
     renderUpdate();
@@ -561,7 +562,18 @@ let updateData,
   updateInitialRevision;
 const sourceSha = (value) =>
   typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+function renderHeaderStatus() {
+  if (!key || $("studio").hidden) return;
+  if (updatePending || updateData?.applying === true) {
+    $("state").textContent = "UPGRADING";
+    $("state").dataset.tone = "busy";
+  } else if (workerState) {
+    $("state").textContent = workerState.toUpperCase();
+    $("state").dataset.tone = workerStatusTone(workerState);
+  }
+}
 function renderUpdate() {
+  renderHeaderStatus();
   const data = updateData;
   if (!data) return;
   const locked = updatePending || data.applying;
@@ -816,6 +828,7 @@ function lockSession(message) {
   updateRequest = false;
   updatePending = false;
   updateWorkerBlocked = true;
+  workerState = undefined;
   updateData = undefined;
   updateTarget = undefined;
   $("updateConfirm").hidden = true;
