@@ -26,6 +26,10 @@ main {
   overflow-wrap: anywhere;
 }
 header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -45,6 +49,29 @@ header {
   border-radius: 6px;
   font-size: 12px;
   color: var(--muted);
+}
+.pill[data-tone="ready"] {
+  color: #9ee3ae;
+  border-color: #397753;
+  background: #193826;
+}
+.pill[data-tone="busy"] {
+  color: #a8d8ff;
+  border-color: #467da8;
+  background: #183347;
+}
+.pill[data-tone="danger"] {
+  color: #ffb3ac;
+  border-color: #b45450;
+  background: #442321;
+}
+.pill[data-tone="caution"] {
+  color: #ffda8b;
+  border-color: #997536;
+  background: #3c301e;
+}
+#settingsPanel [id] {
+  scroll-margin-top: 80px;
 }
 h2 {
   font-size: 19px;
@@ -186,6 +213,9 @@ pre {
   display: none;
 }
 @media (max-width: 760px) {
+  #settingsPanel [id] {
+    scroll-margin-top: 160px;
+  }
   main {
     padding: 16px;
   }
@@ -204,6 +234,11 @@ pre {
   }
   .split {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 360px) {
+  #settingsPanel [id] {
+    scroll-margin-top: 200px;
   }
 }
 /* Capability checkboxes must not inherit full-width text input geometry. */
