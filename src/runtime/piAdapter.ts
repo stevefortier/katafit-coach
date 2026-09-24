@@ -11,6 +11,7 @@ import {
 } from "../diagnostics/log.js";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { assertNoSecrets } from "../config/store.js";
+import { isTextOnlyOperatorImage } from "../katafit/operatorTools.js";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 export interface Provider {
   authorize?: () => Promise<void>;
@@ -261,7 +262,12 @@ export async function complete(
   if (!provider.apiKey) throw new Error("PROVIDER_KEY_REQUIRED");
   if (
     provider.vision !== true &&
-    tools.some((t) => t.name === "coach_read_media")
+    tools.some(
+      (t) =>
+        t.name === "coach_read_media" ||
+        (t.name === "studio_operator_read_dojo_checkin_image" &&
+          !isTextOnlyOperatorImage(t)),
+    )
   )
     throw new Error("VISION_UNSUPPORTED");
   const secrets = [provider.apiKey, ...(provider.secrets ?? [])];

@@ -4,10 +4,10 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
-import { operatorBackend } from "./operator-tools.test.js";
+import { fixture } from "./operator-checkins.test.js";
 
 test("command service preserves delivered receipts after provider failure/restart/Clear without retaining member content", async () => {
-  const backend = await operatorBackend();
+  const backend = await fixture();
   const dir = await mkdtemp(tmpdir() + "/operator-command-");
   const store = new Store(dir);
   await store.init();
@@ -24,8 +24,18 @@ test("command service preserves delivered receipts after provider failure/restar
       assert.deepEqual(JSON.parse(context).messages, [
         { role: "user", text: "Send explicit hello" },
       ]);
-      await tools[0].execute("read", {});
-      await tools[1].execute("send", { text: "Recipient hello" });
+      await tools
+        .find((t) => t.name === "studio_operator_list_members")!
+        .execute("roster", {});
+      await tools
+        .find((t) => t.name === "studio_operator_read_member_coach_feed")!
+        .execute("read", { member_ref: "member-photo" });
+      await tools
+        .find((t) => t.name === "studio_operator_send_message")!
+        .execute("send", {
+          member_ref: "member-photo",
+          text: "Recipient hello",
+        });
       throw new Error("MODEL_FAILED");
     },
   );
@@ -43,7 +53,6 @@ test("command service preserves delivered receipts after provider failure/restar
   try {
     const response = await call("/api/operator/chat", {
       text: "Send explicit hello",
-      member_ref: "member-fixture",
     });
     assert.equal(response.status, 400);
     const failure = await response.json();
@@ -54,9 +63,8 @@ test("command service preserves delivered receipts after provider failure/restar
     assert.equal(snapshot.actions[0].status, "delivered");
     assert.deepEqual(snapshot.messages, []);
     assert.equal(
-      backend.calls.filter(
-        (c) => c.params?.name === "studio_operator_send_message",
-      ).length,
+      backend.calls.filter((name) => name === "studio_operator_send_message")
+        .length,
       1,
     );
     await call("/api/operator/clear", {});

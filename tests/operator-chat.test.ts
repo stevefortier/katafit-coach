@@ -42,7 +42,24 @@ test("operator instructions reject a missing or empty chief-manager contract", (
 async function fixture(infer: Parameters<typeof admin>[2]) {
   const dir = await mkdtemp(tmpdir() + "/operator-chat-");
   const paths: string[] = [];
-  const backend = createServer((req, res) => {
+  const backend = createServer(async (req, res) => {
+    if (req.method === "POST" && req.url === "/api/agents/coach/mcp") {
+      let raw = "";
+      for await (const part of req) raw += part;
+      const body = JSON.parse(raw);
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result:
+            body.method === "initialize"
+              ? { protocolVersion: "2025-03-26" }
+              : { tools: [] },
+        }),
+      );
+      return;
+    }
     paths.push(req.url!);
     res.end(policy);
   });
@@ -89,6 +106,33 @@ async function fixture(infer: Parameters<typeof admin>[2]) {
     },
   };
 }
+
+test("default Discussion photo request never borrows a member command session or invents visible images", async () => {
+  const calls: any[] = [];
+  const f = await fixture(
+    async (_provider, _system, context, _signal, tools = []) => {
+      calls.push({
+        context: JSON.parse(context),
+        tools: tools.map((t) => t.name),
+      });
+      return "I cannot fetch or show dojo check-in photos in Discussion until a dojo read-only backend session and image cards are available.";
+    },
+  );
+  try {
+    const response = await f.call("/api/operator/chat", {
+      text: "Show me the latest check-in pictures of everyone in my dojo",
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.match(body.text, /cannot fetch or show/);
+    assert.deepEqual(calls[0].tools, []);
+    assert.match(calls[0].context.authority, /Operator session is unavailable/);
+    assert.deepEqual(f.paths, ["/api/agents/coach.md"]);
+    assert.deepEqual(body.images, []);
+  } finally {
+    await f.close();
+  }
+});
 
 test("operator HTTP chat supplies explicit multi-turn local context and shared saved prompt, without remote mutations", async () => {
   const calls: any[] = [];
@@ -153,6 +197,7 @@ test("operator HTTP chat supplies explicit multi-turn local context and shared s
     assert.deepEqual(calls[0].tools, []);
     assert.match(calls[0].context.scope, /local operator/);
     assert.match(calls[0].context.authority, /no claimed request/);
+    assert.match(calls[0].context.authority, /Operator session is unavailable/);
     assert.match(calls[0].context.authority, /Settings/);
     assert.deepEqual(f.paths, ["/api/agents/coach.md", "/api/agents/coach.md"]);
     assert.equal(

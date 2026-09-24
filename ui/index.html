@@ -57,8 +57,10 @@
           <div id="operatorView">
             <h2>Operator</h2>
             <p class="hint">
-              Discuss the Coach's work here. Select a recipient to send a member
-              command. Changes to the Coach's instructions belong in Settings.
+              Ask the Coach to review authorized member data or send one
+              explicit message. The Coach chooses the member from Kata.fit's
+              authorized roster; Kata.fit controls access. Save lasting
+              instructions in Settings.
             </p>
             <p class="hint" id="operatorSnapshot"></p>
             <div
@@ -82,27 +84,9 @@
               hidden
               aria-label="Current command result"
             ></section>
-            <details id="operatorReceipts">
-              <summary>Member action receipts</summary>
-              <p class="hint">
-                If delivery is unknown, check the receipt before sending again.
-                Refresh does not resend.
-              </p>
-              <div id="operatorActions"></div>
-              <button id="operatorReconcile" type="button" class="secondary">
-                Refresh receipts
-              </button>
-            </details>
             <p id="operatorStatus" role="status"></p>
             <form id="operatorForm">
-              <label for="operatorTarget">Command recipient</label>
-              <select id="operatorTarget">
-                <option value="">No recipient (discussion only)</option>
-              </select>
-
-              <label for="operatorText"
-                >Direct or discuss the Coach's work</label
-              >
+              <label for="operatorText">Message your Coach</label>
               <p class="hint">Clear or Cancel cannot recall a sent message.</p>
               <p class="hint">Enter to send · Shift+Enter for a new line</p>
               <textarea
@@ -125,6 +109,15 @@
                 </button>
               </div>
             </form>
+            <div id="operatorActions" role="status" aria-live="polite"></div>
+            <button
+              id="operatorReconcile"
+              type="button"
+              class="secondary"
+              hidden
+            >
+              Check delivery status
+            </button>
           </div>
           <section id="memberView" hidden>
             <h2 id="memberTitle">Member conversation</h2>

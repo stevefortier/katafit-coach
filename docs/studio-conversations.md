@@ -24,7 +24,7 @@ Cancel and Clear stop future command work but **cannot undo an already delivered
 
 Operator messages are private installation data. Anyone with Studio admin access can see the retained local discussion. Protect installation and provider credentials as delegated chief access; do not share them with unauthorized operators.
 
-Chat does not silently rewrite permanent Coach behavior. **Use as Coach instructions** prepares an unsaved Settings persona draft; review it, pause the worker and explicitly save. Source upgrades require active inference to finish or be cancelled.
+Chat does not silently rewrite permanent Coach behavior. Edit the Settings persona directly, pause the worker and explicitly save. Source upgrades require active inference to finish or be cancelled.
 
 ## Read-only member threads
 

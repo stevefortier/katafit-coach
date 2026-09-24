@@ -204,6 +204,19 @@ export async function admin(
           memberReads.delete(controller);
         }
       }
+      if (req.method === "GET" && path.startsWith("/api/operator/image?")) {
+        const url = new URL(path, origin);
+        if (
+          [...url.searchParams.keys()].join() !== "id" ||
+          !/^[0-9a-f-]{36}$/.test(url.searchParams.get("id") ?? "")
+        )
+          throw new SafeError("ARGUMENTS_REJECTED");
+        const image = await chat.image(url.searchParams.get("id")!);
+        res.setHeader("Content-Type", image.mime_type);
+        res.setHeader("Content-Length", image.bytes.length);
+        res.end(image.bytes);
+        return;
+      }
       if (req.method === "GET" && path === "/api/operator/chat")
         return send(200, await chat.reconcile());
       if (req.method === "GET" && path === "/api/update")
@@ -337,17 +350,13 @@ export async function admin(
           !body ||
           Array.isArray(body) ||
           !Object.hasOwn(body, "text") ||
-          Object.keys(body).some((k) => !["text", "member_ref"].includes(k)) ||
-          (body.member_ref !== undefined &&
-            (typeof body.member_ref !== "string" ||
-              !body.member_ref ||
-              body.member_ref.length > 8192))
+          Object.keys(body).some((k) => k !== "text")
         )
           throw new SafeError("INVALID_PREVIEW");
         const cancel = () => chat.cancel();
         res.once("close", cancel);
         try {
-          return send(200, await chat.turn(body.text, body.member_ref));
+          return send(200, await chat.turn(body.text));
         } finally {
           res.removeListener("close", cancel);
         }
@@ -410,6 +419,7 @@ export async function admin(
             ]);
             await store.save(body);
           } else await store.rollback();
+          await chat.cancel();
           return send(200, { ok: true });
         }
         if (path === "/api/connect") {

@@ -164,30 +164,21 @@ try {
   assert.equal(await page.locator(".chat-assistant button").count(), 0);
   assert.equal(
     await page.locator(".chat-user button").count(),
-    2,
-    "operator messages offer explicit instruction draft action",
+    0,
+    "operator messages offer no instruction draft action",
   );
   const revisionBeforeDraft = store.publicConfig().revision;
   await page.locator("#settingsTab").click();
   await page.locator("#persona details summary").click();
-  await page.locator("#markdown").fill("Existing unsaved rule");
+  await page.locator("#markdown").fill("Explicit Settings rule");
   await page.locator("#coachTab").click();
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.locator(".chat-user button").first().click();
-  assert.equal(await page.locator("#settingsPanel").isVisible(), true);
-  assert.match(
-    await page.locator("#markdown").inputValue(),
-    /Existing unsaved rule/,
-  );
-  assert.match(
-    await page.locator("#markdown").inputValue(),
-    /Synthetic first operator turn/,
-  );
+  assert.equal(await page.locator(".chat-user button").count(), 0);
   assert.equal(
     store.publicConfig().revision,
     revisionBeforeDraft,
-    "draft action never writes config",
+    "chat never writes config",
   );
+  await page.locator("#settingsTab").click();
   await page.locator("#stop").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent === "STOPPED",
@@ -196,10 +187,7 @@ try {
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
-  assert.match(
-    store.publicConfig().persona.markdown,
-    /Synthetic first operator turn/,
-  );
+  assert.match(store.publicConfig().persona.markdown, /Explicit Settings rule/);
   await page.locator("#coachTab").click();
   await page.screenshot({ path: evidence + "/coach-desktop.png" });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -645,7 +633,7 @@ try {
     fullPage: true,
   });
   console.log(
-    "Coach browser PASS: navigation, hidden logs, real Pi synthetic multi-turn, text-only bubbles, explicit instruction draft without save, cancellation, clear readback, Lock stale-reply fence, safe errors, mobile geometry, synthetic member feed isolation and revoke",
+    "Coach browser PASS: navigation, hidden logs, real Pi synthetic multi-turn, text-only bubbles, explicit Settings edit without chat draft action, cancellation, clear readback, Lock stale-reply fence, safe errors, mobile geometry, synthetic member feed isolation and revoke",
   );
 } finally {
   await browser?.close();
