@@ -53,7 +53,8 @@ for (const mode of ["refresh", "cursor"] as const)
         failMeal = true,
         hugeMeal = true,
         hold = false,
-        held: any;
+        held: any,
+        feedError = "";
       const activities = [
         { activity_ref: "workout", type: "workout", name: "Strength session" },
         { activity_ref: "meal", type: "meal", name: "Recovery lunch" },
@@ -114,7 +115,12 @@ for (const mode of ["refresh", "cursor"] as const)
             ],
             has_more: false,
           };
-        if (p === "/api/members/feed")
+        if (p === "/api/members/feed") {
+          if (feedError)
+            return route.fulfill({
+              status: feedError === "UPDATE_IN_PROGRESS" ? 409 : 400,
+              json: { error: feedError },
+            });
           body = {
             member_ref: url.searchParams.get("member_ref"),
             items: [
@@ -129,6 +135,7 @@ for (const mode of ["refresh", "cursor"] as const)
             has_more: !url.searchParams.has("cursor"),
             next_cursor: url.searchParams.has("cursor") ? null : "second-page",
           };
+        }
         if (p === "/api/members/activities") {
           reads++;
           body = {
@@ -203,6 +210,22 @@ for (const mode of ["refresh", "cursor"] as const)
         .getByRole("button", { name: "Synthetic Alex", exact: true })
         .click();
       await page.locator(".member-item").waitFor();
+      if (mode === "refresh") {
+        await page.evaluate(() => {
+          (window as any).firstMemberRow =
+            document.querySelector(".member-item");
+        });
+        await page.evaluate("loadMemberFeed(false, true)");
+        assert.equal(
+          await page.evaluate(
+            () =>
+              document.querySelector(".member-item") ===
+              (window as any).firstMemberRow,
+          ),
+          true,
+          "unchanged authorized feed must not rebuild the chat DOM on timed revalidation",
+        );
+      }
       if (mode === "cursor") {
         await page.locator("#memberMore").click();
         await page.waitForFunction(
@@ -284,6 +307,28 @@ for (const mode of ["refresh", "cursor"] as const)
       assert.match(
         await page.locator("#memberItems").innerText(),
         /Private activity conversation/,
+      );
+      feedError = "BACKEND_TIMEOUT";
+      await page.locator("#memberRefresh").click();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector("#memberStatus")
+            ?.textContent?.includes("timed out"),
+        null,
+        { timeout: 1500 },
+      );
+      assert.equal(await page.locator(".member-item").count(), 0);
+      assert.doesNotMatch(
+        await page.locator("#memberStatus").innerText(),
+        /sharing may have changed/i,
+      );
+      feedError = "UPDATE_IN_PROGRESS";
+      await page.locator("#memberRefresh").click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#memberStatus")
+          ?.textContent?.includes("updating"),
       );
     } finally {
       await browser?.close();
