@@ -571,6 +571,10 @@ try {
   );
   await page.reload();
   await page.locator("#studio").waitFor({ state: "visible" });
+  assert.equal(new URL(page.url()).pathname, "/settings");
+  assert.equal(await page.locator("#settingsPanel").isVisible(), true);
+  await page.locator("#coachTab").click();
+  assert.equal(new URL(page.url()).pathname, "/chat/operator");
   let clearRoute: any;
   await page.route("**/api/operator/clear", (route) => {
     clearRoute = route;
