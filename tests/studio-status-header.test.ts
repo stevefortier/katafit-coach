@@ -54,6 +54,7 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
         isMobile: width < 600,
       });
       let state = "idle";
+      let applying = false;
       await page.route("**/api/**", async (route) => {
         const path = new URL(route.request().url()).pathname;
         const body =
@@ -61,11 +62,13 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
             ? config
             : path === "/api/status"
               ? { state, lastError: null }
-              : path === "/api/operator/chat"
-                ? { messages: [] }
-                : path === "/api/members"
-                  ? { members: [], has_more: false }
-                  : {};
+              : path === "/api/update" || path === "/api/update/check"
+                ? { supported: true, applying }
+                : path === "/api/operator/chat"
+                  ? { messages: [] }
+                  : path === "/api/members"
+                    ? { members: [], has_more: false }
+                    : {};
         await route.fulfill({ json: body });
       });
       await page.goto(
@@ -97,6 +100,21 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
       assert.equal(stopped.tone, "danger");
       assert.notEqual(stopped.color, idle.color);
       assert.notEqual(stopped.color, busy.color);
+      applying = true;
+      await page.evaluate(() => refreshUpdate());
+      state = "stopped";
+      await page.evaluate(() => status());
+      assert.equal(await badge.innerText(), "UPGRADING");
+      assert.equal(await badge.getAttribute("data-tone"), "busy");
+      await page.reload();
+      await page.locator("#studio").waitFor({ state: "visible" });
+      await page.waitForFunction(
+        () => document.querySelector("#state")?.textContent === "UPGRADING",
+      );
+      applying = false;
+      await page.evaluate(() => refreshUpdate());
+      assert.equal(await badge.innerText(), "STOPPED");
+      assert.equal(await badge.getAttribute("data-tone"), "danger");
       assert.equal((await refresh("task-failure-reported")).tone, "danger");
       assert.equal((await refresh("error")).tone, "danger");
       assert.equal((await refresh("failed")).tone, "danger");
