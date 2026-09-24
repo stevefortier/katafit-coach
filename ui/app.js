@@ -200,6 +200,7 @@ async function api(path, body, signal) {
     }
     const error = new Error(data.error + (data.hint ? " — " + data.hint : ""));
     error.status = r.status;
+    error.code = data.error;
     if (path === "operator/chat" && Array.isArray(data.actions))
       error.actions = data.actions;
     throw error;
@@ -1055,8 +1056,16 @@ $("operatorForm").onsubmit = async (event) => {
     operatorMessages = previous;
     if (Array.isArray(error.actions)) renderOperatorActions(error.actions);
     if (!$("operatorText").value) $("operatorText").value = text;
-    $("operatorStatus").textContent =
-      "Coach could not complete this response. A member action may already have been delivered; verify its receipt or recipient conversation before sending again.";
+    const uncertain =
+      !Array.isArray(error.actions) ||
+      error.actions.some(
+        (action) => action.status === "unknown" || action.status === "pending",
+      );
+    $("operatorStatus").textContent = uncertain
+      ? "Coach could not complete this response. Check delivery status before retrying a member message."
+      : error.code === "READ_UNAVAILABLE"
+        ? "Not enough authorized member data to compare. Try again."
+        : "Coach could not complete this response. Try again.";
   } finally {
     if (epoch === operatorEpoch && generation === authGeneration) {
       operatorBusy = false;

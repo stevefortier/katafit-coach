@@ -42,45 +42,60 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
     let fetched = false;
     await page.route("**/api/operator/chat", (route) =>
       route.request().method() === "POST"
-        ? route.request().postDataJSON().text === "Fail send"
+        ? route.request().postDataJSON().text === "Fail comparison"
           ? route.fulfill({
               status: 400,
               contentType: "application/json",
-              body: JSON.stringify({
-                error: "MCP_TOOL_FAILED",
-                actions: [
-                  {
-                    status: "unknown",
-                    member_ref: "member-photo",
-                    action_id: "action-uncertain",
-                  },
-                ],
-              }),
+              body: JSON.stringify({ error: "READ_UNAVAILABLE", actions: [] }),
             })
-          : route.fulfill({
-              status: 200,
-              contentType: "application/json",
-              body: JSON.stringify({
-                ephemeral: true,
-                text: "Synthetic two-image result; further roster pages were not read.",
-                coverage_notice:
-                  "Partial photo coverage: a roster page has more results. Ask for another batch; do not assume every member was reviewed.",
-                images: [
-                  {
-                    id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                    display_name: "Alex",
-                    checkin_at: "2026-09-24T12:00:00.000Z",
-                  },
-                  {
-                    id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                    display_name: "Morgan",
-                    checkin_at: "2026-09-24T12:00:00.000Z",
-                  },
-                ],
-                messages: [],
-                actions: [],
-              }),
-            })
+          : route.request().postDataJSON().text === "Fail read"
+            ? route.fulfill({
+                status: 400,
+                contentType: "application/json",
+                body: JSON.stringify({
+                  error: "PROVIDER_TIMEOUT",
+                  actions: [],
+                }),
+              })
+            : route.request().postDataJSON().text === "Fail send"
+              ? route.fulfill({
+                  status: 400,
+                  contentType: "application/json",
+                  body: JSON.stringify({
+                    error: "MCP_TOOL_FAILED",
+                    actions: [
+                      {
+                        status: "unknown",
+                        member_ref: "member-photo",
+                        action_id: "action-uncertain",
+                      },
+                    ],
+                  }),
+                })
+              : route.fulfill({
+                  status: 200,
+                  contentType: "application/json",
+                  body: JSON.stringify({
+                    ephemeral: true,
+                    text: "Synthetic two-image result; further roster pages were not read.",
+                    coverage_notice:
+                      "Partial photo coverage: a roster page has more results. Ask for another batch; do not assume every member was reviewed.",
+                    images: [
+                      {
+                        id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        display_name: "Alex",
+                        checkin_at: "2026-09-24T12:00:00.000Z",
+                      },
+                      {
+                        id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        display_name: "Morgan",
+                        checkin_at: "2026-09-24T12:00:00.000Z",
+                      },
+                    ],
+                    messages: [],
+                    actions: [],
+                  }),
+                })
         : route.continue(),
     );
     await page.route("**/api/operator/image*", (route) => {
@@ -105,6 +120,14 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
         .getByText("Use as Coach instructions")
         .count(),
       0,
+    );
+    assert.equal(
+      await page.locator("#operatorForm .hint, #operatorForm label").count(),
+      0,
+    );
+    assert.equal(
+      await page.locator("#operatorText").getAttribute("aria-label"),
+      "Message your Coach",
     );
     assert.match(
       await page.locator("#operatorView .hint").first().innerText(),
@@ -173,6 +196,36 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
         !(document.querySelector("#operatorSend") as HTMLButtonElement)
           .disabled,
     );
+    await page.locator("#operatorText").fill("Fail read");
+    await page.locator("#operatorSend").click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#operatorStatus")
+        ?.textContent?.includes("could not complete"),
+    );
+    assert.doesNotMatch(
+      await page.locator("#operatorStatus").innerText(),
+      /member action|receipt|recipient conversation/i,
+    );
+    assert.equal(await page.locator("#operatorReconcile").isVisible(), false);
+    await page.locator("#operatorText").fill("Fail comparison");
+    await page.locator("#operatorSend").click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("#operatorStatus")
+          ?.textContent?.includes("Not enough authorized member data"),
+      null,
+      { timeout: 1200 },
+    );
+    if (process.env.COACH_EVIDENCE_DIR) {
+      for (const width of [320, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.locator("#operatorView").screenshot({
+          path: `${process.env.COACH_EVIDENCE_DIR}/operator-composer-${width}.png`,
+        });
+      }
+    }
     await page.locator("#operatorText").fill("Fail send");
     await page.locator("#operatorSend").click();
     await page.waitForFunction(() =>
@@ -185,6 +238,10 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
       /action-uncertain/,
     );
     assert.equal(await page.locator("#operatorReconcile").isVisible(), true);
+    assert.match(
+      await page.locator("#operatorStatus").innerText(),
+      /delivery status/i,
+    );
     await page.close();
   } finally {
     await browser?.close();
