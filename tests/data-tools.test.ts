@@ -5,6 +5,62 @@ import { Client } from "../src/katafit/client.js";
 import { discoverReads } from "../src/katafit/readTools.js";
 
 import { fence, schema, wire, readFixture } from "./data-fixtures.js";
+test("an authorized media-files read survives a backend response beyond ten seconds", async () => {
+  const f = await wire(async (method, params) => {
+    if (method === "tools/list")
+      return {
+        tools: [
+          { name: "coach_get_capabilities", inputSchema: schema },
+          {
+            name: "coach_read_activity",
+            inputSchema: {
+              ...schema,
+              properties: {
+                ...schema.properties,
+                activity_id: { type: "string" },
+                section: { type: "string" },
+              },
+              required: [...schema.required, "activity_id"],
+            },
+          },
+        ],
+      };
+    if (params?.name === "coach_get_capabilities")
+      return {
+        structuredContent: {
+          contract_version: 2,
+          allowed_tools: ["coach_read_activity"],
+          domains: {},
+          limits: {},
+        },
+      };
+    await new Promise((resolve) => setTimeout(resolve, 11000));
+    return {
+      structuredContent: { items: [{ media_ref: "synthetic-handle" }] },
+    };
+  });
+  try {
+    const r = await discoverReads(
+      new Client(f.origin, "synthetic-secret", AbortSignal.timeout(30000)),
+      fence,
+      { vision: false, secrets: ["synthetic-secret"] },
+    );
+    const out = await r.tools[0].execute("read", {
+      activity_id: "synthetic-activity",
+      section: "media_files",
+    });
+    assert.match(
+      JSON.parse((out.content[0] as any).text).items[0].media_ref,
+      /^mr:[a-f0-9]{16}$/,
+    );
+    assert.equal(
+      f.calls.filter((x) => x.params?.name === "coach_read_activity").length,
+      1,
+    );
+  } finally {
+    await f.close();
+  }
+});
 test("negotiated fixed read allowlist strips and injects worker fences over real MCP HTTP", async () => {
   const f = await readFixture();
   try {
