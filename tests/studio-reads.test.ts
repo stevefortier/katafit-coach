@@ -67,6 +67,38 @@ test("Studio feed is exact-member read-only and drops executable fields", async 
     },
   ]);
 });
+test("Main chat view is explicitly bound and rejects activity rows", async () => {
+  const calls: unknown[] = [];
+  const main = { ...feed, coverage: "retained_main_coach_conversation" };
+  assert.deepEqual(
+    await new StudioReads(fake(main, calls), []).feed({
+      member_ref: "opaque-member",
+      view: "main_conversation",
+    }),
+    main,
+  );
+  assert.deepEqual(calls, [
+    {
+      name: "studio_read_member_coach_feed",
+      args: {
+        member_ref: "opaque-member",
+        limit: 25,
+        view: "main_conversation",
+      },
+    },
+  ]);
+  for (const value of [
+    feed,
+    { ...main, items: [{ ...feed.items[0], activity_ref: "private-workout" }] },
+    { ...main, items: [{ ...feed.items[0], type: "activity_event" }] },
+  ])
+    await assert.rejects(
+      new StudioReads(fake(value, []), []).feed({
+        member_ref: "opaque-member",
+        view: "main_conversation",
+      }),
+    );
+});
 test("Studio responses reject cross-member data, malformed pages and known secrets", async () => {
   for (const value of [
     { ...feed, member_ref: "different-member" },

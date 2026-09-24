@@ -128,10 +128,27 @@
           </div>
           <section id="memberView" hidden>
             <h2 id="memberTitle">Member conversation</h2>
-            <p class="hint">
-              Read-only Coach conversation. Expand a shared activity for details
-              and photos when available.
+            <p id="memberHint" class="hint">
+              Read-only direct Coach conversation. Activity conversations and
+              insights are available in All activity &amp; Coach history.
             </p>
+            <div
+              class="member-view-tabs"
+              role="group"
+              aria-label="Member conversation view"
+            >
+              <button id="memberMainTab" type="button" aria-pressed="true">
+                Main chat
+              </button>
+              <button
+                id="memberAllTab"
+                type="button"
+                class="secondary"
+                aria-pressed="false"
+              >
+                All activity &amp; Coach history
+              </button>
+            </div>
             <p id="memberStatus" role="status"></p>
             <div
               id="memberItems"

@@ -9,6 +9,7 @@ import { admin } from "../src/server/admin.js";
 test("authenticated member views proxy real MCP reads without claiming worker requests", async () => {
   const home = await mkdtemp(tmpdir() + "/studio-member-http-");
   const calls: string[] = [];
+  const feedViews: unknown[] = [];
   let deny = false;
   let gate: Promise<void> | undefined;
   let reached: (() => void) | undefined;
@@ -27,6 +28,8 @@ test("authenticated member views proxy real MCP reads without claiming worker re
       result = { protocolVersion: "2025-03-26" };
     if (body.method === "tools/call") {
       calls.push(body.params.name);
+      if (body.params.name === "studio_read_member_coach_feed")
+        feedViews.push(body.params.arguments.view);
       assert.equal(
         req.headers.authorization,
         "Bearer synthetic-studio-connection",
@@ -59,7 +62,10 @@ test("authenticated member views proxy real MCP reads without claiming worker re
                 : {
                     schema_version: 1,
                     member_ref: "fixture-member",
-                    coverage: "retained_main_coach_feed",
+                    coverage:
+                      body.params.arguments.view === "main_conversation"
+                        ? "retained_main_coach_conversation"
+                        : "retained_main_coach_feed",
                     items: [
                       {
                         id: "fixture-turn",
@@ -100,8 +106,20 @@ test("authenticated member views proxy real MCP reads without claiming worker re
     );
     assert.equal(feed.status, 200);
     assert.equal((await feed.json()).items[0].text, "Synthetic reply");
+    const main = await fetch(
+      app.origin +
+        "/api/members/feed?member_ref=fixture-member&view=main_conversation",
+      { headers },
+    );
+    assert.equal(main.status, 200);
+    assert.equal(
+      (await main.json()).coverage,
+      "retained_main_coach_conversation",
+    );
+    assert.deepEqual(feedViews, [undefined, "main_conversation"]);
     assert.deepEqual(calls, [
       "studio_list_members",
+      "studio_read_member_coach_feed",
       "studio_read_member_coach_feed",
     ]);
     const wrongOrigin = await fetch(app.origin + "/api/members", {
@@ -115,6 +133,9 @@ test("authenticated member views proxy real MCP reads without claiming worker re
       "/api/members/feed",
       "/api/members/feed?member_ref=fixture-member&member_ref=other",
       "/api/members/feed?member_ref=fixture-member&action=reply",
+      "/api/members/feed?member_ref=fixture-member&view=unknown",
+      "/api/members/feed?member_ref=fixture-member&view=main_conversation&view=main_conversation",
+      "/api/members/activities?member_ref=fixture-member&view=main_conversation",
     ]) {
       assert.notEqual(
         (await fetch(app.origin + path, { headers })).status,

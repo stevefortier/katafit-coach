@@ -319,7 +319,9 @@ try {
     slowMember = false,
     delayedMember: any;
   await page.route("**/api/members/feed?*", (route) => {
-    const ref = new URL(route.request().url()).searchParams.get("member_ref");
+    const url = new URL(route.request().url());
+    const ref = url.searchParams.get("member_ref");
+    const main = url.searchParams.get("view") === "main_conversation";
     if (slowMember && ref === "a") {
       delayedMember = route;
       return;
@@ -335,19 +337,26 @@ try {
               member_ref: ref,
               items: (memberEmpty
                 ? []
-                : more
-                  ? ["older"]
-                  : ["message", "activity_event", "insight", "proposal_summary"]
+                : main
+                  ? ["direct-user", "direct-coach"]
+                  : more
+                    ? ["older"]
+                    : [
+                        "message",
+                        "activity_event",
+                        "insight",
+                        "proposal_summary",
+                      ]
               ).map((type, i) => ({
                 id: type,
-                type: type === "older" ? "message" : type,
-                role: "coach",
+                type: type === "older" || main ? "message" : type,
+                role: type === "direct-user" ? "user" : "coach",
                 text: ref + " synthetic " + type,
                 created_at: "2026-09-22T12:00:00Z",
                 status: "completed",
               })),
-              has_more: !memberEmpty && !more,
-              next_cursor: memberEmpty || more ? null : "feed-next",
+              has_more: !memberEmpty && !main && !more,
+              next_cursor: memberEmpty || main || more ? null : "feed-next",
             },
       ),
     });
@@ -376,10 +385,24 @@ try {
     .getByRole("button", { name: "Synthetic Alex", exact: true })
     .click();
   await page.waitForFunction(
+    () => document.querySelectorAll(".member-item").length === 2,
+  );
+  const mainHint = await page.locator("#memberHint").innerText();
+  assert.match(mainHint, /Read-only direct Coach conversation/);
+  assert.match(
+    await page.locator("#memberItems").innerText(),
+    /a synthetic direct-user/,
+  );
+  assert.equal(
+    await page.locator("#memberMainTab").getAttribute("aria-pressed"),
+    "true",
+  );
+  await page.locator("#memberAllTab").click();
+  await page.waitForFunction(
     () => document.querySelectorAll(".member-item").length === 4,
   );
-  const memberHint = await page.locator("#memberView > .hint").innerText();
-  assert.match(memberHint, /Read-only Coach conversation/);
+  const memberHint = await page.locator("#memberHint").innerText();
+  assert.match(memberHint, /Read-only Coach history/);
   assert.match(memberHint, /Expand a shared activity for details and photos/);
   assert.equal(
     await page
@@ -467,7 +490,7 @@ try {
   );
   assert.equal(
     await page.locator("#memberStatus").innerText(),
-    "No retained Coach feed items are available. Conversation access follows dojo membership; activity records follow category sharing.",
+    "No retained main Coach messages are available for this member and sharing grant. Check All activity & Coach history for activity-local exchanges.",
   );
   for (const [name, width, height] of [
     ["desktop", 1280, 1000],

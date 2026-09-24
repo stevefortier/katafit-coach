@@ -126,7 +126,9 @@ export async function admin(
               ? ["member_ref", "media_ref"]
               : kind === "members"
                 ? ["cursor"]
-                : ["member_ref", "cursor"];
+                : feed
+                  ? ["member_ref", "cursor", "view"]
+                  : ["member_ref", "cursor"];
         for (const key of url.searchParams.keys()) {
           const values = url.searchParams.getAll(key);
           if (
@@ -143,6 +145,9 @@ export async function admin(
           (kind === "activity" && !url.searchParams.get("activity_ref")) ||
           (kind === "media" && !url.searchParams.get("media_ref"))
         )
+          throw new SafeError("ARGUMENTS_REJECTED");
+        const view = url.searchParams.get("view") ?? undefined;
+        if (view !== undefined && view !== "main_conversation")
           throw new SafeError("ARGUMENTS_REJECTED");
         const token = store.secrets.token;
         if (!token) throw new SafeError("TOKEN_REQUIRED");
@@ -162,7 +167,7 @@ export async function admin(
           );
           const cursor = url.searchParams.get("cursor") ?? undefined;
           const result = feed
-            ? await reads.feed({ member_ref: member_ref!, cursor })
+            ? await reads.feed({ member_ref: member_ref!, cursor, view })
             : kind === "activities"
               ? await reads.activities({ member_ref: member_ref!, cursor })
               : kind === "activity"
