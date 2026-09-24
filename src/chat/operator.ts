@@ -1,6 +1,10 @@
-import { Store, compile, assertNoSecrets } from "../config/store.js";
+import { Store, compileOperator, assertNoSecrets } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
-import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
+import {
+  effectivePrompt,
+  fetchInstructions,
+  operatorPolicy,
+} from "../runtime/prompt.js";
 import { Client } from "../katafit/client.js";
 import { SafeError } from "../runtime/errors.js";
 import { openOperatorTools } from "../katafit/operatorTools.js";
@@ -114,7 +118,11 @@ export class OperatorChat {
     });
     signal.throwIfAborted();
     const prompt =
-      effectivePrompt(compile(c, secrets), instructions, secrets) +
+      effectivePrompt(
+        compileOperator(c, secrets),
+        operatorPolicy(instructions),
+        secrets,
+      ) +
       `
 OPERATOR SESSION — authoritative role and capability boundary:
 The local operator is your manager, not a trainee. Respond as their Coach employee: discuss operations, answer authorized queries, and carry out their explicit requests using only the tools supplied for this operator session. Do not redirect management requests into workouts, check-ins, or personal coaching unless asked.

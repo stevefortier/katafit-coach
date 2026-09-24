@@ -10,9 +10,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
-import { Store, compile } from "../src/config/store.js";
+import { Store, compileOperator } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
-import { effectivePrompt } from "../src/runtime/prompt.js";
+import { effectivePrompt, operatorPolicy } from "../src/runtime/prompt.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -21,7 +21,24 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-const policy = "# Kata.fit external Coach agent v1\nSynthetic policy";
+const policy =
+  "# Kata.fit external Coach agent v1\n## Member worker\nAnswer the trainee's training goal only.\n## Chief-manager operator sessions and human Studio\nThe operator is the Coach's manager, not a trainee.\n## Another worker section\nNever share this worker-only instruction.";
+test("operator instructions reject a missing or empty chief-manager contract", () => {
+  assert.throws(
+    () =>
+      operatorPolicy(
+        "# Kata.fit external Coach agent v1\n## Required worker loop\nDo work",
+      ),
+    /CONTRACT_UNSUPPORTED/,
+  );
+  assert.throws(
+    () =>
+      operatorPolicy(
+        "# Kata.fit external Coach agent v1\n## Chief-manager operator sessions and human Studio\n\n## Connect",
+      ),
+    /CONTRACT_UNSUPPORTED/,
+  );
+});
 async function fixture(infer: Parameters<typeof admin>[2]) {
   const dir = await mkdtemp(tmpdir() + "/operator-chat-");
   const paths: string[] = [];
@@ -99,11 +116,36 @@ test("operator HTTP chat supplies explicit multi-turn local context and shared s
     ]);
     assert.match(calls[0].system, /operator is your manager, not a trainee/);
     assert.match(calls[0].system, /Member data.*lower-trust/);
+    assert.doesNotMatch(
+      calls[0].system,
+      /Only explicitly supplied request-scoped read tools are available\. No mutations/,
+    );
+    assert.match(
+      calls[0].system,
+      /operator session may send one explicit message to a selected member/i,
+    );
+    assert.match(calls[0].system, /dojo.*trainees.*authorized/i);
+    assert.match(
+      calls[0].system,
+      /do not demand (?:a|the) manager'?s training goal/i,
+    );
+    assert.doesNotMatch(
+      calls[0].system,
+      /Answer the trainee's training goal only/,
+    );
+    assert.doesNotMatch(
+      calls[0].system,
+      /Never share this worker-only instruction/,
+    );
+    assert.match(calls[0].system, /The operator is the Coach's manager/);
     assert.ok(
       calls[0].system.includes(
         effectivePrompt(
-          compile(f.store.publicConfig(), Object.values(f.store.secrets)),
-          policy,
+          compileOperator(
+            f.store.publicConfig(),
+            Object.values(f.store.secrets),
+          ),
+          "## Chief-manager operator sessions and human Studio\nThe operator is the Coach's manager, not a trainee.\n",
           Object.values(f.store.secrets),
         ),
       ),

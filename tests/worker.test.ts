@@ -129,7 +129,7 @@ export async function fixture(
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
       res.end(
-        "# Kata.fit external Coach agent v1\nUse server-authorized context.",
+        "# Kata.fit external Coach agent v1\nUse server-authorized context.\n## Chief-manager operator sessions and human Studio\nThe operator manages the Coach.",
       );
       return;
     }
