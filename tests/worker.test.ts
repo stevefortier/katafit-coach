@@ -19,6 +19,7 @@ test("photo requests guide native media reads at the original request anchor", (
   assert.match(guidance, /coach_read_media.*media_ref/s);
   assert.match(guidance, /2026-09-23T21:05:00\.000Z/);
   assert.match(guidance, /No image bytes read.*do not judge/is);
+  assert.match(guidance, /only some.*image.*read.*state.*which.*unverified/is);
   assert.equal(photoReviewGuidance("How did my meal go?", asOf), "");
   assert.equal(photoReviewGuidance("Review my photos", "not a timestamp"), "");
 });

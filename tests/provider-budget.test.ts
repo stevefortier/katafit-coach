@@ -68,6 +68,18 @@ test("provider budget rejects an image envelope over the transport ceiling", () 
   );
 });
 
+test("five prepared images fit only while the full serialized wire remains below 6 MiB", () => {
+  const prepared = image(
+    "data:image/jpeg;base64," + Buffer.alloc(768 * 1024).toString("base64"),
+  );
+  const five = payload(Array.from({ length: 5 }, () => prepared));
+  assert.ok(providerTextBytes(five) < 1024 * 1024);
+  assert.throws(
+    () => providerTextBytes({ ...five, padding: "x".repeat(1024 * 1024) }),
+    /PROVIDER_PAYLOAD_TOO_LARGE/,
+  );
+});
+
 test("provider payload evicts older images without changing the transcript", () => {
   const body = {
     messages: Array.from({ length: 6 }, (_, i) => ({
@@ -87,23 +99,23 @@ test("provider payload evicts older images without changing the transcript", () 
     compacted.messages
       .flatMap((m) => m.content)
       .filter((p) => p.type === "image_url").length,
-    4,
+    5,
   );
   assert.deepEqual(
     compacted.messages
       .flatMap((m) => m.content)
       .filter((p) => p.type === "image_url")
       .map((p: any) => Buffer.from(p.image_url.url.split(",")[1], "base64")[0]),
-    [3, 4, 5, 6],
+    [2, 3, 4, 5, 6],
   );
   assert.ok(JSON.stringify(compacted).includes("receipt 0"));
   assert.ok(JSON.stringify(compacted).includes("Earlier image omitted"));
   assert.ok(providerTextBytes(compacted) < 1024 * 1024);
 });
 
-test("provider budget enforces four-image and aggregate 16 MiB caps", () => {
+test("provider budget enforces five-image and aggregate 16 MiB caps", () => {
   assert.throws(
-    () => providerTextBytes(payload(Array.from({ length: 5 }, () => image()))),
+    () => providerTextBytes(payload(Array.from({ length: 6 }, () => image()))),
     /MEDIA_REJECTED/,
   );
   const large = image(

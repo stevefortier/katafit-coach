@@ -213,3 +213,109 @@ test("authorized media read sends bounded image parts to Pi", async () => {
     await f.close();
   }
 });
+
+test("five distinct authorized originals are delivered; a sixth is rejected", async () => {
+  const refs = Array.from({ length: 6 }, (_, i) => `opaque-photo-${i}`);
+  const originals = await Promise.all(
+    refs.map(async (_, i) =>
+      sharp({
+        create: {
+          width: 2,
+          height: 2,
+          channels: 3,
+          background: { r: i * 30, g: 10, b: 20 },
+        },
+      })
+        .png()
+        .toBuffer(),
+    ),
+  );
+  const f = await wire((method, params) => {
+    if (method === "tools/list")
+      return {
+        tools: [
+          { name: "coach_get_capabilities", inputSchema: schema },
+          { name: "coach_list_activities", inputSchema: schema },
+          {
+            name: "coach_read_media",
+            inputSchema: {
+              ...schema,
+              properties: {
+                ...schema.properties,
+                media_ref: { type: "string" },
+              },
+            },
+          },
+        ],
+      };
+    if (params.name === "coach_get_capabilities")
+      return {
+        structuredContent: {
+          contract_version: 2,
+          allowed_tools: ["coach_list_activities", "coach_read_media"],
+          domains: {},
+          limits: {},
+        },
+      };
+    if (params.name === "coach_list_activities")
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              items: refs.map((media_ref) => ({ media_ref })),
+            }),
+          },
+        ],
+      };
+    if (params.name === "coach_read_media") {
+      const i = refs.indexOf(params.arguments.media_ref);
+      assert.ok(i >= 0);
+      return {
+        content: [
+          {
+            type: "image",
+            mimeType: "image/png",
+            data: originals[i].toString("base64"),
+          },
+        ],
+      };
+    }
+    throw new Error("unexpected tool");
+  });
+  try {
+    const signal = AbortSignal.timeout(10000);
+    const reads = await discoverReads(
+      new Client(f.origin, "synthetic-token", signal),
+      fence,
+      { vision: true, secrets: ["synthetic-token"] },
+    );
+    const list = reads.tools.find((t) => t.name === "coach_list_activities")!;
+    const media = reads.tools.find((t) => t.name === "coach_read_media")!;
+    const handles = JSON.parse(
+      (await list.execute("list", {}, signal)).content[0].text,
+    ).items.map((item: any) => item.media_ref);
+    const received = [];
+    for (let i = 0; i < 5; i++) {
+      const result = await media.execute(
+        `image-${i}`,
+        { media_ref: handles[i] },
+        signal,
+      );
+      received.push(result.content.find((c) => c.type === "image"));
+    }
+    assert.equal(received.length, 5);
+    for (let i = 0; i < 5; i++)
+      assert.deepEqual(
+        Buffer.from((received[i] as any).data, "base64"),
+        originals[i],
+      );
+    await assert.rejects(
+      media.execute("image-6", { media_ref: handles[5] }, signal),
+      /MEDIA_REJECTED/,
+    );
+    reads.dispose();
+  } finally {
+    await f.close();
+  }
+});
