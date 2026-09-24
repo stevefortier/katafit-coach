@@ -10,7 +10,12 @@ test("member threads retain both canonical directions in chronological chat orde
     process.env.COACH_EVIDENCE_DIR || `${tmpdir()}/katafit-studio-evidence`;
   await mkdir(evidence, { recursive: true });
   const server = createServer(async (req, res) => {
-    const file = req.url === "/" ? "index.html" : req.url?.slice(1);
+    const file =
+      req.url === "/" ||
+      req.url === "/settings" ||
+      req.url?.startsWith("/chat/member/")
+        ? "index.html"
+        : req.url?.slice(1);
     if (!["index.html", "app.js", "style.css"].includes(file || ""))
       return void res.writeHead(404).end();
     res.setHeader(
@@ -62,14 +67,23 @@ test("member threads retain both canonical directions in chronological chat orde
       if (url.pathname === "/api/operator/chat") body = { messages: [] };
       if (url.pathname === "/api/members")
         body = {
-          members: [
-            {
-              member_ref: "alex",
-              display_name: "Synthetic Alex",
-              access: "granted",
-            },
-          ],
-          has_more: false,
+          members: url.searchParams.has("cursor")
+            ? [
+                {
+                  member_ref: "kai",
+                  display_name: "Synthetic Kai",
+                  access: "granted",
+                },
+              ]
+            : [
+                {
+                  member_ref: "alex",
+                  display_name: "Synthetic Alex",
+                  access: "granted",
+                },
+              ],
+          has_more: !url.searchParams.has("cursor"),
+          next_cursor: "second",
         };
       if (url.pathname === "/api/members/feed")
         body = {
@@ -119,6 +133,49 @@ test("member threads retain both canonical directions in chronological chat orde
     await page
       .getByRole("button", { name: "Synthetic Alex", exact: true })
       .click();
+    await page.locator(".member-item").first().waitFor();
+    assert.equal(new URL(page.url()).pathname, "/chat/member/alex");
+    await page.reload();
+    await page.locator(".member-item").first().waitFor();
+    assert.equal(await page.locator("#memberView").isVisible(), true);
+    await page.locator("#operatorTab").click();
+    assert.equal(new URL(page.url()).pathname, "/chat/operator");
+    await page.goBack();
+    await page.locator(".member-item").first().waitFor();
+    assert.equal(await page.locator("#memberView").isVisible(), true);
+    await page.locator("#settingsTab").click();
+    await page.reload();
+    await page.locator("#studio").waitFor({ state: "visible" });
+    await page.locator("#coachTab").click();
+    await page
+      .getByRole("button", { name: "Synthetic Alex", exact: true })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Synthetic Alex", exact: true })
+      .click();
+    await page.locator(".member-item").first().waitFor();
+    await page.goto(
+      `http://127.0.0.1:${(server.address() as any).port}/chat/member/kai`,
+    );
+    await page.locator("#studio").waitFor({ state: "visible" });
+    await page
+      .getByRole("button", { name: "Synthetic Kai", exact: true })
+      .waitFor({ timeout: 2500 });
+    assert.equal(await page.locator("#memberView").isVisible(), true);
+    assert.equal(new URL(page.url()).pathname, "/chat/member/kai");
+    await page.goto(
+      `http://127.0.0.1:${(server.address() as any).port}/chat/member/unknown`,
+    );
+    await page
+      .getByText("Conversation unavailable for this credential.", {
+        exact: false,
+      })
+      .waitFor();
+    assert.equal(await page.locator("#memberView").isVisible(), false);
+    assert.equal(new URL(page.url()).pathname, "/chat/member/unknown");
+    await page.goto(
+      `http://127.0.0.1:${(server.address() as any).port}/chat/member/alex`,
+    );
     await page.locator(".member-item").first().waitFor();
     await page.screenshot({
       path: evidence + "/thread-before.png",

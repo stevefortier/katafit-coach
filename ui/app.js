@@ -157,9 +157,8 @@ action("unlock", async () => {
   $("login").hidden = true;
   $("studio").hidden = false;
   $("lockStudio").hidden = false;
-  selectStudioTab("coach");
+  restoreStudioRoute();
   void loadOperator();
-  void loadMembers();
   await status();
   await refreshUpdate(true);
 });
@@ -337,7 +336,7 @@ function workerStatusTone(state) {
 }
 if (/^[a-f0-9]{64}$/i.test(location.hash.slice(1))) {
   $("adminKey").value = location.hash.slice(1);
-  history.replaceState(null, "", "/");
+  history.replaceState(null, "", location.pathname + location.search);
   $("unlock").click();
 } else if (rememberedAdmin()) {
   $("adminKey").value = rememberedAdmin();
@@ -349,7 +348,35 @@ let logData = { entries: [] },
   logPaused = false,
   logTimer,
   logController;
-function selectStudioTab(tab) {
+function studioRoute() {
+  if (location.pathname === "/settings") return { tab: "settings" };
+  if (location.pathname.startsWith("/chat/member/")) {
+    try {
+      return {
+        tab: "coach",
+        member: decodeURIComponent(location.pathname.slice(13)),
+      };
+    } catch {}
+  }
+  return { tab: "coach" };
+}
+function navigateStudio(path) {
+  if (location.pathname !== path) history.pushState(null, "", path);
+}
+function restoreStudioRoute() {
+  const route = studioRoute();
+  selectStudioTab(route.tab, false);
+  if (route.tab === "coach") {
+    const member = route.member
+      ? members.find((m) => m.member_ref === route.member)
+      : null;
+    selectConversation(member || null, false);
+  }
+}
+window.addEventListener("popstate", () => {
+  if (key) restoreStudioRoute();
+});
+function selectStudioTab(tab, navigate = true) {
   clearCommandResult();
   const coach = tab === "coach";
   $("coachPanel").hidden = !coach;
@@ -364,6 +391,15 @@ function selectStudioTab(tab) {
   logVisibility();
   if (coach) operatorSnapshotLabel();
   memberVisibility();
+  if (coach && key && !members.length) void loadMembers();
+  if (navigate)
+    navigateStudio(
+      coach
+        ? selectedMember
+          ? "/chat/member/" + encodeURIComponent(selectedMember.member_ref)
+          : "/chat/operator"
+        : "/settings",
+    );
 }
 $("coachTab").onclick = () => selectStudioTab("coach");
 $("settingsTab").onclick = () => selectStudioTab("settings");
@@ -995,7 +1031,7 @@ function resetMembers() {
   ++membersEpoch;
   members = [];
   membersCursor = null;
-  selectConversation(null);
+  selectConversation(null, false);
   renderMembers();
   $("membersStatus").textContent = "";
 }
@@ -1032,7 +1068,7 @@ function renderMembers() {
   $("operatorTab").classList.toggle("secondary", !!selectedMember);
   $("membersMore").hidden = !membersCursor;
 }
-async function loadMembers(more = false) {
+async function loadMembers(more = false, routePages = 0) {
   if (!key || document.hidden || $("coachPanel").hidden) return;
   const epoch = ++membersEpoch,
     generation = authGeneration;
@@ -1060,17 +1096,26 @@ async function loadMembers(more = false) {
         (m) => m.member_ref === selectedMember.member_ref,
       );
       if (!current || current.access !== "granted")
-        selectConversation(current || null);
+        selectConversation(current || null, false);
     }
     renderMembers();
+    const routedMember = studioRoute().member;
+    if (routedMember && !$("coachPanel").hidden) restoreStudioRoute();
     $("membersStatus").textContent = members.length
       ? "Member conversations · read-only"
       : "No member conversations available for this credential. Check dojo membership and credential access in Kata.fit, then refresh.";
+    if (routedMember && !members.some((m) => m.member_ref === routedMember)) {
+      if (membersCursor && routePages < 10)
+        void loadMembers(true, routePages + 1);
+      else
+        $("membersStatus").textContent =
+          "Conversation unavailable for this credential. Check member access or refresh the roster.";
+    }
   } catch (error) {
     if (epoch !== membersEpoch || generation !== authGeneration) return;
     members = [];
     membersCursor = null;
-    selectConversation(null);
+    selectConversation(null, false);
     renderMembers();
     $("membersStatus").textContent =
       "Member conversations unavailable. Check your connection in Settings and dojo membership, chief authority and credential access in Kata.fit, or update an older backend, then Refresh members.";
@@ -1079,7 +1124,7 @@ async function loadMembers(more = false) {
       $("membersMore").disabled = false;
   }
 }
-function selectConversation(member) {
+function selectConversation(member, navigate = true) {
   clearCommandResult();
   clearActivities();
   ++memberEpoch;
@@ -1094,6 +1139,12 @@ function selectConversation(member) {
   $("memberView").hidden = !member;
   $("memberStatus").textContent = "";
   renderMembers();
+  if (navigate && $("settingsPanel").hidden)
+    navigateStudio(
+      member
+        ? "/chat/member/" + encodeURIComponent(member.member_ref)
+        : "/chat/operator",
+    );
   if (!member) return;
   $("memberTitle").textContent = member.display_name + " · Read-only";
   $("memberRefresh").disabled = member.access !== "granted";

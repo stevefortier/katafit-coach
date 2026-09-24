@@ -100,6 +100,15 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(app.origin);
+  const lockedLink = await context.newPage();
+  await lockedLink.goto(app.origin + "/settings");
+  assert.equal(await lockedLink.locator("#login").isVisible(), true);
+  assert.equal(await lockedLink.locator("#studio").isVisible(), false);
+  await lockedLink.locator("#adminKey").fill(store.secrets.admin);
+  await lockedLink.locator("#unlock").click();
+  await lockedLink.locator("#studio").waitFor({ state: "visible" });
+  assert.equal(await lockedLink.locator("#settingsPanel").isVisible(), true);
+  await lockedLink.close();
   await page.setViewportSize({ width: 320, height: 700 });
   assert.ok(
     await page.evaluate(
@@ -110,6 +119,36 @@ try {
   await page.locator("#adminKey").fill(store.secrets.admin);
   await page.locator("#unlock").click();
   await page.locator("#studio").waitFor({ state: "visible" });
+  await page.locator("#settingsTab").click();
+  assert.equal(new URL(page.url()).pathname, "/settings");
+  await page.reload();
+  await page.locator("#studio").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#settingsPanel").isVisible(), true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mkdir(evidence, { recursive: true });
+  await page.screenshot({ path: evidence + "/nav-settings-mobile.png" });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator("#coachTab").click();
+  assert.equal(new URL(page.url()).pathname, "/chat/operator");
+  await page.goBack();
+  assert.equal(await page.locator("#settingsPanel").isVisible(), true);
+  await page.goForward();
+  assert.equal(await page.locator("#operatorView").isVisible(), true);
+  await page.goto(app.origin + "/settings");
+  await page.locator("#studio").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#settingsPanel").isVisible(), true);
+  await page.goto(app.origin + "/chat/operator");
+  await page.locator("#studio").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#operatorView").isVisible(), true);
+  assert.equal((await fetch(app.origin + "/not-a-view")).status, 401);
+  assert.equal(
+    (
+      await fetch(app.origin + "/not-a-view", {
+        headers: { Authorization: "Bearer " + store.secrets.admin },
+      })
+    ).status,
+    404,
+  );
   assert.equal(await page.locator(".hero").count(), 0);
   assert.equal(await page.locator("footer").count(), 0);
   assert.equal(
