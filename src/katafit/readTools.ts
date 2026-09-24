@@ -233,7 +233,9 @@ export async function discoverReads(
               arguments: { ...(resolved as object), ...fence },
             },
             false,
-            10000,
+            // Reads can legitimately take longer than ten seconds under backend
+            // contention. Keep the deadline below the Heroku router's 30s cap.
+            25000,
             t.name === "coach_read_media" ? 12 * 1024 * 1024 : 1024 * 1024,
           );
           client.signal.throwIfAborted();
