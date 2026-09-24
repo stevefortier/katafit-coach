@@ -324,6 +324,17 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             </p>
             <p class="hint" id="updateChecked">Not checked yet.</p>
             <p id="updateOutcome" class="hint" role="status" hidden></p>
+            <label class="hint update-auto-control" for="updateAuto">
+              <input type="checkbox" id="updateAuto" disabled />
+              <span
+                >Automatically install newer main source (checks about every 90
+                seconds)</span
+              >
+            </label>
+            <p class="hint" id="updateAutoStatus" role="status">
+              Off. When enabled, upgrades wait for an idle worker. A previously
+              running worker is restarted; check its status afterward.
+            </p>
             <div class="log-controls">
               <button id="updateCheck" class="secondary">
                 Check for updates
@@ -342,8 +353,8 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             </div>
             <p class="hint">
               Pause the worker and finish or cancel previews and Operator chat
-              before upgrading. Configuration and credentials stay in your data
-              directory. The worker remains stopped after restart.
+              before manual upgrades. Configuration and credentials stay in your
+              data directory. Manual upgrades leave the worker stopped.
             </p>
             <div id="updateConfirm" class="update-confirm" hidden>
               <h3>Install this source revision?</h3>

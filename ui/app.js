@@ -519,7 +519,33 @@ function renderUpdate() {
     ? data.latest.slice(0, 12)
     : "Not available";
   $("updateLatest").title = sourceSha(data.latest) ? data.latest : "";
-  $("updateStatus").textContent = updateError || data.guidance;
+  $("updateStatus").textContent =
+    updateError ||
+    (data.auto?.enabled && data.guidance?.startsWith("New source available.")
+      ? "Main differs from the installed source. Automatic upgrade will verify it and wait for an idle worker."
+      : data.guidance);
+  $("updateAuto").disabled = !data.supported || updateRequest;
+  $("updateAuto").checked = data.auto?.enabled === true;
+  const autoStates = {
+    running:
+      "Upgrade committed; worker started locally. Check Worker status for ongoing connectivity.",
+    stopped: "Upgrade committed; previously stopped worker remains stopped.",
+    deferred: "Automatic upgrade was deferred; no source change was made.",
+    "restored-running":
+      "Upgrade failed; previous runtime restored and worker started locally. Check Worker status.",
+    failed:
+      "Automatic upgrade failed; previous runtime retained. This revision will not retry automatically.",
+    "resume-failed":
+      "Worker restart could not be confirmed. Check Worker status and start it manually if needed; inspect upgrade result separately.",
+  };
+  $("updateAutoStatus").textContent =
+    data.autoOutcome &&
+    sourceSha(data.autoOutcome.sha) &&
+    Object.hasOwn(autoStates, data.autoOutcome.state)
+      ? autoStates[data.autoOutcome.state]
+      : data.auto?.enabled
+        ? "Enabled. Waiting for a newer verified main revision and an idle worker."
+        : "Off. Enable to upgrade from main automatically.";
   const outcome = data.lastOperation;
   const outcomeNames = {
     applying: "Upgrade accepted",
@@ -617,6 +643,19 @@ async function refreshUpdate(check = false) {
 action("updateCheck", async () => {
   $("updateConfirm").hidden = true;
   await refreshUpdate(true);
+});
+$("updateAuto").addEventListener("change", async () => {
+  const enabled = $("updateAuto").checked;
+  $("updateAuto").disabled = true;
+  try {
+    await api("update/auto", { enabled }, AbortSignal.timeout(15000));
+    await refreshUpdate();
+  } catch {
+    $("updateAuto").checked = !enabled;
+    notice("Could not save automatic update setting. Check Studio connection.");
+  } finally {
+    renderUpdate();
+  }
 });
 action("updateApply", async () => {
   const generation = authGeneration;

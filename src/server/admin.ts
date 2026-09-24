@@ -1,6 +1,7 @@
 import { OperatorChat } from "../chat/operator.js";
 import { StudioReads } from "../katafit/studio.js";
 import { Updates } from "../update/updates.js";
+import { AutoUpdateSetting } from "../update/auto.js";
 import { Diagnostics } from "../diagnostics/log.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
@@ -17,6 +18,7 @@ export async function admin(
   infer = complete,
   onShutdown?: () => void,
   updates = new Updates(null, null),
+  auto?: AutoUpdateSetting,
 ) {
   const chat = new OperatorChat(store, infer);
   const logs = new Diagnostics(store.dir);
@@ -24,6 +26,9 @@ export async function admin(
   let worker: Worker | undefined;
   let preview: AbortController | undefined;
   let busy = false;
+  let autoQuiesced = false;
+  let autoWasRunning = false;
+  let autoQuiescePending: Promise<void> | undefined;
   let origin = "";
   const memberReads = new Set<AbortController>();
   const server = createServer(async (req, res) => {
@@ -180,7 +185,13 @@ export async function admin(
       if (req.method === "GET" && path === "/api/operator/chat")
         return send(200, await chat.reconcile());
       if (req.method === "GET" && path === "/api/update")
-        return send(200, updates.snapshot());
+        return send(200, {
+          ...updates.snapshot(),
+          auto:
+            auto && updates.snapshot().supported
+              ? await auto.read()
+              : { enabled: false },
+        });
       if (req.method === "GET" && path === "/api/config")
         return send(200, {
           ...store.publicConfig(),
@@ -199,6 +210,9 @@ export async function admin(
           operatorChat: chat.active,
           lastError: logs.lastError,
           revision: store.publicConfig().revision,
+          autoQuiesced,
+          autoQuiesceReady: autoQuiesced && !autoQuiescePending,
+          autoWasRunning: autoQuiesced && autoWasRunning,
         });
       if (req.method !== "POST") return send(404, { error: "NOT_FOUND" });
       if (!req.headers["content-type"]?.startsWith("application/json"))
@@ -210,6 +224,75 @@ export async function admin(
           return send(413, { error: "TOO_LARGE" });
       }
       const body = JSON.parse(raw || "{}");
+      if (path === "/api/update/auto") {
+        if (!auto || !updates.snapshot().supported)
+          return send(409, { error: "UNSUPPORTED_INSTALLATION" });
+        if (updates.applying && body?.enabled !== false)
+          return send(409, { error: "UPDATE_IN_PROGRESS" });
+        if (
+          !body ||
+          Array.isArray(body) ||
+          Object.keys(body).join(",") !== "enabled" ||
+          typeof body.enabled !== "boolean"
+        )
+          return send(400, { error: "INVALID_AUTO_SETTING" });
+        await auto.write(body.enabled);
+        return send(200, { auto: await auto.read() });
+      }
+      if (path === "/api/update/auto/release" && auto) {
+        if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+        if (Object.keys(body).length)
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        await autoQuiescePending?.catch(() => {});
+        autoQuiesced = false;
+        autoWasRunning = false;
+        worker?.releaseUpdateQuiesce();
+        return send(200, { ok: true });
+      }
+      if (
+        path === "/api/update/auto/quiesce" &&
+        auto &&
+        updates.snapshot().supported
+      ) {
+        if (Object.keys(body).length)
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        if (autoQuiesced) {
+          try {
+            await autoQuiescePending;
+            return send(200, { wasRunning: autoWasRunning });
+          } catch {
+            return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+          }
+        }
+        if (
+          updates.applying ||
+          busy ||
+          preview ||
+          chat.active ||
+          (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
+        )
+          return send(409, { error: "AUTO_UPDATE_BUSY" });
+        autoQuiesced = true;
+        autoWasRunning = !!worker && worker.state !== "stopped";
+        const stopping = (async () => {
+          if (autoWasRunning) await worker!.stop();
+          if (worker && worker.state !== "stopped")
+            throw new Error("WORKER_STOP_UNCONFIRMED");
+        })();
+        autoQuiescePending = stopping;
+        try {
+          await stopping;
+          return send(200, { wasRunning: autoWasRunning });
+        } catch {
+          autoQuiesced = false;
+          autoWasRunning = false;
+          worker?.releaseUpdateQuiesce();
+          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+        } finally {
+          if (autoQuiescePending === stopping) autoQuiescePending = undefined;
+        }
+      }
+      if (autoQuiesced) return send(409, { error: "AUTO_UPDATE_QUIESCED" });
       if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
       if (path === "/api/operator/cancel") {
         await chat.cancel();

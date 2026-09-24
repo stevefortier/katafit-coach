@@ -75,6 +75,21 @@ const MAX_INCIDENTS = 32;
 export class Worker {
   private controller = new AbortController();
   private active?: Promise<void>;
+  private updateQuiesced = false;
+  quiesceForUpdate(): boolean {
+    if (
+      this.state !== "idle" ||
+      this.active ||
+      this.stopping ||
+      this.updateQuiesced
+    )
+      return false;
+    this.updateQuiesced = true;
+    return true;
+  }
+  releaseUpdateQuiesce() {
+    this.updateQuiesced = false;
+  }
   private preferTask = true;
   private pendingTask?: PendingTask;
   private isolated: Incident[] = [];
@@ -124,6 +139,7 @@ export class Worker {
     this.options.onState?.(s);
   }
   pollOnce() {
+    if (this.updateQuiesced) return Promise.reject(new Error("CANCELLED"));
     if (!this.active)
       this.active = this.poll().finally(() => {
         this.active = undefined;
