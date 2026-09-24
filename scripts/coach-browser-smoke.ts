@@ -98,7 +98,10 @@ try {
   });
   await page.goto(app.origin + "/#" + store.secrets.admin);
   await page.locator("#studio").waitFor({ state: "visible" });
-  assert.match(await page.locator("h1").innerText(), /you\.\s+A better/);
+  assert.equal(
+    await page.locator("header .brand").innerText(),
+    "Kata.fit Coach",
+  );
   await page.screenshot({ path: evidence + "/navigation-before.png" });
   assert.equal(
     await page.locator("#coachTab").count(),
@@ -376,18 +379,8 @@ try {
     () => document.querySelectorAll(".member-item").length === 4,
   );
   const memberHint = await page.locator("#memberView > .hint").innerText();
-  assert.match(
-    memberHint,
-    /Messages to and from Coach are readable through dojo membership/,
-  );
-  assert.match(memberHint, /including retained workout conversations/);
-  assert.match(memberHint, /Activity records follow category sharing/);
-  assert.match(memberHint, /Raw attachments are not included/);
-  assert.match(memberHint, /not instructions for your Operator chat/);
-  assert.doesNotMatch(
-    memberHint,
-    /nested workout conversations are not included/,
-  );
+  assert.match(memberHint, /Read-only Coach conversation/);
+  assert.match(memberHint, /Expand a shared activity for details and photos/);
   assert.equal(
     await page
       .locator("#operatorTab")

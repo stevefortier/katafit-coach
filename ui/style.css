@@ -1,91 +1,61 @@
-@import url("data:text/css,");
 :root {
   color-scheme: dark;
   --bg: #101715;
   --panel: #17221e;
   --line: #33463c;
   --muted: #a6b7ac;
-  --accent: #d3f3a4;
+  --accent: #c8dec0;
 }
 * {
   box-sizing: border-box;
 }
 body {
   margin: 0;
-  background:
-    radial-gradient(ellipse at 90% 0, #283b28, transparent 45%), var(--bg);
+  background: var(--bg);
   font:
     15px/1.6 system-ui,
     sans-serif;
   color: #edf2e9;
 }
 main {
+  width: 100%;
   max-width: 1120px;
+  min-width: 0;
   margin: auto;
-  padding: 32px;
+  padding: 24px;
 }
 header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid var(--line);
-  padding-bottom: 24px;
+  padding-bottom: 16px;
+  margin-bottom: 20px;
 }
 .brand {
-  font-size: 25px;
-  font-weight: 800;
+  font-size: 18px;
+  font-weight: 600;
   color: inherit;
   text-decoration: none;
-  letter-spacing: -1px;
-}
-.brand span {
-  color: var(--accent);
-}
-.brand b {
-  font-size: 10px;
-  letter-spacing: 2px;
-  font-weight: 500;
-  margin-left: 24px;
-}
-.pill,
-.eyebrow {
-  font-size: 10px;
-  letter-spacing: 2px;
-  font-weight: 700;
-  color: var(--accent);
 }
 .pill {
   border: 1px solid var(--line);
-  padding: 7px 14px;
-  border-radius: 20px;
-}
-.hero {
-  padding: 64px 0 42px;
-  max-width: 720px;
-}
-h1 {
-  font-size: clamp(36px, 5vw, 58px);
-  line-height: 1.08;
-  font-weight: 500;
-  letter-spacing: -2px;
-  margin: 18px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--muted);
 }
 h2 {
-  font-size: 23px;
-  letter-spacing: -0.5px;
-  font-weight: 500;
-  margin: 10px 0;
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0 0 12px;
 }
 p {
   color: var(--muted);
 }
-.hero p {
-  max-width: 600px;
-  font-size: 17px;
-}
 nav {
   display: flex;
-  gap: 32px;
+  gap: 12px;
   margin: 8px 0 24px;
 }
 nav a {
@@ -94,16 +64,18 @@ nav a {
 }
 .grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
 }
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 28px;
+  border-radius: 8px;
+  padding: 20px;
+  min-width: 0;
 }
 label {
+  min-width: 0;
   display: block;
   font-size: 12px;
   color: #cad5cc;
@@ -116,6 +88,8 @@ select {
   font-size: 14px;
   display: block;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 8px;
   background: #101a15;
   border: 1px solid #3c4d41;
@@ -134,7 +108,7 @@ select:focus {
 }
 .split {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 .hint {
@@ -184,10 +158,11 @@ pre {
   padding: 20px;
   color: #cbd9ca;
   max-height: 420px;
+  max-width: 100%;
   overflow: auto;
 }
 .runbar {
-  padding: 36px 0;
+  padding: 24px 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -209,38 +184,25 @@ pre {
 #notice:empty {
   display: none;
 }
-footer {
-  border-top: 1px solid var(--line);
-  padding: 25px 0;
-  color: #7d9382;
-  font-size: 9px;
-  letter-spacing: 2px;
-}
 @media (max-width: 760px) {
   main {
-    padding: 20px;
+    padding: 16px;
   }
   .grid {
-    grid-template-columns: 1fr;
-  }
-  .hero {
-    padding-top: 38px;
-  }
-  .brand b {
-    display: none;
+    grid-template-columns: minmax(0, 1fr);
   }
   .card {
-    padding: 22px;
+    padding: 16px;
   }
   .runbar {
     display: block;
   }
   nav {
-    gap: 18px;
-    font-size: 12px;
+    gap: 8px 14px;
+    font-size: 13px;
   }
   .split {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 /* Capability checkboxes must not inherit full-width text input geometry. */
@@ -367,18 +329,6 @@ header {
 [hidden] {
   display: none !important;
 }
-body:has(#studio:not([hidden])) .hero {
-  padding: 24px 0 12px;
-}
-body:has(#studio:not([hidden])) .hero h1 {
-  font-size: 30px;
-}
-body:has(#studio:not([hidden])) .hero h1 br {
-  display: none;
-}
-body:has(#studio:not([hidden])) .hero p {
-  display: none;
-}
 .studio-tabs {
   gap: 10px;
 }
@@ -397,6 +347,7 @@ body:has(#studio:not([hidden])) .hero p {
   min-width: 0;
 }
 .chat-messages {
+  min-width: 0;
   height: clamp(220px, 36vh, 460px);
   overflow-y: auto;
   overflow-wrap: anywhere;
@@ -411,6 +362,8 @@ body:has(#studio:not([hidden])) .hero p {
   margin: 10px 0;
   max-width: 85%;
   width: fit-content;
+  min-width: 0;
+  overflow-wrap: anywhere;
   background: var(--panel);
 }
 .chat-message strong {
@@ -506,6 +459,8 @@ body:has(#studio:not([hidden])) .hero p {
 }
 .activity-card dd {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .activity-card img {
   display: block;

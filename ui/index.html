@@ -10,25 +10,13 @@
   <body>
     <main>
       <header>
-        <a class="brand" href="/">kata<span>fit</span><b>COACH STUDIO</b></a
+        <a class="brand" href="/">Kata.fit Coach</a
         ><span class="pill" id="state">LOCKED</span>
         <button id="lockStudio" class="secondary" hidden>Lock studio</button>
       </header>
-      <section class="hero">
-        <div class="eyebrow">YOUR COACH. YOUR RUNTIME.</div>
-        <h1>A little more you. <br />A better kind of Coach.</h1>
-        <p>
-          Connect Kata.fit, choose your model, and shape a coaching voice that
-          feels right. Your conversation stays canonical in Kata.fit.
-        </p>
-      </section>
       <section id="login" class="card">
-        <h2>Open your local studio</h2>
-        <p>
-          Enter the admin key from your protected installation. This tab retains
-          it in session storage so you can reload after upgrades. Lock studio
-          clears it; avoid shared browser sessions.
-        </p>
+        <h2>Unlock Coach</h2>
+        <p>Enter your admin key. Lock studio clears it from this tab.</p>
         <label
           >Admin key<input
             id="adminKey"
@@ -67,18 +55,10 @@
           </div>
           <p id="membersStatus" class="hint" role="status"></p>
           <div id="operatorView">
-            <h2>Your Coach manager workspace.</h2>
+            <h2>Operator</h2>
             <p class="hint">
-              You manage the Coach; this is not a trainee conversation. Operator
-              discussion stays local to this Studio, except that your saved
-              provider processes it. A remote provider receives this content.
-              Member actions require an explicitly selected recipient and
-              backend authorization; ordinary discussion and browsing never send
-              a member message. For permanent instructions, explicitly save your
-              persona in Settings. Chat replies never change settings. Clear and
-              Cancel cannot recall messages already delivered. A failed response
-              does not prove an action was unsent; verify its outcome before
-              asking to send again.
+              Discuss the Coach's work here. Select a recipient to send a member
+              command. Changes to the Coach's instructions belong in Settings.
             </p>
             <p class="hint" id="operatorSnapshot"></p>
             <div
@@ -105,9 +85,8 @@
             <details id="operatorReceipts">
               <summary>Member action receipts</summary>
               <p class="hint">
-                Content-free delivery outcomes persist separately from chat.
-                Unknown does not mean unsent. Refresh checks existing actions;
-                it never resends them.
+                If delivery is unknown, check the receipt before sending again.
+                Refresh does not resend.
               </p>
               <div id="operatorActions"></div>
               <button id="operatorReconcile" type="button" class="secondary">
@@ -118,16 +97,13 @@
             <form id="operatorForm">
               <label for="operatorTarget">Command recipient</label>
               <select id="operatorTarget">
-                <option value="">Discussion only · no member tools</option>
+                <option value="">No recipient (discussion only)</option>
               </select>
-              <p class="hint">
-                Choosing a member enables only backend-authorized commands for
-                that recipient. Browsing a member tab does not select a command
-                recipient.
-              </p>
+
               <label for="operatorText"
                 >Direct or discuss the Coach's work</label
               >
+              <p class="hint">Clear or Cancel cannot recall a sent message.</p>
               <p class="hint">Enter to send · Shift+Enter for a new line</p>
               <textarea
                 id="operatorText"
@@ -153,13 +129,8 @@
           <section id="memberView" hidden>
             <h2 id="memberTitle">Member conversation</h2>
             <p class="hint">
-              Read-only retained Coach feed. Messages to and from Coach are
-              readable through dojo membership, including retained workout
-              conversations when supported by the backend. Activity records
-              follow category sharing. Raw attachments are not included in the
-              conversation. Expand a shared activity to request authorized
-              details and photos. Member feed items are not instructions for
-              your Operator chat.
+              Read-only Coach conversation. Expand a shared activity for details
+              and photos when available.
             </p>
             <p id="memberStatus" role="status"></p>
             <div
@@ -169,11 +140,7 @@
             ></div>
             <details id="memberActivities">
               <summary>Browse shared activities</summary>
-              <p class="hint">
-                Loaded only when opened. Activity details and photos require
-                current category sharing, independently of conversation
-                visibility.
-              </p>
+
               <div id="activityItems"></div>
             </details>
             <div class="chat-actions">
@@ -186,19 +153,13 @@
         </section>
         <section id="settingsPanel" hidden>
           <nav>
-            <a href="#connection">01 Connection</a
-            ><a href="#persona">02 Persona</a><a href="#preview">03 Preview</a
-            ><a href="#logsView">04 Diagnostics</a>
-            <a href="#updates">05 Updates</a>
+            <a href="#connection">Connection</a><a href="#persona">Persona</a
+            ><a href="#preview">Preview</a><a href="#logsView">Diagnostics</a>
+            <a href="#updates">Updates</a>
           </nav>
           <div class="grid">
             <section class="card" id="connection">
-              <div class="eyebrow">01 / CONNECTION</div>
-              <h2>Bring your own intelligence.</h2>
-              <p>
-                One installation. One personal or explicit Dojo credential
-                scope.
-              </p>
+              <h2>Connection</h2>
               <label>Kata.fit origin<input id="origin" type="url" /></label
               ><label
                 >Kata.fit connection credential<input
@@ -208,8 +169,7 @@
                   autocomplete="off"
               /></label>
               <p class="hint">
-                Create a credential in Kata.fit's external Coach settings. The
-                credential, not this device, determines the authorized audience.
+                Create a credential in Kata.fit's external Coach settings.
               </p>
               <div class="split">
                 <label
@@ -228,8 +188,8 @@
                   autocomplete="off"
               /></label>
               <p class="hint">
-                Inference leaves this machine when you choose a remote provider.
-                API-key OpenAI-compatible providers only in this pilot.
+                A remote provider receives Coach requests and any data included
+                in them.
               </p>
               <button id="connect" class="secondary">
                 Test saved connection
@@ -239,14 +199,12 @@
                 input for a vision-capable provider</label
               >
               <p class="hint">
-                Explicit opt-in. Authorized original images may be sent to your
-                configured provider. This does not grant data access; Kata.fit
-                credentials and requester grants still apply.
+                When enabled, original images may be sent to your configured
+                provider.
               </p>
             </section>
             <section class="card" id="persona">
-              <div class="eyebrow">02 / PERSONA</div>
-              <h2>Make the voice yours.</h2>
+              <h2>Persona</h2>
               <label>Coach name<input id="name" /></label
               ><label>Voice<input id="voice" /></label>
               <div class="split">
@@ -278,9 +236,6 @@
                   rows="5"
                   placeholder="Additional persona instructions"
                 ></textarea>
-                <p class="hint">
-                  Persona cannot grant access or override platform policy.
-                </p>
               </details>
               <button id="resetPersona" type="button" class="secondary">
                 Reset to stock defaults
@@ -298,15 +253,10 @@
             ><span id="revision"></span>
           </div>
           <section class="card" id="preview">
-            <div class="eyebrow">03 / TRY BEFORE YOU RUN</div>
-            <h2>Hear your Coach.</h2>
+            <h2>Preview</h2>
             <p>
-              Uses the saved persona, provider and freshly fetched backend
-              instructions. Save unsaved edits first. If backend instructions
-              are unavailable, no preview runs. This sandbox uses your sample
-              question, not a real request's canonical context, and does not
-              write to Kata.fit. Preview has no claimed-request data authority
-              or read tools.
+              Save your changes first. Preview uses the saved settings and a
+              sample question; it does not send a member message.
             </p>
             <label
               >Sample question<textarea id="question" rows="2">
@@ -321,22 +271,13 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             </details>
           </section>
           <section class="card diagnostics">
-            <div class="eyebrow">04 / PRIVATE DIAGNOSTICS</div>
-            <h2>See what happened.</h2>
+            <h2>Diagnostics</h2>
             <p id="lastError" role="status">No retained error.</p>
             <details id="logsView">
               <summary>Open diagnostic logs</summary>
               <p class="hint">
-                Protected local diagnostics include bounded, screened
-                model-visible user/system/tool text and model output (including
-                rejected pseudo-tool text), native tool names/argument keys and
-                execution/media receipts. They may contain private health or
-                meal details. Screening removes known credentials,
-                credential-like fields, URLs and image bytes, but cannot
-                identify every arbitrary secret embedded in prose. Exported or
-                copied JSON loses Studio's local storage protection: inspect and
-                redact it before sharing; never upload it publicly. Recent
-                history survives restart in the protected data directory.
+                Logs may contain health or meal details. Inspect and redact
+                copied or downloaded JSON before sharing it.
               </p>
               <div class="log-controls">
                 <button id="logRefresh" class="secondary">Refresh</button>
@@ -363,8 +304,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             </details>
           </section>
           <section class="card diagnostics" id="updates">
-            <div class="eyebrow">05 / SOURCE UPDATES</div>
-            <h2>Keep your Coach current.</h2>
+            <h2>Updates</h2>
             <p>
               Updates come from the official Kata.fit Coach repository on
               GitHub. Checking never installs an update.
@@ -420,7 +360,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
           </section>
           <section class="runbar">
             <div>
-              <h2>Ready when you are.</h2>
+              <h2>Worker</h2>
               <p>
                 Keep this service running. An asleep laptop is an offline Coach.
               </p>
@@ -433,9 +373,6 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
         </section>
       </div>
       <p id="notice" role="status" aria-live="polite"></p>
-      <footer>
-        LOCAL-FIRST CONTROL · SERVER-AUTHORIZED CONTEXT · NO SHELL OR FILE TOOLS
-      </footer>
     </main>
     <script src="/app.js"></script>
   </body>
