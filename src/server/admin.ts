@@ -59,11 +59,18 @@ export async function admin(
       if (req.headers.host !== new URL(origin).host)
         return send(403, { error: "HOST_REJECTED" });
       const path = req.url ?? "/";
+      const viewPath = path.split("?")[0];
       if (
-        ["/", "/app.js", "/style.css", "/favicon.svg"].includes(path) &&
+        (["/", "/settings", "/chat/operator"].includes(viewPath) ||
+          /^\/chat\/member\/[^/]+$/.test(viewPath) ||
+          ["/app.js", "/style.css", "/favicon.svg"].includes(path)) &&
         req.method === "GET"
       ) {
-        const file = path === "/" ? "index.html" : path.slice(1);
+        const file =
+          ["/", "/settings", "/chat/operator"].includes(viewPath) ||
+          /^\/chat\/member\/[^/]+$/.test(viewPath)
+            ? "index.html"
+            : path.slice(1);
         res.setHeader(
           "Content-Type",
           file.endsWith(".js")
