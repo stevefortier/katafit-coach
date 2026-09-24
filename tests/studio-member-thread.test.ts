@@ -259,7 +259,10 @@ test("member threads retain both canonical directions in chronological chat orde
       await page.locator(".member-item").nth(2).innerText(),
       /Insight/,
     );
-    await page.locator("#memberMore").click();
+    await page.locator("#memberItems").evaluate((el) => {
+      el.scrollTop = 0;
+      el.dispatchEvent(new Event("scroll"));
+    });
     await page.waitForFunction(
       () => document.querySelectorAll(".member-item").length === 4,
     );
