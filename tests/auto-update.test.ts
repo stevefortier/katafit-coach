@@ -206,7 +206,8 @@ test("managed supervisor checks only after persisted consent and suppresses fail
     await owner.auto.tick();
     assert.equal(refs, 0);
     await new AutoUpdateSetting(home).write(true);
-    await owner.auto.tick(); // Dirty local build has no attested source; fail closed.
+    owner.updates.installed = null; // CI builds may carry a clean revision.
+    await owner.auto.tick(); // Unknown installed source fails closed.
     assert.equal(prepares, 0);
     owner.updates.installed = "b".repeat(40);
     owner.updates.checkedAt = 0;
@@ -231,7 +232,9 @@ test("auto tick replaces a real managed child on the same port and retains stopp
   const sha = "a".repeat(40),
     bad = "c".repeat(40),
     good = "d".repeat(40),
-    badAfterRunning = "e".repeat(40);
+    badAfterRunning = "e".repeat(40),
+    afterRelease = "f".repeat(40),
+    afterResume = "1".repeat(40);
   let latest = sha;
   const prepare = async (target: string) => {
     const root = join(home, "versions", target);
@@ -487,14 +490,90 @@ test("auto tick replaces a real managed child on the same port and retains stopp
         await new Promise((r) => setTimeout(r, 50));
       }
       assert.equal(state, "idle");
+      latest = afterRelease;
+      owner.updates.checkedAt = 0;
+      let lostAllRelease = 0;
+      globalThis.fetch = async (input, init) => {
+        const response = await originalFetch(input, init);
+        if (
+          String(input).endsWith("/api/update/auto/release") &&
+          lostAllRelease++ < 3
+        )
+          throw Error("synthetic lost release reply after acceptance");
+        return response;
+      };
+      try {
+        await owner.auto.tick();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      assert.equal(lostAllRelease, 3);
+      assert.equal(owner.updates.snapshot().installed, afterRelease);
+      assert.equal(
+        owner.updates.snapshot().autoOutcome?.state,
+        "resume-failed",
+      );
+      assert.equal(
+        (await (await fetch(origin + "/api/status", { headers })).json()).state,
+        "stopped",
+      );
+      await owner.auto.tick(); // Recover before checking source again.
+      assert.equal(owner.updates.snapshot().installed, afterRelease);
+      assert.equal(owner.updates.snapshot().autoOutcome?.state, "running");
+      for (let n = 0; n < 60; n++) {
+        state = (
+          await (await fetch(origin + "/api/status", { headers })).json()
+        ).state;
+        if (state === "idle") break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.equal(state, "idle");
       latest = badAfterRunning;
       owner.updates.checkedAt = 0;
       await assert.rejects(owner.auto.tick(), /UPGRADE_FAILED/);
-      assert.equal(owner.updates.snapshot().installed, good);
+      assert.equal(owner.updates.snapshot().installed, afterRelease);
       assert.equal(
         owner.updates.snapshot().autoOutcome?.state,
         "restored-running",
       );
+      assert.notEqual(
+        (await (await fetch(origin + "/api/status", { headers })).json()).state,
+        "stopped",
+      );
+      for (let n = 0; n < 60; n++) {
+        state = (
+          await (await fetch(origin + "/api/status", { headers })).json()
+        ).state;
+        if (state === "idle") break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.equal(state, "idle");
+      latest = afterResume;
+      owner.updates.checkedAt = 0;
+      let blockedRuns = 0;
+      globalThis.fetch = async (input, init) => {
+        if (String(input).endsWith("/api/run") && blockedRuns++ < 3)
+          throw Error("synthetic worker restart connection failure");
+        return originalFetch(input, init);
+      };
+      try {
+        await owner.auto.tick();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      assert.equal(blockedRuns, 3);
+      assert.equal(owner.updates.snapshot().installed, afterResume);
+      assert.equal(
+        owner.updates.snapshot().autoOutcome?.state,
+        "resume-failed",
+      );
+      assert.equal(
+        (await (await fetch(origin + "/api/status", { headers })).json()).state,
+        "stopped",
+      );
+      await owner.auto.tick();
+      assert.equal(owner.updates.snapshot().installed, afterResume);
+      assert.equal(owner.updates.snapshot().autoOutcome?.state, "running");
       assert.notEqual(
         (await (await fetch(origin + "/api/status", { headers })).json()).state,
         "stopped",
