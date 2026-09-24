@@ -22,6 +22,7 @@ export async function fixture(
     hasMore?: boolean;
     twoPages?: boolean;
     memberDojoTools?: boolean;
+    duplicateMorgan?: boolean;
   } = {},
 ) {
   const bytes = await sharp({
@@ -58,6 +59,17 @@ export async function fixture(
                   media_ref: "media-two",
                 },
               ],
+            },
+          ]
+        : []),
+      ...(options.duplicateMorgan
+        ? [
+            {
+              member_ref: "member-four",
+              display_name: "Morgan",
+              access: "shared",
+              checkin_status: "no_completed_media",
+              images: [],
             },
           ]
         : []),
@@ -207,7 +219,14 @@ export async function fixture(
         structuredContent: {
           schema_version: 1,
           member_ref: body.params.arguments.member_ref,
-          items: [{ text: "Authorized member feed" }],
+          items: [
+            {
+              text:
+                body.params.arguments.member_ref === "member-photo"
+                  ? "Authorized member feed: Alex completed two synthetic workouts this week."
+                  : "Authorized member feed: Morgan completed one synthetic workout this week.",
+            },
+          ],
           has_more: false,
         },
       };

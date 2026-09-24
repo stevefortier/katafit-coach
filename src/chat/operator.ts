@@ -189,9 +189,10 @@ export class OperatorChat {
     assertNoSecrets(text, Object.values(this.store.secrets));
     const controller = new AbortController();
     this.controller = controller;
+    const deadlineAt = Date.now() + 300000;
     const signal = AbortSignal.any([
       controller.signal,
-      AbortSignal.timeout(60000),
+      AbortSignal.timeout(300000),
     ]);
     let abort!: () => void;
     const cancelled = new Promise<never>((_, reject) => {
@@ -205,7 +206,7 @@ export class OperatorChat {
     });
     try {
       return await Promise.race([
-        this.generate(text, signal, controller),
+        this.generate(text, signal, controller, deadlineAt),
         cancelled,
       ]);
     } finally {
@@ -218,9 +219,15 @@ export class OperatorChat {
     text: string,
     signal: AbortSignal,
     controller: AbortController,
+    deadlineAt: number,
   ) {
     const c = this.store.publicConfig();
     const secrets = Object.values(this.store.secrets);
+    const isComparison =
+      /\b(?:compare|comparison|versus|vs\.?|between)\b/i.test(text);
+    const sendRequested =
+      /\b(?:send|deliver|message|notify)\b[^.!?\n]{0,80}\bto\b/i.test(text) ||
+      /\b(?:message|notify)\s+(?:him|her|them|[A-Z][a-z]+)\b/.test(text);
 
     const instructions = await fetchInstructions(
       new Client(c.origin, this.store.secrets.token, signal),
@@ -252,6 +259,9 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
     // Member-derived read context is deliberately never retained for a later
     // turn. A sharing grant can be revoked without changing local Settings.
     let readUsed = false;
+    const evidenceMembers = new Set<string>();
+    const requiredMembers = new Set<string>();
+    let actionAttempted = false;
     let rosterIncomplete = false;
     let imageLimit = false;
     const availableImages = new Set<string>();
@@ -264,9 +274,19 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
         member_ref,
         {
           secrets,
-          onAction: this.actions.recorder(),
-          onRead: () => {
+          onAction: (action) => {
+            actionAttempted = true;
+            this.actions.recorder()(action);
+          },
+          onRead: (name, memberRefs) => {
             readUsed = true;
+            if (
+              name !== "studio_operator_list_members" &&
+              name !== "studio_operator_send_message" &&
+              name !== "studio_operator_list_dojo_checkins"
+            ) {
+              for (const ref of memberRefs) evidenceMembers.add(ref);
+            }
           },
           onIncomplete: (hasMore) => {
             rosterIncomplete = hasMore;
@@ -312,24 +332,126 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
         throw new SafeError("CANCELLED");
       this.session = session;
       messages = [...(member_ref ? [] : this.messages), { role: "user", text }];
-      const reply = await this.infer(
-        {
-          ...c.provider,
-          apiKey: this.store.secrets.apiKey,
-          secrets,
-          authorize: session?.authorize,
-        },
-        prompt,
-        JSON.stringify({
-          scope: "local operator conversation",
-          authority: session
-            ? "Unified dojo Operator session. The model chooses member_ref for each targeted call from the authorized roster; Kata.fit decides authorization. Multiple members can be read but at most one explicit message may be sent. Only advertised session tools are available. Images appear as transient Studio cards; do not claim complete coverage from partial results. Member-derived turns are not retained."
-            : "No member data, no claimed request or tools. The dojo Operator session is unavailable; do not claim data was fetched or actions completed. Use Settings persona to save instructions.",
-          messages,
-        }),
-        signal,
-        modelOperatorTools(session?.tools ?? [], c.provider.vision === true),
+      let rosterContext: unknown;
+      if (session && isComparison && !sendRequested) {
+        const roster = session.tools.find(
+          (tool) => tool.name === "studio_operator_list_members",
+        );
+        if (!roster) throw new SafeError("READ_UNAVAILABLE");
+        const members: Array<{ member_ref: string; display_name: string }> = [];
+        let cursor: string | undefined;
+        const seen = new Set<string>();
+        for (let page = 0; page < 10; page++) {
+          const output = await roster.execute("comparison-roster", {
+            limit: 10,
+            ...(cursor ? { cursor } : {}),
+          });
+          const part = output.content.find((item) => item.type === "text");
+          if (!part || part.type !== "text")
+            throw new SafeError("READ_UNAVAILABLE");
+          const value = JSON.parse(part.text);
+          if (!Array.isArray(value.members))
+            throw new SafeError("READ_UNAVAILABLE");
+          for (const row of value.members) {
+            if (
+              typeof row.member_ref !== "string" ||
+              typeof row.display_name !== "string"
+            )
+              throw new SafeError("READ_UNAVAILABLE");
+            members.push({
+              member_ref: row.member_ref,
+              display_name: row.display_name,
+            });
+          }
+          if (!value.has_more) break;
+          if (
+            typeof value.next_cursor !== "string" ||
+            !value.next_cursor ||
+            seen.has(value.next_cursor) ||
+            page === 9
+          )
+            throw new SafeError("READ_UNAVAILABLE");
+          seen.add(value.next_cursor);
+          cursor = value.next_cursor;
+        }
+        rosterContext = { members };
+        const matched = members.filter((row) => {
+          const escaped = row.display_name.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&",
+          );
+          return new RegExp(
+            `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+            "iu",
+          ).test(text);
+        });
+        if (
+          matched.length > 2 ||
+          (matched.length === 2 &&
+            matched[0].display_name.toLowerCase() ===
+              matched[1].display_name.toLowerCase())
+        )
+          throw new SafeError("READ_UNAVAILABLE"); // Ambiguous name; never choose a member arbitrarily.
+        if (
+          matched.length === 2 &&
+          matched[0].display_name.toLowerCase() !==
+            matched[1].display_name.toLowerCase()
+        )
+          for (const row of matched) requiredMembers.add(row.member_ref);
+      }
+      const provider = {
+        ...c.provider,
+        apiKey: this.store.secrets.apiKey,
+        secrets,
+        authorize: session?.authorize,
+      };
+      const context = JSON.stringify({
+        scope: "local operator conversation",
+        authority: session
+          ? "Unified dojo Operator session. The model chooses member_ref for each targeted call from the authorized roster; Kata.fit decides authorization. Multiple members can be read but at most one explicit message may be sent. Only advertised session tools are available. Images appear as transient Studio cards; do not claim complete coverage from partial results. Member-derived turns are not retained."
+          : "No member data, no claimed request or tools. The dojo Operator session is unavailable; do not claim data was fetched or actions completed. Use Settings persona to save instructions.",
+        messages,
+        ...(rosterContext ? { authorized_roster: rosterContext } : {}),
+      });
+      const tools = modelOperatorTools(
+        session?.tools ?? [],
+        c.provider.vision === true,
+      ).filter(
+        (tool) =>
+          !isComparison ||
+          sendRequested ||
+          tool.name !== "studio_operator_send_message",
       );
+      let reply = await this.infer(provider, prompt, context, signal, tools, {
+        deadlineAt,
+      });
+      // An unsupported assertion of missing files must not become a completed
+      // comparison. Retry only a read-only comparison, never a send attempt.
+      if (
+        session &&
+        (requiredMembers.size
+          ? [...requiredMembers].some((ref) => !evidenceMembers.has(ref))
+          : evidenceMembers.size < 2) &&
+        !actionAttempted &&
+        isComparison &&
+        !sendRequested
+      ) {
+        reply = await this.infer(
+          provider,
+          prompt +
+            "\nThis is a comparison of members, and the preceding attempt made no authorized read. First list the roster, resolve each unambiguous identity, and read each permitted member's evidence before answering. If either read is denied, say so. Do not ask the manager to supply files the tools can retrieve. Do not send a message.\n",
+          context,
+          signal,
+          tools.filter((tool) => tool.name !== "studio_operator_send_message"),
+          { deadlineAt },
+        );
+        if (
+          requiredMembers.size
+            ? [...requiredMembers].some((ref) => !evidenceMembers.has(ref))
+            : evidenceMembers.size < 2
+        )
+          throw new SafeError("READ_UNAVAILABLE");
+      }
       await session?.authorize();
       if (signal.aborted || this.controller !== controller)
         throw new SafeError("CANCELLED");

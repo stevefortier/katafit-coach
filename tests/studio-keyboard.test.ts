@@ -109,9 +109,13 @@ test("Studio composers: Enter sends through the real UI", async () => {
       await page.locator("#operatorView h2").innerText(),
       /^Operator$/,
     );
-    assert.match(
+    assert.doesNotMatch(
       await page.locator("#operatorView").innerText(),
-      /cannot recall a sent message/,
+      /cannot recall a sent message|Enter to send/,
+    );
+    assert.equal(
+      await page.locator("#operatorText").getAttribute("aria-label"),
+      "Message your Coach",
     );
     const evidence =
       process.env.COACH_EVIDENCE_DIR || `${tmpdir()}/katafit-studio-evidence`;

@@ -86,14 +86,12 @@
             ></section>
             <p id="operatorStatus" role="status"></p>
             <form id="operatorForm">
-              <label for="operatorText">Message your Coach</label>
-              <p class="hint">Clear or Cancel cannot recall a sent message.</p>
-              <p class="hint">Enter to send · Shift+Enter for a new line</p>
               <textarea
                 id="operatorText"
+                aria-label="Message your Coach"
                 rows="2"
                 maxlength="8000"
-                placeholder="Try your coaching ideas here…"
+                placeholder="Message your Coach…"
               ></textarea>
               <div class="chat-actions">
                 <button id="operatorSend" type="submit">Send</button

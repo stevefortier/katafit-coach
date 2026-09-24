@@ -72,7 +72,7 @@ export async function openOperatorTools(
     onAction: (action: OperatorAction) => void;
     control?: Client;
     current?: () => boolean;
-    onRead?: () => void;
+    onRead?: (name: string, memberRefs: string[]) => void;
     onImageLimit?: () => void;
     onIncomplete?: (hasMore: boolean) => void;
     onImageAvailable?: (member_ref: string, media_ref: string) => void;
@@ -456,7 +456,7 @@ export async function openOperatorTools(
             }
             if (imageCount === 4) options.onImageLimit?.();
             assertNoSecrets(m, options.secrets);
-            options.onRead?.();
+            options.onRead?.(name, [args.member_ref]);
             options.onImage?.({
               member_ref: args.member_ref,
               media_ref: args.media_ref,
@@ -544,7 +544,14 @@ export async function openOperatorTools(
                 (item: unknown) => JSON.stringify(item),
               ),
             });
-            options.onRead?.();
+            options.onRead?.(
+              name,
+              name === CHECKINS
+                ? value.items.map((row: any) => row.member_ref)
+                : typeof args.member_ref === "string"
+                  ? [args.member_ref]
+                  : [],
+            );
             if (name === CHECKINS) {
               for (const row of value.items) {
                 if (row.access === "shared")
@@ -567,7 +574,7 @@ export async function openOperatorTools(
           }
           sentText = args.text;
           sentMember = member_ref ?? args.member_ref;
-          options.onRead?.(); // Member-directed turns must never enter local history.
+          options.onRead?.(name, []); // Member-directed turns must never enter local history.
           emit({
             session_id,
             idempotency_key: randomUUID(),
