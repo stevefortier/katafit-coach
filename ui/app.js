@@ -1238,7 +1238,10 @@ async function loadMemberFeed(more = false, validate = false) {
     ref = selectedMember.member_ref,
     validationCursor = validate ? memberValidationCursor : null,
     requestedCursor = validationCursor || (more ? memberCursor : null);
-  $("memberStatus").textContent = "Loading read-only feed…";
+  $("memberStatus").textContent =
+    validate && memberItems.length
+      ? "Checking sharing and history…"
+      : "Loading read-only feed…";
   $("memberMore").disabled = true;
   try {
     const params = new URLSearchParams({ member_ref: ref });
@@ -1261,7 +1264,20 @@ async function loadMemberFeed(more = false, validate = false) {
         "Read-only · sharing and history rechecked";
       return;
     }
+    const unchanged =
+      validate &&
+      !more &&
+      !requestedCursor &&
+      JSON.stringify(memberItems) === JSON.stringify(data.items);
     memberValidationCursor = more ? requestedCursor : null;
+    memberCursor = data.has_more ? data.next_cursor : null;
+    if (unchanged) {
+      // Revoked raw details were cleared above; stable chat rows need no DOM work.
+      $("memberMore").hidden = !memberCursor;
+      $("memberStatus").textContent =
+        "Read-only · sharing and history rechecked";
+      return;
+    }
     memberItems = [
       ...new Map(
         [...(more ? memberItems : []), ...data.items].map((item) => [
@@ -1270,7 +1286,6 @@ async function loadMemberFeed(more = false, validate = false) {
         ]),
       ).values(),
     ];
-    memberCursor = data.has_more ? data.next_cursor : null;
     renderMemberFeed();
     $("memberStatus").textContent = memberItems.length
       ? "Read-only · refreshed from Kata.fit"
@@ -1282,8 +1297,15 @@ async function loadMemberFeed(more = false, validate = false) {
     memberCursor = null;
     memberValidationCursor = null;
     renderMemberFeed();
-    $("memberStatus").textContent =
-      "Feed unavailable. Sharing may have changed. Refresh members and check the connection in Settings before trying again.";
+    $("memberStatus").textContent = error.message?.includes(
+      "UPDATE_IN_PROGRESS",
+    )
+      ? "Studio is updating. Member feeds are temporarily unavailable; retry shortly."
+      : error.message?.includes("BACKEND_TIMEOUT")
+        ? "Kata.fit feed timed out. Retry shortly; this does not mean sharing changed."
+        : error.message?.includes("MCP_TOOL_FAILED")
+          ? "Kata.fit could not build this feed. Retry or check the connection; this does not prove sharing changed."
+          : "Feed unavailable. Retry or refresh members; if access changed, check sharing in Kata.fit.";
   } finally {
     if (epoch === memberEpoch && generation === authGeneration) {
       $("memberMore").disabled = false;
