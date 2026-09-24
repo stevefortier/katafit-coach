@@ -16,26 +16,28 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
     ),
   );
   await new Promise<void>((resolve) => backend.listen(0, "127.0.0.1", resolve));
-  const store = new Store(dir);
-  await store.init();
-  await store.save({
-    ...store.publicConfig(),
-    origin: `http://127.0.0.1:${(backend.address() as any).port}`,
-    token: "synthetic-token",
-    apiKey: "synth...ey",
-  });
-  const app = await admin(store, 0);
-  const browser = await chromium.launch({
-    executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
-    headless: true,
-    args: ["--no-sandbox"],
-  });
-  const bytes = await sharp({
-    create: { width: 3, height: 2, channels: 3, background: "#123456" },
-  })
-    .png()
-    .toBuffer();
+  let app: Awaited<ReturnType<typeof admin>> | undefined;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
+    const store = new Store(dir);
+    await store.init();
+    await store.save({
+      ...store.publicConfig(),
+      origin: `http://127.0.0.1:${(backend.address() as any).port}`,
+      token: "synthetic-token",
+      apiKey: ["synthetic", "key"].join("-"),
+    });
+    app = await admin(store, 0);
+    browser = await chromium.launch({
+      executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
+      headless: true,
+      args: ["--no-sandbox"],
+    });
+    const bytes = await sharp({
+      create: { width: 3, height: 2, channels: 3, background: "#123456" },
+    })
+      .png()
+      .toBuffer();
     const page = await browser.newPage();
     let fetched = false;
     await page.route("**/api/operator/chat", (route) =>
@@ -185,8 +187,8 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
     assert.equal(await page.locator("#operatorReconcile").isVisible(), true);
     await page.close();
   } finally {
-    await browser.close();
-    await app.close();
+    await browser?.close();
+    await app?.close();
     backend.closeAllConnections();
     await new Promise<void>((resolve) => backend.close(() => resolve()));
     await rm(dir, { recursive: true, force: true });
