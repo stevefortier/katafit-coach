@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/build-metadata.mjs",
-    "test": "npm run build && tsx --test tests/*.test.ts",
+    "test": "npm run build && tsx --test --test-concurrency=1 tests/*.test.ts",
     "prepack": "npm run build",
     "test:browser": "tsx scripts/browser-smoke.ts",
     "test:coach-browser": "tsx scripts/coach-browser-smoke.ts",
