@@ -853,6 +853,7 @@ let operatorMessages = [],
   operatorControlPending = false,
   operatorEpoch = 0,
   operatorDraft = "";
+let operatorScrollMax = 0;
 function operatorSnapshotLabel() {
   if (!config) return;
   $("operatorSnapshot").textContent =
@@ -864,6 +865,7 @@ function operatorSnapshotLabel() {
 }
 function renderOperator() {
   const list = $("operatorMessages");
+  const pinned = list.scrollHeight - list.clientHeight - list.scrollTop <= 40;
   list.replaceChildren();
   for (const message of operatorMessages) {
     if (
@@ -907,7 +909,8 @@ function renderOperator() {
   }
   if (!operatorMessages.length)
     list.textContent = "Start a private conversation with your Coach.";
-  list.scrollTop = list.scrollHeight;
+  if (pinned) list.scrollTop = list.scrollHeight;
+  operatorScrollMax = list.scrollHeight - list.clientHeight;
   $("operatorPending").hidden = !operatorBusy;
   $("operatorTarget").disabled = operatorBusy || operatorControlPending;
   $("operatorSend").disabled = operatorBusy || operatorControlPending;
@@ -1036,9 +1039,10 @@ let selectedMember = null,
   memberView = "main_conversation",
   memberItems = [],
   memberCursor = null,
-  memberValidationCursor = null,
+  memberLoading = false,
   memberEpoch = 0,
   memberTimer;
+let memberScrollMax = 0;
 const memberActive = () =>
   key && !document.hidden && !$("coachPanel").hidden && selectedMember;
 function resetMembers() {
@@ -1166,7 +1170,7 @@ function selectMemberView(view) {
   clearActivities();
   memberItems = [];
   memberCursor = null;
-  memberValidationCursor = null;
+  memberLoading = false;
   disposeDetails($("memberItems"));
   $("memberItems").replaceChildren();
   $("memberMore").hidden = true;
@@ -1186,7 +1190,7 @@ function selectConversation(member, navigate = true) {
   memberItems = [];
   renderMemberViewTabs();
   memberCursor = null;
-  memberValidationCursor = null;
+  memberLoading = false;
   $("memberItems").replaceChildren();
   $("memberMore").hidden = true;
   $("operatorView").hidden = !!member;
@@ -1208,6 +1212,8 @@ function selectConversation(member, navigate = true) {
   else void loadMemberFeed();
 }
 function renderMemberFeed() {
+  const list = $("memberItems");
+  const pinned = list.scrollHeight - list.clientHeight - list.scrollTop <= 40;
   disposeDetails($("memberItems"));
   $("memberItems").replaceChildren();
   const kinds = {
@@ -1270,15 +1276,22 @@ function renderMemberFeed() {
     (thread || $("memberItems")).append(row);
   }
   $("memberMore").hidden = !memberCursor;
+  if (pinned) list.scrollTop = list.scrollHeight;
+  memberScrollMax = list.scrollHeight - list.clientHeight;
 }
 async function loadMemberFeed(more = false, validate = false) {
-  if (!memberActive() || selectedMember.access !== "granted") return;
+  if (!memberActive() || selectedMember.access !== "granted" || memberLoading)
+    return;
   clearTimeout(memberTimer);
+  memberLoading = true;
   const epoch = ++memberEpoch,
     generation = authGeneration,
     ref = selectedMember.member_ref,
-    validationCursor = validate ? memberValidationCursor : null,
-    requestedCursor = validationCursor || (more ? memberCursor : null);
+    requestedCursor = more ? memberCursor : null;
+  const list = $("memberItems");
+  const oldHeight = list.scrollHeight;
+  const oldTop = list.scrollTop;
+  const pinned = oldHeight - list.clientHeight - oldTop <= 40;
   $("memberStatus").textContent =
     validate && memberItems.length
       ? "Checking sharing and history…"
@@ -1300,20 +1313,16 @@ async function loadMemberFeed(more = false, validate = false) {
     // Conversation membership survives raw-category revocation. Rechecking a
     // feed must not leave previously expanded raw data independently retained.
     clearActivities();
-    if (validationCursor) {
-      // A cursor is bound to the complete backend snapshot and live authority.
-      // Successful revalidation preserves already loaded pages and scroll.
-      $("memberStatus").textContent =
-        "Read-only · sharing and history rechecked";
-      return;
-    }
     const unchanged =
       validate &&
       !more &&
-      !requestedCursor &&
-      JSON.stringify(memberItems) === JSON.stringify(data.items);
-    memberValidationCursor = more ? requestedCursor : null;
-    memberCursor = data.has_more ? data.next_cursor : null;
+      data.items.every((item) =>
+        memberItems.some(
+          (existing) => JSON.stringify(existing) === JSON.stringify(item),
+        ),
+      );
+    if (more || !validate || !memberItems.length)
+      memberCursor = data.has_more ? data.next_cursor : null;
     if (unchanged) {
       // Revoked raw details were cleared above; stable chat rows need no DOM work.
       $("memberMore").hidden = !memberCursor;
@@ -1323,13 +1332,15 @@ async function loadMemberFeed(more = false, validate = false) {
     }
     memberItems = [
       ...new Map(
-        [...(more ? memberItems : []), ...data.items].map((item) => [
-          item.id,
-          item,
-        ]),
+        [...(more || validate ? memberItems : []), ...data.items].map(
+          (item) => [item.id, item],
+        ),
       ).values(),
     ];
     renderMemberFeed();
+    if (more) list.scrollTop = oldTop + list.scrollHeight - oldHeight;
+    else if (!pinned) list.scrollTop = oldTop;
+    else list.scrollTop = list.scrollHeight;
     $("memberStatus").textContent = memberItems.length
       ? "Read-only · refreshed from Kata.fit"
       : memberView === "main_conversation"
@@ -1340,7 +1351,7 @@ async function loadMemberFeed(more = false, validate = false) {
     clearActivities();
     memberItems = [];
     memberCursor = null;
-    memberValidationCursor = null;
+    memberLoading = false;
     renderMemberFeed();
     $("memberStatus").textContent = error.message?.includes(
       "UPDATE_IN_PROGRESS",
@@ -1353,11 +1364,38 @@ async function loadMemberFeed(more = false, validate = false) {
           : "Feed unavailable. Retry or refresh members; if access changed, check sharing in Kata.fit.";
   } finally {
     if (epoch === memberEpoch && generation === authGeneration) {
+      memberLoading = false;
       $("memberMore").disabled = false;
       if (memberActive())
         memberTimer = setTimeout(() => loadMemberFeed(false, true), 15000);
+      if (
+        memberActive() &&
+        memberCursor &&
+        list.scrollHeight <= list.clientHeight
+      )
+        queueMicrotask(() => loadMemberFeed(true));
     }
   }
+}
+$("memberItems").addEventListener("scroll", () => {
+  if (memberCursor && !memberLoading && $("memberItems").scrollTop <= 80)
+    void loadMemberFeed(true);
+});
+// Reflow changes message wrapping without a feed render. Follow a pane that
+// was pinned before resize, while leaving a scrolled-up reader undisturbed.
+for (const [id, previousMax] of [
+  ["operatorMessages", () => operatorScrollMax],
+  ["memberItems", () => memberScrollMax],
+]) {
+  const list = $(id);
+  new ResizeObserver(() => {
+    if (!list.getClientRects().length) return;
+    const pinned = previousMax() - list.scrollTop <= 40;
+    if (pinned) list.scrollTop = list.scrollHeight;
+    if (id === "operatorMessages")
+      operatorScrollMax = list.scrollHeight - list.clientHeight;
+    else memberScrollMax = list.scrollHeight - list.clientHeight;
+  }).observe(list);
 }
 // Every expansion owns its requests and URLs; no raw source IDs become URLs.
 const detailResources = new Set();
@@ -1748,7 +1786,7 @@ function memberVisibility() {
   // Erase hidden customer content; never retain a stale authority snapshot.
   memberItems = [];
   memberCursor = null;
-  memberValidationCursor = null;
+  memberLoading = false;
   $("memberItems").replaceChildren();
   $("memberMore").hidden = true;
   if (memberActive()) void loadMemberFeed();

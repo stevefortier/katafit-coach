@@ -227,7 +227,7 @@ for (const mode of ["refresh", "cursor"] as const)
         );
       }
       if (mode === "cursor") {
-        await page.locator("#memberMore").click();
+        // A short pane fetches its older page without a manual button press.
         await page.waitForFunction(
           () => (document.querySelector("#memberMore") as HTMLElement)?.hidden,
         );
