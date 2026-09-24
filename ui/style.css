@@ -23,6 +23,7 @@ main {
   min-width: 0;
   margin: auto;
   padding: 24px;
+  overflow-wrap: anywhere;
 }
 header {
   display: flex;
