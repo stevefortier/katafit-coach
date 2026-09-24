@@ -298,6 +298,7 @@ export async function discoverReads(
             | { type: "text"; text: string }
             | { type: "image"; data: string; mimeType: string }
           > = [];
+          let resultImageCount = 0;
           for (const c of content) {
             safe.push(
               await (async () => {
@@ -336,11 +337,13 @@ export async function discoverReads(
                 if (decoded.toString("base64") !== c.data)
                   throw new Error("MEDIA_REJECTED");
                 imageCount++;
+                resultImageCount++;
                 mediaBytes += decoded.length;
                 if (
                   !decoded.length ||
                   decoded.length > 8 * 1024 * 1024 ||
-                  imageCount > 4 ||
+                  resultImageCount > 4 ||
+                  imageCount > 5 ||
                   mediaBytes > 16 * 1024 * 1024
                 )
                   throw new Error("MEDIA_REJECTED");

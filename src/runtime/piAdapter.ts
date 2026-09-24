@@ -22,7 +22,7 @@ export interface Provider {
   secrets?: string[];
   apiKey: string;
 }
-// Provider-only compaction: keep the latest four authorized image parts, while
+// Provider-only compaction: keep the latest five authorized image parts, while
 // leaving tool receipts in the agent transcript untouched. Earlier images are
 // not silently described as evidence in this request.
 export function compactProviderImages(payload: unknown): unknown {
@@ -30,7 +30,7 @@ export function compactProviderImages(payload: unknown): unknown {
     return payload;
   const body = payload as Record<string, unknown>;
   if (!Array.isArray(body.messages)) return payload;
-  let remaining = 4;
+  let remaining = 5;
   const messages = [...body.messages];
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -84,7 +84,7 @@ export function providerTextBytes(payload: unknown): number {
       if (
         decoded.toString("base64") !== data ||
         decoded.length > 8 * 1024 * 1024 ||
-        imageCount > 4 ||
+        imageCount > 5 ||
         imageBytes > 16 * 1024 * 1024
       )
         throw new Error("MEDIA_REJECTED");

@@ -6,7 +6,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { complete } from "../src/runtime/piAdapter.js";
 import { prepareModelImage } from "../src/katafit/providerImage.js";
 
-test("real Pi transport retains latest four bounded images across five native read turns", async () => {
+test("real Pi transport retains five bounded images across five native read turns", async () => {
   const width = 1800;
   const pixels = Buffer.alloc(width * width * 3);
   let seed = 23;
@@ -52,7 +52,7 @@ test("real Pi transport retains latest four bounded images across five native re
       hasOmission: body.toString().includes("Earlier image omitted"),
     });
     const next = bodies.length;
-    // A provider threshold below four original image URLs but above four resized ones.
+    // A provider threshold below five original image URLs but above five resized ones.
     if (body.length > 5 * 1024 * 1024) {
       res.writeHead(413);
       res.end();
@@ -124,11 +124,11 @@ test("real Pi transport retains latest four bounded images across five native re
     assert.equal(bodies.length, 6);
     assert.deepEqual(
       bodies.map((b) => b.images.length),
-      [0, 1, 2, 3, 4, 4],
+      [0, 1, 2, 3, 4, 5],
     );
     assert.ok(bodies[5].size < 5 * 1024 * 1024);
     assert.equal(bodies[5].hasOldReceipt, true);
-    assert.equal(bodies[5].hasOmission, true);
+    assert.equal(bodies[5].hasOmission, false);
     assert.equal(
       diagnostics.filter((event) => event.stage === "provider-payload").at(-1)
         ?.metadata?.wireBytes,

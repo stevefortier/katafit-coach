@@ -5,6 +5,7 @@ import { complete } from "../src/runtime/piAdapter.js";
 import { Client } from "../src/katafit/client.js";
 import { discoverReads } from "../src/katafit/readTools.js";
 import { readFixture, fence } from "./data-fixtures.js";
+import sharp from "sharp";
 
 test("request-scoped read budget permits 48 attempts and reports the rejected 49th", async () => {
   const f = await readFixture({ content: [{ type: "text", text: "ok" }] });
@@ -257,6 +258,62 @@ test("real Pi model -> MCP media -> next provider payload preserves original PNG
     await f.close();
   }
 });
+test("five native media calls in one provider turn preserve all five bounded images", async () => {
+  const originals = await Promise.all(Array.from({ length: 5 }, async (_, i) => sharp({ create: {
+    width: 2, height: 2, channels: 3, background: { r: i * 30, g: 10, b: 20 },
+  } }).png().toBuffer()));
+  const p = await providerFixture((_body, turn) => turn === 1 ? {
+    tool_calls: Array.from({ length: 5 }, (_, i) => ({ index: i, id: `photo-${i + 1}`, type: "function",
+      function: { name: "coach_read_media", arguments: JSON.stringify({ media_ref: `photo-${i + 1}` }) } })),
+  } : { content: "Five images present." });
+  const tools: any[] = [{
+    name: "coach_read_media", label: "Media", description: "Read media",
+    parameters: { type: "object", properties: { media_ref: { type: "string" } }, required: ["media_ref"] },
+    execute: async (_id: string, args: { media_ref: string }) => ({
+      content: [{ type: "text", text: args.media_ref }, { type: "image", data: originals[Number(args.media_ref.split("-")[1]) - 1].toString("base64"), mimeType: "image/png" }], details: {},
+    }),
+  }];
+  try {
+    assert.equal(await complete(p.config, "Coach", "Five photos", AbortSignal.timeout(5000), tools), "Five images present.");
+    assert.equal(p.bodies.length, 2);
+    const parts = p.bodies[1].messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []);
+    const images = parts.filter((part: any) => part.type === "image_url");
+    assert.equal(images.length, 5);
+    images.forEach((part: any, i: number) => assert.deepEqual(Buffer.from(part.image_url.url.split(",")[1], "base64"), originals[i]));
+    assert.equal(parts.some((part: any) => part.type === "text" && part.text.includes("Earlier image omitted")), false);
+  } finally {
+    await p.close();
+  }
+});
+
+test("five sequential media receipts reach separate provider turns with bounded images per wire turn", async () => {
+  const p = await providerFixture((_body, turn) => turn <= 5
+    ? toolCall("coach_read_media", { media_ref: `photo-${turn}` })
+    : { content: "Five separate receipts seen." });
+  const executed: string[] = [];
+  const tools: any[] = [{
+    name: "coach_read_media", label: "Media", description: "Read media",
+    parameters: { type: "object", properties: { media_ref: { type: "string" } }, required: ["media_ref"] },
+    execute: async (_id: string, args: { media_ref: string }) => {
+      executed.push(args.media_ref);
+      return { content: [{ type: "image", data: image, mimeType: "image/png" }], details: {} };
+    },
+  }];
+  try {
+    assert.equal(await complete(p.config, "Coach", "Read five photos", AbortSignal.timeout(5000), tools), "Five separate receipts seen.");
+    assert.deepEqual(executed, ["photo-1", "photo-2", "photo-3", "photo-4", "photo-5"]);
+    assert.equal(p.bodies.length, 6);
+    for (let turn = 2; turn <= 6; turn++) {
+      const parts = p.bodies[turn - 1].messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []);
+      assert.equal(parts.filter((part: any) => part.type === "image_url").length, turn - 1);
+    }
+    const last = p.bodies[5].messages.flatMap((m: any) => Array.isArray(m.content) ? m.content : []);
+    assert.equal(last.some((part: any) => part.type === "text" && part.text.includes("Earlier image omitted")), false);
+  } finally {
+    await p.close();
+  }
+});
+
 test("real Pi stops repeated model tool calls at 40 turns without returning a partial answer", async () => {
   const f = await readFixture();
   const p = await providerFixture(() => toolCall("coach_list_activities"));
