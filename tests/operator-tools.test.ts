@@ -10,7 +10,9 @@ export async function operatorBackend(
   const calls: any[] = [];
   const server = createServer(async (req, res) => {
     if (req.url?.endsWith("coach.md")) {
-      res.end("# Kata.fit external Coach agent v1\nCoach policy");
+      res.end(
+        "# Kata.fit external Coach agent v1\n## Chief-manager operator sessions and human Studio\nThe operator is the manager.\n",
+      );
       return;
     }
     let raw = "";
@@ -175,6 +177,15 @@ test("negotiates finite optional category-authorized activity tools, never arbit
         ...extra,
       ],
     );
+    assert.match(
+      session.tools[2].description,
+      /list.*selected member.*activit/i,
+    );
+    assert.match(
+      session.tools[3].description,
+      /section.*selected member.*activit/i,
+    );
+    assert.match(session.tools[3].description, /media_files.*metadata/i);
     await session.tools[2].execute("list", {});
     await assert.rejects(
       session.tools[3].execute("forged", {

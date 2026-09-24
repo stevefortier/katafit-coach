@@ -16,7 +16,7 @@ let evidenceReply = "";
 const backend = createServer(async (req, res) => {
   if (req.method !== "POST")
     return res.end(
-      "# Kata.fit external Coach agent v1\nSynthetic browser policy",
+      "# Kata.fit external Coach agent v1\nSynthetic browser policy\n## Chief-manager operator sessions and human Studio\nThe operator manages the Coach.",
     );
   let raw = "";
   for await (const part of req) raw += part;
