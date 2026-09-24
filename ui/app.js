@@ -298,6 +298,7 @@ async function status() {
     const s = await api("status");
     if (generation !== authGeneration) return;
     $("state").textContent = s.state.toUpperCase();
+    $("state").dataset.tone = workerStatusTone(s.state);
     updateWorkerBlocked =
       s.state !== "stopped" || s.preview === true || s.operatorChat === true;
     renderUpdate();
@@ -310,6 +311,29 @@ async function status() {
         s.lastError.hint
       : "No retained error.";
   } catch {}
+}
+function workerStatusTone(state) {
+  if (
+    [
+      "idle",
+      "reply-persisted",
+      "task-result-stored",
+      "task-publication-confirmed",
+    ].includes(state)
+  )
+    return "ready";
+  if (["connecting", "working", "task-working"].includes(state)) return "busy";
+  if (
+    [
+      "stopped",
+      "error",
+      "failed",
+      "task-failure-reported",
+      "task-failure-unverified",
+    ].includes(state)
+  )
+    return "danger";
+  return "caution";
 }
 if (/^[a-f0-9]{64}$/i.test(location.hash.slice(1))) {
   $("adminKey").value = location.hash.slice(1);
@@ -762,6 +786,7 @@ function lockSession(message) {
   $("login").hidden = false;
   $("lockStudio").hidden = true;
   $("state").textContent = "LOCKED";
+  $("state").dataset.tone = "neutral";
   notice(message);
 }
 action("lockStudio", async () =>
