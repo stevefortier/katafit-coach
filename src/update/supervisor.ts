@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { Store } from "../config/store.js";
 import { Updates, validSha } from "./updates.js";
+import { AutoUpdater, AutoUpdateSetting, isMainDescendant } from "./auto.js";
 import { UpdateJournal } from "./journal.js";
 import {
   stage,
@@ -58,6 +59,12 @@ export async function supervise(
     origin = "";
   const controller = new AbortController();
   let operation: Promise<void> | undefined;
+  const autoSetting = new AutoUpdateSetting(home);
+  let autoAttempt: string | undefined;
+  let ambiguousQuiesce = false;
+  let recoveryWasRunning: boolean | undefined;
+  let recoverySha: string | undefined;
+  let recoveryOutcome = "deferred";
   let supported =
     process.platform === "linux" &&
     process.env.KATAFIT_COACH_UPDATES !== "disabled";
@@ -210,13 +217,21 @@ export async function supervise(
         // extra startup-failure guard; candidate is first probed on empty home.
         const backup = new Map<string, Buffer>();
         for (const name of await readdir(home))
-          if (name.endsWith(".json"))
+          if (
+            name.endsWith(".json") &&
+            !["auto-update.json", "auto-failed.json"].includes(name)
+          )
             backup.set(
               name,
               await managedFile(join(home, name), 4 * 1024 * 1024),
             );
         const oldPort = Number(new URL(origin).port);
         const keep = new Set([sha, active?.revision]);
+        if (
+          autoAttempt === sha &&
+          (closing || !(await autoSetting.read()).enabled)
+        )
+          throw new Error("AUTO_UPDATE_DISABLED");
         await stop();
         try {
           await launch(candidate, sha, oldPort);
@@ -287,6 +302,247 @@ export async function supervise(
     installed,
     port,
   );
+  async function post(path: string) {
+    const response = await fetch(origin + path, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + store.secrets.admin,
+        Origin: origin,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+      signal: AbortSignal.timeout(15000),
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      data: (await response.json()) as any,
+    };
+  }
+  async function postRetry(path: string, attempts = 3) {
+    for (let n = 0; n < attempts; n++) {
+      try {
+        const result = await post(path);
+        if (result.ok) return result;
+        if (result.status !== 409 || n === attempts - 1) return result;
+      } catch {
+        if (n === attempts - 1) break;
+      }
+      await sleep(200);
+    }
+    return { ok: false, status: 503, data: null };
+  }
+  async function recoverAmbiguousQuiesce(): Promise<boolean> {
+    if (!ambiguousQuiesce) return true;
+    if (closing) return false;
+    try {
+      const response = await fetch(origin + "/api/status", {
+        headers: { Authorization: "Bearer " + store.secrets.admin },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!response.ok) return false;
+      const state = (await response.json()) as any;
+      if (closing) return false;
+      if (state.autoQuiesced) {
+        if (!state.autoQuiesceReady) return false;
+        recoveryWasRunning = state.autoWasRunning === true;
+        if (closing) return false;
+        if (!(await postRetry("/api/update/auto/release")).ok) return false;
+      }
+      if (recoveryWasRunning && state.state === "stopped") {
+        if (closing) return false;
+        if (!(await postRetry("/api/run")).ok) return false;
+      }
+      if (recoveryWasRunning) {
+        let confirmed = false;
+        for (let n = 0; n < 3; n++) {
+          if (closing) return false;
+          try {
+            const reply = await fetch(origin + "/api/status", {
+              headers: { Authorization: "Bearer " + store.secrets.admin },
+              signal: AbortSignal.timeout(3000),
+            });
+            const current = reply.ok ? ((await reply.json()) as any) : {};
+            if (
+              ["idle", "connecting", "working", "task-working"].includes(
+                current.state,
+              )
+            ) {
+              confirmed = true;
+              break;
+            }
+          } catch {
+            // A lost read is not proof of a failed local start.
+          }
+          if (n < 2) await sleep(200);
+        }
+        if (!confirmed) return false;
+      }
+      if (recoverySha)
+        updates.autoOutcome = { sha: recoverySha, state: recoveryOutcome };
+      ambiguousQuiesce = false;
+      recoveryWasRunning = undefined;
+      recoverySha = undefined;
+      recoveryOutcome = "deferred";
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const auto = new AutoUpdater(autoSetting, {
+    check: async () => {
+      if (closing || !supported || updates.applying)
+        return { installed: null, latest: null };
+      const state = await updates.check();
+      return { installed: state.installed, latest: state.latest };
+    },
+    isDescendant: (old, next) => isMainDescendant(old, next, boundary.request),
+    apply: async (sha) => {
+      if (closing || !supported) return;
+      // A local transport failure before acceptance is not a bad source SHA.
+      const paused = await postRetry("/api/update/auto/quiesce");
+      if (!paused.ok) {
+        if (paused.status === 503) {
+          ambiguousQuiesce = true;
+          recoverySha = sha;
+          recoveryOutcome = "deferred";
+          const recovered = await recoverAmbiguousQuiesce();
+          updates.autoOutcome = {
+            sha,
+            state: recovered ? "deferred" : "resume-failed",
+          };
+        } else updates.autoOutcome = { sha, state: "deferred" };
+        return; // Busy/unavailable; no source operation was accepted.
+      }
+      const wasRunning = paused.data.wasRunning === true;
+      let failure: unknown;
+      let attempted = false;
+      try {
+        autoAttempt = sha;
+        if (!closing && (await autoSetting.read()).enabled) {
+          attempted = true;
+          await updates.apply(sha);
+        }
+      } catch (error) {
+        failure = error;
+      } finally {
+        autoAttempt = undefined;
+      }
+      try {
+        send({ type: "state", data: updates.snapshot() });
+        // IPC state is asynchronous; release must not race the child's stale applying flag.
+        for (let n = 0; n < 30; n++) {
+          try {
+            const state = await fetch(origin + "/api/update", {
+              headers: { Authorization: "Bearer " + store.secrets.admin },
+              signal: AbortSignal.timeout(2000),
+            });
+            if (state.ok && !((await state.json()) as any).applying) break;
+          } catch {
+            // The child can briefly disconnect during replacement; retry.
+          }
+          await sleep(50);
+        }
+        const released = await postRetry("/api/update/auto/release");
+        if (!released.ok) throw new Error("AUTO_RELEASE_FAILED");
+        if (wasRunning && !closing) {
+          const resumed = await postRetry("/api/run");
+          if (!resumed.ok) throw new Error("AUTO_RESUME_FAILED");
+          let confirmed = false;
+          for (let n = 0; n < 3; n++) {
+            try {
+              const status = await fetch(origin + "/api/status", {
+                headers: { Authorization: "Bearer " + store.secrets.admin },
+                signal: AbortSignal.timeout(5000),
+              });
+              const state = status.ok ? ((await status.json()) as any) : {};
+              if (
+                ["idle", "connecting", "working", "task-working"].includes(
+                  state.state,
+                )
+              ) {
+                confirmed = true;
+                break;
+              }
+            } catch {
+              // A lost read is not proof that the worker failed to start.
+            }
+            if (n < 2) await sleep(200);
+          }
+          if (!confirmed) throw new Error("AUTO_RESUME_UNCONFIRMED");
+          updates.autoOutcome = {
+            sha,
+            state: !attempted
+              ? "deferred"
+              : failure
+                ? "restored-running"
+                : "running",
+          };
+        } else
+          updates.autoOutcome = {
+            sha,
+            state: failure ? "failed" : attempted ? "stopped" : "deferred",
+          };
+      } catch {
+        updates.autoOutcome = { sha, state: "resume-failed" };
+        if (!closing) {
+          ambiguousQuiesce = true;
+          recoverySha = sha;
+          recoveryWasRunning = wasRunning;
+          recoveryOutcome = !attempted
+            ? "deferred"
+            : failure
+              ? wasRunning
+                ? "restored-running"
+                : "failed"
+              : wasRunning
+                ? "running"
+                : "stopped";
+        }
+      }
+      if (failure) throw failure;
+    },
+  });
+  const tickAuto = async () => {
+    if (ambiguousQuiesce) {
+      await recoverAmbiguousQuiesce();
+      return; // Restore the previous worker first; check source on a later tick.
+    }
+    await auto.tick();
+  };
+  let autoTimer: ReturnType<typeof setTimeout> | undefined;
+  let autoTimerWork: Promise<void> | undefined;
+  const schedule = (ms: number) => {
+    autoTimer = setTimeout(() => {
+      const work = (async () => {
+        if (closing) return;
+        try {
+          await tickAuto();
+        } catch {
+          /* Journal carries failure; no secret output. */
+        }
+        if (!closing)
+          schedule(
+            ambiguousQuiesce
+              ? 10000
+              : updates.latest === null && updates.checkedAt
+                ? 900000
+                : 90000,
+          );
+      })();
+      autoTimerWork = work;
+      void work.then(
+        () => {
+          if (autoTimerWork === work) autoTimerWork = undefined;
+        },
+        () => {
+          if (autoTimerWork === work) autoTimerWork = undefined;
+        },
+      );
+    }, ms);
+    autoTimer.unref();
+  };
+  if (supported) schedule(90000);
   // Refresh state even for code-driven updates and across a replaced child.
   const timer = setInterval(
     () => send({ type: "state", data: updates.snapshot() }),
@@ -300,10 +556,14 @@ export async function supervise(
       return child?.pid;
     },
     updates,
+    auto: { tick: tickAuto },
     async close() {
       closing = true;
+      if (autoTimer) clearTimeout(autoTimer);
       controller.abort();
       clearInterval(timer);
+      await autoTimerWork?.catch(() => {});
+      await auto.settle();
       await operation?.catch(() => {});
       await stop();
     },

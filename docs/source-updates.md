@@ -2,13 +2,32 @@
 
 ## User workflow
 
-Open **05 Source updates** in Studio. Unlock performs a source check; checks never install anything. The installed identifier is an exact Git SHA, **not** npm `0.1.0` or a persona revision. Unknown/dirty builds report an unknown source rather than falsely claiming the checkout's HEAD.
+**Automatic upgrades are opt-in and off by default.** In Settings → Updates,
+enable the checkbox to have the stable Linux supervisor check the fixed public
+`main` about every 90 seconds (longer after failed/rate-limited checks). It
+only installs a SHA verified as ahead of the known installed Git revision;
+unknown/dirty, divergent and behind revisions are skipped. It waits for
+preview, Operator chat and worker actions to finish, then quiesces and stops
+an idle worker before applying. A previously running worker is started again
+after a healthy upgrade or restored previous runtime; a previously stopped
+worker stays stopped. A successful local start is not proof of ongoing backend
+connectivity or reply delivery. Check Worker status after an upgrade. If resume
+cannot be confirmed, Studio reports it separately from the source operation.
+Disabling prevents future automatic apply; a worker stopped for a deferred
+upgrade is restarted unless the service is shutting down. A failed target is
+not retried automatically on subsequent polls; use the manual confirmation
+path after investigating, or wait for a different main SHA. The preference
+lives in the protected Coach home, independently of persona revisions and
+rollback. Unsupported/embedded or explicitly disabled installations cannot
+enable it. The browser does not schedule checks.
+
+Open **Settings → Updates** in Studio. Unlock performs a source check; checks never install anything. The installed identifier is an exact Git SHA, **not** npm `0.1.0` or a persona revision. Unknown/dirty builds report an unknown source rather than falsely claiming the checkout's HEAD.
 
 1. Save or revert unsaved edits. Pause Coach and finish/cancel any preview.
 2. Check the displayed latest revision from the fixed public repository, `stevefortier/katafit-coach`, branch `main`.
 3. Click Upgrade and explicitly confirm the full displayed SHA. This authorizes executing that trusted source and its pinned dependencies on your machine.
 4. Studio stages and validates the revision while the existing server stays available. Run, configuration changes, preview and shutdown are rejected during apply. Brief reconnecting is normal during replacement; disappearance is not success.
-5. Wait for the installed SHA to match the confirmed target and the success result. The worker intentionally remains **stopped**. Reload Studio to load its new UI assets, preview, then choose Run.
+5. Wait for the installed SHA to match the confirmed target and the success result. For **manual upgrades**, the worker intentionally remains **stopped**. Reload Studio to load its new UI assets, preview, then choose Run.
 
 The admin credential stays in per-origin **sessionStorage**, not localStorage, after successful authentication so this tab can reload/reconnect across upgrades. **Lock studio** clears it and locks the UI; it does not stop the service, worker, or an in-progress upgrade. On a shared browser, lock the Studio and close the tab. Invalid credentials clear the saved session key. Credentials are never put into query strings or update requests.
 
@@ -34,7 +53,7 @@ Each build subprocess is limited to three minutes and a process group that is ki
 
 Managed directory ancestors cannot be symlinks; metadata/lockfile reads require bounded regular files with no-follow/nonblocking opens, rejecting symlinks and FIFOs. This prevents accidental redirected writes/reads, not a defense against a hostile same-user process racing filesystem operations. Protect the home as you would its plaintext credentials.
 
-An isolated child loads the candidate's **own Store and admin code**, with a disposable home and no real secrets. It must serve authenticated stopped-worker health. Only then does the owner snapshot existing JSON records, stop the old runtime, launch the candidate against the real home, wait through startup probation, and require authenticated health at the original port. The active pointer is atomically renamed only after health. Startup errors, hangs and early exits cause old-runtime restart and JSON restoration. Worker execution never auto-resumes. This certifies startup health, not every future request.
+An isolated child loads the candidate's **own Store and admin code**, with a disposable home and no real secrets. It must serve authenticated stopped-worker health. Only then does the owner snapshot existing JSON records, stop the old runtime, launch the candidate against the real home, wait through startup probation, and require authenticated health at the original port. The active pointer is atomically renamed only after health. Startup errors, hangs and early exits cause old-runtime restart and JSON restoration. Manual upgrades never auto-resume. Opt-in automatic upgrades restore a previously running worker only after healthy activation or rollback. This certifies startup health, not every future request.
 
 ### Compatibility and limits
 

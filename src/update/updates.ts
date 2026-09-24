@@ -14,6 +14,7 @@ export class Updates {
   checkedAt = 0;
   applying = false;
   cleanupWarning = false;
+  autoOutcome?: { sha: string; state: string };
   accepted: Promise<void> = Promise.resolve();
   lastOperation: LastOperation | undefined;
   guidance = "Use a managed Linux launcher to enable upgrades.";
@@ -35,6 +36,7 @@ export class Updates {
       applying: this.applying,
       guidance: this.guidance,
       lastOperation: this.lastOperation,
+      autoOutcome: this.autoOutcome,
     };
   }
   validate(sha: unknown): string {

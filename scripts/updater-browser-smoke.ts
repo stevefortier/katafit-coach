@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { Updates } from "../src/update/updates.js";
+import { AutoUpdateSetting } from "../src/update/auto.js";
 import type { Operation } from "../src/update/journal.js";
 const home = await mkdtemp(tmpdir() + "/coach-update-browser-");
 const store = new Store(home);
@@ -38,7 +39,14 @@ const updates = new BrowserUpdates(
     return new Response(JSON.stringify({ object: { sha: latest } }));
   },
 );
-const app = await admin(store, 0, undefined, undefined, updates);
+const app = await admin(
+  store,
+  0,
+  undefined,
+  undefined,
+  updates,
+  new AutoUpdateSetting(home),
+);
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   browser = await chromium.launch({
@@ -58,6 +66,35 @@ try {
   await page.goto(app.origin + "/#" + store.secrets.admin);
   await page.locator("#studio").waitFor({ state: "visible" });
   await page.locator("#settingsTab").click();
+  const savedAuto = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/update/auto") &&
+      response.request().method() === "POST",
+  );
+  await page.locator("#updateAuto").check();
+  assert.equal((await savedAuto).status(), 200);
+  await page.waitForFunction(
+    () =>
+      document.querySelector<HTMLInputElement>("#updateAuto")?.checked === true,
+  );
+  assert.equal((await new AutoUpdateSetting(home).read()).enabled, true);
+  for (const width of [320, 360]) {
+    await page.setViewportSize({ width, height: 800 });
+    const layout = await page.evaluate(() => {
+      const input = document
+        .querySelector("#updateAuto")!
+        .getBoundingClientRect();
+      const text = document
+        .querySelector(".update-auto-control span")!
+        .getBoundingClientRect();
+      return {
+        aligned: text.left > input.right && Math.abs(text.top - input.top) < 12,
+        noOverflow: document.documentElement.scrollWidth <= innerWidth,
+      };
+    });
+    assert.deepEqual(layout, { aligned: true, noOverflow: true });
+  }
+  await page.setViewportSize({ width: 1280, height: 1000 });
   assert.equal(
     await page.locator("#updates").count(),
     1,
