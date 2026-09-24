@@ -13,6 +13,51 @@ import {
   isMainDescendant,
 } from "../src/update/auto.js";
 
+test("old launcher exposes auto-update as unavailable even when manual updates work", async () => {
+  const home = await mkdtemp(join(tmpdir(), "coach-auto-old-launcher-"));
+  const store = new Store(home);
+  await store.init();
+  const app = await admin(
+    store,
+    0,
+    undefined,
+    undefined,
+    new Updates(null, async () => {}),
+  );
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  try {
+    const status = await (
+      await fetch(app.origin + "/api/update", { headers })
+    ).json();
+    assert.equal(status.supported, true);
+    assert.deepEqual(status.auto, { enabled: false, available: false });
+    const checked = await fetch(app.origin + "/api/update/check", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    assert.equal(checked.status, 200);
+    assert.deepEqual((await checked.json()).auto, {
+      enabled: false,
+      available: false,
+    });
+    const response = await fetch(app.origin + "/api/update/auto", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ enabled: true }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error, "LAUNCHER_UPGRADE_REQUIRED");
+  } finally {
+    await app.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("auto-update is opt-in, protected, strict and independent of persona rollback", async () => {
   const home = await mkdtemp(join(tmpdir(), "coach-auto-setting-"));
   const store = new Store(home);

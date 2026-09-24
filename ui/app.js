@@ -548,7 +548,8 @@ function renderUpdate() {
     (data.auto?.enabled && data.guidance?.startsWith("New source available.")
       ? "Main differs from the installed source. Automatic upgrade will verify it and wait for an idle worker."
       : data.guidance);
-  $("updateAuto").disabled = !data.supported || updateRequest;
+  $("updateAuto").disabled =
+    !data.supported || data.auto?.available !== true || updateRequest;
   $("updateAuto").checked = data.auto?.enabled === true;
   const autoStates = {
     running:
@@ -567,9 +568,11 @@ function renderUpdate() {
     sourceSha(data.autoOutcome.sha) &&
     Object.hasOwn(autoStates, data.autoOutcome.state)
       ? autoStates[data.autoOutcome.state]
-      : data.auto?.enabled
-        ? "Enabled. Waiting for a newer verified main revision and an idle worker."
-        : "Off. Enable to upgrade from main automatically.";
+      : data.supported && data.auto?.available === false
+        ? "Launcher upgrade required. Replace the launcher or container image with the current build, restart the service using the same Coach home, then reload Studio. Source upgrades alone leave the old launcher running."
+        : data.auto?.enabled
+          ? "Enabled. Waiting for a newer verified main revision and an idle worker."
+          : "Off. Enable to upgrade from main automatically.";
   const outcome = data.lastOperation;
   const outcomeNames = {
     applying: "Upgrade accepted",
