@@ -166,6 +166,25 @@ test("explicit quoted send requires anchored recipient, action, and complete quo
   );
 });
 
+test("unquoted saying tail accepts only the complete source payload", () => {
+  const text = "Send Alex a note saying do not train today";
+  const send = {
+    ...empty,
+    kind: "send",
+    scope: "named",
+    scopeQuote: "Alex",
+    targets: [{ name: "Alex", quote: "Alex" }],
+    actionQuote: "Send",
+    payloadQuote: "do not train today",
+  };
+  assert.equal(validateRequestClaim(text, send, tools).status, "advisory");
+  assert.equal(
+    validateRequestClaim(text, { ...send, payloadQuote: "train today" }, tools)
+      .status,
+    "uncertain",
+  );
+});
+
 test("structured request planner sends a strict schema and treats malformed provider claims as uncertainty", async () => {
   let request: any;
   const server = createServer(async (req, res) => {

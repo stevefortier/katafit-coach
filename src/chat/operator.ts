@@ -16,10 +16,13 @@ import { randomUUID, createHash } from "node:crypto";
 import { explicitSendPayload } from "./operatorPayload.js";
 import {
   modelPlanner,
+  modelRequestPlanner,
+  validateRequestClaim,
   validatePlan,
   toolFor,
   type OperatorPlanner,
   type Domain,
+  type ClaimAssessment,
 } from "./operatorPlan.js";
 
 type Card = {
@@ -170,6 +173,7 @@ export class OperatorChat {
     private store: Store,
     private infer = complete,
     private planner?: OperatorPlanner,
+    private requestPlanner?: typeof modelRequestPlanner,
   ) {
     this.history = new History(store.dir);
     this.messages = this.history.load();
@@ -266,6 +270,9 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
     const evidence = new Set<string>();
     const denied = new Set<string>();
     let plan: import("./operatorPlan.js").IntentPlan | undefined;
+    let requestScope:
+      | import("./operatorPlan.js").RequestClaim["scope"]
+      | undefined;
     let readUsed = false;
     const requiredMembers = new Set<string>();
     let actionAttempted = false;
@@ -380,12 +387,82 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
             : { kind: "discussion", targets: [], domains: [], action: "none" };
       };
       try {
-        plan = validatePlan(
-          await (
-            this.planner ?? (this.infer === complete ? modelPlanner : legacy)
-          )(text, baseTools, signal, provider, deadlineAt),
-          baseTools,
-        );
+        // In production the typed request is the primary interpretation; the
+        // legacy planner is retained only for pre-existing scripted fixtures.
+        const typed: ClaimAssessment | undefined =
+          this.requestPlanner || (this.infer === complete && !this.planner)
+            ? await (this.requestPlanner ?? modelRequestPlanner)(
+                text,
+                baseTools,
+                signal,
+                provider,
+                deadlineAt,
+              )
+            : undefined;
+        if (typed) {
+          const assessment =
+            typed.status === "advisory"
+              ? validateRequestClaim(text, typed.claim, baseTools)
+              : typed;
+          if (assessment.status !== "advisory")
+            throw new SafeError("READ_UNAVAILABLE");
+          const claim = assessment.claim;
+          requestScope = claim.scope;
+          const requestedPayload = explicitSendPayload(text);
+          // Anchored payload text alone does not authorize a shortened send.
+          if (
+            claim.kind === "send" &&
+            (!requestedPayload ||
+              (claim.payloadQuote !== `"${requestedPayload}"` &&
+                claim.payloadQuote !== `“${requestedPayload}”` &&
+                claim.payloadQuote !== requestedPayload))
+          )
+            throw new SafeError("READ_UNAVAILABLE");
+          if (claim.kind === "unsupported")
+            return {
+              images: [],
+              coverage_notice: false,
+              text: "That action is not available in this Operator session; no change was made.",
+              messages: this.messages,
+              ephemeral: false,
+              actions: this.actions.snapshot(),
+            };
+
+          plan = validatePlan(
+            claim.kind === "read"
+              ? {
+                  kind: "read",
+                  targets: claim.targets.map((t) => t.name),
+                  domains: [
+                    ...new Set(claim.evidence.flatMap((e) => e.domains)),
+                  ],
+                  action: "none",
+                }
+              : claim.kind === "send"
+                ? {
+                    kind: "action",
+                    targets: claim.targets.map((t) => t.name),
+                    domains: [],
+                    action: "send",
+                  }
+                : {
+                    kind: "discussion",
+                    targets: [],
+                    domains: [],
+                    action: "none",
+                  },
+            baseTools,
+          );
+          if (claim.kind === "read" && claim.scope === "dojo")
+            plan.targets = [];
+        } else {
+          plan = validatePlan(
+            await (
+              this.planner ?? (this.infer === complete ? modelPlanner : legacy)
+            )(text, baseTools, signal, provider, deadlineAt),
+            baseTools,
+          );
+        }
       } catch (error) {
         if (
           error instanceof Error &&
@@ -557,15 +634,17 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
           plan.kind === "read" &&
           plan.domains.every((d) => d === "roster" || d === "checkins")
             ? []
-            : named.length
-              ? named
-              : plan.kind === "read" &&
-                  (!plan.targets.length ||
-                    /\b(?:dojo members|members|everyone|all trainees|whole dojo)\b/i.test(
-                      text,
-                    ))
-                ? members
-                : [];
+            : requestScope === "dojo" && plan.kind === "read"
+              ? members
+              : named.length
+                ? named
+                : plan.kind === "read" &&
+                    (!plan.targets.length ||
+                      /\b(?:dojo members|members|everyone|all trainees|whole dojo)\b/i.test(
+                        text,
+                      ))
+                  ? members
+                  : [];
         if (plan.kind === "action" && matched.length !== 1)
           throw new SafeError("READ_UNAVAILABLE");
         if (plan.kind === "read" && matched.length > 1 && named.length)

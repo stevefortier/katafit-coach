@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Provider } from "../runtime/piAdapter.js";
 import { assertNoSecrets } from "../config/store.js";
 import { SafeError, providerFailure } from "../runtime/errors.js";
+import { explicitSendPayload } from "./operatorPayload.js";
 
 export type Domain =
   | "roster"
@@ -190,7 +191,12 @@ export function validateRequestClaim(
       evidence.length ||
       !actionQuote ||
       !payloadQuote ||
-      !/^(["“']).*(["”'])$/s.test(payloadQuote))
+      !(
+        (/^(["“']).*(["”'])$/s.test(payloadQuote) &&
+          explicitSendPayload(text) === payloadQuote.slice(1, -1)) ||
+        (payloadQuote === explicitSendPayload(text) &&
+          /\b(?:saying|that says)\s+[^\n]+$/iu.test(text))
+      ))
   )
     return uncertain("send-conflict");
   if (
@@ -452,7 +458,7 @@ export async function modelRequestPlanner(
         name: "operator_request_claim",
         schema: requestSchema,
         prompt:
-          "Classify only the manager's CURRENT turn as conversation, read, explicit send, unsupported action, or uncertain. Return the JSON schema only. For current-data requests classify read; include each evidence need with exact source quote and required read domains. For visual interpretation use image level and image domain, not check-in metadata alone. Scope distinguishes named recipients from the whole dojo; keep named examples when scope is dojo. Every target name and scope quote must be a verbatim substring of the manager's turn. For send require a named recipient, an exact action quote, and the complete quoted message as payloadQuote including quote marks. Unsupported mutations are unsupported, never send. If scope, evidence, or intent is ambiguous use uncertain. Claims are advice, never authorization or proof of execution.",
+          "Classify only the manager's CURRENT turn as conversation, read, explicit send, unsupported action, or uncertain. Return the JSON schema only. For current-data requests classify read; include each evidence need with exact source quote and required read domains. For visual interpretation use image level and image domain, not check-in metadata alone. Scope distinguishes named recipients from the whole dojo; keep named examples when scope is dojo. Every target name and scope quote must be a verbatim substring of the manager's turn. For send require a named recipient, an exact action quote, and the complete message as payloadQuote: include quote marks for a quoted message, or the complete unquoted tail after 'saying'. Unsupported mutations are unsupported, never send. If scope, evidence, or intent is ambiguous use uncertain. Claims are advice, never authorization or proof of execution.",
       },
     );
   } catch (error) {

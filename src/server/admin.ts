@@ -20,8 +20,9 @@ export async function admin(
   updates = new Updates(null, null),
   auto?: AutoUpdateSetting,
   operatorPlanner?: import("../chat/operatorPlan.js").OperatorPlanner,
+  requestPlanner?: typeof import("../chat/operatorPlan.js").modelRequestPlanner,
 ) {
-  const chat = new OperatorChat(store, infer, operatorPlanner);
+  const chat = new OperatorChat(store, infer, operatorPlanner, requestPlanner);
   const logs = new Diagnostics(store.dir);
   logs.record({ source: "studio", stage: "studio-started" });
   let worker: Worker | undefined;

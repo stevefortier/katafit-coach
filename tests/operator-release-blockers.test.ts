@@ -5,13 +5,14 @@ import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { fixture } from "./operator-checkins.test.js";
-import type { IntentPlan } from "../src/chat/operatorPlan.js";
+import type { IntentPlan, ClaimAssessment } from "../src/chat/operatorPlan.js";
 
 async function run(
   text: string,
   plan: IntentPlan,
   model: (tools: any[]) => Promise<string>,
   options: Parameters<typeof fixture>[0] = {},
+  requestClaim?: ClaimAssessment,
 ) {
   const backend = await fixture({ two: true, ...options });
   const dir = await mkdtemp(tmpdir() + "/operator-release-");
@@ -37,6 +38,7 @@ async function run(
       undefined,
       undefined,
       async () => plan,
+      requestClaim ? async () => requestClaim : undefined,
     );
     const response = await fetch(app.origin + "/api/operator/chat", {
       method: "POST",
@@ -269,4 +271,173 @@ test("SEND preserves the complete source-anchored quoted payload", async () => {
       .map((x) => x.args.text),
     ["Do not train today"],
   );
+});
+
+const claim = (
+  kind: "conversation" | "read" | "send" | "unsupported",
+  scope: "none" | "named" | "dojo" = "none",
+  domains: Array<"feed" | "checkins" | "image"> = [],
+): ClaimAssessment => ({
+  status: "advisory",
+  claim: {
+    kind,
+    scope,
+    scopeQuote:
+      scope === "named" ? "Alex" : scope === "dojo" ? "all dojo members" : "",
+    targets: scope === "none" ? [] : [{ name: "Alex", quote: "Alex" }],
+    evidence: domains.length
+      ? [
+          {
+            level: domains.includes("image") ? "image" : "metadata",
+            domains,
+            quote: domains.includes("image") ? "photos" : "feed",
+          },
+        ]
+      : [],
+    actionQuote: "",
+    payloadQuote: "",
+  },
+});
+
+test("typed read claim overrides hostile old-planner discussion", async () => {
+  const result = await run(
+    "How is Alex doing in the feed?",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Alex completed two workouts.",
+    {},
+    claim("read", "named", ["feed"]),
+  );
+  assert.equal(result.status, 400);
+  assert.equal(result.body.error, "READ_UNAVAILABLE");
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("typed dojo scope requires coverage beyond a named example", async () => {
+  const result = await run(
+    "How are all dojo members, including Alex, doing in the feed?",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async (tools) => {
+      await feed(tools).execute("alex", { member_ref: "member-photo" });
+      return "Everyone is well.";
+    },
+    {},
+    claim("read", "dojo", ["feed"]),
+  );
+  assert.equal(result.status, 400);
+  assert.equal(result.body.error, "READ_UNAVAILABLE");
+});
+
+test("source-anchored but semantically wrong named scope fails closed", async () => {
+  const result = await run(
+    "How are all dojo members except Alex doing in the feed?",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Alex is well.",
+    {},
+    claim("read", "named", ["feed"]),
+  );
+  assert.equal(result.status, 400);
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("source-anchored metadata claim cannot answer a visual question", async () => {
+  const result = await run(
+    "How do Alex's photos look in the feed?",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Alex looks stronger.",
+    {},
+    claim("read", "named", ["feed"]),
+  );
+  assert.equal(result.status, 400);
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("uncertain typed claim cannot fall through to old planner", async () => {
+  const result = await run(
+    "How is Alex doing?",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Alex is well.",
+    {},
+    { status: "uncertain", reason: "shape-or-anchor" },
+  );
+  assert.equal(result.attempts, 0);
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("hostile typed named scope cannot narrow a dojo-wide request", async () => {
+  const result = await run(
+    "How are all dojo members, including Alex, doing in the feed?",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async (tools) => {
+      await feed(tools).execute("alex", { member_ref: "member-photo" });
+      return "Everyone is doing well.";
+    },
+    {},
+    claim("read", "named", ["feed"]),
+  );
+  assert.equal(result.status, 400);
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("typed unquoted full saying payload is delivered without confirmation", async () => {
+  const result = await run(
+    "Send Alex a note saying do not train today",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async (tools) => {
+      await tools
+        .find((t) => t.name === "studio_operator_send_message")!
+        .execute("send", {
+          member_ref: "member-photo",
+          text: "do not train today",
+        });
+      return "Sent.";
+    },
+    {},
+    {
+      status: "advisory",
+      claim: {
+        kind: "send",
+        scope: "named",
+        scopeQuote: "Alex",
+        targets: [{ name: "Alex", quote: "Alex" }],
+        evidence: [],
+        actionQuote: "Send",
+        payloadQuote: "do not train today",
+      },
+    },
+  );
+  assert.equal(result.status, 200);
+  assert.deepEqual(
+    result.callArgs
+      .filter((x) => x.name === "studio_operator_send_message")
+      .map((x) => x.args.text),
+    ["do not train today"],
+  );
+});
+
+test("anchored but incomplete send claim cannot deliver a shortened payload", async () => {
+  const result = await run(
+    'Send Alex exactly: "Do not train today"',
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async (tools) => {
+      await tools
+        .find((t) => t.name === "studio_operator_send_message")
+        ?.execute("send", { member_ref: "member-photo", text: "train" });
+      return "Sent.";
+    },
+    {},
+    {
+      status: "advisory",
+      claim: {
+        kind: "send",
+        scope: "named",
+        scopeQuote: "Alex",
+        targets: [{ name: "Alex", quote: "Alex" }],
+        evidence: [],
+        actionQuote: "Send",
+        payloadQuote: '"train"',
+      },
+    },
+  );
+  assert.equal(result.status, 400);
+  assert.equal(result.calls.includes("studio_operator_send_message"), false);
 });
