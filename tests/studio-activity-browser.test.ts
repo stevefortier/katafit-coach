@@ -117,6 +117,14 @@ test("activity expansion is lazy, authenticated, bounded to its view, and retrya
         body = {
           member_ref: url.searchParams.get("member_ref"),
           items: [
+            ...activities.map((activity, i) => ({
+              id: activity.activity_ref,
+              activity_ref: activity.activity_ref,
+              type: "message",
+              role: "coach",
+              text: activity.name,
+              created_at: `2026-09-22T12:0${i + 1}:00Z`,
+            })),
             {
               id: "private",
               type: "message",
@@ -127,14 +135,7 @@ test("activity expansion is lazy, authenticated, bounded to its view, and retrya
           ],
           has_more: false,
         };
-      if (p === "/api/members/activities") {
-        reads++;
-        body = {
-          member_ref: url.searchParams.get("member_ref"),
-          items: activities,
-          has_more: false,
-        };
-      }
+      assert.notEqual(p, "/api/members/activities");
       if (p === "/api/members/activity") {
         reads++;
         if (hold) {
@@ -200,26 +201,17 @@ test("activity expansion is lazy, authenticated, bounded to its view, and retrya
     await page
       .getByRole("button", { name: "Synthetic Alex", exact: true })
       .click();
-    await page.locator(".member-item").waitFor();
+    await page.locator(".member-item").first().waitFor();
     assert.equal(reads, 0, "visible message never hydrates private activity");
-    assert.equal(
-      await page.locator("#memberActivities").count(),
-      1,
-      "lazy activity browser exists",
-    );
-    await page.locator("#memberActivities > summary").click();
-    await page.getByText("Strength session", { exact: true }).click();
+    assert.equal(await page.locator("#memberActivities").count(), 0);
+    await page.locator(".member-thread > details > summary").nth(0).click();
     await page.getByText("Back squat", { exact: true }).click();
     await page.waitForFunction(() =>
-      document
-        .querySelector("#memberActivities")
-        ?.textContent?.includes("60 kg"),
+      document.querySelector("#memberItems")?.textContent?.includes("60 kg"),
     );
-    assert.match(await page.locator("#memberActivities").innerText(), /8 reps/);
-    await page.getByText("Recovery lunch", { exact: true }).click();
-    const meal = page
-      .locator("details.activity-card")
-      .filter({ has: page.getByText("Recovery lunch", { exact: true }) });
+    assert.match(await page.locator("#memberItems").innerText(), /8 reps/);
+    await page.locator(".member-thread > details > summary").nth(1).click();
+    const meal = page.locator(".member-thread > details").nth(1);
     await meal.getByRole("button", { name: "Retry", exact: true }).click();
     await page.waitForTimeout(100);
     assert.equal(
@@ -229,16 +221,14 @@ test("activity expansion is lazy, authenticated, bounded to its view, and retrya
     );
     await meal.getByRole("button", { name: "Retry", exact: true }).click();
     await page.waitForFunction(() =>
-      document
-        .querySelector("#memberActivities")
-        ?.textContent?.includes("Oats"),
+      document.querySelector("#memberItems")?.textContent?.includes("Oats"),
     );
     assert.match(await meal.innerText(), /80 g/);
     assert.match(await meal.innerText(), /300/);
     assert.equal(media, 0);
-    await page.getByText("Progress photo", { exact: true }).click();
+    await page.locator(".member-thread > details > summary").nth(2).click();
     await page.waitForFunction(() =>
-      Array.from(document.querySelectorAll("#memberActivities img")).some(
+      Array.from(document.querySelectorAll("#memberItems img")).some(
         (i) => (i as HTMLImageElement).naturalWidth > 0,
       ),
     );
@@ -254,28 +244,26 @@ test("activity expansion is lazy, authenticated, bounded to its view, and retrya
         ),
         true,
       );
-      await page.locator("#memberActivities").scrollIntoViewIfNeeded();
+      await page.locator("#memberItems").scrollIntoViewIfNeeded();
       await page.screenshot({
         path: evidence + "/activities-" + name + ".png",
         fullPage: true,
       });
     }
-    await page.getByText("Progress photo", { exact: true }).click();
+    await page.locator(".member-thread > details > summary").nth(2).click();
     await page.waitForFunction(
-      () => document.querySelectorAll("#memberActivities img").length === 0,
+      () => document.querySelectorAll("#memberItems img").length === 0,
     );
-    assert.equal(await page.locator("#memberActivities img").count(), 0);
+    assert.equal(await page.locator("#memberItems img").count(), 0);
     assert.ok(
       (await page.evaluate(() => (window as any).revoked.length)) > 0,
       "collapse revokes image URLs",
     );
-    await page.getByText("Recovery lunch", { exact: true }).click();
+    await page.locator(".member-thread > details > summary").nth(1).click();
     hold = true;
-    await page.getByText("Recovery lunch", { exact: true }).click();
+    await page.locator(".member-thread > details > summary").nth(1).click();
     await page.waitForFunction(() =>
-      document
-        .querySelector("#memberActivities")
-        ?.textContent?.includes("Loading"),
+      document.querySelector("#memberItems")?.textContent?.includes("Loading"),
     );
     await page.waitForTimeout(50);
     assert.ok(held);
@@ -300,7 +288,7 @@ test("activity expansion is lazy, authenticated, bounded to its view, and retrya
       /STALE PRIVATE DETAIL|PRIVATE_DENIAL/,
     );
     await page.locator("#lockStudio").click();
-    assert.equal(await page.locator("#memberActivities img").count(), 0);
+    assert.equal(await page.locator("#memberItems img").count(), 0);
   } finally {
     await browser?.close();
     server.closeAllConnections();

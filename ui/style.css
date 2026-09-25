@@ -1,3 +1,8 @@
+#membersStatus:empty,
+#memberStatus:empty {
+  display: none;
+}
+
 :root {
   color-scheme: dark;
   --bg: #101715;
@@ -142,12 +147,6 @@ select:focus {
 .hint {
   font-size: 12px;
   line-height: 1.5;
-}
-.member-view-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 10px 0;
 }
 .actions {
   display: flex;

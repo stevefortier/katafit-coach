@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
 import { chromium } from "playwright-core";
 
-for (const mode of ["refresh", "cursor"] as const)
+for (const mode of ["refresh", "timed"] as const)
   test(`successful ${mode} revalidation clears raw data and fences delayed detail`, async () => {
     const evidence =
       process.env.COACH_EVIDENCE_DIR || `${tmpdir()}/katafit-studio-evidence`;
@@ -54,7 +54,8 @@ for (const mode of ["refresh", "cursor"] as const)
         hugeMeal = true,
         hold = false,
         held: any,
-        feedError = "";
+        feedError = "",
+        revokedWorkout = false;
       const activities = [
         { activity_ref: "workout", type: "workout", name: "Strength session" },
         { activity_ref: "meal", type: "meal", name: "Recovery lunch" },
@@ -124,6 +125,14 @@ for (const mode of ["refresh", "cursor"] as const)
           body = {
             member_ref: url.searchParams.get("member_ref"),
             items: [
+              ...activities.map((activity, i) => ({
+                id: activity.activity_ref,
+                activity_ref: activity.activity_ref,
+                type: "message",
+                role: "coach",
+                text: activity.name,
+                created_at: `2026-09-22T12:0${i + 1}:00Z`,
+              })),
               {
                 id: "private",
                 type: "message",
@@ -136,16 +145,17 @@ for (const mode of ["refresh", "cursor"] as const)
             next_cursor: url.searchParams.has("cursor") ? null : "second-page",
           };
         }
-        if (p === "/api/members/activities") {
-          reads++;
-          body = {
-            member_ref: url.searchParams.get("member_ref"),
-            items: activities,
-            has_more: false,
-          };
-        }
+        assert.notEqual(p, "/api/members/activities");
         if (p === "/api/members/activity") {
           reads++;
+          if (
+            revokedWorkout &&
+            url.searchParams.get("activity_ref") === "workout"
+          )
+            return route.fulfill({
+              status: 403,
+              json: { error: "PRIVATE_DENIAL" },
+            });
           if (hold) {
             held = route;
             return;
@@ -209,7 +219,8 @@ for (const mode of ["refresh", "cursor"] as const)
       await page
         .getByRole("button", { name: "Synthetic Alex", exact: true })
         .click();
-      await page.locator(".member-item").waitFor();
+      await page.locator(".member-item").first().waitFor();
+      await page.evaluate("loadMemberFeed(true)");
       if (mode === "refresh") {
         await page.evaluate(() => {
           (window as any).firstMemberRow =
@@ -226,61 +237,41 @@ for (const mode of ["refresh", "cursor"] as const)
           "unchanged authorized feed must not rebuild the chat DOM on timed revalidation",
         );
       }
-      if (mode === "cursor") {
-        // A short pane fetches its older page without a manual button press.
-        await page.waitForFunction(
-          () => (document.querySelector("#memberMore") as HTMLElement)?.hidden,
-        );
-      }
       assert.equal(reads, 0, "visible message never hydrates private activity");
-      assert.equal(
-        await page.locator("#memberActivities").count(),
-        1,
-        "lazy activity browser exists",
-      );
-      await page.locator("#memberActivities > summary").click();
-      await page.getByText("Strength session", { exact: true }).click();
+      assert.equal(await page.locator("#memberActivities").count(), 0);
+      await page.locator(".member-thread > details > summary").nth(0).click();
       await page.getByText("Back squat", { exact: true }).click();
       await page.waitForFunction(() =>
-        document
-          .querySelector("#memberActivities")
-          ?.textContent?.includes("60 kg"),
+        document.querySelector("#memberItems")?.textContent?.includes("60 kg"),
       );
-      assert.match(
-        await page.locator("#memberActivities").innerText(),
-        /8 reps/,
-      );
+      assert.match(await page.locator("#memberItems").innerText(), /8 reps/);
 
-      await page.getByText("Progress photo", { exact: true }).click();
+      await page.locator(".member-thread > details > summary").nth(2).click();
       await page.waitForFunction(
         () =>
-          !!document.querySelector<HTMLImageElement>("#memberActivities img")
+          !!document.querySelector<HTMLImageElement>("#memberItems img")
             ?.naturalWidth,
       );
       const revalidate = async () => {
-        if (mode === "cursor")
+        if (mode === "timed")
           await page.evaluate("loadMemberFeed(false, true)");
         else {
-          await page.locator("#memberRefresh").click();
-          await page.waitForFunction(() =>
-            document
-              .querySelector("#memberStatus")
-              ?.textContent?.includes("refreshed"),
-          );
+          await page.evaluate("loadMemberFeed()");
+          await page.evaluate("loadMemberFeed(true)");
         }
       };
       // Feed can succeed after category revocation; cached raw content must clear.
       await revalidate();
       assert.equal(
-        (await page.locator("#memberActivities").innerText()).includes("60 kg"),
+        (await page.locator("#memberItems").innerText()).includes("60 kg"),
         false,
       );
-      assert.equal(await page.locator("#memberActivities img").count(), 0);
+      assert.equal(await page.locator("#memberItems img").count(), 0);
       assert.ok(await page.evaluate(() => (window as any).revoked.length > 0));
       // A request started before successful revalidation cannot repaint afterward.
-      await page.locator("#memberActivities > summary").click();
+
       hold = true;
-      await page.getByText("Strength session", { exact: true }).click();
+      await page.locator(".member-thread > details > summary").nth(0).click();
       for (let i = 0; i < 50 && !held; i++) await page.waitForTimeout(20);
       assert.ok(held, "detail request is in flight");
       await revalidate();
@@ -299,10 +290,26 @@ for (const mode of ["refresh", "cursor"] as const)
         .catch(() => {});
       await page.waitForTimeout(50);
       assert.equal(
-        (await page.locator("#memberActivities").innerText()).includes(
+        (await page.locator("#memberItems").innerText()).includes(
           "LATE_PRIVATE_DETAIL",
         ),
         false,
+      );
+      assert.match(
+        await page.locator("#memberItems").innerText(),
+        /Private activity conversation/,
+      );
+      hold = false;
+      revokedWorkout = true;
+      await page.locator(".member-thread > details > summary").nth(0).click();
+      await page
+        .locator(".member-thread > details")
+        .first()
+        .getByRole("button", { name: "Retry", exact: true })
+        .waitFor();
+      assert.doesNotMatch(
+        await page.locator("#memberItems").innerText(),
+        /60 kg|Back squat|LATE_PRIVATE_DETAIL|PRIVATE_DENIAL/,
       );
       assert.match(
         await page.locator("#memberItems").innerText(),

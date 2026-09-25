@@ -164,7 +164,7 @@ async function api(path, body, signal) {
       redirect: "error",
       cache: "no-store",
     });
-    if (/^members\/(activity|activities)\?/.test(path)) {
+    if (/^members\/activity\?/.test(path)) {
       const reader = r.body.getReader(),
         chunks = [];
       let bytes = 0;
@@ -1128,7 +1128,6 @@ let members = [],
   membersCursor = null,
   membersEpoch = 0;
 let selectedMember = null,
-  memberView = "main_conversation",
   memberItems = [],
   memberCursor = null,
   memberLoading = false,
@@ -1201,7 +1200,7 @@ async function loadMembers(more = false, routePages = 0) {
     const routedMember = studioRoute().member;
     if (routedMember && !$("coachPanel").hidden) restoreStudioRoute();
     $("membersStatus").textContent = members.length
-      ? "Member conversations · read-only"
+      ? ""
       : "No member conversations available for this credential. Check dojo membership and credential access in Kata.fit, then refresh.";
     if (routedMember && !members.some((m) => m.member_ref === routedMember)) {
       if (membersCursor && routePages < 10)
@@ -1223,53 +1222,13 @@ async function loadMembers(more = false, routePages = 0) {
       $("membersMore").disabled = false;
   }
 }
-function renderMemberViewTabs() {
-  for (const [id, view] of [
-    ["memberMainTab", "main_conversation"],
-    ["memberAllTab", "all"],
-  ]) {
-    const button = $(id);
-    button.setAttribute("aria-pressed", String(memberView === view));
-    button.classList.toggle("secondary", memberView !== view);
-  }
-  $("memberHint").textContent =
-    memberView === "main_conversation"
-      ? "Read-only direct Coach conversation. Activity conversations and insights are available in All activity & Coach history."
-      : "Read-only Coach history, including shared activity conversations. Expand a shared activity for details and photos when available.";
-  $("memberItems").setAttribute(
-    "aria-label",
-    memberView === "main_conversation"
-      ? "Read-only main Coach chat"
-      : "Read-only member feed",
-  );
-}
-function selectMemberView(view) {
-  if (!selectedMember || memberView === view) return;
-  memberView = view;
-  ++memberEpoch;
-  clearTimeout(memberTimer);
-  clearActivities();
-  memberItems = [];
-  memberCursor = null;
-  memberLoading = false;
-  disposeDetails($("memberItems"));
-  $("memberItems").replaceChildren();
-  $("memberMore").hidden = true;
-  $("memberStatus").textContent = "";
-  renderMemberViewTabs();
-  if (selectedMember.access === "granted") void loadMemberFeed();
-}
-$("memberMainTab").onclick = () => selectMemberView("main_conversation");
-$("memberAllTab").onclick = () => selectMemberView("all");
 function selectConversation(member, navigate = true) {
   clearCommandResult();
   clearActivities();
   ++memberEpoch;
   clearTimeout(memberTimer);
   selectedMember = member;
-  memberView = "main_conversation";
   memberItems = [];
-  renderMemberViewTabs();
   memberCursor = null;
   memberLoading = false;
   $("memberItems").replaceChildren();
@@ -1285,7 +1244,7 @@ function selectConversation(member, navigate = true) {
         : "/chat/operator",
     );
   if (!member) return;
-  $("memberTitle").textContent = member.display_name + " · Read-only";
+  $("memberTitle").textContent = member.display_name;
   $("memberRefresh").disabled = member.access !== "granted";
   if (member.access !== "granted")
     $("memberStatus").textContent =
@@ -1373,15 +1332,10 @@ async function loadMemberFeed(more = false, validate = false) {
   const oldHeight = list.scrollHeight;
   const oldTop = list.scrollTop;
   const pinned = oldHeight - list.clientHeight - oldTop <= 40;
-  $("memberStatus").textContent =
-    validate && memberItems.length
-      ? "Checking sharing and history…"
-      : "Loading read-only feed…";
+  $("memberStatus").textContent = memberItems.length ? "" : "Loading feed…";
   $("memberMore").disabled = true;
   try {
     const params = new URLSearchParams({ member_ref: ref });
-    if (memberView === "main_conversation")
-      params.set("view", "main_conversation");
     if (requestedCursor) params.set("cursor", requestedCursor);
     const data = await api("members/feed?" + params);
     if (
@@ -1407,8 +1361,7 @@ async function loadMemberFeed(more = false, validate = false) {
     if (unchanged) {
       // Revoked raw details were cleared above; stable chat rows need no DOM work.
       $("memberMore").hidden = !memberCursor;
-      $("memberStatus").textContent =
-        "Read-only · sharing and history rechecked";
+      $("memberStatus").textContent = "";
       return;
     }
     memberItems = [
@@ -1423,10 +1376,8 @@ async function loadMemberFeed(more = false, validate = false) {
     else if (!pinned) list.scrollTop = oldTop;
     else list.scrollTop = list.scrollHeight;
     $("memberStatus").textContent = memberItems.length
-      ? "Read-only · refreshed from Kata.fit"
-      : memberView === "main_conversation"
-        ? "No retained main Coach messages are available for this member and sharing grant. Check All activity & Coach history for activity-local exchanges."
-        : "No retained Coach feed items are available. Conversation access follows dojo membership; activity records follow category sharing.";
+      ? ""
+      : "No retained Coach feed items are available.";
   } catch (error) {
     if (epoch !== memberEpoch || generation !== authGeneration) return;
     clearActivities();
@@ -1491,7 +1442,6 @@ function disposeDetails(root) {
 }
 function clearActivities() {
   disposeDetails();
-  // Inline thread expansions are outside the separate activity inventory.
   // Closing alone fires toggle asynchronously; clear their raw DOM immediately.
   for (const node of $("memberItems").querySelectorAll(
     "details.activity-card",
@@ -1499,8 +1449,6 @@ function clearActivities() {
     node.open = false;
     node.querySelector(":scope > div")?.replaceChildren();
   }
-  $("memberActivities").open = false;
-  $("activityItems").replaceChildren();
 }
 function detailScope(node) {
   const controller = new AbortController();
@@ -1809,56 +1757,6 @@ function activityCard(activity) {
       loadDetailPage(body, activity, sections[activity.type] || "overview"),
   );
 }
-async function loadActivityInventory(cursor) {
-  const body = $("activityItems");
-  if (!cursor) {
-    disposeDetails(body);
-    body.replaceChildren();
-  }
-  const scope = detailScope(body);
-  const loading = detailText("p", "Loading shared activities…");
-  body.append(loading);
-  try {
-    const params = new URLSearchParams({ member_ref: scope.ref });
-    if (cursor) params.set("cursor", cursor);
-    const data = await api(
-      "members/activities?" + params,
-      undefined,
-      scope.signal,
-    );
-    if (!scope.current()) return;
-    if (
-      data.member_ref !== scope.ref ||
-      !Array.isArray(data.items) ||
-      data.items.length > 100
-    )
-      throw new Error("Invalid activities");
-    loading.remove();
-    for (const activity of data.items) body.append(activityCard(activity));
-    if (!data.items.length)
-      body.append(detailText("p", "No shared activities available."));
-    if (data.has_more && data.next_cursor) {
-      const more = detailText("button", "More activities");
-      more.type = "button";
-      more.onclick = () => {
-        more.remove();
-        void loadActivityInventory(data.next_cursor);
-      };
-      body.append(more);
-    }
-  } catch {
-    if (scope.current()) {
-      disposeDetails(body);
-      detailError(body, () => loadActivityInventory());
-    }
-  }
-}
-$("memberActivities").addEventListener("toggle", () => {
-  disposeDetails($("memberActivities"));
-  $("activityItems").replaceChildren();
-  if ($("memberActivities").open && memberActive())
-    void loadActivityInventory();
-});
 function memberVisibility() {
   clearCommandResult();
   clearActivities();
