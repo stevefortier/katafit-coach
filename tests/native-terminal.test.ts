@@ -283,9 +283,9 @@ async function continuityTerminal(
     ws.once("error", j);
   });
   ws.send(JSON.stringify({ ticket: ticket.ticket }));
-  const waitFor = async (check: () => boolean, what: string) => {
+  const waitFor = async (check: () => boolean | Promise<boolean>, what: string) => {
     const end = Date.now() + 40000;
-    while (!check()) {
+    while (!(await check())) {
       if (Date.now() > end)
         throw new Error("Missing " + what + "\n" + output.slice(-4000));
       await new Promise((r) => setTimeout(r, 40));
@@ -406,16 +406,20 @@ test(
       assert.ok(h.f.named("studio_operator_close_session").length >= 1);
       assert.notEqual(h.f.state.status, "active");
       // A later Start is a new, empty runtime; nothing reopened this one.
-      assert.equal(
-        (
-          await fetch(h.app.origin + "/api/terminal/ticket", {
-            method: "POST",
-            headers: h.headers,
-            body: "{}",
-          })
-        ).status,
-        200,
-      );
+      // Docker absence precedes completion of stop's gateway/stdio cleanup.
+      // Wait for actual admission readiness, not an incidental Docker timing.
+      await h.waitFor(async () => {
+        const response = await fetch(h.app.origin + "/api/terminal/ticket", {
+          method: "POST",
+          headers: h.headers,
+          body: "{}",
+        });
+        assert.ok([200, 400].includes(response.status));
+        const body = (await response.json()) as { ticket?: string };
+        if (response.status !== 200) return false;
+        assert.match(body.ticket ?? "", /^[a-f0-9]{64}$/);
+        return true;
+      }, "post-teardown ticket admission");
       assert.equal(h.f.named("studio_operator_open_session").length, 1);
     } finally {
       await h.close();
