@@ -23,10 +23,7 @@ test("one Operator turn chooses a member through advertised session tools, never
     store,
     0,
     async (_p, _s, context, _signal, tools = []) => {
-      assert.match(
-        JSON.parse(context).authority,
-        /model.*member|member.*model/i,
-      );
+      assert.match(JSON.parse(context).authority, /authorized.*turn tools/i);
       assert.deepEqual(
         tools.map((t) => t.name),
         [
@@ -40,7 +37,7 @@ test("one Operator turn chooses a member through advertised session tools, never
       await tools[0].execute("roster", {});
       await assert.rejects(
         tools[2].execute("invalid", { text: "Hi" }),
-        /ARGUMENTS_REJECTED/,
+        /READ_UNAVAILABLE|ARGUMENTS_REJECTED/,
       );
       await tools[1].execute("read", { member_ref: "member-photo" });
       await tools[2].execute("send", {
@@ -52,10 +49,19 @@ test("one Operator turn chooses a member through advertised session tools, never
           member_ref: "member-denied",
           text: "Hi Pat",
         }),
-        /ARGUMENTS_REJECTED/,
+        /READ_UNAVAILABLE|ARGUMENTS_REJECTED/,
       );
       return "Sent to Alex.";
     },
+    undefined,
+    undefined,
+    undefined,
+    async () => ({
+      kind: "action",
+      targets: ["Alex"],
+      domains: [],
+      action: "send",
+    }),
   );
   try {
     const headers = {
@@ -72,7 +78,7 @@ test("one Operator turn chooses a member through advertised session tools, never
     const result = await fetch(app.origin + "/api/operator/chat", {
       method: "POST",
       headers,
-      body: JSON.stringify({ text: "Send Alex a hello" }),
+      body: JSON.stringify({ text: "Send Alex Hi Alex" }),
     });
     assert.equal(result.status, 200, await result.clone().text());
     assert.equal((await result.json()).ephemeral, true);

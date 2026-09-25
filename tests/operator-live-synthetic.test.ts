@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
+import { modelPlanner } from "../src/chat/operatorPlan.js";
 import { fixture } from "./operator-checkins.test.js";
 
 // Opt-in: real model, synthetic authorized roster and HTTP MCP; never customer records.
@@ -85,3 +86,101 @@ test(
     }
   },
 );
+
+for (const scenario of [
+  {
+    text: "How is Alex doing?",
+    name: "single member",
+    expected: "studio_operator_read_member_coach_feed",
+    answer: /Alex/i,
+  },
+  {
+    text: "What's the dojo-wide check-in situation?",
+    name: "group check-in",
+    expected: "studio_operator_list_dojo_checkins",
+    answer: /check.in|photo|shared/i,
+  },
+])
+  test(
+    `selected model answers synthetic ${scenario.name} with authorized reads`,
+    {
+      skip:
+        process.env.OPERATOR_TEST_LIVE !== "1" ||
+        !process.env.UBUNTU3090_LM_STUDIO_TOKEN,
+      timeout: 360000,
+    },
+    async () => {
+      const f = await fixture({ two: true });
+      const dir = await mkdtemp(tmpdir() + "/operator-live-synthetic-");
+      let app: Awaited<ReturnType<typeof admin>> | undefined;
+      try {
+        const store = new Store(dir);
+        await store.init();
+        await store.save({
+          ...store.publicConfig(),
+          origin: f.origin,
+          provider: {
+            baseUrl: process.env.UBUNTU3090_LM_STUDIO_BASE_URL!,
+            model: process.env.OPERATOR_TEST_MODEL ?? "qwen/qwen3.8-27b",
+            vision: false,
+          },
+          token: "synthetic-token",
+          ["api" + "Key"]: process.env.UBUNTU3090_LM_STUDIO_TOKEN!,
+        });
+        app = await admin(
+          store,
+          0,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          async (...args) => {
+            const plan = await modelPlanner(...args);
+            console.log(
+              JSON.stringify({
+                scenario: scenario.name,
+                planKind: plan.kind,
+                planDomains: plan.domains,
+                targetCount: plan.targets.length,
+              }),
+            );
+            return plan;
+          },
+        );
+        const response = await fetch(app.origin + "/api/operator/chat", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + store.secrets.admin,
+            Origin: app.origin,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ text: scenario.text }),
+          signal: AbortSignal.timeout(340000),
+        });
+        const result = await response.json();
+        console.log(
+          JSON.stringify({
+            scenario: scenario.name,
+            status: response.status,
+            readCount: f.calls.filter((name) => name === scenario.expected)
+              .length,
+            ephemeral: result.ephemeral,
+            error: result.error,
+          }),
+        );
+        assert.equal(response.status, 200);
+        assert.ok(f.calls.includes(scenario.expected));
+        assert.equal(result.ephemeral, true);
+        assert.match(result.text, scenario.answer);
+        assert.equal(
+          f.calls.filter((name) => name === "studio_operator_send_message")
+            .length,
+          0,
+        );
+      } finally {
+        await app?.close();
+        await f.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );

@@ -31,12 +31,11 @@ test("only executed, backend-validated tool images become ephemeral cards and au
         [
           "studio_operator_list_members",
           "studio_operator_read_member_coach_feed",
-          "studio_operator_send_message",
           LIST,
           IMAGE,
         ],
       );
-      assert.match(JSON.parse(input).authority, /model chooses member_ref/);
+      assert.match(JSON.parse(input).authority, /authorized.*turn tools/i);
       const list = await tools
         .find((t) => t.name === LIST)!
         .execute("list", { limit: 10 });
@@ -56,6 +55,15 @@ test("only executed, backend-validated tool images become ephemeral cards and au
       }
       return "Two read; roster has more pages, coverage incomplete.";
     },
+    undefined,
+    undefined,
+    undefined,
+    async () => ({
+      kind: "read",
+      targets: [],
+      domains: ["checkins"],
+      action: "none",
+    }),
   );
   const request = (path: string, body?: object, auth = true) =>
     fetch(app.origin + path, {

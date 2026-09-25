@@ -13,6 +13,13 @@ import {
 } from "../katafit/operatorTools.js";
 import { Actions } from "./actions.js";
 import { randomUUID, createHash } from "node:crypto";
+import {
+  modelPlanner,
+  validatePlan,
+  toolFor,
+  type OperatorPlanner,
+  type Domain,
+} from "./operatorPlan.js";
 
 type Card = {
   id: string;
@@ -161,6 +168,7 @@ export class OperatorChat {
   constructor(
     private store: Store,
     private infer = complete,
+    private planner?: OperatorPlanner,
   ) {
     this.history = new History(store.dir);
     this.messages = this.history.load();
@@ -223,11 +231,7 @@ export class OperatorChat {
   ) {
     const c = this.store.publicConfig();
     const secrets = Object.values(this.store.secrets);
-    const isComparison =
-      /\b(?:compare|comparison|versus|vs\.?|between)\b/i.test(text);
-    const sendRequested =
-      /\b(?:send|deliver|message|notify)\b[^.!?\n]{0,80}\bto\b/i.test(text) ||
-      /\b(?:message|notify)\s+(?:him|her|them|[A-Z][a-z]+)\b/.test(text);
+    // The production planner receives only the currently advertised Operator catalog.
 
     const instructions = await fetchInstructions(
       new Client(c.origin, this.store.secrets.token, signal),
@@ -258,8 +262,10 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
     const token = this.store.secrets.token;
     // Member-derived read context is deliberately never retained for a later
     // turn. A sharing grant can be revoked without changing local Settings.
+    const evidence = new Set<string>();
+    const denied = new Set<string>();
+    let plan: import("./operatorPlan.js").IntentPlan | undefined;
     let readUsed = false;
-    const evidenceMembers = new Set<string>();
     const requiredMembers = new Set<string>();
     let actionAttempted = false;
     let rosterIncomplete = false;
@@ -280,12 +286,24 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
           },
           onRead: (name, memberRefs) => {
             readUsed = true;
-            if (
-              name !== "studio_operator_list_members" &&
-              name !== "studio_operator_send_message" &&
-              name !== "studio_operator_list_dojo_checkins"
-            ) {
-              for (const ref of memberRefs) evidenceMembers.add(ref);
+            if (name !== "studio_operator_send_message") {
+              const domain = (
+                {
+                  studio_operator_list_members: "roster",
+                  studio_operator_read_member_coach_feed: "feed",
+                  studio_operator_list_activities: "activities",
+                  studio_operator_read_activity: "activity",
+                  studio_operator_list_dojo_checkins: "checkins",
+                  studio_operator_read_dojo_checkin_image: "image",
+                } as Record<string, Domain>
+              )[name];
+              if (domain)
+                for (const ref of name === "studio_operator_list_dojo_checkins"
+                  ? ["*", ...memberRefs]
+                  : memberRefs.length
+                    ? memberRefs
+                    : ["*"])
+                  evidence.add(JSON.stringify([domain, ref]));
             }
           },
           onIncomplete: (hasMore) => {
@@ -332,8 +350,120 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
         throw new SafeError("CANCELLED");
       this.session = session;
       messages = [...(member_ref ? [] : this.messages), { role: "user", text }];
+      const baseTools = modelOperatorTools(
+        session?.tools ?? [],
+        c.provider.vision === true,
+      );
+      const provider = {
+        ...c.provider,
+        apiKey: this.store.secrets.apiKey,
+        secrets,
+        authorize: session?.authorize,
+      };
+      // Older scripted-inference fixtures predate the planner; production always
+      // uses the structured, bounded model classifier.
+      const legacy = async (): Promise<
+        import("./operatorPlan.js").IntentPlan
+      > => {
+        const comparison =
+          /\b(?:compare|comparison|versus|vs\.?|between)\b/i.test(text);
+        const sending =
+          /\b(?:send|deliver|message|notify)\b[^.!?\n]{0,80}\bto\b/i.test(
+            text,
+          ) ||
+          /\b(?:message|notify)\s+(?:him|her|them|[A-Z][a-z]+)\b/.test(text);
+        return sending
+          ? { kind: "action", targets: ["legacy"], domains: [], action: "send" }
+          : comparison
+            ? { kind: "read", targets: [], domains: ["feed"], action: "none" }
+            : { kind: "discussion", targets: [], domains: [], action: "none" };
+      };
+      try {
+        plan = validatePlan(
+          await (
+            this.planner ?? (this.infer === complete ? modelPlanner : legacy)
+          )(text, baseTools, signal, provider, deadlineAt),
+          baseTools,
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          ["ACTION_UNAVAILABLE", "READ_UNAVAILABLE"].includes(error.message)
+        )
+          throw new SafeError("READ_UNAVAILABLE");
+        throw error;
+      }
+      // A model's "clarify" cannot waive an explicit current-data question.
+      // This host minimum only strengthens read requirements; it never grants
+      // mutation authority or treats a domain word as a member name.
+      if (
+        plan.kind !== "read" &&
+        plan.action !== "send" &&
+        /\b(?:how|compare|what|who)\b/i.test(text) &&
+        /\b(?:feeds?|activities|activity|check-?ins?|photos?|pictures?|roster|dojo members)\b/i.test(
+          text,
+        ) &&
+        !/\b(?:send|deliver|notify)\b/i.test(text)
+      ) {
+        const domains: Domain[] = [];
+        if (/\bfeeds?\b/i.test(text)) domains.push("feed");
+        if (/\bactivit(?:y|ies)\b/i.test(text)) domains.push("activities");
+        if (/\b(?:check-?ins?|photos?|pictures?)\b/i.test(text))
+          domains.push("checkins");
+        if (/\b(?:roster|dojo members)\b/i.test(text)) domains.push("roster");
+        plan = validatePlan(
+          { kind: "read", targets: [], domains, action: "none" },
+          baseTools,
+        );
+      }
+      if (/^\s*(?:please\s+)?(?:schedule|book|delete|cancel)\b/i.test(text)) {
+        return {
+          images: [],
+          coverage_notice: false,
+          text: "That action is not available in this Operator session; no change was made.",
+          messages: this.messages,
+          ephemeral: false,
+          actions: this.actions.snapshot(),
+        };
+      }
+      // Independent host-side minimum for a mutation: a structured plan alone
+      // cannot authorize a greeting or an ambiguous suggestion to send.
+      if (plan.action === "send") {
+        const target = plan.targets[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const directive =
+          /^\s*(?:please\s+)?(?:send|deliver|message|notify)\b/i.test(text);
+        const destination = new RegExp(
+          `^(?:\\s*please\\s+)?(?:send|deliver|message|notify)\\s+${target}(?![\\p{L}\\p{N}])|\\bto\\s+${target}(?![\\p{L}\\p{N}])`,
+          "iu",
+        ).test(text);
+        if (!directive || !destination) throw new SafeError("READ_UNAVAILABLE");
+      }
+      let isComparison =
+        plan.kind === "read" &&
+        plan.targets.length !== 1 &&
+        (plan.targets.length > 1 || (this.infer !== complete && !this.planner));
+      const sendRequested = plan.action === "send";
+      if (plan.kind === "clarify" || plan.action === "uncertain") {
+        return {
+          images: [],
+          coverage_notice: false,
+          text: /\b(?:send|deliver|notify|message)\b/i.test(text)
+            ? "Please clarify whether you want me to send a message, to whom, and the exact content."
+            : /\b(?:schedule|book|cancel|delete|update|change)\b/i.test(text)
+              ? "That action is not available in this Operator session; no change was made."
+              : "Please clarify which member or data you want me to check.",
+          messages: this.messages,
+          ephemeral: false,
+          actions: this.actions.snapshot(),
+        };
+      }
       let rosterContext: unknown;
-      if (session && isComparison && !sendRequested) {
+      let actionTargetName: string | undefined;
+      if (
+        session &&
+        (plan.kind === "read" ||
+          (plan.kind === "action" && plan.targets[0] !== "legacy"))
+      ) {
         const roster = session.tools.find(
           (tool) => tool.name === "studio_operator_list_members",
         );
@@ -375,7 +505,41 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
           cursor = value.next_cursor;
         }
         rosterContext = { members };
-        const matched = members.filter((row) => {
+        const statedTargets = [
+          ...plan.targets,
+          ...[
+            ...text.matchAll(
+              /\b(?:vs\.?|versus)\s+([\p{L}][\p{L}\p{N}'-]{1,63})/giu,
+            ),
+          ].map((match) => match[1]),
+        ];
+        if (
+          plan.kind === "read" &&
+          statedTargets.some(
+            (target) =>
+              ![
+                "feed",
+                "feeds",
+                "activity",
+                "activities",
+                "members",
+                "roster",
+                "checkins",
+                "photos",
+              ].includes(target.toLocaleLowerCase()) &&
+              new RegExp(
+                `(^|[^\\p{L}\\p{N}])${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^\\p{L}\\p{N}])`,
+                "iu",
+              ).test(text) &&
+              !members.some(
+                (row) =>
+                  row.display_name.toLocaleLowerCase() ===
+                  target.toLocaleLowerCase(),
+              ),
+          )
+        )
+          throw new SafeError("READ_UNAVAILABLE");
+        const named = members.filter((row) => {
           const escaped = row.display_name.replace(
             /[.*+?^${}()|[\]\\]/g,
             "\\$&",
@@ -385,72 +549,145 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
             "iu",
           ).test(text);
         });
+        // Backend roster and the manager's exact words, never model-authored
+        // target strings, bind each authorized subject for this turn.
+        const matched =
+          plan.kind === "read" &&
+          plan.domains.every((d) => d === "roster" || d === "checkins")
+            ? []
+            : named.length
+              ? named
+              : plan.kind === "read" &&
+                  (!plan.targets.length ||
+                    /\b(?:dojo members|members|everyone|all trainees|whole dojo)\b/i.test(
+                      text,
+                    ))
+                ? members
+                : [];
+        if (plan.kind === "action" && matched.length !== 1)
+          throw new SafeError("READ_UNAVAILABLE");
+        if (plan.kind === "read" && matched.length > 1 && named.length)
+          isComparison = true;
         if (
-          matched.length > 2 ||
-          (matched.length === 2 &&
-            matched[0].display_name.toLowerCase() ===
-              matched[1].display_name.toLowerCase())
+          named.some(
+            (row) =>
+              members.filter(
+                (other) =>
+                  other.display_name.toLocaleLowerCase() ===
+                  row.display_name.toLocaleLowerCase(),
+              ).length > 1,
+          )
         )
-          throw new SafeError("READ_UNAVAILABLE"); // Ambiguous name; never choose a member arbitrarily.
+          throw new SafeError("READ_UNAVAILABLE");
         if (
-          matched.length === 2 &&
-          matched[0].display_name.toLowerCase() !==
-            matched[1].display_name.toLowerCase()
+          new Set(matched.map((row) => row.member_ref)).size !==
+            matched.length ||
+          matched.length > 8
         )
-          for (const row of matched) requiredMembers.add(row.member_ref);
+          throw new SafeError("READ_UNAVAILABLE");
+        for (const row of matched) requiredMembers.add(row.member_ref);
+        if (plan.kind === "action") actionTargetName = matched[0]?.display_name;
       }
-      const provider = {
-        ...c.provider,
-        apiKey: this.store.secrets.apiKey,
-        secrets,
-        authorize: session?.authorize,
-      };
       const context = JSON.stringify({
         scope: "local operator conversation",
         authority: session
-          ? "Unified dojo Operator session. The model chooses member_ref for each targeted call from the authorized roster; Kata.fit decides authorization. Multiple members can be read but at most one explicit message may be sent. Only advertised session tools are available. Images appear as transient Studio cards; do not claim complete coverage from partial results. Member-derived turns are not retained."
+          ? `Unified dojo Operator session. Only these currently authorized turn tools may be used: ${baseTools
+              .filter(
+                (t) =>
+                  sendRequested || t.name !== "studio_operator_send_message",
+              )
+              .map((t) => t.name)
+              .join(
+                ", ",
+              )}. Kata.fit decides each call's authorization. Member-derived turns are not retained.`
           : "No member data, no claimed request or tools. The dojo Operator session is unavailable; do not claim data was fetched or actions completed. Use Settings persona to save instructions.",
         messages,
         ...(rosterContext ? { authorized_roster: rosterContext } : {}),
       });
-      const tools = modelOperatorTools(
-        session?.tools ?? [],
-        c.provider.vision === true,
-      ).filter(
-        (tool) =>
-          !isComparison ||
-          sendRequested ||
-          tool.name !== "studio_operator_send_message",
-      );
+      const tools = baseTools
+        .filter(
+          (tool) =>
+            sendRequested || tool.name !== "studio_operator_send_message",
+        )
+        .map((tool) =>
+          tool.name === "studio_operator_read_dojo_checkin_image"
+            ? tool
+            : {
+                ...tool,
+                async execute(id: string, args: any) {
+                  if (
+                    tool.name === "studio_operator_send_message" &&
+                    (!sendRequested ||
+                      plan?.kind !== "action" ||
+                      !requiredMembers.has(args.member_ref) ||
+                      !actionTargetName ||
+                      !text
+                        .toLocaleLowerCase()
+                        .includes(actionTargetName.toLocaleLowerCase()) ||
+                      typeof args.text !== "string" ||
+                      !text
+                        .toLocaleLowerCase()
+                        .includes(args.text.trim().toLocaleLowerCase()))
+                  )
+                    throw new SafeError("READ_UNAVAILABLE");
+                  try {
+                    return await tool.execute(id, args);
+                  } catch (error) {
+                    const domain = plan?.domains.find(
+                      (d) => toolFor(d) === tool.name,
+                    );
+                    if (domain)
+                      denied.add(
+                        JSON.stringify([
+                          domain,
+                          typeof args.member_ref === "string"
+                            ? args.member_ref
+                            : "*",
+                        ]),
+                      );
+                    throw error;
+                  }
+                },
+              },
+        );
+      const missing = () =>
+        (plan?.kind === "read" &&
+          ((plan.domains.some((d) => d !== "checkins" && d !== "roster") &&
+            requiredMembers.size === 0) ||
+            plan.domains.some((domain) =>
+              (domain === "checkins" || domain === "roster"
+                ? ["*"]
+                : [...requiredMembers]
+              ).some((ref) => !evidence.has(JSON.stringify([domain, ref]))),
+            ))) ||
+        (isComparison &&
+          requiredMembers.size === 0 &&
+          ![...evidence].some((x) => x.startsWith('["feed"')));
       let reply = await this.infer(provider, prompt, context, signal, tools, {
         deadlineAt,
       });
-      // An unsupported assertion of missing files must not become a completed
-      // comparison. Retry only a read-only comparison, never a send attempt.
-      if (
-        session &&
-        (requiredMembers.size
-          ? [...requiredMembers].some((ref) => !evidenceMembers.has(ref))
-          : evidenceMembers.size < 2) &&
-        !actionAttempted &&
-        isComparison &&
-        !sendRequested
-      ) {
+      // One corrective inference for missing evidence, with a read-only catalog.
+      // Never retry after a mutation, and never offer SEND in the correction.
+      if (session && missing() && !actionAttempted) {
+        const readOnly = tools.filter(
+          (tool) => tool.name !== "studio_operator_send_message",
+        );
+        const correctionContext = JSON.stringify({
+          ...JSON.parse(context),
+          authority: `Read-only correction. Available tools: ${readOnly.map((t) => t.name).join(", ")}. SEND is not available.`,
+          evidence: [...evidence],
+          denied: [...denied],
+        });
         reply = await this.infer(
           provider,
           prompt +
-            "\nThis is a comparison of members, and the preceding attempt made no authorized read. First list the roster, resolve each unambiguous identity, and read each permitted member's evidence before answering. If either read is denied, say so. Do not ask the manager to supply files the tools can retrieve. Do not send a message.\n",
-          context,
+            "\nUse the advertised read tools to satisfy the requested domain and target. Do not invent evidence. A denied read must be described as denied; do not claim success. No sends.\n",
+          correctionContext,
           signal,
-          tools.filter((tool) => tool.name !== "studio_operator_send_message"),
+          readOnly,
           { deadlineAt },
         );
-        if (
-          requiredMembers.size
-            ? [...requiredMembers].some((ref) => !evidenceMembers.has(ref))
-            : evidenceMembers.size < 2
-        )
-          throw new SafeError("READ_UNAVAILABLE");
+        if (missing()) throw new SafeError("READ_UNAVAILABLE");
       }
       await session?.authorize();
       if (signal.aborted || this.controller !== controller)

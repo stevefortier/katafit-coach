@@ -11,6 +11,8 @@ export const hints = {
   TOOL_BUDGET_EXHAUSTED:
     "The request exceeded its 48 read-tool call budget. Reduce the request.",
   RESULT_REJECTED: "A read result failed safety, size or structure validation.",
+  PLAN_UNAVAILABLE:
+    "Could not classify the request with the configured model; no member data or action was assumed.",
   READ_UNAVAILABLE:
     "The scoped read was unavailable. Check request authority, grants and supported capabilities.",
   READ_NOT_FOUND:

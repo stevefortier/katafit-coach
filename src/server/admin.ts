@@ -19,8 +19,9 @@ export async function admin(
   onShutdown?: () => void,
   updates = new Updates(null, null),
   auto?: AutoUpdateSetting,
+  operatorPlanner?: import("../chat/operatorPlan.js").OperatorPlanner,
 ) {
-  const chat = new OperatorChat(store, infer);
+  const chat = new OperatorChat(store, infer, operatorPlanner);
   const logs = new Diagnostics(store.dir);
   logs.record({ source: "studio", stage: "studio-started" });
   let worker: Worker | undefined;

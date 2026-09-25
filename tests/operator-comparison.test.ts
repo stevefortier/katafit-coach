@@ -90,7 +90,7 @@ test("Operator retries a no-read comparison refusal against authorized evidence"
       attempts++;
       if (attempts === 1)
         return "I do not have Steve or Kai's files open. Supply evidence before I compare them.";
-      assert.match(system, /roster.*authorized.*read/is);
+      assert.match(system, /read tools/i);
       const roster = await tools
         .find((t) => t.name === "studio_operator_list_members")!
         .execute("roster", {});
@@ -112,7 +112,7 @@ test("Operator retries a no-read comparison refusal against authorized evidence"
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        text: "Tell me what you think about Steve vs Kai",
+        text: "Tell me what you think about Alex vs Morgan",
       }),
     });
     assert.equal(response.status, 200, await response.clone().text());

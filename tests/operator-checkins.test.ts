@@ -23,6 +23,7 @@ export async function fixture(
     twoPages?: boolean;
     memberDojoTools?: boolean;
     duplicateMorgan?: boolean;
+    denyFeed?: string;
   } = {},
 ) {
   const bytes = await sharp({
@@ -229,6 +230,14 @@ export async function fixture(
           ],
           has_more: false,
         },
+      };
+    if (
+      name === "studio_operator_read_member_coach_feed" &&
+      options.denyFeed === body.params.arguments.member_ref
+    )
+      result = {
+        isError: true,
+        content: [{ type: "text", text: "READ_NOT_AUTHORIZED" }],
       };
     if (name === "studio_operator_send_message")
       result = {
