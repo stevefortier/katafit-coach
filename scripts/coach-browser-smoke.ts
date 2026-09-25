@@ -2,8 +2,15 @@ import { chromium } from "playwright-core";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
-import { Store } from "../src/config/store.js";
-import { admin } from "../src/server/admin.js";
+import { pathToFileURL } from "node:url";
+// Allow narrow and broad browser checks against the same installed artifact.
+const packagedRoot = process.env.COACH_PACKAGED_ROOT;
+const moduleUrl = (path: string) =>
+  packagedRoot
+    ? pathToFileURL(`${packagedRoot}/dist/${path}.js`).href
+    : new URL(`../src/${path}.js`, import.meta.url).href;
+const { Store } = await import(moduleUrl("config/store"));
+const { admin } = await import(moduleUrl("server/admin"));
 const home = await mkdtemp(tmpdir() + "/coach-chat-browser-");
 const evidence =
   process.env.COACH_EVIDENCE_DIR ?? tmpdir() + "/studio-chat-browser";
@@ -145,7 +152,7 @@ try {
   await page.locator("#operatorText").fill("Synthetic second operator turn");
   await page.locator("#operatorSend").click();
   await page.waitForFunction(
-    () => document.querySelectorAll(".chat-message").length === 4,
+    () => document.querySelectorAll(".chat-message:not([hidden])").length === 4,
   );
   assert.equal(
     await page.locator("#operatorMessages img").count(),
@@ -216,7 +223,7 @@ try {
   delay = false;
   await page.locator("#operatorClear").click();
   await page.waitForFunction(
-    () => document.querySelectorAll(".chat-message").length === 0,
+    () => document.querySelectorAll(".chat-message:not([hidden])").length === 0,
   );
   assert.deepEqual(
     (
