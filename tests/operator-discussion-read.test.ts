@@ -29,30 +29,19 @@ test("member-derived operator context is not reused after sharing changes", asyn
         [
           "studio_operator_list_members",
           "studio_operator_read_member_coach_feed",
+          "studio_operator_send_message",
           "studio_operator_list_dojo_checkins",
           "studio_operator_read_dojo_checkin_image",
         ],
       );
       if (seen.length === 1) {
-        await tools[2].execute("roster", { limit: 10 });
+        await tools[3].execute("roster", { limit: 10 });
         return "Authorized Alex shared; Pat not shared.";
       }
-      const roster = await tools[2].execute("roster", { limit: 10 });
+      const roster = await tools[3].execute("roster", { limit: 10 });
       assert.match(roster.content[0].text, /not_shared/);
       return "Current access does not establish Alex's photos.";
     },
-    undefined,
-    undefined,
-    undefined,
-    async (text) =>
-      text === "A new topic"
-        ? { kind: "discussion", targets: [], domains: [], action: "none" }
-        : {
-            kind: "read",
-            targets: text.includes("Alex") ? ["Alex"] : [],
-            domains: ["checkins"],
-            action: "none",
-          },
   );
   const post = (text: string) =>
     fetch(app.origin + "/api/operator/chat", {

@@ -33,14 +33,23 @@ export class Actions {
             "action_id",
             "message_id",
             "member_ref",
+            "tool_name",
           ].includes(k),
       ) ||
-      !["pending", "unknown", "not_found", "delivered"].includes(v.status)
+      !["pending", "unknown", "not_found", "delivered", "completed"].includes(
+        v.status,
+      )
     )
       throw new Error("UNSAFE_STORAGE");
     for (const key of ["session_id", "idempotency_key"])
       if (typeof v[key] !== "string" || !v[key] || v[key].length > 8192)
         throw new Error("UNSAFE_STORAGE");
+    if (
+      v.tool_name !== undefined &&
+      (typeof v.tool_name !== "string" ||
+        !/^[a-z][a-z0-9_]{0,127}$/.test(v.tool_name))
+    )
+      throw new Error("UNSAFE_STORAGE");
     for (const key of ["action_id", "message_id"])
       if (
         v[key] !== undefined &&
@@ -73,7 +82,9 @@ export class Actions {
         const resolved = next.findIndex(
           (m, i) =>
             i % 2 === 1 &&
-            ["delivered", "not_found"].includes(this.decode(m.text).status),
+            ["delivered", "completed", "not_found"].includes(
+              this.decode(m.text).status,
+            ),
         );
         if (resolved < 0) throw new Error("UNSAFE_STORAGE");
         next.splice(resolved - 1, 2);
@@ -85,7 +96,12 @@ export class Actions {
     } else {
       if (this.decode(next[index].text).member_ref !== action.member_ref)
         throw new Error("UNSAFE_STORAGE");
-      if (this.decode(next[index].text).status === "delivered") return;
+      if (
+        ["delivered", "completed"].includes(
+          this.decode(next[index].text).status,
+        )
+      )
+        return;
       next[index].text = JSON.stringify(action);
     }
     this.storage.save(next);
@@ -126,6 +142,13 @@ export class Actions {
           closed.status !== "closed"
         )
           throw new Error("RESULT_REJECTED");
+        // Generic capability receipts have no implicit SEND lookup contract.
+        // Keep unknown durable until its backend provides an explicit readback;
+        // never invent not_found or replay the mutation on refresh/restart.
+        if (action.tool_name) {
+          record({ ...action, status: "unknown" });
+          continue;
+        }
         const v = await client.call("studio_operator_get_action", {
           session_id: action.session_id,
           idempotency_key: action.idempotency_key,

@@ -442,7 +442,9 @@ test("timed-out heartbeat cannot revive a confirmed Stop when its backend write 
 test("lost heartbeat reply leaves Stop unconfirmed instead of claiming offline", async () => {
   const f = await backend({ loseRunningReply: true });
   try {
-    const w = worker(f.origin, { presenceMs: 1000 });
+    // Keep the heartbeat well inside waitFor's one-second deadline. The
+    // previous equal deadlines raced scheduler latency instead of lost replies.
+    const w = worker(f.origin, { presenceMs: 40 });
     await w.start();
     await waitFor(
       () => f.accepted.filter((r) => r.state === "running").length >= 2,

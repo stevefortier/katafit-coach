@@ -53,15 +53,6 @@ test("one Operator turn chooses a member through advertised session tools, never
       );
       return "Sent to Alex.";
     },
-    undefined,
-    undefined,
-    undefined,
-    async () => ({
-      kind: "action",
-      targets: ["Alex"],
-      domains: [],
-      action: "send",
-    }),
   );
   try {
     const headers = {

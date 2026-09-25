@@ -133,7 +133,7 @@ for (const args of [
           /synthetic-token|session-fixture/,
         );
         if (args.text === 123)
-          assert.match(JSON.stringify(p.bodies[1]), /action receipts/);
+          assert.match(JSON.stringify(p.bodies[1]), /no confirmed receipt/);
       } finally {
         await session.dispose();
         await p.close();

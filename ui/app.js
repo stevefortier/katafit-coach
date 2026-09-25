@@ -91,6 +91,7 @@ async function showOperatorImages(images, view, generation) {
 function renderOperatorActions(actions = []) {
   const labels = {
     delivered: "Delivered",
+    completed: "Completed — backend receipt confirmed",
     pending: "Pending confirmation — do not resend",
     unknown: "Delivery unknown — refresh receipts before sending again",
     not_found: "No delivery found after session closed",
@@ -101,7 +102,10 @@ function renderOperatorActions(actions = []) {
     $("operatorActions").append(
       detailText(
         "p",
-        labels[action.status] +
+        (action.tool_name && action.status === "unknown"
+          ? "Action outcome unknown — do not retry; backend confirmation required"
+          : labels[action.status]) +
+          (action.tool_name ? " · " + action.tool_name : "") +
           (action.member_ref ? " · member " + action.member_ref : "") +
           (action.action_id ? " · " + action.action_id : ""),
       ),

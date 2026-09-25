@@ -38,15 +38,6 @@ test("command service preserves delivered receipts after provider failure/restar
         });
       throw new Error("MODEL_FAILED");
     },
-    undefined,
-    undefined,
-    undefined,
-    async () => ({
-      kind: "action",
-      targets: ["Alex"],
-      domains: [],
-      action: "send",
-    }),
   );
   const call = (path: string, body?: unknown) =>
     fetch(app.origin + path, {
