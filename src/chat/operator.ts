@@ -379,7 +379,7 @@ For the final answer, bind every factual comparison and final verdict to the exa
         context,
         signal,
         baseTools,
-        { deadlineAt },
+        { deadlineAt, finalGroundingReview: () => readUsed },
       );
       await session?.authorize();
       if (signal.aborted || this.controller !== controller)

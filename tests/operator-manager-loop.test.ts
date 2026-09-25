@@ -32,7 +32,10 @@ test("ephemeral reads retain only bounded user request context for followups, ne
     const contexts: any[] = [];
     chat = new OperatorChat(
       store,
-      async (_p, prompt, context, _signal, tools = []) => {
+      async (_p, prompt, context, _signal, tools = [], budget) => {
+        assert.equal(typeof budget?.finalGroundingReview, "function");
+        const needsReview = budget!.finalGroundingReview as () => boolean;
+        assert.equal(needsReview(), false);
         contexts.push(JSON.parse(context));
         if (contexts.length === 2)
           assert.deepEqual(contexts[1].recent_operator_requests, [
@@ -41,6 +44,7 @@ test("ephemeral reads retain only bounded user request context for followups, ne
         await tools
           .find((t) => t.name === "studio_operator_read_member_coach_feed")!
           .execute("read", { member_ref: "member-photo" });
+        assert.equal(needsReview(), true);
         return "Private synthetic read-derived answer";
       },
     );
