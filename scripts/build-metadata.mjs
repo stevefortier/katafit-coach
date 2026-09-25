@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 let revision = null;
 try {
   const git = (...args) =>
@@ -24,8 +25,24 @@ try {
   if (/^[a-f0-9]{40}$/.test(process.env.KATAFIT_BUILD_REVISION ?? ""))
     revision = process.env.KATAFIT_BUILD_REVISION;
 }
-mkdirSync("dist", { recursive: true });
+const identity = createHash("sha256").update("katafit-native-contract-2\0");
+for (const name of [
+  "package.json",
+  "package-lock.json",
+  "sandbox/Dockerfile",
+  "sandbox/launch.mjs",
+  "sandbox/relay.mjs",
+  "sandbox/katafit.mjs",
+]) {
+  const bytes = readFileSync(name);
+  identity.update(name + "\0" + bytes.length + "\0").update(bytes);
+}
+const fingerprint = identity.digest("hex");
+mkdirSync("dist/native", { recursive: true });
+// npm deliberately omits root package-lock.json. Ship the exact locked input
+// under a non-special name so the unpacked package is a complete image context.
+writeFileSync("dist/native/npm-lock.json", readFileSync("package-lock.json"));
 writeFileSync(
   "dist/build.json",
-  JSON.stringify({ revision, protocol: 1 }) + "\n",
+  JSON.stringify({ revision, protocol: 2, fingerprint }) + "\n",
 );

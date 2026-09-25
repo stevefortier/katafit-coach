@@ -54,6 +54,7 @@ try {
   await mkdir(source);
   for (const name of [
     "src",
+    "sandbox",
     "ui",
     "package.json",
     "package-lock.json",
@@ -64,6 +65,17 @@ try {
   await cp(
     resolve("scripts/build-metadata.mjs"),
     join(source, "scripts/build-metadata.mjs"),
+  );
+  // This daemon-independent lifecycle matrix deliberately exercises legacy
+  // protocol-1 rollback compatibility. Native artifacts have a separate Docker
+  // qualification; never relabel real released native source as protocol 1.
+  const fixtureMetadata = join(source, "scripts/build-metadata.mjs");
+  await writeFile(
+    fixtureMetadata,
+    (await readFile(fixtureMetadata, "utf8")).replace(
+      "protocol: 2",
+      "protocol: 1",
+    ),
   );
   const git = (...args) =>
     execFileSync("git", args, { cwd: source, encoding: "utf8" }).trim();

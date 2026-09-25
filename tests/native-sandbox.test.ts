@@ -5,6 +5,7 @@ import { sandboxArgs } from "../src/sandbox/policy.js";
 test("native Pi sandbox has no external network, mounts or ambient credentials", () => {
   const args = sandboxArgs("coach-native-test", "katafit-pi:0.86.1");
   for (const flag of [
+    "--pull=never",
     "--network=none",
     "--read-only",
     "--cap-drop=ALL",

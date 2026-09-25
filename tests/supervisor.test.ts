@@ -106,7 +106,8 @@ test("stable owner validates isolated candidate, switches same port and rolls ba
   const sha = "c".repeat(40),
     bad = "d".repeat(40),
     badStore = "f".repeat(40),
-    delayed = "9".repeat(40);
+    delayed = "9".repeat(40),
+    native = "8".repeat(40);
   const prepare = async (target: string) => {
     const root = join(home, "versions", target);
     await mkdir(join(root, "dist/server"), { recursive: true });
@@ -120,7 +121,11 @@ test("stable owner validates isolated candidate, switches same port and rolls ba
     await writeFile(join(root, "package.json"), '{"type":"module"}');
     await writeFile(
       join(root, "dist/build.json"),
-      JSON.stringify({ revision: target, protocol: 1 }),
+      JSON.stringify({
+        revision: target,
+        protocol: target === native ? 2 : 1,
+        ...(target === native ? { fingerprint: "b".repeat(64) } : {}),
+      }),
     );
     await writeFile(
       join(root, "dist/server/admin.js"),
@@ -170,6 +175,15 @@ test("stable owner validates isolated candidate, switches same port and rolls ba
       sha,
     );
     const healthyPid = owner.pid;
+    owner.updates.latest = native;
+    owner.updates.checkedAt = Date.now();
+    await assert.rejects(owner.updates.apply(native), /UPGRADE_FAILED/);
+    assert.equal(
+      owner.pid,
+      healthyPid,
+      "missing native artifact must not stop old child",
+    );
+    assert.match(owner.updates.guidance, /external artifact.*bootstrap/i);
     owner.updates.latest = badStore;
     owner.updates.checkedAt = Date.now();
     await assert.rejects(owner.updates.apply(badStore), /UPGRADE_FAILED/);

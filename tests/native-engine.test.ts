@@ -78,3 +78,45 @@ test("ambiguous partial Docker create is removed by its preallocated name", asyn
     await runtime.stop();
   }
 });
+
+test("ambiguous removal retains ownership until Docker API confirms absence", async () => {
+  const dir = await mkdtemp(tmpdir() + "/native-remove-");
+  let status = 503,
+    removes = 0,
+    exited = 0;
+  const server = createServer((req, res) => {
+    assert.equal(req.method, "GET");
+    assert.match(req.url!, /\/containers\/katafit-pi-[a-f0-9-]+\/json$/);
+    res.writeHead(status);
+    res.end();
+  });
+  await new Promise<void>((r) => server.listen(dir + "/docker.sock", r));
+  const runtime = new NativeRuntime("unused", {
+    socketPath: dir + "/docker.sock",
+    exec: async (_file, args) => {
+      if (args.includes("rm")) {
+        removes++;
+        throw Error("AMBIGUOUS_RM");
+      }
+      return { stdout: "1.52" };
+    },
+  });
+  runtime.onExit = () => {
+    exited++;
+  };
+  try {
+    await runtime.start();
+    await assert.rejects(runtime.stop());
+    assert.equal(runtime.cleanupPending, true);
+    assert.equal(exited, 0);
+    status = 404;
+    await runtime.stop();
+    assert.equal(removes, 2);
+    assert.equal(exited, 1);
+  } finally {
+    status = 404;
+    await runtime.stop().catch(() => {});
+    await new Promise<void>((r) => server.close(() => r()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});

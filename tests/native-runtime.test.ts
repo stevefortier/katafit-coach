@@ -9,7 +9,7 @@ test(
   "exiting actual Pi tears down its container and notifies its owner",
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 15000 },
   async () => {
-    const runtime = new NativeRuntime("katafit-pi:0.86.1");
+    const runtime = new NativeRuntime(process.env.NATIVE_TEST_IMAGE!);
     let output = "";
     runtime.onOutput = (c) => (output += c);
     let exited!: () => void;
@@ -41,7 +41,7 @@ test(
   "real Docker Pi runs in a PTY without persisted sessions or external network",
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 30000 },
   async () => {
-    const runtime = new NativeRuntime("katafit-pi:0.86.1");
+    const runtime = new NativeRuntime(process.env.NATIVE_TEST_IMAGE!);
     try {
       await runtime.start();
       let output = "";

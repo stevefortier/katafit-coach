@@ -58,7 +58,7 @@ test(
       },
     });
     const gateway = await openNativeGateway(f.store);
-    const runtime = new NativeRuntime("katafit-pi:0.86.1");
+    const runtime = new NativeRuntime(process.env.NATIVE_TEST_IMAGE!);
     let output = "";
     const wait = async (text: string) => {
       const end = Date.now() + 25000;

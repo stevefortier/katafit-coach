@@ -4,18 +4,25 @@ The Operator view now opens the actual Pi 0.86.1 TUI in Docker. Member browsing 
 
 ## Run locally
 
+**Protocol-2 deployment:** first follow [native-bootstrap.md](native-bootstrap.md)
+to build a clean exact source/package, provision its immutable image and preflight
+under the actual control-plane identity. A mutable Pi-version tag is no longer
+an application runtime selection. Legacy launchers reject native releases; the
+new launcher accepts legacy rollback applications. Source updating never builds
+or pulls sandbox images.
+
 Prerequisites: Linux Docker Engine on `/var/run/docker.sock`, Node >=22.19, and the installation's saved Coach backend and OpenAI-compatible provider configuration. The control-plane process must have Docker permission; the sandbox must never receive that socket. Docker is mandatory: there is no host execution fallback.
 
 ```sh
 npm ci --ignore-scripts
 npm run build
-docker build -f sandbox/Dockerfile -t katafit-pi:0.86.1 .
-# Start the normal Coach admin application, unlock, open Operator, click Start.
-NATIVE_DOCKER_TEST=1 npm test
+# Follow native-bootstrap.md for revision labels, image ID and provisioning.
+# Supply the exact image to the synthetic Docker fixtures:
+NATIVE_DOCKER_TEST=1 NATIVE_TEST_IMAGE="$IMAGE" npm test
 npm run format:check
 ```
 
-The npm package includes `sandbox/` build assets and local xterm assets. Build the sandbox from the source checkout and production lockfile; the package does not install or launch Docker automatically. `/model` displays the approved saved model through Pi's native picker; only that model is registered. `/mcp` is a supported Pi extension command, not an invented built-in MCP feature. Change provider/model through existing authenticated Settings; saving revokes the old terminal. Custom OpenAI-compatible saved endpoints work; arbitrary stock providers and arbitrary user-added MCP servers are not enabled.
+The npm package includes `sandbox/` build assets, `dist/native/npm-lock.json` (npm omits the root lockfile), and local xterm assets. Build the sandbox from the matching built clean source or unpacked package using the bootstrap guide; the package does not install or launch Docker automatically. `/model` displays the approved saved model through Pi's native picker; only that model is registered. `/mcp` is a supported Pi extension command, not an invented built-in MCP feature. Change provider/model through existing authenticated Settings; saving revokes the old terminal. Custom OpenAI-compatible saved endpoints work; arbitrary stock providers and arbitrary user-added MCP servers are not enabled.
 
 ## Boundary
 

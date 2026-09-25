@@ -100,6 +100,23 @@ export async function fixture(
     token: "synthetic-backend-credential",
     apiKey: "synthetic-provider-credential",
   });
+  if (process.env.NATIVE_DOCKER_TEST === "1" && process.env.NATIVE_TEST_IMAGE) {
+    try {
+      const { provisionArtifact } = await import(
+        "../../src/sandbox/artifact.js"
+      );
+      await provisionArtifact(
+        dir,
+        process.env.COACH_PACKAGED_ROOT ?? process.cwd(),
+        process.env.NATIVE_TEST_IMAGE,
+      );
+    } catch (error) {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+      await rm(dir, { recursive: true, force: true });
+      throw error;
+    }
+  }
   return {
     store,
     calls,

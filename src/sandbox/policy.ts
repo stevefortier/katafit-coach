@@ -2,6 +2,7 @@
 export function sandboxArgs(name: string, image: string): string[] {
   return [
     "create",
+    "--pull=never",
     "--name",
     name,
     "--interactive",

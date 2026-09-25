@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Store } from "../config/store.js";
 import { NativeRuntime } from "../sandbox/runtime.js";
+import { nativeImage } from "../sandbox/artifact.js";
 import { openNativeGateway, type NativeGateway } from "../sandbox/gateway.js";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -15,6 +16,7 @@ export class NativeTerminal {
   private gateway?: NativeGateway;
   private starting?: Promise<void>;
   private stopping?: Promise<void>;
+  private cleanupFailed = false;
   private generation = 0;
   private controller?: AbortController;
   private output = "";
@@ -52,7 +54,13 @@ export class NativeTerminal {
     );
   }
   ticket() {
-    if (this.stopping || !this.allowed()) throw new Error("NATIVE_UNAVAILABLE");
+    if (
+      this.stopping ||
+      this.cleanupFailed ||
+      this.runtime?.cleanupPending ||
+      !this.allowed()
+    )
+      throw new Error("NATIVE_UNAVAILABLE");
     for (const [key, value] of this.tickets)
       if (value.expires <= Date.now()) this.tickets.delete(key);
     if (this.tickets.size >= 8) throw new Error("NATIVE_TICKET_LIMIT");
@@ -96,6 +104,9 @@ export class NativeTerminal {
           const ticket = this.tickets.get(key);
           this.tickets.delete(key);
           if (
+            this.cleanupFailed ||
+            this.runtime?.cleanupPending ||
+            this.stopping ||
             !this.allowed() ||
             !ticket ||
             ticket.expires <= Date.now() ||
@@ -131,6 +142,8 @@ export class NativeTerminal {
     });
   }
   private start() {
+    if (this.cleanupFailed || this.runtime?.cleanupPending)
+      return Promise.reject(new Error("NATIVE_UNAVAILABLE"));
     if (this.starting) return this.starting;
     if (this.runtime) return Promise.resolve();
     const generation = this.generation;
@@ -139,12 +152,19 @@ export class NativeTerminal {
       if (generation !== this.generation) throw new Error("REVOKED");
       const controller = (this.controller = new AbortController());
       const gateway = await openNativeGateway(this.store, controller.signal);
+      let image: string;
+      try {
+        image = await nativeImage(this.store.dir);
+      } catch (error) {
+        await gateway.close();
+        throw error;
+      }
       if (generation !== this.generation) {
         await gateway.close();
         throw new Error("REVOKED");
       }
       this.gateway = gateway;
-      const runtime = (this.runtime = new NativeRuntime("katafit-pi:0.86.1"));
+      const runtime = (this.runtime = new NativeRuntime(image));
       runtime.onExit = () => {
         if (this.runtime === runtime) void this.stop().catch(() => {});
       };
@@ -156,10 +176,15 @@ export class NativeTerminal {
         await runtime.start(gateway);
         await runtime.attach();
       } catch {
-        await runtime.stop();
-        await gateway.close();
-        this.runtime = undefined;
-        this.gateway = undefined;
+        try {
+          await runtime.stop();
+          this.runtime = undefined;
+        } catch {
+          this.cleanupFailed = true;
+        } finally {
+          await gateway.close();
+          this.gateway = undefined;
+        }
         throw new Error("NATIVE_START_FAILED");
       }
     })().finally(() => {
@@ -180,12 +205,16 @@ export class NativeTerminal {
       await starting?.catch(() => {});
       const runtime = this.runtime,
         gateway = this.gateway;
-      this.runtime = undefined;
-      this.gateway = undefined;
       try {
         await runtime?.stop();
+        this.runtime = undefined;
+        this.cleanupFailed = false;
+      } catch (error) {
+        this.cleanupFailed = true;
+        throw error;
       } finally {
         await gateway?.close();
+        this.gateway = undefined;
       }
     })().finally(() => {
       this.stopping = undefined;
