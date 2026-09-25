@@ -5,10 +5,12 @@ import { createServer } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
 import { chromium } from "playwright-core";
 
-test("Studio composers: Enter sends through the real UI", async () => {
+test("Settings preview composer retains Enter, Shift+Enter and IME behavior", async () => {
   const server = createServer(async (req, res) => {
     const file = req.url === "/" ? "index.html" : req.url?.slice(1);
-    if (!["index.html", "app.js", "style.css"].includes(file || "")) {
+    if (
+      !["index.html", "app.js", "terminal.js", "style.css"].includes(file || "")
+    ) {
       res.writeHead(404).end();
       return;
     }
@@ -107,21 +109,17 @@ test("Studio composers: Enter sends through the real UI", async () => {
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.match(
       await page.locator("#operatorView h2").innerText(),
-      /^Operator$/,
+      /^Operator · Native Pi$/,
     );
     assert.doesNotMatch(
       await page.locator("#operatorView").innerText(),
       /cannot recall a sent message|Enter to send/,
     );
-    assert.equal(
-      await page.locator("#operatorText").getAttribute("aria-label"),
-      "Message your Coach",
-    );
+    assert.equal(await page.locator("#operatorText").count(), 0);
     const evidence =
       process.env.COACH_EVIDENCE_DIR || `${tmpdir()}/katafit-studio-evidence`;
     await mkdir(evidence, { recursive: true });
     for (const [input, button, path] of [
-      ["operatorText", "operatorSend", "/api/operator/chat"],
       ["question", "previewButton", "/api/preview"],
     ]) {
       if (input === "question") await page.locator("#settingsTab").click();
@@ -196,73 +194,10 @@ test("Studio composers: Enter sends through the real UI", async () => {
       await page.unroute("**" + path);
       await page.waitForTimeout(50);
     }
-    await page.locator("#coachTab").click();
     assert.equal(
-      await page.locator("#operatorTarget, #operatorReceipts").count(),
-      0,
+      sent.some((s) => s.path === "/api/operator/chat"),
+      false,
     );
-    await page.locator("#operatorText").fill("Tell Alex to recover today");
-    const targeted = page.waitForRequest(
-      (r) => r.url().endsWith("/api/operator/chat") && r.method() === "POST",
-    );
-    await page.locator("#operatorText").press("Enter");
-    assert.deepEqual((await targeted).postDataJSON(), {
-      text: "Tell Alex to recover today",
-    });
-    await page.waitForTimeout(100);
-    assert.match(
-      await page.locator("#operatorView").innerText(),
-      /Synthetic targeted command reply/,
-    );
-
-    assert.match(
-      await page.locator("#operatorView").innerText(),
-      /Delivered.*synthetic-action/,
-    );
-    await page.locator("#operatorClear").click();
-    await page.waitForFunction(() =>
-      document
-        .querySelector("#operatorStatus")
-        ?.textContent?.includes("Operator chat cleared"),
-    );
-    await page.waitForFunction(
-      () =>
-        !(document.querySelector("#operatorSend") as HTMLButtonElement)
-          .disabled,
-    );
-    assert.doesNotMatch(
-      await page.locator("#operatorView").innerText(),
-      /Synthetic targeted command reply/,
-    );
-    for (const [name, width, height] of [
-      ["desktop", 1280, 1000],
-      ["mobile", 390, 844],
-    ] as const) {
-      await page.setViewportSize({ width, height });
-      const composer = page.locator("#operatorText");
-      await composer.fill("Manager keyboard " + name);
-      const before = sent.length;
-      await composer.press("Enter");
-      await page.waitForFunction(() =>
-        document
-          .querySelector("#operatorMessages")
-          ?.textContent?.includes("Synthetic keyboard reply"),
-      );
-      assert.equal(sent.length, before + 1);
-      await composer.fill("Line one");
-      await composer.press("Shift+Enter");
-      assert.equal(await composer.inputValue(), "Line one\n");
-      assert.equal(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-        true,
-      );
-      await page.screenshot({
-        path: evidence + "/keyboard-" + name + ".png",
-        fullPage: true,
-      });
-    }
   } finally {
     await browser?.close();
     server.closeAllConnections();

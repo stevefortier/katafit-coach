@@ -29,7 +29,9 @@ const config = {
 test("Studio header remains visible on scroll and shows semantic worker state", async () => {
   const server = createServer(async (req, res) => {
     const file = req.url === "/" ? "index.html" : req.url?.slice(1);
-    if (!["index.html", "app.js", "style.css"].includes(file || ""))
+    if (
+      !["index.html", "app.js", "terminal.js", "style.css"].includes(file || "")
+    )
       return void res.writeHead(404).end();
     res.setHeader(
       "Content-Type",

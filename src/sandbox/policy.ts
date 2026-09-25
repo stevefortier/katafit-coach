@@ -1,0 +1,32 @@
+/** No host paths, host environment or externally routable interface enter Pi. */
+export function sandboxArgs(name: string, image: string): string[] {
+  return [
+    "create",
+    "--name",
+    name,
+    "--interactive",
+    "--init",
+    "--network=none",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--memory=512m",
+    "--memory-swap=512m",
+    "--pids-limit=128",
+    "--cpus=1",
+    "--user=1000:1000",
+    "--log-driver=none",
+    "--tmpfs",
+    "/workspace:rw,nosuid,nodev,size=32m,uid=1000,gid=1000",
+    "--tmpfs",
+    "/home/node:rw,nosuid,nodev,noexec,size=32m,uid=1000,gid=1000",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+    "--workdir=/workspace",
+    "--env=HOME=/home/node",
+    "--env=TERM=xterm-256color",
+    "--env=PI_OFFLINE=1",
+    "--env=PI_SKIP_VERSION_CHECK=1",
+    image,
+  ];
+}

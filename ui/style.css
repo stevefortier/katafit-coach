@@ -3,6 +3,24 @@
   display: none;
 }
 
+#nativeTerminal {
+  height: 540px;
+  max-width: 100%;
+  overflow: hidden;
+  background: #10151b;
+  padding: 8px;
+  margin: 12px 0;
+}
+#nativeTerminal .xterm {
+  height: 100%;
+}
+@media (max-width: 600px) {
+  #nativeTerminal {
+    height: 460px;
+    padding: 4px;
+  }
+}
+
 :root {
   color-scheme: dark;
   --bg: #101715;

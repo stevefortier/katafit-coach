@@ -15,7 +15,9 @@ const item = (id: number) => ({
 test("member chat opens at newest, loads older at top, and follows only while pinned", async () => {
   const server = createServer(async (req, res) => {
     const file = req.url === "/" ? "index.html" : req.url?.slice(1);
-    if (!["index.html", "app.js", "style.css"].includes(file || ""))
+    if (
+      !["index.html", "app.js", "terminal.js", "style.css"].includes(file || "")
+    )
       return void res.writeHead(404).end();
     res.setHeader(
       "Content-Type",
@@ -201,35 +203,7 @@ test("member chat opens at newest, loads older at top, and follows only while pi
         "resize leaves a scrolled-up reader alone",
       );
     }
-    await page.locator("#operatorTab").click();
-    const operator = () =>
-      page.locator("#operatorMessages").evaluate((el) => ({
-        top: el.scrollTop,
-        max: el.scrollHeight - el.clientHeight,
-      }));
-    assert.ok((await operator()).max > 0);
-    assert.ok(
-      Math.abs((await operator()).max - (await operator()).top) <= 2,
-      "operator opens at bottom",
-    );
-    await page.locator("#operatorMessages").evaluate((el) => {
-      el.scrollTop = 0;
-    });
-    operatorLatest++;
-    await page.evaluate(() => (window as any).loadOperator());
-    assert.ok(
-      (await operator()).max - (await operator()).top > 10,
-      "operator update preserves scroll-up",
-    );
-    await page.locator("#operatorMessages").evaluate((el) => {
-      el.scrollTop = el.scrollHeight;
-    });
-    operatorLatest++;
-    await page.evaluate(() => (window as any).loadOperator());
-    assert.ok(
-      Math.abs((await operator()).max - (await operator()).top) <= 2,
-      "operator update follows bottom",
-    );
+    // Native terminal scrolling is exercised against real Pi in native-browser.test.ts.
   } finally {
     await browser?.close();
     server.closeAllConnections();

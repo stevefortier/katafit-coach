@@ -134,31 +134,8 @@ try {
     () => document.querySelector("#state")?.textContent === "IDLE",
   );
   await page.locator("#coachTab").click();
-  assert.equal(
-    await page.locator("#operatorSend").isEnabled(),
-    true,
-    "operator chat enabled while actual worker runs",
-  );
-  await page.locator("#operatorText").fill("Synthetic first operator turn");
-  await page.locator("#operatorSend").click();
-  await page.waitForFunction(
-    () =>
-      document
-        .querySelector("#operatorMessages")
-        ?.textContent?.includes("Synthetic operator reply 1"),
-    {},
-    { timeout: 8000 },
-  );
-  await page.locator("#operatorText").fill("Synthetic second operator turn");
-  await page.locator("#operatorSend").click();
-  await page.waitForFunction(
-    () => document.querySelectorAll(".chat-message:not([hidden])").length === 4,
-  );
-  assert.equal(
-    await page.locator("#operatorMessages img").count(),
-    0,
-    "model markup remains text",
-  );
+  assert.equal(await page.locator("#nativeStart").isEnabled(), true);
+  assert.equal(await page.locator("#operatorText").count(), 0);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator("#settingsTab").click();
   await page.locator("#name").fill("Unsaved operator draft");
@@ -167,7 +144,10 @@ try {
     await page.locator("#operatorSnapshot").innerText(),
     /saved.*revision|Saved.*revision/,
   );
-  assert.match(await page.locator("#operatorSnapshot").innerText(), /Unsaved/);
+  assert.doesNotMatch(
+    await page.locator("#operatorSnapshot").innerText(),
+    /Unsaved operator draft/,
+  );
   assert.equal(await page.locator(".chat-assistant button").count(), 0);
   assert.equal(
     await page.locator(".chat-user button").count(),
@@ -205,87 +185,8 @@ try {
     true,
   );
   await page.screenshot({ path: evidence + "/coach-mobile.png" });
-  delay = true;
-  await page
-    .locator("#operatorText")
-    .fill("Cancel this synthetic pending turn");
-  await page.locator("#operatorSend").click();
-  await page.locator("#operatorPending").waitFor({ state: "visible" });
-  assert.equal(await page.locator("#operatorPending span").count(), 3);
-  await page.screenshot({ path: evidence + "/coach-pending-mobile.png" });
-  await page.locator("#operatorCancel").click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#operatorStatus")
-      ?.textContent?.includes("cancelled"),
-  );
-  assert.equal(await page.locator("#operatorPending").isVisible(), false);
-  delay = false;
-  await page.locator("#operatorClear").click();
-  await page.waitForFunction(
-    () => document.querySelectorAll(".chat-message:not([hidden])").length === 0,
-  );
-  assert.deepEqual(
-    (
-      await (
-        await page.request.get(app.origin + "/api/operator/chat", {
-          headers: { Authorization: "Bearer " + store.secrets.admin },
-        })
-      ).json()
-    ).messages,
-    [],
-  );
-  // A transport response from the previous unlock must never repaint a locked UI.
-  let release: any;
-  await page.route("**/api/operator/chat", (route) => {
-    release = route;
-  });
-  await page.locator("#operatorText").fill("Late synthetic turn");
-  await page.locator("#operatorSend").click();
-  await page.waitForTimeout(100);
-  assert.ok(release);
-  await page.locator("#lockStudio").click();
-  await release.fulfill({
-    contentType: "application/json",
-    body: JSON.stringify({
-      messages: [{ role: "assistant", text: "STALE CHAT SENTINEL" }],
-    }),
-  });
-  await page.waitForTimeout(100);
-  assert.equal(
-    await page.locator("#operatorMessages").textContent(),
-    "Start a private conversation with your Coach.",
-  );
-  await page.unroute("**/api/operator/chat");
-  await page.locator("#adminKey").fill(store.secrets.admin);
-  await page.locator("#unlock").click();
-  await page.locator("#coachPanel").waitFor({ state: "visible" });
-  await page.route("**/api/operator/chat", (route) =>
-    route.fulfill({
-      status: 500,
-      contentType: "application/json",
-      body: '{"error":"PRIVATE_PROVIDER_SENTINEL"}',
-    }),
-  );
-  await page.locator("#operatorText").fill("Synthetic error");
-  await page.locator("#operatorSend").click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#operatorStatus")
-      ?.textContent?.includes("could not complete"),
-  );
-  assert.equal(
-    await page.locator("#operatorText").inputValue(),
-    "Synthetic error",
-    "failed send restores draft",
-  );
-  assert.equal(
-    (await page.locator("body").innerText()).includes(
-      "PRIVATE_PROVIDER_SENTINEL",
-    ),
-    false,
-  );
-  await page.unroute("**/api/operator/chat");
+  // Native tool execution, cancellation and ticket revocation are exercised
+  // by native-browser/native-terminal tests against actual Docker Pi.
   // Synthetic member transport fixtures exercise the real UI without customer data.
   const member = (
     member_ref: string,
@@ -456,7 +357,7 @@ try {
     0,
     "feed has no executable actions",
   );
-  assert.equal(await page.locator("#operatorForm").isVisible(), false);
+  assert.equal(await page.locator("#nativeStart").isVisible(), false);
   await page
     .getByRole("button", { name: "Synthetic Blair", exact: true })
     .click();
@@ -523,7 +424,7 @@ try {
     fullPage: true,
   });
   await page.locator("#operatorTab").click();
-  assert.equal(await page.locator("#operatorForm").isVisible(), true);
+  assert.equal(await page.locator("#nativeStart").isVisible(), true);
   assert.equal(
     (await page.locator("#operatorMessages").innerText()).includes(
       "synthetic proposal_summary",
@@ -586,38 +487,7 @@ try {
   assert.equal(await page.locator("#settingsPanel").isVisible(), true);
   await page.locator("#coachTab").click();
   assert.equal(new URL(page.url()).pathname, "/chat/operator");
-  let clearRoute: any;
-  await page.route("**/api/operator/clear", (route) => {
-    clearRoute = route;
-  });
-  await page.locator("#operatorClear").click();
-  await page.waitForTimeout(100);
-  assert.ok(clearRoute);
-  assert.equal(
-    await page.locator("#operatorSend").isDisabled(),
-    true,
-    "send waits for pending Clear acknowledgement",
-  );
-  await clearRoute.continue();
-  await page.unroute("**/api/operator/clear");
-  await page.waitForFunction(
-    () =>
-      document.querySelector("#operatorStatus")?.textContent ===
-      "Operator chat cleared. Messages already delivered cannot be recalled.",
-  );
-  evidenceReply =
-    "Synthetic QA reply: I can help review the coaching tone while the worker stays active. To make an instruction permanent, use Settings and explicitly save it. Member conversations remain separate.";
-  await page
-    .locator("#operatorText")
-    .fill(
-      "Keep your coaching direct and practical. Can I discuss the tone here while you handle member requests?",
-    );
-  await page.locator("#operatorSend").click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#operatorMessages")
-      ?.textContent?.includes("Synthetic QA reply:"),
-  );
+  assert.equal(await page.locator("#nativeStart").isVisible(), true);
   await page.setViewportSize({ width: 1280, height: 1100 });
   await page.evaluate(() => {
     window.scrollTo(0, 0);
@@ -633,7 +503,7 @@ try {
     fullPage: true,
   });
   console.log(
-    "Coach browser PASS: navigation, hidden logs, real Pi synthetic multi-turn, text-only bubbles, explicit Settings edit without chat draft action, cancellation, clear readback, Lock stale-reply fence, safe errors, mobile geometry, synthetic member feed isolation and revoke",
+    "Coach browser PASS: navigation, hidden logs, native terminal entry while worker runs, explicit Settings edit, mobile geometry, synthetic member feed isolation and revoke. Actual Docker Pi covered separately by native-browser tests.",
   );
 } finally {
   await browser?.close();

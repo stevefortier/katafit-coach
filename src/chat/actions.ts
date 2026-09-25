@@ -67,6 +67,8 @@ export class Actions {
   }
   save(action: OperatorAction, scope = this.scope()) {
     assertNoSecrets(action, Object.values(this.store.secrets));
+    // Writers share one installation process; reload synchronously before a write.
+    this.rows = this.storage.load();
     const next = structuredClone(this.rows);
     let index = next.findIndex(
       (m, i) =>
@@ -112,6 +114,7 @@ export class Actions {
     return (action: OperatorAction) => this.save(action, scope);
   }
   snapshot() {
+    this.rows = this.storage.load();
     const scope = this.scope();
     const actions = this.rows.flatMap((m, i) =>
       i % 2 === 1 && this.rows[i - 1].text === scope
