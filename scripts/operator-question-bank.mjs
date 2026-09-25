@@ -21,6 +21,7 @@ import { cases } from "./operator-question-bank-cases.mjs";
 import { evaluate } from "./operator-question-bank-evaluate.mjs";
 import { seed } from "./operator-question-bank-fixture.mjs";
 import { streamedTurn } from "./operator-question-bank-transport.mjs";
+import { verifyPersona } from "./operator-question-bank-persona.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 const transportMode = process.argv.includes("--transport");
 const sha = (x) => createHash("sha256").update(x).digest("hex");
@@ -209,11 +210,12 @@ try {
     assert.equal(r.status, 200, "Installed config discovery failed");
     const c = await r.json();
     provider = c.provider;
-    assert.deepEqual(
+    receipt.personaSelection = verifyPersona(
       c.persona,
       persona.persona,
-      "Do not weaken/change revision-16 persona",
+      process.env.OPERATOR_TEST_PINNED_PERSONA,
     );
+    receipt.discoveredPersonaSha256 = sha(JSON.stringify(c.persona));
     if (process.env.OPERATOR_TEST_MODEL)
       assert.equal(
         provider.model,

@@ -38,6 +38,7 @@ Required live environment in addition to paths above:
 - `KATAFIT_STANDALONE_COACH_URL` and `KATAFIT_STANDALONE_COACH_TOKEN` for read-only installed configuration discovery
 - `UBUNTU3090_LM_STUDIO_BASE_URL` and `UBUNTU3090_LM_STUDIO_TOKEN` matching that configured provider
 - optional `OPERATOR_TEST_MODEL`, which must match discovery; no stale fallback
+- optional `OPERATOR_TEST_PINNED_PERSONA=1` explicitly retains the original revision-16 Warden stress fixture when the live user has changed their persona. The receipt records pinned mode, current revision/persona hash and whether they match. This does not alter live settings and is not acceptance of the current installed persona. Without it, any persona drift still fails closed.
 
 First, a small diagnostic subset, once each:
 
