@@ -14,6 +14,7 @@ import {
 import { Actions } from "./actions.js";
 import { randomUUID, createHash } from "node:crypto";
 import { explicitSendPayload } from "./operatorPayload.js";
+import { OperatorEvidenceLedger } from "./operatorEvidence.js";
 import {
   modelPlanner,
   modelRequestPlanner,
@@ -268,10 +269,14 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
     // Member-derived read context is deliberately never retained for a later
     // turn. A sharing grant can be revoked without changing local Settings.
     const evidence = new Set<string>();
+    const ledger = new OperatorEvidenceLedger();
     const denied = new Set<string>();
     let plan: import("./operatorPlan.js").IntentPlan | undefined;
     let requestScope:
       | import("./operatorPlan.js").RequestClaim["scope"]
+      | undefined;
+    let requestedEvidence:
+      | import("./operatorPlan.js").RequestClaim["evidence"]
       | undefined;
     let readUsed = false;
     const requiredMembers = new Set<string>();
@@ -292,8 +297,9 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
             actionAttempted = true;
             this.actions.recorder()(action);
           },
-          onRead: (name, memberRefs) => {
+          onRead: (name, memberRefs, receipt) => {
             readUsed = true;
+            if (receipt) ledger.record(receipt);
             if (name !== "studio_operator_send_message") {
               const domain = (
                 {
@@ -313,6 +319,12 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
                     : ["*"])
                   evidence.add(JSON.stringify([domain, ref]));
             }
+          },
+          onFailure: (receipt) => {
+            ledger.record(receipt);
+            denied.add(
+              JSON.stringify([receipt.domain, receipt.member_ref ?? "*"]),
+            );
           },
           onIncomplete: (hasMore) => {
             rosterIncomplete = hasMore;
@@ -408,6 +420,7 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
             throw new SafeError("READ_UNAVAILABLE");
           const claim = assessment.claim;
           requestScope = claim.scope;
+          requestedEvidence = claim.evidence;
           const requestedPayload = explicitSendPayload(text);
           // Anchored payload text alone does not authorize a shortened send.
           if (
@@ -729,19 +742,46 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
                 },
               },
         );
-      const missing = () =>
-        (plan?.kind === "read" &&
-          ((plan.domains.some((d) => d !== "checkins" && d !== "roster") &&
-            requiredMembers.size === 0) ||
-            plan.domains.some((domain) =>
-              (domain === "checkins" || domain === "roster"
-                ? ["*"]
-                : [...requiredMembers]
-              ).some((ref) => !evidence.has(JSON.stringify([domain, ref]))),
-            ))) ||
-        (isComparison &&
-          requiredMembers.size === 0 &&
-          ![...evidence].some((x) => x.startsWith('["feed"')));
+      const missing = () => {
+        if (plan?.kind !== "read") return false;
+        if (
+          plan.domains.some((d) => d !== "checkins" && d !== "roster") &&
+          requiredMembers.size === 0
+        )
+          return true;
+        if (isComparison && requiredMembers.size === 0) return true;
+        return plan.domains.some((domain) => {
+          if (domain === "image") {
+            const visual =
+              requestedEvidence?.some((need) => need.level === "image") ===
+              true;
+            return [...requiredMembers].some((member_ref) => {
+              const media = [...availableImages]
+                .map((item) => JSON.parse(item) as [string, string])
+                .filter(([ref]) => ref === member_ref);
+              return (
+                !media.length ||
+                media.some(
+                  ([, media_ref]) =>
+                    !ledger.satisfies({
+                      domain,
+                      member_ref,
+                      media_ref,
+                      visual,
+                    }),
+                )
+              );
+            });
+          }
+          const refs =
+            domain === "checkins" || domain === "roster"
+              ? [undefined]
+              : [...requiredMembers];
+          return refs.some(
+            (member_ref) => !ledger.satisfies({ domain, member_ref }),
+          );
+        });
+      };
       let reply = await this.infer(provider, prompt, context, signal, tools, {
         deadlineAt,
       });
