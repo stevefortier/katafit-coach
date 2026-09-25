@@ -122,6 +122,11 @@ for (const request of [
         assert.match(prompt, /recent main conversation/i);
         assert.match(prompt, /missing or denied data is not evidence of/i);
         assert.match(prompt, /completed_at.*created_at/);
+        assert.match(
+          prompt,
+          /final verdict.*exact source, date window, and measured dimension/,
+        );
+        assert.match(prompt, /missing detail means unknown, not low or absent/);
         assert.match(context, /studio_operator_send_message/);
         const roster = tools.find(
           (t) => t.name === "studio_operator_list_members",
