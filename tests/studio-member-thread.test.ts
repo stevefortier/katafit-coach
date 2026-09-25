@@ -41,6 +41,9 @@ test("member threads retain both canonical directions in chronological chat orde
     });
     await page.route("**/api/**", async (route) => {
       const url = new URL(route.request().url());
+      assert.notEqual(url.pathname, "/api/members/activities");
+      if (url.pathname === "/api/members/feed")
+        assert.equal(url.searchParams.has("view"), false);
       let body: any = {};
       if (url.pathname === "/api/config")
         body = {
@@ -86,67 +89,45 @@ test("member threads retain both canonical directions in chronological chat orde
           next_cursor: "second",
         };
       if (url.pathname === "/api/members/feed")
-        body =
-          url.searchParams.get("view") === "main_conversation"
-            ? {
-                member_ref: "alex",
-                items: [
-                  {
-                    id: "main-reply",
-                    type: "message",
-                    role: "coach",
-                    text: "Main chat reply",
-                    created_at: "2026-09-23T12:02:00Z",
-                  },
-                  {
-                    id: "main-question",
-                    type: "message",
-                    role: "user",
-                    text: "Main chat question",
-                    created_at: "2026-09-23T12:01:00Z",
-                  },
-                ],
-                has_more: false,
-              }
-            : {
-                member_ref: "alex",
-                items: url.searchParams.has("cursor")
-                  ? [
-                      {
-                        id: "earlier",
-                        type: "message",
-                        role: "user",
-                        text: "Earlier question",
-                        created_at: "2026-09-20T12:00:00Z",
-                      },
-                    ]
-                  : [
-                      {
-                        id: "reply",
-                        activity_ref: "shared-workout",
-                        type: "message",
-                        role: "coach",
-                        text: "Keep the next set controlled.",
-                        created_at: "2026-09-22T12:02:00Z",
-                      },
-                      {
-                        id: "question",
-                        activity_ref: "shared-workout",
-                        type: "message",
-                        role: "user",
-                        text: "Should I increase the load?",
-                        created_at: "2026-09-22T12:01:00Z",
-                      },
-                      {
-                        id: "insight",
-                        type: "insight",
-                        text: "Your weekly consistency improved.",
-                        created_at: "2026-09-22T12:03:00Z",
-                      },
-                    ],
-                has_more: !url.searchParams.has("cursor"),
-                next_cursor: "older",
-              };
+        body = {
+          member_ref: url.searchParams.get("member_ref"),
+          items: url.searchParams.has("cursor")
+            ? [
+                {
+                  id: "earlier",
+                  type: "message",
+                  role: "user",
+                  text: "Earlier question",
+                  created_at: "2026-09-20T12:00:00Z",
+                },
+              ]
+            : [
+                {
+                  id: "reply",
+                  activity_ref: "shared-workout",
+                  type: "message",
+                  role: "coach",
+                  text: "Keep the next set controlled.",
+                  created_at: "2026-09-22T12:02:00Z",
+                },
+                {
+                  id: "question",
+                  activity_ref: "shared-workout",
+                  type: "message",
+                  role: "user",
+                  text: "Should I increase the load?",
+                  created_at: "2026-09-22T12:01:00Z",
+                },
+                {
+                  id: "insight",
+                  type: "insight",
+                  text: "Your weekly consistency improved.",
+                  created_at: "2026-09-22T12:03:00Z",
+                },
+              ],
+          has_more: !url.searchParams.has("cursor"),
+          next_cursor: "older",
+        };
       await route.fulfill({ json: body });
     });
     await page.goto(`http://127.0.0.1:${(server.address() as any).port}/`);
@@ -157,14 +138,32 @@ test("member threads retain both canonical directions in chronological chat orde
       .click();
     await page.locator(".member-item").first().waitFor();
     assert.equal(
-      await page.locator("#memberMainTab").getAttribute("aria-pressed"),
-      "true",
+      await page
+        .locator("#memberMainTab, #memberAllTab, #memberActivities")
+        .count(),
+      0,
+      "one combined feed without mode controls or activity browser",
     );
     assert.match(
       await page.locator("#memberItems").innerText(),
-      /Main chat question[\s\S]*Main chat reply/,
+      /Should I increase[\s\S]*Keep the next set/,
     );
-    assert.equal(await page.locator("#memberMore").isVisible(), false);
+    assert.equal(
+      await page.locator("#memberTitle").innerText(),
+      "Synthetic Alex",
+    );
+    assert.doesNotMatch(
+      await page.locator("#coachPanel").innerText(),
+      /read.only|Browse shared activities|All activity & Coach history|Main chat/i,
+    );
+    assert.equal(
+      await page
+        .locator("#membersStatus, #memberStatus")
+        .evaluateAll((els) =>
+          els.every((el) => el.getBoundingClientRect().height === 0),
+        ),
+      true,
+    );
     for (const width of [320, 390]) {
       await page.setViewportSize({ width, height: 844 });
       assert.equal(
@@ -222,12 +221,7 @@ test("member threads retain both canonical directions in chronological chat orde
       `http://127.0.0.1:${(server.address() as any).port}/chat/member/alex`,
     );
     await page.locator(".member-item").first().waitFor();
-    await page.locator("#memberAllTab").click();
     await page.locator(".member-thread .member-item").first().waitFor();
-    assert.equal(
-      await page.locator("#memberAllTab").getAttribute("aria-pressed"),
-      "true",
-    );
     await page.screenshot({
       path: evidence + "/thread-before.png",
       fullPage: true,
@@ -270,21 +264,14 @@ test("member threads retain both canonical directions in chronological chat orde
       await page.locator(".member-item").first().innerText(),
       /Earlier question/,
     );
-    await page.locator("#memberMainTab").click();
-    await page.waitForFunction(
-      () => document.querySelectorAll(".member-item").length === 2,
-    );
-    assert.match(
-      await page.locator("#memberItems").innerText(),
-      /Main chat question/,
-    );
-    assert.doesNotMatch(
-      await page.locator("#memberItems").innerText(),
-      /Earlier question/,
-    );
-    await page.locator("#memberAllTab").click();
-    await page.waitForFunction(
-      () => document.querySelectorAll(".member-item").length === 3,
+    await page.locator("#membersMore").click();
+    await page
+      .getByRole("button", { name: "Synthetic Kai", exact: true })
+      .click();
+    await page.locator(".member-thread .member-item").first().waitFor();
+    assert.equal(
+      await page.locator("#memberTitle").innerText(),
+      "Synthetic Kai",
     );
     assert.doesNotMatch(
       await page.locator("#memberItems").innerText(),

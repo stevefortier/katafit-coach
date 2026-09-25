@@ -373,25 +373,18 @@ try {
     .getByRole("button", { name: "Synthetic Alex", exact: true })
     .click();
   await page.waitForFunction(
-    () => document.querySelectorAll(".member-item").length === 2,
-  );
-  const mainHint = await page.locator("#memberHint").innerText();
-  assert.match(mainHint, /Read-only direct Coach conversation/);
-  assert.match(
-    await page.locator("#memberItems").innerText(),
-    /a synthetic direct-user/,
-  );
-  assert.equal(
-    await page.locator("#memberMainTab").getAttribute("aria-pressed"),
-    "true",
-  );
-  await page.locator("#memberAllTab").click();
-  await page.waitForFunction(
     () => document.querySelectorAll(".member-item").length === 4,
   );
-  const memberHint = await page.locator("#memberHint").innerText();
-  assert.match(memberHint, /Read-only Coach history/);
-  assert.match(memberHint, /Expand a shared activity for details and photos/);
+  assert.equal(
+    await page
+      .locator("#memberMainTab, #memberAllTab, #memberHint, #memberActivities")
+      .count(),
+    0,
+  );
+  assert.doesNotMatch(
+    await page.locator("#coachPanel").innerText(),
+    /read.only|Browse shared activities/i,
+  );
   assert.equal(
     await page
       .locator("#operatorTab")
@@ -478,7 +471,7 @@ try {
   );
   assert.equal(
     await page.locator("#memberStatus").innerText(),
-    "No retained main Coach messages are available for this member and sharing grant. Check All activity & Coach history for activity-local exchanges.",
+    "No retained Coach feed items are available.",
   );
   for (const [name, width, height] of [
     ["desktop", 1280, 1000],

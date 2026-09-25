@@ -41,6 +41,14 @@ test("member chat opens at newest, loads older at top, and follows only while pi
     let latest = 30;
     let operatorLatest = 18;
     const cursors: string[] = [];
+    let releaseOlder: (() => void) | undefined;
+    let olderStarted: () => void;
+    const olderRequest = new Promise<void>((resolve) => {
+      olderStarted = resolve;
+    });
+    const olderGate = new Promise<void>((resolve) => {
+      releaseOlder = resolve;
+    });
     await page.route("**/api/**", async (route) => {
       const url = new URL(route.request().url());
       let body: any = {};
@@ -70,8 +78,13 @@ test("member chat opens at newest, loads older at top, and follows only while pi
           has_more: false,
         };
       if (url.pathname === "/api/members/feed") {
+        assert.equal(url.searchParams.has("view"), false);
         const cursor = url.searchParams.get("cursor");
         cursors.push(cursor || "latest");
+        if (cursor === "24") {
+          olderStarted();
+          await olderGate;
+        }
         const end = cursor ? Number(cursor) : latest;
         body = {
           member_ref: "alex",
@@ -105,10 +118,29 @@ test("member chat opens at newest, loads older at top, and follows only while pi
       "starts at bottom",
     );
     assert.deepEqual(cursors, ["latest"]);
+    const geometry = () =>
+      page.locator("#memberItems").evaluate((el) => ({
+        top: el.getBoundingClientRect().top,
+        height: el.getBoundingClientRect().height,
+      }));
+    const beforeOlder = await geometry();
     await page.locator("#memberItems").evaluate((el) => {
       el.scrollTop = 0;
       el.dispatchEvent(new Event("scroll"));
     });
+    await olderRequest;
+    assert.deepEqual(
+      await geometry(),
+      beforeOlder,
+      "pending older load must not shift the chat pane",
+    );
+    assert.equal(
+      await page
+        .locator("#memberStatus")
+        .evaluate((el) => el.getBoundingClientRect().height),
+      0,
+    );
+    releaseOlder!();
     await page.waitForFunction(
       () =>
         document.querySelectorAll("#memberItems .member-item").length === 12,
