@@ -2,6 +2,8 @@
 
 POST `/api/operator/chat` accepts exactly `{text}` and opens `{mode:"dojo_operator",idempotency_key}` without selecting a recipient. The backend supplies the active session, `allowed_tools`, and optionally the additive `capabilities: {version:1,tools:[...]}` descriptor. Each descriptor identifies its `tools/list` schema, read/write kind, target, domain, coverage, pagination, side effect and receipt contract. The descriptor is discovery metadata, not a second authorization system. Backend authorization is authoritative on every dispatch.
 
+The native Pi terminal additionally negotiates retained-context continuity when the backend advertises it; see [native continuity](native-continuity.md).
+
 ## Manager relationship and execution
 
 Operator is this Coach's manager and boss, not a coachee. The configured persona identity, name, voice and expertise remain intact. Trainee-facing discipline or missed workouts must not become a reason to withhold managerial work.

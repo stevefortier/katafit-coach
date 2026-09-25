@@ -126,9 +126,14 @@ export class NativeTerminal {
         }
         if (this.ws !== ws || authority !== this.authority())
           throw new Error("AUTH");
-        if (message.type === "input" && typeof message.data === "string")
-          this.runtime?.input(message.data);
-        else if (message.type === "resize")
+        if (message.type === "input" && typeof message.data === "string") {
+          const runtime = this.runtime;
+          runtime?.input(message.data);
+          // Only authenticated browser input actually written to this PTY may
+          // arm the gateway's single human-turn latch; never runtime output,
+          // relay/provider frames, resize or reconnect replay.
+          if (runtime) this.gateway?.noteHumanInput?.(message.data);
+        } else if (message.type === "resize")
           await this.runtime?.resize(message.cols, message.rows);
         else throw new Error("FRAME");
       } catch {
@@ -151,7 +156,22 @@ export class NativeTerminal {
       await this.stopping;
       if (generation !== this.generation) throw new Error("REVOKED");
       const controller = (this.controller = new AbortController());
-      const gateway = await openNativeGateway(this.store, controller.signal);
+      const gateway = await openNativeGateway(this.store, controller.signal, {
+        // Retained context was denied, expired or became unknown. The gateway
+        // has closed its backend session; destroy this whole runtime (process,
+        // transcript, filesystem, retained output). Never reopen it: a later
+        // Start creates a new, empty runtime and backend session.
+        onTerminate: () => {
+          if (generation !== this.generation) return;
+          for (const ws of this.sockets)
+            this.send(ws, {
+              type: "error",
+              message:
+                "Native Pi retained context was revoked or expired, so this runtime was destroyed. Start a new session; actions are never replayed.",
+            });
+          void this.stop().catch(() => {});
+        },
+      });
       let image: string;
       try {
         image = await nativeImage(this.store.dir);

@@ -72,17 +72,26 @@ test(
     };
     const provision = async (revision: string) => {
       const root = await prepare(revision);
-      const output = execFileSync(
-        "docker",
-        ["build", "--pull=false", "-q", "-"],
-        {
-          input: `FROM ${image}\nLABEL fit.kata.native.revision=${revision}\n`,
-          encoding: "utf8",
-          timeout: 30000,
-          stdio: ["pipe", "pipe", "pipe"],
-        },
-      ).trim();
+      // Derive the revision-labelled pair image without a builder: BuildKit
+      // resolves `FROM sha256:<local id>` as a registry name and cannot pull
+      // it. The never-started container only carries the exact image config.
+      const container = docker("create", "--network", "none", image);
+      let output: string;
+      try {
+        output = docker(
+          "commit",
+          "--change",
+          `LABEL fit.kata.native.revision=${revision}`,
+          container,
+        );
+      } finally {
+        docker("rm", "--force", container);
+      }
       assert.match(output, /^sha256:[a-f0-9]{64}$/);
+      assert.equal(
+        docker("image", "inspect", "--format", "{{json .Config.User}}", output),
+        docker("image", "inspect", "--format", "{{json .Config.User}}", image),
+      );
       owned.push(output);
       await provisionArtifact(home, root, output);
       return output;

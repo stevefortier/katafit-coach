@@ -21,6 +21,16 @@ const LIST = "studio_operator_list_activities";
 const DETAIL = "studio_operator_read_activity";
 const CHECKINS = "studio_operator_list_dojo_checkins";
 const IMAGE = "studio_operator_read_dojo_checkin_image";
+const AUTHORIZE = "studio_operator_authorize_context";
+const ADVANCE = "studio_operator_advance_turn";
+// Host-only continuity controls: never model tools, whatever a catalog says.
+const HOST_CONTROLS = [AUTHORIZE, ADVANCE];
+// Continuity identity is host-owned; stripped from every model schema.
+const continuityArguments = [
+  "turn_generation",
+  "continuity_version",
+  "resolved_action_id",
+];
 // These fields belong to the authenticated host, regardless of a server's
 // permissive additionalProperties/patternProperties schema. member_ref remains
 // model-selected only in the explicitly negotiated dojo-wide mode.
@@ -32,7 +42,62 @@ const reservedArguments = [
   "user_id",
   "dojo_id",
   "mode",
+  ...continuityArguments,
 ];
+export interface OperatorContinuity {
+  version: 1;
+  host_controls: string[];
+  max_turns: number;
+  max_tool_calls_per_turn: number;
+  command_ttl_ms: number;
+  retained_ttl_ms: number;
+  failure_requires: "destroy_runtime";
+  generation_field: "turn_generation";
+}
+const exactKeys = (value: any, keys: string[]) =>
+  !!value &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === keys.length &&
+  keys.every((key) => Object.hasOwn(value, key));
+const instant = (value: unknown) =>
+  typeof value === "string" &&
+  value.length <= 64 &&
+  Number.isFinite(Date.parse(value));
+/** Exact backend continuity v1 descriptor (docs/studio-operator-continuity.md). */
+function validateContinuity(session: any): OperatorContinuity {
+  const c = session.continuity;
+  const bounded = (v: unknown, min: number, max: number) =>
+    Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
+  if (
+    !exactKeys(c, [
+      "version",
+      "host_controls",
+      "max_turns",
+      "max_tool_calls_per_turn",
+      "command_ttl_ms",
+      "retained_ttl_ms",
+      "failure_requires",
+      "generation_field",
+    ]) ||
+    c.version !== 1 ||
+    JSON.stringify(c.host_controls) !== JSON.stringify(HOST_CONTROLS) ||
+    !bounded(c.max_turns, 1, 64) ||
+    !bounded(c.max_tool_calls_per_turn, 1, 12) ||
+    !bounded(c.command_ttl_ms, 1, 900000) ||
+    !bounded(c.retained_ttl_ms, 1, 28800000) ||
+    c.failure_requires !== "destroy_runtime" ||
+    c.generation_field !== "turn_generation" ||
+    session.turn_generation !== 0 ||
+    !instant(session.context_expires_at) ||
+    Date.parse(session.context_expires_at) <= Date.now() ||
+    Date.parse(session.context_expires_at) >
+      Date.now() + c.retained_ttl_ms + 60000 ||
+    Date.parse(session.expires_at) > Date.parse(session.context_expires_at)
+  )
+    throw new Error("CAPABILITIES_REJECTED");
+  return c;
+}
 function assertCallerArguments(args: unknown, memberScoped: boolean) {
   if (
     !args ||
@@ -136,6 +201,9 @@ export async function openOperatorTools(
       sha256: string;
       bytes: Buffer;
     }) => void;
+    // Request backend continuity v1 when the catalog advertises its host
+    // controls. Dojo-wide sessions only; legacy behaviour is otherwise kept.
+    continuity?: boolean;
   },
 ) {
   assertNoSecrets(member_ref, options.secrets);
@@ -165,9 +233,15 @@ export async function openOperatorTools(
     !names.every((n) => listed.tools.some((t: any) => t.name === n))
   )
     throw new Error("CONTRACT_UNSUPPORTED");
+  const continuityOffered =
+    options.continuity === true &&
+    member_ref === undefined &&
+    HOST_CONTROLS.every((n) => listed.tools.some((t: any) => t.name === n));
+  // One runtime-owned session with a fresh key: never reopen for old context.
   const session = await client.call("studio_operator_open_session", {
     ...(member_ref === undefined ? { mode: "dojo_operator" } : { member_ref }),
     idempotency_key: randomUUID(),
+    ...(continuityOffered ? { continuity_version: 1 } : {}),
   });
   try {
     assertNoSecrets(session, options.secrets);
@@ -196,8 +270,43 @@ export async function openOperatorTools(
       throw new Error("CAPABILITIES_REJECTED");
     const capabilities =
       member_ref === undefined ? validateOperatorCapabilities(session) : null;
+    const continuity = continuityOffered ? validateContinuity(session) : null;
+    if (
+      continuity &&
+      (!capabilities ||
+        capabilities.tools.some(
+          (t) =>
+            HOST_CONTROLS.includes(t.name) ||
+            (t.name === SEND &&
+              t.side_effect !== "durable_delivery_one_per_turn_generation"),
+        ))
+    )
+      throw new Error("CAPABILITIES_REJECTED");
     const capabilityGuidance = renderOperatorCapabilities(capabilities);
     const session_id: string = session.session_id;
+    // Continuity state. Counters below are per generation and reset only by a
+    // validated advance receipt; uncertainWrite and revocation are sticky.
+    let generation = 0;
+    let commandExpires: string = session.expires_at;
+    const contextExpires: string | undefined = continuity
+      ? session.context_expires_at
+      : undefined;
+    const toolLimit = continuity ? continuity.max_tool_calls_per_turn : 12;
+    let revoked: string | undefined;
+    // Journaled host transition: identity fixed before first dispatch.
+    let transition:
+      | {
+          intent: Record<string, unknown>;
+          negative: boolean;
+          attempts: number;
+        }
+      | undefined;
+    const revoke = (reason: string) => {
+      revoked ??= reason;
+      return new Error("CONTINUITY_REVOKED");
+    };
+    const hostFields = () =>
+      continuity ? { session_id, turn_generation: generation } : { session_id };
     let uncertainWrite = false;
     let closed = false,
       calls = 0,
@@ -220,12 +329,20 @@ export async function openOperatorTools(
       options.onAction({ ...next });
       action = next;
     };
+    // Retained context past its absolute deadline can never be renewed.
+    const alive = () => {
+      if (revoked) throw new Error("CONTINUITY_REVOKED");
+      if (contextExpires && Date.parse(contextExpires) <= Date.now())
+        throw revoke("CONTEXT_EXPIRED");
+    };
     const check = () => {
+      alive();
+      if (transition) throw new Error("CONTINUITY_TRANSITION_PENDING");
       if (
         closed ||
         client.signal.aborted ||
         options.current?.() === false ||
-        Date.parse(session.expires_at) <= Date.now()
+        Date.parse(commandExpires) <= Date.now()
       )
         throw new Error("CANCELLED");
     };
@@ -419,6 +536,7 @@ export async function openOperatorTools(
           for (const key of [
             "session_id",
             "idempotency_key",
+            ...continuityArguments,
             ...(member_ref ? ["member_ref"] : []),
           ]) {
             delete parameters.properties[key];
@@ -460,7 +578,7 @@ export async function openOperatorTools(
             assertCallerArguments(args, member_ref !== undefined);
             if (!validate(args)) throw new Error("ARGUMENTS_REJECTED");
             assertNoSecrets(args, options.secrets);
-            if (++calls > 12) throw new Error("TOOL_BUDGET_EXHAUSTED");
+            if (++calls > toolLimit) throw new Error("TOOL_BUDGET_EXHAUSTED");
             if (name === IMAGE) {
               if (imageCount >= 4 || imageBytes >= 16 * 1024 * 1024) {
                 options.onImageLimit?.();
@@ -483,7 +601,7 @@ export async function openOperatorTools(
               if (!listedRow) throw new Error("READ_NOT_AUTHORIZED");
               const r = await client.rpc(
                 "tools/call",
-                { name, arguments: { ...args, session_id } },
+                { name, arguments: { ...args, ...hostFields() } },
                 false,
                 10000,
                 12 * 1024 * 1024,
@@ -565,10 +683,12 @@ export async function openOperatorTools(
               }
               if (imageCount === 4) options.onImageLimit?.();
               assertNoSecrets(m, options.secrets);
-              imageReads.set(
-                JSON.stringify([args.member_ref, args.media_ref]),
-                structuredClone(args),
-              );
+              // Continuity authorizes retained images server-side without refetch.
+              if (!continuity)
+                imageReads.set(
+                  JSON.stringify([args.member_ref, args.media_ref]),
+                  structuredClone(args),
+                );
               options.onRead?.(name, [args.member_ref], {
                 tool: name,
                 domain: "image",
@@ -611,7 +731,10 @@ export async function openOperatorTools(
               };
             }
             if (name !== SEND) {
-              const value = await client.call(name, { ...args, session_id });
+              const value = await client.call(name, {
+                ...args,
+                ...hostFields(),
+              });
               check();
               if (
                 value.schema_version !== 1 ||
@@ -664,13 +787,18 @@ export async function openOperatorTools(
               )
                 throw new Error("RESULT_REJECTED");
               const output = result(value);
-              reads.push({
-                name,
-                args: structuredClone(args),
-                items: (name === ROSTER ? value.members : value.items).map(
-                  (item: unknown) => JSON.stringify(item),
-                ),
-              });
+              // Continuity never replays reads; only check-in listings remain,
+              // bounded, to anchor model-selected image references.
+              if (!continuity || name === CHECKINS) {
+                reads.push({
+                  name,
+                  args: structuredClone(args),
+                  items: (name === ROSTER ? value.members : value.items).map(
+                    (item: unknown) => JSON.stringify(item),
+                  ),
+                });
+                if (continuity && reads.length > 64) reads.shift();
+              }
               options.onRead?.(
                 name,
                 name === CHECKINS
@@ -730,12 +858,12 @@ export async function openOperatorTools(
             });
             try {
               const value = await client.call(name, {
-                session_id,
                 idempotency_key: action!.idempotency_key,
                 text: args.text,
                 ...(member_ref === undefined
                   ? { member_ref: args.member_ref }
                   : {}),
+                ...hostFields(),
               });
               return result(delivered(value));
             } catch {
@@ -790,7 +918,8 @@ export async function openOperatorTools(
     for (const capability of capabilities?.tools ?? []) {
       if (
         tools.some((tool) => tool.name === capability.name) ||
-        capability.name === "studio_operator_get_action"
+        capability.name === "studio_operator_get_action" ||
+        HOST_CONTROLS.includes(capability.name)
       )
         continue;
       const advertised = listed.tools.find(
@@ -804,11 +933,15 @@ export async function openOperatorTools(
         Buffer.byteLength(JSON.stringify(schema)) > 32768
       )
         throw new Error("CAPABILITIES_REJECTED");
-      delete schema.properties.session_id;
-      delete schema.properties.idempotency_key;
+      const hostOwned = [
+        "session_id",
+        "idempotency_key",
+        ...continuityArguments,
+      ];
+      for (const key of hostOwned) delete schema.properties[key];
       if (Array.isArray(schema.required))
         schema.required = schema.required.filter(
-          (key: string) => !["session_id", "idempotency_key"].includes(key),
+          (key: string) => !hostOwned.includes(key),
         );
       const validate = ajv.compile<Record<string, any>>(schema);
       const writeResults = new Map<string, ReturnType<typeof result> | null>();
@@ -822,13 +955,16 @@ export async function openOperatorTools(
           assertCallerArguments(args, member_ref !== undefined);
           if (!validate(args)) throw new Error("ARGUMENTS_REJECTED");
           assertNoSecrets(args, options.secrets);
-          // Discovery is not a retained-source authorization contract. The
-          // inspected backend contract only fences the explicit adapters above; it has
-          // no generic authorize/renew RPC. Never hydrate uncheckable private
-          // context or replay arbitrary capabilities as an authority probe.
-          if (capability.kind === "read")
+          // Discovery alone is not a retained-source authorization contract.
+          // Only a negotiated continuity session has an explicit content-free
+          // authorize_context covering every backend-retained read proof; never
+          // hydrate uncheckable private context or replay tools as authority.
+          if (capability.kind === "read" && !continuity)
             throw new Error("SOURCE_AUTHORIZATION_UNSUPPORTED");
-          if (++calls > 12) throw new Error("TOOL_BUDGET_EXHAUSTED");
+          // Continuity v1 negotiates no generic mutation or its receipts.
+          if (capability.kind === "write" && continuity)
+            throw new Error("CONTINUITY_WRITE_UNSUPPORTED");
+          if (++calls > toolLimit) throw new Error("TOOL_BUDGET_EXHAUSTED");
           options.onRead?.(capability.name, []);
           if (capability.kind === "write" && uncertainWrite)
             throw new Error("DELIVERY_UNVERIFIED");
@@ -855,12 +991,12 @@ export async function openOperatorTools(
           try {
             const value = await client.call(capability.name, {
               ...args,
-              session_id,
               ...(advertised.inputSchema.properties.idempotency_key
                 ? {
                     idempotency_key: operation?.idempotency_key ?? randomUUID(),
                   }
                 : {}),
+              ...hostFields(),
             });
             check();
             const output = result(value);
@@ -894,7 +1030,219 @@ export async function openOperatorTools(
       });
     }
     let disposal: Promise<void> | undefined;
+    // Host controls follow the gateway lifetime, never a sandbox request's
+    // cancellation: an aborted request must not leave a transition unknown.
+    const hostControl = control.withSignal(client.signal);
+    // Host controls keep the backend's bounded error code: OPERATOR_UNAVAILABLE
+    // (and an unanswered request) is retryable and never authorizes anything.
+    const hostCall = async (name: string, args: Record<string, unknown>) => {
+      const r = await hostControl.rpc("tools/call", { name, arguments: args });
+      const text = Array.isArray(r?.content)
+        ? r.content.find((part: any) => part?.type === "text")?.text
+        : undefined;
+      if (r?.isError) {
+        let code = "OPERATOR_REFUSED";
+        try {
+          const parsed = JSON.parse(text);
+          if (/^[A-Z_]{1,64}$/.test(parsed?.code)) code = parsed.code;
+        } catch {
+          /* An unparseable refusal remains a refusal. */
+        }
+        throw new Error(code);
+      }
+      return r?.structuredContent ?? JSON.parse(text);
+    };
+    const retryable = (error: unknown) =>
+      [
+        "OPERATOR_UNAVAILABLE",
+        "CONNECTIVITY_ERROR",
+        "BACKEND_TIMEOUT",
+      ].includes((error as Error)?.message);
+    const pause = (attempt: number) =>
+      new Promise((r) => setTimeout(r, 50 * attempt));
+    const live = () => {
+      alive();
+      if (closed || client.signal.aborted || options.current?.() === false)
+        throw new Error("CANCELLED");
+    };
+    const turnReceipt = (value: any, status: string, turn: number) => {
+      try {
+        assertNoSecrets(value, options.secrets);
+      } catch {
+        return false;
+      }
+      return (
+        exactKeys(value, [
+          "schema_version",
+          "session_id",
+          "turn_generation",
+          "status",
+          "expires_at",
+          "context_expires_at",
+        ]) &&
+        value.schema_version === 1 &&
+        value.session_id === session_id &&
+        value.status === status &&
+        value.turn_generation === turn &&
+        instant(value.expires_at) &&
+        value.context_expires_at === contextExpires &&
+        Date.parse(value.expires_at) <= Date.parse(contextExpires!)
+      );
+    };
+    // Explicit, content-free backend reauthorization of every retained proof.
+    // A refusal or malformed receipt is terminal: destroy the runtime. A
+    // bounded unavailable outcome discloses nothing but keeps the runtime.
+    const authorizeContext = async () => {
+      live();
+      if (transition) throw new Error("CONTINUITY_TRANSITION_PENDING");
+      if (Date.parse(commandExpires) <= Date.now())
+        throw new Error("CONTINUITY_TURN_REQUIRED");
+      let value: any;
+      for (let attempt = 0; attempt < 3 && value === undefined; attempt++) {
+        if (attempt) await pause(attempt);
+        live();
+        try {
+          value = await hostCall(AUTHORIZE, {
+            session_id,
+            turn_generation: generation,
+          });
+        } catch (error) {
+          if (closed || client.signal.aborted) throw new Error("CANCELLED");
+          if (!retryable(error)) throw revoke("AUTHORIZATION_DENIED");
+        }
+      }
+      if (value === undefined) throw new Error("OPERATOR_UNAVAILABLE");
+      if (
+        !turnReceipt(value, "authorized", generation) ||
+        value.expires_at !== commandExpires
+      )
+        throw revoke("AUTHORIZATION_REJECTED");
+      live();
+    };
+    // The original receipt lookup. not_found is only an observation; it never
+    // clears an uncertain send by itself.
+    const lookup = async (): Promise<"delivered" | "not_found" | "unknown"> => {
+      let value: any;
+      try {
+        value = await control.call("studio_operator_get_action", {
+          session_id,
+          idempotency_key: action!.idempotency_key,
+          ...(action!.member_ref ? { member_ref: action!.member_ref } : {}),
+        });
+      } catch {
+        return "unknown";
+      }
+      if (
+        exactKeys(value, ["schema_version", "session_id", "status"]) &&
+        value.schema_version === 1 &&
+        value.session_id === session_id &&
+        value.status === "not_found"
+      )
+        return "not_found";
+      try {
+        delivered(value);
+        return "delivered";
+      } catch {
+        return "unknown";
+      }
+    };
+    // Dispatch the journaled transition; only its identical identity is ever
+    // retried. A definite refusal is terminal, except the documented conflict
+    // of a negative reconciliation (its SEND committed; nothing advanced).
+    const dispatchTransition = async (): Promise<"applied" | "conflict"> => {
+      const t = transition!;
+      for (let round = 0; round < 3; round++) {
+        if (t.attempts >= 9) throw revoke("TRANSITION_UNKNOWN");
+        if (round) await pause(round);
+        live();
+        t.attempts++;
+        let value: any;
+        try {
+          value = await hostCall(ADVANCE, t.intent);
+        } catch (error) {
+          if (closed || client.signal.aborted) throw new Error("CANCELLED");
+          if (retryable(error)) continue;
+          // A conflicting new key never committed (identical committed keys
+          // reconcile to their receipt), so the negative intent is void.
+          if (t.negative && (error as Error).message === "OPERATOR_CONFLICT") {
+            transition = undefined;
+            return "conflict";
+          }
+          throw revoke("TRANSITION_DENIED");
+        }
+        if (!turnReceipt(value, "advanced", generation + 1))
+          throw revoke("TRANSITION_REJECTED");
+        // A validated advance without resolved_action_id is the backend's
+        // proof that the uncertain old-generation SEND never commits.
+        if (t.negative && action) emit({ ...action, status: "not_found" });
+        generation = value.turn_generation;
+        commandExpires = value.expires_at;
+        calls = bytes = imageCount = imageBytes = 0;
+        action = sentText = sentMember = receipt = undefined;
+        uncertainWrite = false;
+        transition = undefined;
+        return "applied";
+      }
+      // Still unknown after the bounded identical attempts: never guess.
+      if (t.attempts >= 9) throw revoke("TRANSITION_UNKNOWN");
+      throw new Error("CONTINUITY_TRANSITION_PENDING");
+    };
+    const begin = (negative: boolean) => {
+      transition = {
+        negative,
+        attempts: 0,
+        intent: {
+          session_id,
+          turn_generation: generation,
+          idempotency_key: randomUUID(),
+          ...(action && !negative
+            ? { resolved_action_id: action.action_id }
+            : {}),
+        },
+      };
+    };
+    // Called by the trusted host after authenticated human input, or to resume
+    // its own journaled transition. Never driven by sandbox frames.
+    const advance = async (): Promise<"advanced" | "unused" | "capped"> => {
+      if (!continuity) return "unused";
+      live();
+      if (!transition) {
+        // Do not burn a generation for input that used nothing yet.
+        if (!calls && !action && Date.parse(commandExpires) > Date.now())
+          return "unused";
+        if (generation >= continuity.max_turns - 1) {
+          // No renewal remains: an expired last generation can never proceed.
+          if (Date.parse(commandExpires) <= Date.now())
+            throw revoke("TURNS_EXHAUSTED");
+          return "capped";
+        }
+        let negative = false;
+        if (action && action.status !== "delivered") {
+          const observed = await lookup();
+          if (observed === "unknown") throw new Error("DELIVERY_UNVERIFIED");
+          negative = observed === "not_found";
+        }
+        begin(negative);
+      }
+      if ((await dispatchTransition()) === "conflict") {
+        // The in-flight SEND landed after the lookup: use its receipt.
+        if ((await lookup()) !== "delivered") throw revoke("TRANSITION_DENIED");
+        begin(false);
+        if ((await dispatchTransition()) === "conflict")
+          throw revoke("TRANSITION_DENIED");
+      }
+      // A reconciled receipt may already be past its command deadline; it is
+      // no disclosure permission. The same human intent renews it once.
+      if (Date.parse(commandExpires) <= Date.now()) {
+        if (generation >= continuity.max_turns - 1)
+          throw revoke("TURNS_EXHAUSTED");
+        begin(false);
+        await dispatchTransition();
+      }
+      return "advanced";
+    };
     const authorize = async () => {
+      if (continuity) return authorizeContext();
       check();
       for (const args of imageReads.values()) {
         const current = await client.rpc(
@@ -955,6 +1303,19 @@ export async function openOperatorTools(
       session_id,
       reconcile,
       authorize,
+      advance,
+      /** A journaled transition must be resumed before any disclosure. */
+      transitionPending: () => !!transition,
+      /** Content-free lifecycle state for the trusted host only. */
+      continuity: () =>
+        continuity
+          ? {
+              turn_generation: generation,
+              expires_at: commandExpires,
+              context_expires_at: contextExpires!,
+              revoked: revoked ?? null,
+            }
+          : null,
       dispose() {
         closed = true;
         return (disposal ??= (async () => {

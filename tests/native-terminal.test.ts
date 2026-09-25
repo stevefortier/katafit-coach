@@ -4,6 +4,13 @@ import { WebSocket } from "ws";
 import { admin } from "../src/server/admin.js";
 import { fixture } from "./helpers/native.js";
 import { Actions } from "../src/chat/actions.js";
+import { execFileSync } from "node:child_process";
+import {
+  continuityFixture,
+  GENERIC,
+  answer,
+  toolCall,
+} from "./helpers/continuity.js";
 
 test(
   "Stop aborts a pending MCP startup rather than waiting for its backend",
@@ -236,6 +243,182 @@ test(
     } finally {
       await app.close();
       await f.close();
+    }
+  },
+);
+
+// Real admin server, ticket, WebSocket, NativeTerminal, Docker Pi and relay.
+// Only the continuity backend and model provider are synthetic loopback.
+async function continuityTerminal(
+  provider: Parameters<typeof continuityFixture>[0]["provider"],
+) {
+  const f = await continuityFixture({ provider });
+  const app = await admin(f.store, 0);
+  const headers = {
+    Authorization: "Bearer " + f.store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const ticket = (await (
+    await fetch(app.origin + "/api/terminal/ticket", {
+      method: "POST",
+      headers,
+      body: "{}",
+    })
+  ).json()) as any;
+  const ws = new WebSocket(app.origin.replace("http:", "ws:") + ticket.path, {
+    origin: app.origin,
+  });
+  let output = "";
+  const errors: string[] = [];
+  let closeCode: number | undefined;
+  ws.on("message", (raw) => {
+    const m = JSON.parse(raw.toString());
+    if (m.type === "output") output = (output + m.data).slice(-150000);
+    if (m.type === "error") errors.push(m.message);
+  });
+  ws.on("close", (code) => (closeCode = code));
+  await new Promise<void>((r, j) => {
+    ws.once("open", r);
+    ws.once("error", j);
+  });
+  ws.send(JSON.stringify({ ticket: ticket.ticket }));
+  const waitFor = async (check: () => boolean, what: string) => {
+    const end = Date.now() + 40000;
+    while (!check()) {
+      if (Date.now() > end)
+        throw new Error("Missing " + what + "\n" + output.slice(-4000));
+      await new Promise((r) => setTimeout(r, 40));
+    }
+  };
+  await waitFor(() => output.includes("ripgrep not found"), "Pi ready");
+  await new Promise((r) => setTimeout(r, 150));
+  return {
+    f,
+    app,
+    headers,
+    errors,
+    closeCode: () => closeCode,
+    output: () => output,
+    waitFor,
+    type: (data: string) => ws.send(JSON.stringify({ type: "input", data })),
+    resize: () =>
+      ws.send(JSON.stringify({ type: "resize", cols: 110, rows: 32 })),
+    close: async () => {
+      ws.terminate();
+      await app.close();
+      await f.close();
+    },
+  };
+}
+const turnOf = (body: any) => {
+  const index = body.messages.findLastIndex((m: any) => m.role === "user");
+  const text = JSON.stringify(body.messages[index]);
+  return {
+    turn: text.includes("second") ? "second" : "first",
+    results: body.messages
+      .slice(index + 1)
+      .filter((m: any) => m.role === "tool")
+      .map((m: any) => JSON.stringify(m.content)),
+  };
+};
+const owned = () =>
+  execFileSync(
+    "docker",
+    ["ps", "-a", "--filter", "name=katafit-pi-", "--format", "{{.Names}}"],
+    { encoding: "utf8" },
+  ).trim();
+
+test(
+  "real terminal: authenticated browser Enter renews Pi turns; model loops and resize frames cannot",
+  { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 150000 },
+  async () => {
+    const h = await continuityTerminal((body) => {
+      const { turn, results } = turnOf(body);
+      if (results.length < 11)
+        return toolCall(
+          "studio_operator_list_members",
+          {},
+          `r_${turn}_${results.length}`,
+        );
+      if (results.length === 11)
+        return toolCall(
+          "studio_operator_send_message",
+          { member_ref: "fixture-member", text: `Intentional ${turn}` },
+          `s_${turn}`,
+        );
+      return answer(
+        `TERM_${turn}_${results.at(-1)!.includes("delivered") ? "SENT" : "UNSENT"}`,
+      );
+    });
+    try {
+      h.type("Perform the first synthetic task\r");
+      await h.waitFor(() => h.output().includes("TERM_first_SENT"), "first");
+      h.resize();
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(h.f.named("studio_operator_advance_turn").length, 0);
+      assert.ok(h.f.providerCalls() >= 13, "model loop alone never advanced");
+      h.type("Perform the second synthetic task\r");
+      await h.waitFor(() => h.output().includes("TERM_second_SENT"), "second");
+      assert.equal(h.f.named("studio_operator_advance_turn").length, 1);
+      assert.equal(h.f.named("studio_operator_list_members").length, 22);
+      assert.deepEqual(
+        h.f.state.messages.map((m) => [m.text, m.generation]),
+        [
+          ["Intentional first", 0],
+          ["Intentional second", 1],
+        ],
+      );
+      assert.equal(h.f.named("studio_operator_open_session").length, 1);
+      assert.deepEqual(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+);
+
+test(
+  "real terminal: continuity denial closes the browser session and destroys the runtime without reopening",
+  { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 150000 },
+  async () => {
+    const h = await continuityTerminal((body) => {
+      const { turn, results } = turnOf(body);
+      if (turn === "first" && !results.length)
+        return toolCall(GENERIC, { topic: "private" }, "g_first");
+      return answer(`TERM_${turn}_ANSWERED`);
+    });
+    try {
+      h.type("Read the first private synthetic source\r");
+      await h.waitFor(
+        () => h.output().includes("TERM_first_ANSWERED"),
+        "first answer",
+      );
+      assert.notEqual(owned(), "");
+      const before = h.f.providerCalls();
+      h.f.state.revoked = true;
+      h.type("Answer the second question from retained context\r");
+      await h.waitFor(() => h.closeCode() !== undefined, "browser close");
+      assert.equal(h.closeCode(), 1008);
+      assert.match(h.errors.join("\n"), /revoked or expired/);
+      await h.waitFor(() => owned() === "", "runtime destruction");
+      assert.equal(h.f.providerCalls(), before);
+      assert.equal(h.f.named("studio_operator_open_session").length, 1);
+      assert.ok(h.f.named("studio_operator_close_session").length >= 1);
+      assert.notEqual(h.f.state.status, "active");
+      // A later Start is a new, empty runtime; nothing reopened this one.
+      assert.equal(
+        (
+          await fetch(h.app.origin + "/api/terminal/ticket", {
+            method: "POST",
+            headers: h.headers,
+            body: "{}",
+          })
+        ).status,
+        200,
+      );
+      assert.equal(h.f.named("studio_operator_open_session").length, 1);
+    } finally {
+      await h.close();
     }
   },
 );
