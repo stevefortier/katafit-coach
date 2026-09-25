@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Ajv } from "ajv";
+import { fullFormats } from "ajv-formats/dist/formats.js";
 import { Client } from "./client.js";
 import { assertNoSecrets } from "../config/store.js";
 import { dimensions } from "./studio.js";
@@ -271,6 +272,7 @@ export async function openOperatorTools(
       removeAdditional: false,
       useDefaults: false,
     });
+    ajv.addFormat("date-time", fullFormats["date-time"]);
     const tools: AgentTool[] = [
       ROSTER,
       READ,
@@ -884,11 +886,26 @@ export async function openOperatorTools(
         : member_ref === undefined
           ? []
           : [{ name: READ, args: { limit: 1 }, items: [] }];
+      // Roster cursors bind a snapshot; refresh that chain instead of replaying
+      // cursors from a now-changed membership snapshot. Backend retained-source
+      // guards still authorize the evidence used by this turn.
+      let rosterStarted = false;
+      let rosterCursor: unknown;
       for (const read of checks) {
+        let args = read.args;
+        if (read.name === ROSTER) {
+          if (rosterStarted && !rosterCursor) continue;
+          args = { ...read.args };
+          delete args.cursor;
+          if (rosterStarted) args.cursor = rosterCursor;
+          rosterStarted = true;
+        }
         const value = await client.call(read.name, {
           session_id,
-          ...read.args,
+          ...args,
         });
+        if (read.name === ROSTER)
+          rosterCursor = value.has_more ? value.next_cursor : undefined;
         check();
         assertNoSecrets(value, options.secrets);
         if (

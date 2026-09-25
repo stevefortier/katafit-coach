@@ -9,8 +9,9 @@ import {
   symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { Store, compileOperator } from "../src/config/store.js";
+import { Actions } from "../src/chat/actions.js";
 import { admin } from "../src/server/admin.js";
 import { effectivePrompt, operatorPolicy } from "../src/runtime/prompt.js";
 
@@ -106,6 +107,276 @@ async function fixture(infer: Parameters<typeof admin>[2]) {
     },
   };
 }
+
+test("overlapping historical reconciliation never becomes a failed read's current action", async () => {
+  const reconciling = deferred<void>(),
+    releaseReconcile = deferred<void>(),
+    inferEntered = deferred<void>(),
+    releaseInfer = deferred<void>();
+  const original = Actions.prototype.reconcile;
+  const f = await fixture(async () => {
+    inferEntered.resolve();
+    await releaseInfer.promise;
+    throw new Error("READ_UNAVAILABLE");
+  });
+  const old = {
+    session_id: "historical-session",
+    idempotency_key: "historical-action",
+    status: "pending" as const,
+  };
+  try {
+    new Actions(f.store).save(old);
+    await f.restart();
+    Actions.prototype.reconcile = async function () {
+      reconciling.resolve();
+      await releaseReconcile.promise;
+      this.save({ ...old, status: "unknown" });
+    };
+    const get = f.call("/api/operator/chat");
+    await reconciling.promise;
+    const post = f.call("/api/operator/chat", {
+      text: "Read current evidence",
+    });
+    await inferEntered.promise;
+    releaseReconcile.resolve();
+    await get;
+    releaseInfer.resolve();
+    const result = await (await post).json();
+    assert.equal(result.error, "READ_UNAVAILABLE");
+    assert.equal(result.actions[0].status, "unknown");
+    assert.deepEqual(result.turnActions, []);
+  } finally {
+    releaseReconcile.resolve();
+    releaseInfer.resolve();
+    Actions.prototype.reconcile = original;
+    await f.close();
+  }
+});
+
+test("failed read turn separates historical uncertain writes from this turn's receipts", async () => {
+  const f = await fixture(async () => {
+    throw new Error("READ_UNAVAILABLE");
+  });
+  try {
+    new Actions(f.store).save({
+      session_id: "old-session",
+      idempotency_key: "old-write",
+      status: "unknown",
+    });
+    await f.restart();
+    const response = await f.call("/api/operator/chat", {
+      text: "Compare Alex and Morgan",
+    });
+    const result = await response.json();
+    assert.equal(result.error, "READ_UNAVAILABLE");
+    assert.equal(result.actions[0].status, "unknown");
+    assert.deepEqual(result.turnActions, []);
+    assert.doesNotMatch(result.hint, /receipts/);
+  } finally {
+    await f.close();
+  }
+});
+
+test("Operator inference diagnostics correlate with its Studio request", async () => {
+  const f = await fixture(async (provider) => {
+    provider.onDiagnostic?.({
+      source: "provider",
+      stage: "provider-payload",
+      metadata: { turn: 1 },
+      texts: [{ role: "tool", text: "Private synthetic member evidence" }],
+      calls: [
+        {
+          name: "studio_operator_read_member_coach_feed",
+          argumentKeys: ["member_ref"],
+          arguments: '{"member_ref":"sensitive-member-ref"}',
+        },
+      ],
+    });
+    return "Synthetic answer";
+  });
+  try {
+    await (
+      await f.call("/api/operator/chat", { text: "Discuss coaching" })
+    ).json();
+    const logs = await (await f.call("/api/logs")).json();
+    const events = logs.entries.filter(
+      (e: any) => e.stage === "provider-payload",
+    );
+    assert.equal(
+      events.length,
+      1,
+      "Operator must wire diagnostics, not just Worker",
+    );
+    assert.ok(events[0].ref);
+    const stages = logs.entries
+      .filter((e: any) => e.ref === events[0].ref)
+      .map((e: any) => e.stage);
+    assert.ok(stages.includes("connecting"));
+    assert.ok(stages.includes("reads-ready"));
+    assert.ok(stages.includes("inference"));
+    const persisted = await readFile(f.dir + "/diagnostics.jsonl", "utf8");
+    assert.doesNotMatch(
+      persisted,
+      /Private synthetic member evidence|sensitive-member-ref/,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test(
+  "streaming Operator disconnect still cancels inference and cannot publish a late answer",
+  { timeout: 5000 },
+  async () => {
+    const entered = deferred<void>();
+    const aborted = deferred<void>();
+    const release = deferred<string>();
+    const f = await fixture(async (_p, _s, _c, signal) => {
+      signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+      entered.resolve();
+      return release.promise;
+    });
+    const controller = new AbortController();
+    try {
+      const response = await fetch(f.origin + "/api/operator/chat", {
+        method: "POST",
+        headers: {
+          ...f.headers(),
+          Accept: "application/vnd.katafit.operator+json",
+        },
+        body: JSON.stringify({ text: "Compare Alex and Morgan" }),
+        signal: controller.signal,
+      });
+      await response.body!.getReader().read();
+      await entered.promise;
+      controller.abort();
+      await aborted.promise;
+      release.resolve("Late private answer");
+      const snapshot = await (await f.call("/api/operator/chat")).json();
+      assert.deepEqual(snapshot.messages, []);
+      assert.equal(
+        (await (await f.call("/api/status")).json()).operatorChat,
+        false,
+      );
+    } finally {
+      controller.abort();
+      release.resolve("cleanup");
+      await f.close();
+    }
+  },
+);
+
+test(
+  "recurring Operator heartbeats survive a real idle-timeout HTTP proxy",
+  { timeout: 30000 },
+  async () => {
+    let aborted = false;
+    const f = await fixture(async (_p, _s, _c, signal) => {
+      signal.addEventListener(
+        "abort",
+        () => {
+          aborted = true;
+        },
+        { once: true },
+      );
+      await new Promise((r) => setTimeout(r, 22000));
+      return "Verified delayed answer";
+    });
+    let chunks = 0;
+    let timedOut = false;
+    const proxy = createServer((req, res) => {
+      const upstream = request(
+        f.origin + req.url,
+        {
+          method: req.method,
+          headers: { ...req.headers, host: new URL(f.origin).host },
+        },
+        (response) => {
+          res.writeHead(response.statusCode!, response.headers);
+          response.on("data", () => {
+            chunks++;
+          });
+          response.pipe(res);
+        },
+      );
+      upstream.setTimeout(12000, () => {
+        timedOut = true;
+        upstream.destroy();
+        res.destroy();
+      });
+      upstream.on("error", () => res.destroy());
+      res.on("close", () => upstream.destroy());
+      req.pipe(upstream);
+    });
+    try {
+      await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+      const response = await fetch(
+        `http://127.0.0.1:${(proxy.address() as any).port}/api/operator/chat`,
+        {
+          method: "POST",
+          headers: {
+            ...f.headers(),
+            Accept: "application/vnd.katafit.operator+json",
+          },
+          body: JSON.stringify({ text: "Compare Alex and Morgan" }),
+          signal: AbortSignal.timeout(28000),
+        },
+      );
+      assert.equal((await response.json()).text, "Verified delayed answer");
+      assert.ok(
+        chunks >= 4,
+        "initial byte, recurring heartbeats, and terminal result",
+      );
+      assert.equal(timedOut, false);
+      assert.equal(aborted, false);
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>((r) => proxy.close(() => r()));
+      await f.close();
+    }
+  },
+);
+
+test("streaming Operator request receives bytes before inference completes and preserves terminal errors", async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const f = await fixture(async () => {
+    entered.resolve();
+    await release.promise;
+    throw new Error("PROVIDER_TIMEOUT");
+  });
+  try {
+    const responsePromise = fetch(f.origin + "/api/operator/chat", {
+      method: "POST",
+      headers: {
+        ...f.headers(),
+        Accept: "application/vnd.katafit.operator+json",
+      },
+      body: JSON.stringify({
+        text: "Tell me what you think about Alex vs Morgan",
+      }),
+      signal: AbortSignal.timeout(2000),
+    });
+    await entered.promise;
+    const response = await responsePromise;
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    assert.equal(Buffer.from(first.value!).toString().trim(), "");
+    assert.equal(response.headers.get("x-accel-buffering"), "no");
+    release.resolve();
+    let text = Buffer.from(first.value!).toString();
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      text += Buffer.from(next.value).toString();
+    }
+    assert.equal(JSON.parse(text).error, "PROVIDER_TIMEOUT");
+    assert.deepEqual(JSON.parse(text).actions, []);
+  } finally {
+    release.resolve();
+    await f.close();
+  }
+});
 
 test("default Discussion photo request never borrows a member command session or invents visible images", async () => {
   const calls: any[] = [];

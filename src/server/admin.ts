@@ -1,4 +1,5 @@
 import { OperatorChat } from "../chat/operator.js";
+import type { OperatorAction } from "../katafit/operatorTools.js";
 import { StudioReads } from "../katafit/studio.js";
 import { Updates } from "../update/updates.js";
 import { AutoUpdateSetting } from "../update/auto.js";
@@ -44,8 +45,11 @@ export async function admin(
   const server = createServer(async (req, res) => {
     const ref = randomUUID();
     const started = Date.now();
+    let operatorTurnActions: Map<string, OperatorAction> | undefined;
     const send = (status: number, data: unknown) => {
-      res.writeHead(status, { "Content-Type": "application/json" });
+      if (res.destroyed || res.writableEnded) return;
+      if (!res.headersSent)
+        res.writeHead(status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(data));
     };
     res.setHeader("Cache-Control", "no-store");
@@ -353,11 +357,53 @@ export async function admin(
           Object.keys(body).some((k) => k !== "text")
         )
           throw new SafeError("INVALID_PREVIEW");
+        operatorTurnActions = new Map();
         const cancel = () => chat.cancel();
         res.once("close", cancel);
+        // Negotiated JSON streaming: whitespace keeps idle proxies alive while
+        // retaining one terminal JSON object. HTTP 200 means accepted; callers
+        // must inspect the terminal error field, not just the HTTP status.
+        let heartbeat: NodeJS.Timeout | undefined;
+        if (req.headers.accept === "application/vnd.katafit.operator+json") {
+          res.writeHead(200, {
+            "Content-Type": "application/vnd.katafit.operator+json",
+            "X-Accel-Buffering": "no",
+          });
+          res.write("\n");
+          heartbeat = setInterval(() => {
+            if (!res.destroyed && !res.writableEnded) res.write("\n");
+          }, 10000);
+          heartbeat.unref();
+        }
         try {
-          return send(200, await chat.turn(body.text));
+          return send(
+            200,
+            await chat.turn(
+              body.text,
+              (event) =>
+                logs.record({
+                  source: event.source,
+                  stage: event.stage,
+                  level: event.level,
+                  metadata: {
+                    ...event.metadata,
+                    elapsedMs: Date.now() - started,
+                  },
+                  shape: event.shape,
+                  receipt: event.receipt,
+                  // Operator evidence remains ephemeral: never persist model/tool
+                  // prose, arguments, member references, previews or rejection text.
+                  ref,
+                }),
+              (action) =>
+                operatorTurnActions!.set(
+                  JSON.stringify([action.session_id, action.idempotency_key]),
+                  { ...action },
+                ),
+            ),
+          );
         } finally {
+          clearInterval(heartbeat);
           res.removeListener("close", cancel);
         }
       }
@@ -580,10 +626,14 @@ export async function admin(
         };
         try {
           const actions = chat.snapshot().actions;
+          const turnActions = operatorTurnActions
+            ? [...operatorTurnActions.values()]
+            : undefined;
           operatorOutcome = {
             ...operatorOutcome,
             actions,
-            hint: actions.length
+            turnActions,
+            hint: (turnActions ?? actions).length
               ? failure.hint + " Review action receipts before retry."
               : failure.hint,
             receiptsUnavailable: false,
