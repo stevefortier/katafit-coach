@@ -83,6 +83,19 @@ The installed stable launcher and protocol stay fixed while managed runtime sour
 
 ## Verification
 
+For clean protocol-2 builds, first build the exact sandbox artifact as in
+[native-bootstrap.md](native-bootstrap.md), then pass its immutable local ID as
+`NATIVE_TEST_IMAGE` to `npm run test:package` and `npm run test:updates-package`.
+Those scripts provision and exercise native bootstrap from the actual installed
+production-only package. The updater package's subsequent good/crash/good source
+fixtures are explicitly protocol 1 to retain legacy rollback coverage without
+inventing an image service. The opt-in `NATIVE_DOCKER_TEST=1` native deployment
+matrix separately verifies real native A→B pairing, missing artifacts, failed
+post-stop activation, restart and image-pointer drift, using synthetic candidate
+identities (not published releases). CI runs both matrices. Daemon-independent
+CLI/supervisor tests use explicit legacy fixtures, never a production bypass.
+
+
 `npm test` builds and exercises revision checking, explicit confirmation/auth fences, metadata, isolated staging, child replacement, incompatible Store probing, immediate and delayed startup rollback, stable port/auth/data, disabled support and legacy-platform behavior. `npm run test:package` verifies the normal production-only package.
 
 `npm run test:updates-package` performs actual packed CLI upgrades through synthetic local Git commits: good revision → startup-crashing revision/rollback → second good revision, then normal restart and SIGKILL recovery. The only substitution is a code-loaded trusted GitHub/Git boundary; no production source override exists. It also runs in the managed nonroot Docker environment. `npm run test:updates-browser` exercises the real Studio/API with synthetic source transport and records desktop/mobile evidence. These tests do not update a real user installation, call a real model, or prove a production deployment.

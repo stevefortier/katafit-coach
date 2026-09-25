@@ -7,8 +7,8 @@ import type { supervise as realSupervise } from "../../src/update/supervisor.js"
  * The production launcher has no environment or HTTP bypass for native checks.
  * Real protocol-2 pairs are exercised by native-deployment.test.ts with Docker.
  */
-export async function supervise(...args: Parameters<typeof realSupervise>) {
-  const root = join(args[0].dir, "legacy-bootstrap-fixture");
+async function legacyRoot(home: string) {
+  const root = join(home, "legacy-bootstrap-fixture");
   try {
     await access(join(root, "package.json"));
   } catch {
@@ -22,6 +22,18 @@ export async function supervise(...args: Parameters<typeof realSupervise>) {
     );
     await writeFile(join(root, "package.json"), '{"type":"module"}');
   }
+  return root;
+}
+export async function activateLegacyFixture(home: string) {
+  const root = await legacyRoot(home),
+    revision = "1".repeat(40);
+  await cp(root, join(home, "versions", revision), { recursive: true });
+  await writeFile(join(home, "active.json"), JSON.stringify({ revision }), {
+    mode: 0o600,
+  });
+}
+export async function supervise(...args: Parameters<typeof realSupervise>) {
+  const root = await legacyRoot(args[0].dir);
   const module = await import(
     pathToFileURL(join(root, "src/update/supervisor.ts")).href
   );
