@@ -158,6 +158,9 @@ async function api(path, body, signal) {
       headers: {
         Authorization: "Bearer " + requestKey,
         "Content-Type": "application/json",
+        ...(path === "operator/chat" && body !== undefined
+          ? { Accept: "application/vnd.katafit.operator+json" }
+          : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal,
@@ -191,7 +194,7 @@ async function api(path, body, signal) {
   }
   if (generation !== authGeneration || requestKey !== key)
     throw staleAuthentication();
-  if (!r.ok) {
+  if (!r.ok || (path === "operator/chat" && typeof data?.error === "string")) {
     if (r.status === 401) {
       lockSession(
         "Studio authorization expired. Unlock again with the current admin key.",
@@ -207,6 +210,8 @@ async function api(path, body, signal) {
     error.code = data.error;
     if (path === "operator/chat" && Array.isArray(data.actions))
       error.actions = data.actions;
+    if (path === "operator/chat" && Array.isArray(data.turnActions))
+      error.turnActions = data.turnActions;
     throw error;
   }
   return data;
@@ -1012,6 +1017,38 @@ async function loadOperator() {
         "Operator history is unavailable. Try unlocking Studio again.";
   }
 }
+function operatorFailureStatus(error) {
+  const receipts = Array.isArray(error.turnActions)
+    ? error.turnActions
+    : error.actions;
+  if (
+    Array.isArray(receipts) &&
+    receipts.some((a) => a.status === "unknown" || a.status === "pending")
+  )
+    return "Coach could not complete this response. Action outcome unknown; review receipts before retrying that action.";
+  if (
+    Array.isArray(receipts) &&
+    receipts.some((a) => a.status === "delivered" || a.status === "completed")
+  )
+    return "The requested action completed, but the Coach response did not. Review its receipt; do not repeat the action.";
+  if (!error.code)
+    return "The connection ended and the Coach result was not received. Reconnect before retrying; if you requested an action, check its receipts first.";
+  const messages = {
+    READ_UNAVAILABLE:
+      "Authorized member data is temporarily unavailable. Try again later.",
+    BACKEND_TIMEOUT:
+      "Kata.fit timed out while preparing or reading this request. Try again later.",
+    BACKEND_INSTRUCTIONS_UNAVAILABLE:
+      "Kata.fit instructions are unavailable. Check the connection and retry.",
+    PROVIDER_TIMEOUT:
+      "The model provider timed out before completing this response. Try again later.",
+    CANCELLED: "This Operator response was cancelled.",
+  };
+  return (
+    messages[error.code] ||
+    "Coach could not complete this response. Check diagnostics for the cause."
+  );
+}
 $("operatorForm").onsubmit = async (event) => {
   event.preventDefault();
   const text = $("operatorText").value.trim();
@@ -1060,16 +1097,7 @@ $("operatorForm").onsubmit = async (event) => {
     operatorMessages = previous;
     if (Array.isArray(error.actions)) renderOperatorActions(error.actions);
     if (!$("operatorText").value) $("operatorText").value = text;
-    const uncertain =
-      !Array.isArray(error.actions) ||
-      error.actions.some(
-        (action) => action.status === "unknown" || action.status === "pending",
-      );
-    $("operatorStatus").textContent = uncertain
-      ? "Coach could not complete this response. Check delivery status before retrying a member message."
-      : error.code === "READ_UNAVAILABLE"
-        ? "Not enough authorized member data to compare. Try again."
-        : "Coach could not complete this response. Try again.";
+    $("operatorStatus").textContent = operatorFailureStatus(error);
   } finally {
     if (epoch === operatorEpoch && generation === authGeneration) {
       operatorBusy = false;

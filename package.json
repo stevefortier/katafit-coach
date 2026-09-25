@@ -30,6 +30,7 @@
     "@earendil-works/pi-agent-core": "0.86.1",
     "@earendil-works/pi-ai": "0.86.1",
     "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "sharp": "0.35.4"
   },
   "devDependencies": {

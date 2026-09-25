@@ -10,6 +10,7 @@ import {
   rm,
   mkdir,
   readdir,
+  rename,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -114,6 +115,14 @@ const receipt = {
 const secrets = [];
 let mongo, client, server, studio, dir, fixture, current, db, store;
 const calls = [];
+async function checkpoint() {
+  let serialized = JSON.stringify(receipt, null, 2);
+  for (const secret of secrets.filter(Boolean))
+    serialized = serialized.split(secret).join("[REDACTED]");
+  await mkdir(dirname(output), { recursive: true });
+  await writeFile(output + ".tmp", serialized + "\n", { mode: 0o600 });
+  await rename(output + ".tmp", output);
+}
 try {
   for (const name of await readdir(here))
     if (name.startsWith("operator-question-bank"))
@@ -585,6 +594,7 @@ try {
         if (e.transport) turn.transport = e.transport;
         turn.calls = calls.slice(start);
       }
+      await checkpoint();
       console.log(
         JSON.stringify({
           id: turn.id,
@@ -623,11 +633,7 @@ try {
       (receipt.cleanupErrors ||= []).push(e.message);
     }
   if (receipt.cleanupErrors) receipt.status = "fail";
-  let serialized = JSON.stringify(receipt, null, 2);
-  for (const secret of secrets.filter(Boolean))
-    serialized = serialized.split(secret).join("[REDACTED]");
-  await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, serialized + "\n", { mode: 0o600 });
+  await checkpoint();
   console.log(
     JSON.stringify({
       status: receipt.status,

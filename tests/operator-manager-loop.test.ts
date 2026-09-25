@@ -7,6 +7,77 @@ import { Client } from "../src/katafit/client.js";
 import { openOperatorTools } from "../src/katafit/operatorTools.js";
 import { OperatorChat } from "../src/chat/operator.js";
 import { fixture } from "./operator-checkins.test.js";
+import { History } from "../src/chat/history.js";
+
+test("ephemeral reads retain only bounded user request context for followups, never old evidence", async () => {
+  const backend = await fixture({ two: true });
+  const dir = await mkdtemp(tmpdir() + "/operator-followup-");
+  let chat: OperatorChat | undefined;
+  try {
+    const store = new Store(dir);
+    await store.init();
+    await store.save({
+      ...store.publicConfig(),
+      origin: backend.origin,
+      token: "synthetic-token",
+    });
+    const persisted = [
+      { role: "user" as const, text: "Compare Alex and Morgan" },
+      {
+        role: "assistant" as const,
+        text: "Bring me their feeds; I have no tools.",
+      },
+    ];
+    new History(dir).save(persisted);
+    const contexts: any[] = [];
+    chat = new OperatorChat(
+      store,
+      async (_p, prompt, context, _signal, tools = []) => {
+        contexts.push(JSON.parse(context));
+        if (contexts.length === 2)
+          assert.deepEqual(contexts[1].recent_operator_requests, [
+            "How many workouts did Alex complete between September 1 and 7, 2025?",
+          ]);
+        await tools
+          .find((t) => t.name === "studio_operator_read_member_coach_feed")!
+          .execute("read", { member_ref: "member-photo" });
+        return "Private synthetic read-derived answer";
+      },
+    );
+    const first =
+      "How many workouts did Alex complete between September 1 and 7, 2025?";
+    await chat.turn(first);
+    await chat.turn("And what about his nutrition in that same week?");
+    assert.deepEqual(contexts[1].recent_operator_requests, [first]);
+    assert.doesNotMatch(
+      JSON.stringify(contexts[1]),
+      /Private synthetic read-derived answer/,
+    );
+    assert.deepEqual(
+      new History(dir).load(),
+      persisted,
+      "do not clear old history or persist new member turns",
+    );
+    assert.ok(
+      backend.calls.filter(
+        (name) => name === "studio_operator_read_member_coach_feed",
+      ).length >= 2,
+    );
+    await chat.clear();
+    await chat.turn("Who are we discussing?");
+    assert.deepEqual(contexts[2].recent_operator_requests, []);
+    await store.save({
+      ...store.publicConfig(),
+      persona: { ...store.publicConfig().persona, name: "Same Coach, edited" },
+    });
+    await chat.turn("Which week?");
+    assert.deepEqual(contexts[3].recent_operator_requests, []);
+  } finally {
+    await chat?.cancel();
+    await backend.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 async function run(
   text: string,

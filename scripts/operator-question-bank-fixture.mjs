@@ -141,6 +141,44 @@ export async function seed({ db, require }) {
       "progress check-in",
     );
   }
+  // Creation is not completion chronology: a scheduled Steve record predates
+  // the requested week, while Kai created next week's completed record inside it.
+  for (const type of ["workout", "meal"]) {
+    docs.find(
+      (d) =>
+        d.user_id.equals(ids.Steve) &&
+        d.type === type &&
+        d.completed_at
+          ?.toISOString()
+          .startsWith(type === "workout" ? "2025-09-02" : "2025-09-03"),
+    ).created_at = new Date("2025-08-30T12:00:00Z");
+    docs.find(
+      (d) =>
+        d.user_id.equals(ids.Kai) &&
+        d.type === type &&
+        d.completed_at?.toISOString().startsWith("2025-09-08"),
+    ).created_at = new Date("2025-09-04T12:00:00Z");
+  }
+  const inWeek = (date) =>
+    date >= new Date("2025-09-01T00:00:00Z") &&
+    date < new Date("2025-09-08T00:00:00Z");
+  for (const type of ["workout", "meal"]) {
+    assert.ok(
+      docs.some(
+        (d) =>
+          d.type === type && inWeek(d.completed_at) && !inWeek(d.created_at),
+      ),
+      "fixture must distinguish in-window completion from creation: " + type,
+    );
+    assert.ok(
+      docs.some(
+        (d) =>
+          d.type === type && !inWeek(d.completed_at) && inWeek(d.created_at),
+      ),
+      "fixture must distinguish out-of-window completion from creation: " +
+        type,
+    );
+  }
   await db.collection("activities").insertMany(docs);
   assert.equal(await db.collection("dojo_members").countDocuments(), 31);
   for (const [name, completed, planned] of [
@@ -150,10 +188,22 @@ export async function seed({ db, require }) {
     const week = {
       user_id: ids[name],
       type: "workout",
-      created_at: {
-        $gte: new Date("2025-09-01T00:00:00Z"),
-        $lt: new Date("2025-09-08T00:00:00Z"),
-      },
+      $or: [
+        {
+          status: "complete",
+          completed_at: {
+            $gte: new Date("2025-09-01T00:00:00Z"),
+            $lt: new Date("2025-09-08T00:00:00Z"),
+          },
+        },
+        {
+          status: "pending",
+          due_at: {
+            $gte: new Date("2025-09-01T00:00:00Z"),
+            $lt: new Date("2025-09-08T00:00:00Z"),
+          },
+        },
+      ],
     };
     assert.equal(
       await db.collection("activities").countDocuments(week),

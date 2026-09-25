@@ -201,7 +201,7 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
     await page.waitForFunction(() =>
       document
         .querySelector("#operatorStatus")
-        ?.textContent?.includes("could not complete"),
+        ?.textContent?.includes("model provider timed out"),
     );
     assert.doesNotMatch(
       await page.locator("#operatorStatus").innerText(),
@@ -214,7 +214,9 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
       () =>
         document
           .querySelector("#operatorStatus")
-          ?.textContent?.includes("Not enough authorized member data"),
+          ?.textContent?.includes(
+            "Authorized member data is temporarily unavailable",
+          ),
       null,
       { timeout: 1200 },
     );
@@ -240,7 +242,7 @@ test("actual Studio document decodes authenticated Blob cards and revokes on cle
     assert.equal(await page.locator("#operatorReconcile").isVisible(), true);
     assert.match(
       await page.locator("#operatorStatus").innerText(),
-      /delivery status/i,
+      /Action outcome unknown.*review receipts/i,
     );
     await page.close();
   } finally {

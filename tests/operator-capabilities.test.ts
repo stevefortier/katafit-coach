@@ -41,6 +41,115 @@ const descriptor = (
   },
 });
 
+test("roster reauthorization starts fresh pagination rather than replaying stale snapshot cursors", async () => {
+  let version = "original";
+  const f = await operatorBackend((name, result, body) => {
+    if (name === "tools/list")
+      result.tools.push({ name: "studio_operator_list_members" });
+    if (name === "studio_operator_open_session") {
+      Object.assign(result, descriptor(["studio_operator_list_members"]), {
+        mode: "dojo_operator",
+      });
+      delete result.member_ref;
+    }
+    if (name === "studio_operator_list_members") {
+      const cursor = body.params.arguments.cursor;
+      return {
+        schema_version: !cursor || cursor === version + "-next" ? 1 : 0,
+        members: [{ member_ref: "member-current", display_name: "Current" }],
+        has_more: !cursor,
+        next_cursor: cursor ? null : version + "-next",
+      };
+    }
+    return result;
+  });
+  try {
+    const session = await openOperatorTools(
+      new Client(f.origin, "synthetic-token", AbortSignal.timeout(5000)),
+      undefined,
+      { secrets: [], onAction: () => {} },
+    );
+    try {
+      const roster = session.tools[0];
+      await roster.execute("first", {});
+      await roster.execute("next", { cursor: "original-next" });
+      version = "refreshed";
+      const before = f.calls.length;
+      await session.authorize();
+      assert.deepEqual(
+        f.calls
+          .slice(before)
+          .filter((c) => c.params?.name === roster.name)
+          .map((c) => c.params.arguments.cursor ?? null),
+        [null, "refreshed-next"],
+      );
+    } finally {
+      await session.dispose();
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("backend-advertised date-time filters negotiate and validate calendar dates before dispatch", async () => {
+  const f = await operatorBackend((name, result) => {
+    if (name === "tools/list") {
+      result.tools.find(
+        (t: any) => t.name === "studio_operator_read_member_coach_feed",
+      ).inputSchema = {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          session_id: { type: "string" },
+          member_ref: { type: "string" },
+          created_after: { type: "string", format: "date-time" },
+          created_before: { type: "string", format: "date-time" },
+          order: { type: "string", enum: ["asc", "desc"] },
+        },
+        required: ["session_id", "member_ref"],
+      };
+    }
+    return result;
+  });
+  try {
+    const session = await openOperatorTools(
+      new Client(f.origin, "synthetic-token", AbortSignal.timeout(5000)),
+      "member-fixture",
+      { secrets: [], onAction: () => {} },
+    );
+    try {
+      const read = session.tools.find(
+        (t) => t.name === "studio_operator_read_member_coach_feed",
+      )!;
+      for (const value of [
+        "not-a-date",
+        "2025-02-30T12:00:00Z",
+        "2025-09-01T12:00:00",
+      ])
+        await assert.rejects(
+          read.execute("invalid", { created_after: value }),
+          /ARGUMENTS_REJECTED/,
+        );
+      const args = {
+        created_after: "2025-09-01T00:00:00-04:00",
+        created_before: "2025-09-08T00:00:00Z",
+        order: "desc",
+      };
+      await read.execute("valid", args);
+      const calls = f.calls.filter((c) => c.params?.name === read.name);
+      assert.equal(calls.length, 1);
+      assert.deepEqual(calls[0].params.arguments, {
+        session_id: "session-fixture",
+        ...args,
+      });
+    } finally {
+      await session.dispose();
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 test("validates a version-one descriptor and renders bounded coverage, pagination and receipt guidance", () => {
   const validated = validateOperatorCapabilities(descriptor());
   assert.ok(validated);
