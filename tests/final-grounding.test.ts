@@ -69,6 +69,12 @@ test("opt-in reviews a private draft in the same context with no tool declaratio
       JSON.stringify(requests[1].messages),
       /unequal inventory coverage alone/,
     );
+    assert.match(JSON.stringify(requests[1].messages), /concise direct answer/);
+    assert.match(
+      JSON.stringify(requests[1].messages),
+      /created_at with completed_at/,
+    );
+    assert.match(JSON.stringify(requests[1].messages), /different months/);
     assert.doesNotMatch(JSON.stringify(events), /DRAFT_PRIVATE|REVIEWED_FINAL/);
     for (const event of events) {
       assert.equal(event.preview, undefined);
