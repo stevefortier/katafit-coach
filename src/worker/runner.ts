@@ -537,7 +537,11 @@ export class Worker {
         JSON.stringify(taskSchema(task.kind)) +
         (task.kind === "activity_reaction"
           ? "\nSemantic constraint: activity_feedback.reply_worthwhile must equal Boolean(general_advice). If you write nonempty general_advice, set reply_worthwhile to true; if reply_worthwhile is false, general_advice must be empty."
+          : "") +
+        (task.kind === "workout_suggestions"
+          ? '\nWorkout output: recommendations is an object keyed by the exact exercise IDs from the workout context, not an array or a single summary. Cover each exercise in that workout using its exact key (1 to 40 entries); never use the workout ID as an exercise key. Do not invent IDs, history, or evidence. Shape template only: {"recommendations":{"<exact exercise ID from context>":{"summary":"","target_weight":null}}}. Replace the placeholder with a context exercise ID; do not output the placeholder. Each entry requires summary (string, at most 1000 characters). Optional numeric targets must be JSON numbers within the schema bounds, or null when unknown; sets/reps/duration must be integers. Intensity is low, moderate, high, or null. Omit unsupported optional fields; no extra fields. Use evidence-grounded advice, not example claims or invented loads. Return the actual complete JSON object, at most 24000 UTF-8 bytes, not a description of it.'
           : "");
+      let repairHint = "";
       let result: any;
       for (let attempt = 0; attempt < 2; attempt++) {
         const text = await bounded(
@@ -547,7 +551,8 @@ export class Worker {
               signal,
               system +
                 (attempt === 1
-                  ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose, tools or Markdown code fences. The rejected result is not available."
+                  ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose, tools or Markdown code fences. The rejected result is not available. Structural correction: " +
+                    repairHint
                   : ""),
               [],
               ref,
@@ -607,6 +612,7 @@ export class Worker {
             Math.min(deadline, deadlineAt) - Date.now() < 5000
           )
             throw error;
+          repairHint = error.repairHint;
           phase = "provider";
         }
       }

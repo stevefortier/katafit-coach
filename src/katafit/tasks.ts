@@ -216,9 +216,51 @@ export class TaskOutputError extends Error {
   constructor(
     readonly category: TaskOutputCategory,
     readonly reason: string,
+    readonly repairHint: string = "Return one JSON object matching the local schema and semantic constraints.",
   ) {
     super("OUTPUT_REJECTED");
   }
+}
+// Only local catalog field names and fixed instructions may cross the repair
+// boundary. Ajv instancePath, message, data and params can contain model text.
+function schemaRepairHint(kind: string, errors: any[] = []): string {
+  const messages: Record<string, string> = {
+    type: "must match the allowed types",
+    anyOf: "must match one allowed schema alternative",
+    required: "must include all required fields",
+    additionalProperties: "must not contain extra fields",
+    pattern: "must match the schema format",
+    propertyNames: "must use keys matching the schema format",
+    enum: "must use an allowed enum value",
+    minimum: "must meet the schema minimum",
+    maximum: "must not exceed the schema maximum",
+    minLength: "must meet the schema minimum length after trimming",
+    maxLength: "must not exceed the schema maximum length",
+    maxItems: "must not exceed the schema item limit",
+  };
+  const hints = errors.slice(0, 6).map((error) => {
+    let schema = taskSchema(kind);
+    const path: string[] = [];
+    // Resolve the schema path against the immutable local catalog, never emit
+    // a rejected object's dynamic keys (including otherwise valid workout IDs).
+    const parts = String(error.schemaPath).split("/").slice(1, -1);
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part === "properties" && schema?.properties) {
+        const key = parts[++i];
+        if (!Object.hasOwn(schema.properties, key)) break;
+        path.push(key);
+        schema = schema.properties[key];
+      } else if (part === "additionalProperties" || part === "items") {
+        path.push("*");
+        schema = schema?.[part];
+      } else if (part === "anyOf" && Array.isArray(schema?.anyOf)) {
+        schema = schema.anyOf[Number(parts[++i])];
+      } else break;
+    }
+    return `/${path.join("/")}: ${messages[error.keyword] ?? "must match the local schema"}`;
+  });
+  return [...new Set(hints)].join("; ").slice(0, 1200);
 }
 const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
@@ -252,6 +294,7 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
     throw new TaskOutputError(
       "JSON",
       error instanceof Error ? error.message : "JSON parser rejected output",
+      "Use valid JSON syntax: one object, double-quoted keys and strings, no trailing commas or surrounding prose.",
     );
   }
   // JSON escapes can conceal credentials from the raw-text scan. Recheck the
@@ -269,10 +312,15 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
     throw new TaskOutputError(
       "SCHEMA",
       JSON.stringify(validator?.errors ?? [{ message: "Unknown task kind" }]),
+      schemaRepairHint(kind, validator?.errors ?? []),
     );
   value = normalize(value, taskSchema(kind));
   if (!validator(value))
-    throw new TaskOutputError("SCHEMA", JSON.stringify(validator.errors ?? []));
+    throw new TaskOutputError(
+      "SCHEMA",
+      JSON.stringify(validator.errors ?? []),
+      schemaRepairHint(kind, validator.errors ?? []),
+    );
   if (
     (kind === "activity_reaction" &&
       value.activity_feedback.reply_worthwhile !==
@@ -283,6 +331,9 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
   )
     throw new TaskOutputError(
       "SEMANTIC",
+      kind === "activity_reaction"
+        ? "activity_feedback.reply_worthwhile must equal Boolean(general_advice)"
+        : "recommendations must have between 1 and 40 entries",
       kind === "activity_reaction"
         ? "activity_feedback.reply_worthwhile must equal Boolean(general_advice)"
         : "recommendations must have between 1 and 40 entries",
