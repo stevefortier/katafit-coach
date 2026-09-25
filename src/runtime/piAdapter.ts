@@ -237,6 +237,20 @@ function readGuidance(code?: string): string {
     return "The same failed read was already attempted. Do not repeat it; answer from verified evidence and state uncertainty.";
   return "Read unavailable within the authorized scope. Do not change authorization or infer inaccessible records; state what remains unverified.";
 }
+const uncertainAction =
+  "Action outcome unknown: no confirmed receipt is available. A failed follow-up does not prove it was unsent. Never retry an uncertain write automatically.";
+function toolFailureGuidance(name: string, content: any[]): string {
+  const text = content.find((part) => part.type === "text")?.text;
+  if (
+    text === uncertainAction ||
+    text === "DELIVERY_UNVERIFIED" ||
+    name === "studio_operator_send_message"
+  )
+    return uncertainAction;
+  // Preserve only our own safe diagnostics across transcript transformations.
+  for (const code of readCodes) if (text === readGuidance(code)) return text;
+  return readGuidance(readCode({ content }));
+}
 const CALL_LIMIT = 64;
 const TOTAL_INPUT_LIMIT = 48 * 1024 * 1024;
 const OUTPUT_TOKEN_LIMIT = 48000;
@@ -548,26 +562,7 @@ export async function complete(
               content: [
                 {
                   type: "text",
-                  text: tools.some(
-                    (t) => t.name === "studio_operator_send_message",
-                  )
-                    ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
-                    : m.content[0]?.type === "text" &&
-                        [
-                          "READ_NOT_FOUND",
-                          "READ_NOT_AUTHORIZED",
-                          "READ_LIMIT",
-                          "ARGUMENTS_REJECTED",
-                          "BACKEND_TIMEOUT",
-                          "READ_REPEAT_BLOCKED",
-                          "READ_UNAVAILABLE",
-                        ].some(
-                          (code) =>
-                            m.content[0].type === "text" &&
-                            m.content[0].text === readGuidance(code),
-                        )
-                      ? (m.content[0] as { type: "text"; text: string }).text
-                      : readGuidance(readCode({ content: m.content })),
+                  text: toolFailureGuidance(m.toolName, m.content),
                 },
               ],
               details: {},
@@ -636,11 +631,7 @@ export async function complete(
             content: [
               {
                 type: "text",
-                text: tools.some(
-                  (t) => t.name === "studio_operator_send_message",
-                )
-                  ? "Tool unavailable. Consult action receipts: a failed follow-up does not prove a send was unsent. Never retry automatically."
-                  : readGuidance(code),
+                text: toolFailureGuidance(toolCall.name, result.content),
               },
             ],
             details: {},

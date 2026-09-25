@@ -579,9 +579,13 @@ export async function admin(
           receiptsUnavailable: true,
         };
         try {
+          const actions = chat.snapshot().actions;
           operatorOutcome = {
             ...operatorOutcome,
-            actions: chat.snapshot().actions,
+            actions,
+            hint: actions.length
+              ? failure.hint + " Review action receipts before retry."
+              : failure.hint,
             receiptsUnavailable: false,
           };
         } catch {}

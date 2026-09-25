@@ -36,7 +36,7 @@ test("only executed, backend-validated tool images become ephemeral cards and au
           IMAGE,
         ],
       );
-      assert.match(JSON.parse(input).authority, /model chooses member_ref/);
+      assert.match(JSON.parse(input).authority, /authorized.*turn tools/i);
       const list = await tools
         .find((t) => t.name === LIST)!
         .execute("list", { limit: 10 });

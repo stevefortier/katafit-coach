@@ -23,6 +23,9 @@ export async function fixture(
     twoPages?: boolean;
     memberDojoTools?: boolean;
     duplicateMorgan?: boolean;
+    denyFeed?: string;
+    denyFeedLaterPage?: string;
+    failSend?: boolean;
   } = {},
 ) {
   const bytes = await sharp({
@@ -31,6 +34,7 @@ export async function fixture(
     .png()
     .toBuffer();
   const calls: string[] = [];
+  const callArgs: Array<{ name: string; args: any }> = [];
   const openings: any[] = [];
   let revoked = false;
   const row = {
@@ -121,6 +125,7 @@ export async function fixture(
     const body = JSON.parse(raw),
       name = body.params?.name;
     if (name) calls.push(name);
+    if (name) callArgs.push({ name, args: body.params.arguments });
     if (name === "studio_operator_open_session")
       openings.push(body.params.arguments);
     let result: any = {};
@@ -227,18 +232,40 @@ export async function fixture(
                   : "Authorized member feed: Morgan completed one synthetic workout this week.",
             },
           ],
-          has_more: false,
+          has_more:
+            options.denyFeedLaterPage === body.params.arguments.member_ref &&
+            !body.params.arguments.cursor,
+          next_cursor:
+            options.denyFeedLaterPage === body.params.arguments.member_ref &&
+            !body.params.arguments.cursor
+              ? "feed-next"
+              : null,
         },
       };
-    if (name === "studio_operator_send_message")
+    if (
+      name === "studio_operator_read_member_coach_feed" &&
+      (options.denyFeed === body.params.arguments.member_ref ||
+        (options.denyFeedLaterPage === body.params.arguments.member_ref &&
+          body.params.arguments.cursor))
+    )
       result = {
-        schema_version: 1,
-        session_id: "session-photo",
-        status: "delivered",
-        action_id: "action-photo",
-        message_id: "message-photo",
-        idempotent: false,
+        isError: true,
+        content: [{ type: "text", text: "READ_NOT_AUTHORIZED" }],
       };
+    if (name === "studio_operator_send_message")
+      result = options.failSend
+        ? {
+            isError: true,
+            content: [{ type: "text", text: "delivery status unavailable" }],
+          }
+        : {
+            schema_version: 1,
+            session_id: "session-photo",
+            status: "delivered",
+            action_id: "action-photo",
+            message_id: "message-photo",
+            idempotent: false,
+          };
     if (name === IMAGE)
       result =
         options.revoke || revoked
@@ -295,6 +322,7 @@ export async function fixture(
   return {
     bytes,
     calls,
+    callArgs,
     openings,
     revokeSharing() {
       revoked = true;

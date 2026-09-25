@@ -22,7 +22,7 @@ test("command service preserves delivered receipts after provider failure/restar
     0,
     async (_p, _s, context, _signal, tools = []) => {
       assert.deepEqual(JSON.parse(context).messages, [
-        { role: "user", text: "Send explicit hello" },
+        { role: "user", text: "Send Alex Recipient hello" },
       ]);
       await tools
         .find((t) => t.name === "studio_operator_list_members")!
@@ -52,7 +52,7 @@ test("command service preserves delivered receipts after provider failure/restar
     });
   try {
     const response = await call("/api/operator/chat", {
-      text: "Send explicit hello",
+      text: "Send Alex Recipient hello",
     });
     assert.equal(response.status, 400);
     const failure = await response.json();

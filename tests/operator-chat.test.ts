@@ -164,10 +164,7 @@ test("operator HTTP chat supplies explicit multi-turn local context and shared s
       calls[0].system,
       /Only explicitly supplied request-scoped read tools are available\. No mutations/,
     );
-    assert.match(
-      calls[0].system,
-      /operator session may send one explicit message to a selected member/i,
-    );
+    assert.match(calls[0].system, /backend-advertised session capabilities/i);
     assert.match(calls[0].system, /dojo.*trainees.*authorized/i);
     assert.match(
       calls[0].system,
@@ -198,7 +195,7 @@ test("operator HTTP chat supplies explicit multi-turn local context and shared s
     assert.match(calls[0].context.scope, /local operator/);
     assert.match(calls[0].context.authority, /no claimed request/);
     assert.match(calls[0].context.authority, /Operator session is unavailable/);
-    assert.match(calls[0].context.authority, /Settings/);
+    assert.match(calls[0].system, /Settings/);
     assert.deepEqual(f.paths, ["/api/agents/coach.md", "/api/agents/coach.md"]);
     assert.equal(
       (await (await f.call("/api/operator/chat")).json()).messages.length,
