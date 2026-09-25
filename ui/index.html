@@ -69,7 +69,14 @@
               role="log"
               aria-label="Operator conversation"
               aria-live="polite"
-            ></div>
+            >
+              <article
+                id="operatorCommandResult"
+                class="chat-message chat-assistant"
+                hidden
+                aria-label="Current command result"
+              ></article>
+            </div>
             <div
               id="operatorPending"
               class="chat-pending"
@@ -79,11 +86,6 @@
             >
               <span></span><span></span><span></span>
             </div>
-            <section
-              id="operatorCommandResult"
-              hidden
-              aria-label="Current command result"
-            ></section>
             <p id="operatorStatus" role="status"></p>
             <form id="operatorForm">
               <textarea

@@ -970,8 +970,10 @@ function operatorSnapshotLabel() {
       ? " · Unsaved Settings edits are not used."
       : " · Settings changes must be explicitly saved.");
 }
-function renderOperator() {
+function renderOperator(scrollToResult = false) {
   const list = $("operatorMessages");
+  // Keep the current read-derived result out of durable conversation state.
+  const currentResult = $("operatorCommandResult");
   const pinned = list.scrollHeight - list.clientHeight - list.scrollTop <= 40;
   list.replaceChildren();
   for (const message of operatorMessages) {
@@ -983,16 +985,18 @@ function renderOperator() {
     const bubble = document.createElement("article");
     bubble.className = "chat-message chat-" + message.role;
     const label = document.createElement("strong");
-    label.textContent = message.role === "user" ? "You · Manager" : "Coach";
+    label.textContent =
+      message.role === "user" ? "You · Manager" : "Coach · Saved history";
     const text = document.createElement("p");
     text.textContent = message.text;
     bubble.append(label, text);
 
     list.append(bubble);
   }
-  if (!operatorMessages.length)
+  if (!operatorMessages.length && currentResult.hidden)
     list.textContent = "Start a private conversation with your Coach.";
-  if (pinned) list.scrollTop = list.scrollHeight;
+  list.append(currentResult);
+  if (pinned || scrollToResult) list.scrollTop = list.scrollHeight;
   operatorScrollMax = list.scrollHeight - list.clientHeight;
   $("operatorPending").hidden = !operatorBusy;
 
@@ -1078,7 +1082,7 @@ $("operatorForm").onsubmit = async (event) => {
     ) {
       $("operatorCommandResult").hidden = false;
       $("operatorCommandResult").append(
-        detailText("h3", "Current Operator result · not retained in chat"),
+        detailText("strong", "Coach · Current result · not retained in chat"),
         detailText("p", data.text),
       );
       if (
@@ -1088,12 +1092,14 @@ $("operatorForm").onsubmit = async (event) => {
         $("operatorCommandResult").append(
           detailText("p", data.coverage_notice),
         );
+      renderOperator(true);
       if (Array.isArray(data.images))
         await showOperatorImages(data.images, view, generation);
     }
     operatorDraft = "";
   } catch (error) {
     if (epoch !== operatorEpoch || generation !== authGeneration) return;
+    clearCommandResult();
     operatorMessages = previous;
     if (Array.isArray(error.actions)) renderOperatorActions(error.actions);
     if (!$("operatorText").value) $("operatorText").value = text;
@@ -1101,7 +1107,9 @@ $("operatorForm").onsubmit = async (event) => {
   } finally {
     if (epoch === operatorEpoch && generation === authGeneration) {
       operatorBusy = false;
-      renderOperator();
+      renderOperator(
+        view === commandViewEpoch && !$("operatorCommandResult").hidden,
+      );
     }
   }
 };
