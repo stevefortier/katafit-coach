@@ -10,6 +10,8 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Real frozen protocol-1 launcher compatibility matrix.
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -18,7 +20,18 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: npm run build
+      - name: Build exact native sandbox artifact outside Pi
+        shell: bash
+        run: |
+          FP=$(node -p 'JSON.parse(require("fs").readFileSync("dist/build.json")).fingerprint')
+          docker build --pull=false -f sandbox/Dockerfile \
+            --build-arg KATAFIT_BUILD_REVISION="$(git rev-parse HEAD)" \
+            --build-arg KATAFIT_NATIVE_FINGERPRINT="$FP" \
+            --iidfile "$RUNNER_TEMP/native-image-id" .
+          printf 'NATIVE_TEST_IMAGE=%s\n' "$(node -p 'require("fs").readFileSync(process.env.RUNNER_TEMP+"/native-image-id","utf8").trim()')" >> "$GITHUB_ENV"
       - run: npm run test:package
+      - name: Verify real immutable native pair and isolated runtime
+        run: NATIVE_DOCKER_TEST=1 npx tsx --test --test-concurrency=1 tests/native-deployment.test.ts tests/native-runtime.test.ts tests/native-pi-path.test.ts tests/native-terminal.test.ts
       - name: Verify packed source upgrade, rollback and restart
         run: node scripts/updater-package-smoke.mjs
       - run: npm run test:browser

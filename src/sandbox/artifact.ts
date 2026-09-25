@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { managedFile } from "../update/managed.js";
 const exec = promisify(execFile);
+// Retain failed-removal ownership in the stable process. Abrupt process death
+// still requires the documented operator-owned orphan recovery procedure.
+const pendingCleanup = new Map<string, import("./runtime.js").NativeRuntime>();
 export const artifactRequired = "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED";
 export async function provisionArtifact(
   home: string,
@@ -135,6 +138,12 @@ export async function nativePreflight(
   const { metadata } = await import("../update/managed.js");
   const build = await metadata(root);
   if (build.protocol === 1) return undefined;
+  const key = resolve(home);
+  const previous = pendingCleanup.get(key);
+  if (previous) {
+    await previous.stop();
+    pendingCleanup.delete(key);
+  }
   const image = await nativeImage(home, root);
   const { NativeRuntime } = await import("./runtime.js");
   const runtime = new NativeRuntime(image);
@@ -177,6 +186,11 @@ export async function nativePreflight(
   } catch {
     throw new Error(artifactRequired);
   } finally {
-    await runtime.stop();
+    try {
+      await runtime.stop();
+    } catch (error) {
+      pendingCleanup.set(key, runtime);
+      throw error;
+    }
   }
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Store } from "../src/config/store.js";
-import { supervise } from "../src/update/supervisor.js";
+import { supervise } from "./helpers/legacy-supervisor.js";
 
 test("failed and interrupted accepted operations retain durable outcome across restart", async () => {
   const home = await mkdtemp(join(tmpdir(), "coach-outcome-"));

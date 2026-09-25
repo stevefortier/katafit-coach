@@ -51,6 +51,13 @@ try {
     { stdio: "pipe", timeout: 120000 },
   );
   cli = join(root, "install/node_modules/@katafit/coach/dist/cli.js");
+  if (process.env.NATIVE_TEST_IMAGE) {
+    const installedRoot = join(root, "install/node_modules/@katafit/coach");
+    const { provisionArtifact } = await import(
+      join(installedRoot, "dist/sandbox/artifact.js")
+    );
+    await provisionArtifact(home, installedRoot, process.env.NATIVE_TEST_IMAGE);
+  }
   await mkdir(source);
   for (const name of [
     "src",
