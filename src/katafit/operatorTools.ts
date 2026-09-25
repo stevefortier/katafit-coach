@@ -21,6 +21,29 @@ const LIST = "studio_operator_list_activities";
 const DETAIL = "studio_operator_read_activity";
 const CHECKINS = "studio_operator_list_dojo_checkins";
 const IMAGE = "studio_operator_read_dojo_checkin_image";
+// These fields belong to the authenticated host, regardless of a server's
+// permissive additionalProperties/patternProperties schema. member_ref remains
+// model-selected only in the explicitly negotiated dojo-wide mode.
+const reservedArguments = [
+  "session_id",
+  "idempotency_key",
+  "credential_id",
+  "owner_id",
+  "user_id",
+  "dojo_id",
+  "mode",
+];
+function assertCallerArguments(args: unknown, memberScoped: boolean) {
+  if (
+    !args ||
+    typeof args !== "object" ||
+    Array.isArray(args) ||
+    [...reservedArguments, ...(memberScoped ? ["member_ref"] : [])].some(
+      (key) => Object.hasOwn(args, key),
+    )
+  )
+    throw new Error("ARGUMENTS_REJECTED");
+}
 const textOnlyImageTools = new WeakSet<AgentTool>();
 const imageReceipts = new WeakMap<
   AgentTool,
@@ -427,12 +450,14 @@ export async function openOperatorTools(
           parameters,
           prepareArguments(args: unknown) {
             check();
+            assertCallerArguments(args, member_ref !== undefined);
             if (!validate(args)) throw new Error("ARGUMENTS_REJECTED");
             assertNoSecrets(args, options.secrets);
             return args;
           },
           async execute(_id: string, args: unknown) {
             check();
+            assertCallerArguments(args, member_ref !== undefined);
             if (!validate(args)) throw new Error("ARGUMENTS_REJECTED");
             assertNoSecrets(args, options.secrets);
             if (++calls > 12) throw new Error("TOOL_BUDGET_EXHAUSTED");
@@ -458,7 +483,7 @@ export async function openOperatorTools(
               if (!listedRow) throw new Error("READ_NOT_AUTHORIZED");
               const r = await client.rpc(
                 "tools/call",
-                { name, arguments: { session_id, ...args } },
+                { name, arguments: { ...args, session_id } },
                 false,
                 10000,
                 12 * 1024 * 1024,
@@ -586,7 +611,7 @@ export async function openOperatorTools(
               };
             }
             if (name !== SEND) {
-              const value = await client.call(name, { session_id, ...args });
+              const value = await client.call(name, { ...args, session_id });
               check();
               if (
                 value.schema_version !== 1 ||
@@ -794,8 +819,15 @@ export async function openOperatorTools(
         parameters: schema,
         async execute(_id, args) {
           check();
+          assertCallerArguments(args, member_ref !== undefined);
           if (!validate(args)) throw new Error("ARGUMENTS_REJECTED");
           assertNoSecrets(args, options.secrets);
+          // Discovery is not a retained-source authorization contract. The
+          // inspected backend contract only fences the explicit adapters above; it has
+          // no generic authorize/renew RPC. Never hydrate uncheckable private
+          // context or replay arbitrary capabilities as an authority probe.
+          if (capability.kind === "read")
+            throw new Error("SOURCE_AUTHORIZATION_UNSUPPORTED");
           if (++calls > 12) throw new Error("TOOL_BUDGET_EXHAUSTED");
           options.onRead?.(capability.name, []);
           if (capability.kind === "write" && uncertainWrite)
@@ -901,8 +933,8 @@ export async function openOperatorTools(
           rosterStarted = true;
         }
         const value = await client.call(read.name, {
-          session_id,
           ...args,
+          session_id,
         });
         if (read.name === ROSTER)
           rosterCursor = value.has_more ? value.next_cursor : undefined;

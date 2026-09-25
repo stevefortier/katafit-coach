@@ -125,8 +125,8 @@ export async function openNativeGateway(store: Store, signal?: AbortSignal) {
         Object.keys(request).some((k) => !allowed.includes(k))
       )
         throw new Error("NATIVE_REQUEST_REJECTED");
-      if (request.kind === "catalog")
-        return {
+      if (request.kind === "catalog") {
+        const catalog = {
           model: config.provider.model,
           vision: config.provider.vision === true,
           prompt: compileOperator(config, Object.values(secrets)),
@@ -136,6 +136,11 @@ export async function openNativeGateway(store: Store, signal?: AbortSignal) {
             parameters: t.parameters,
           })),
         };
+        // Catalog metadata is an outbound disclosure too: the relay persists
+        // this complete envelope in the untrusted Pi workspace.
+        assertNoSecrets(catalog, Object.values(secrets));
+        return catalog;
+      }
       if (active) throw new Error("NATIVE_REQUEST_BUSY");
       active = true;
       client.requestSignal = requestSignal;
