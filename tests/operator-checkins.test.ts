@@ -25,6 +25,7 @@ export async function fixture(
     duplicateMorgan?: boolean;
     denyFeed?: string;
     denyFeedLaterPage?: string;
+    failSend?: boolean;
   } = {},
 ) {
   const bytes = await sharp({
@@ -252,14 +253,19 @@ export async function fixture(
         content: [{ type: "text", text: "READ_NOT_AUTHORIZED" }],
       };
     if (name === "studio_operator_send_message")
-      result = {
-        schema_version: 1,
-        session_id: "session-photo",
-        status: "delivered",
-        action_id: "action-photo",
-        message_id: "message-photo",
-        idempotent: false,
-      };
+      result = options.failSend
+        ? {
+            isError: true,
+            content: [{ type: "text", text: "delivery status unavailable" }],
+          }
+        : {
+            schema_version: 1,
+            session_id: "session-photo",
+            status: "delivered",
+            action_id: "action-photo",
+            message_id: "message-photo",
+            idempotent: false,
+          };
     if (name === IMAGE)
       result =
         options.revoke || revoked

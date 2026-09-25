@@ -13,6 +13,7 @@ async function run(
   model: (tools: any[]) => Promise<string>,
   options: Parameters<typeof fixture>[0] = {},
   requestClaim?: ClaimAssessment,
+  auditClaim: ClaimAssessment | undefined = requestClaim,
 ) {
   const backend = await fixture({ two: true, ...options });
   const dir = await mkdtemp(tmpdir() + "/operator-release-");
@@ -39,6 +40,7 @@ async function run(
       undefined,
       async () => plan,
       requestClaim ? async () => requestClaim : undefined,
+      auditClaim ? async () => auditClaim : undefined,
     );
     const response = await fetch(app.origin + "/api/operator/chat", {
       method: "POST",
@@ -76,12 +78,73 @@ const feed = (tools: any[]) =>
   tools.find((t) => t.name === "studio_operator_read_member_coach_feed")!;
 const checkins = (tools: any[]) =>
   tools.find((t) => t.name === "studio_operator_list_dojo_checkins")!;
+const unsupported = (actionQuote: string): ClaimAssessment => ({
+  status: "advisory",
+  claim: {
+    kind: "unsupported",
+    scope: "none",
+    scopeQuote: "",
+    targets: [],
+    evidence: [],
+    actionQuote,
+    payloadQuote: "",
+  },
+});
+
+test("host proactively performs scoped read even when model never invokes a tool", async () => {
+  const result = await run(
+    "Compare Alex and Morgan from their Coach feeds",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Alex completed two workouts and Morgan completed one.",
+    {},
+    {
+      status: "advisory",
+      claim: {
+        kind: "read",
+        scope: "named",
+        scopeQuote: "Alex and Morgan",
+        targets: [
+          { name: "Alex", quote: "Alex" },
+          { name: "Morgan", quote: "Morgan" },
+        ],
+        evidence: [
+          { level: "metadata", domains: ["feed"], quote: "Coach feeds" },
+        ],
+        actionQuote: "",
+        payloadQuote: "",
+      },
+    },
+  );
+  assert.equal(result.status, 200);
+  assert.ok(
+    result.calls.filter(
+      (name) => name === "studio_operator_read_member_coach_feed",
+    ).length >= 2,
+  );
+  assert.equal(result.body.ephemeral, true);
+  assert.deepEqual(result.history.messages, []);
+});
 
 test("a named member current-data question cannot persist a discussion-classified fabrication", async () => {
   const result = await run(
     "How has Alex progressed this week?",
     { kind: "discussion", targets: [], domains: [], action: "none" },
     async () => "Alex completed two workouts this week.",
+    {},
+    {
+      status: "advisory",
+      claim: {
+        kind: "read",
+        scope: "named",
+        scopeQuote: "Alex",
+        targets: [{ name: "Alex", quote: "Alex" }],
+        evidence: [
+          { level: "metadata", domains: ["feed"], quote: "progressed" },
+        ],
+        actionQuote: "",
+        payloadQuote: "",
+      },
+    },
   );
   assert.equal(result.status, 400);
   assert.equal(result.body.error, "READ_UNAVAILABLE");
@@ -93,6 +156,19 @@ test("imperative named progress summary cannot use discussion classification to 
     "Summarize Alex’s progress now",
     { kind: "discussion", targets: [], domains: [], action: "none" },
     async () => "Alex completed two workouts this week.",
+    {},
+    {
+      status: "advisory",
+      claim: {
+        kind: "read",
+        scope: "named",
+        scopeQuote: "Alex",
+        targets: [{ name: "Alex", quote: "Alex" }],
+        evidence: [{ level: "metadata", domains: ["feed"], quote: "progress" }],
+        actionQuote: "",
+        payloadQuote: "",
+      },
+    },
   );
   assert.equal(result.status, 400);
   assert.equal(result.body.error, "READ_UNAVAILABLE");
@@ -104,6 +180,19 @@ test("unrecognized wording about a named member still needs evidence", async () 
     "Give me Alex's latest standing",
     { kind: "discussion", targets: [], domains: [], action: "none" },
     async () => "Alex is improving quickly.",
+    {},
+    {
+      status: "advisory",
+      claim: {
+        kind: "read",
+        scope: "named",
+        scopeQuote: "Alex",
+        targets: [{ name: "Alex", quote: "Alex" }],
+        evidence: [{ level: "metadata", domains: ["feed"], quote: "standing" }],
+        actionQuote: "",
+        payloadQuote: "",
+      },
+    },
   );
   assert.equal(result.status, 400);
   assert.deepEqual(result.history.messages, []);
@@ -114,8 +203,12 @@ test("an unsupported action paraphrase has no completion without an action recei
     "Set up Alex's next appointment",
     { kind: "discussion", targets: [], domains: [], action: "none" },
     async () => "I arranged the appointment.",
+    {},
+    unsupported("Set up"),
   );
-  assert.equal(result.status, 400);
+  assert.equal(result.status, 200);
+  assert.match(result.body.text, /not available.*no change was made/i);
+  assert.equal(result.attempts, 0);
   assert.equal(result.calls.includes("studio_operator_send_message"), false);
   assert.deepEqual(result.history.messages, []);
 });
@@ -125,8 +218,12 @@ test("unsupported mutation paraphrase cannot claim completion without a receipt"
     "Arrange Alex’s session tomorrow",
     { kind: "discussion", targets: [], domains: [], action: "none" },
     async () => "Done, Alex's session is arranged.",
+    {},
+    unsupported("Arrange"),
   );
-  assert.notEqual(result.status, 200);
+  assert.equal(result.status, 200);
+  assert.match(result.body.text, /not available.*no change was made/i);
+  assert.equal(result.attempts, 0);
   assert.deepEqual(result.history.messages, []);
 });
 
@@ -135,8 +232,12 @@ test("unsupported dojo-wide action cannot claim completion without a receipt", a
     "Set up tomorrow's dojo schedule",
     { kind: "discussion", targets: [], domains: [], action: "none" },
     async () => "Done, the schedule is set.",
+    {},
+    unsupported("Set up"),
   );
-  assert.notEqual(result.status, 200);
+  assert.equal(result.status, 200);
+  assert.match(result.body.text, /not available.*no change was made/i);
+  assert.equal(result.attempts, 0);
   assert.deepEqual(result.history.messages, []);
 });
 
@@ -184,6 +285,8 @@ test("group coverage includes unnamed members despite one named member", async (
       await feed(tools).execute("alex", { member_ref: "member-photo" });
       return "Everyone is doing well.";
     },
+    {},
+    claim("read", "dojo", ["feed"]),
   );
   assert.equal(result.status, 400);
   assert.equal(result.body.error, "READ_UNAVAILABLE");
@@ -197,6 +300,8 @@ test("photo interpretation requires image bytes, not check-in metadata", async (
       await checkins(tools).execute("metadata", { limit: 10 });
       return "Alex's physique has improved in the photos.";
     },
+    {},
+    claim("read", "named", ["checkins", "image"]),
   );
   assert.equal(result.status, 400);
   assert.equal(result.body.error, "READ_UNAVAILABLE");
@@ -230,6 +335,65 @@ test("a denied later page invalidates an earlier successful feed page", async ()
     ).length,
     2,
   );
+});
+
+test("typed explicit send dispatches once without waiting for model to choose a tool", async () => {
+  const result = await run(
+    'Send Alex exactly: "Do not train today"',
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Sent.",
+    {},
+    {
+      status: "advisory",
+      claim: {
+        kind: "send",
+        scope: "named",
+        scopeQuote: "Alex",
+        targets: [{ name: "Alex", quote: "Alex" }],
+        evidence: [],
+        actionQuote: "Send",
+        payloadQuote: '"Do not train today"',
+      },
+    },
+  );
+  assert.equal(result.status, 200);
+  assert.deepEqual(
+    result.callArgs
+      .filter((x) => x.name === "studio_operator_send_message")
+      .map((x) => x.args.text),
+    ["Do not train today"],
+  );
+  assert.equal(result.body.ephemeral, true);
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("unknown delivery is never retried or claimed delivered", async () => {
+  const result = await run(
+    'Send Alex exactly: "Do not train today"',
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Sent.",
+    { failSend: true },
+    {
+      status: "advisory",
+      claim: {
+        kind: "send",
+        scope: "named",
+        scopeQuote: "Alex",
+        targets: [{ name: "Alex", quote: "Alex" }],
+        evidence: [],
+        actionQuote: "Send",
+        payloadQuote: '"Do not train today"',
+      },
+    },
+  );
+  assert.equal(result.status, 400);
+  assert.equal(result.body.error, "DELIVERY_UNVERIFIED");
+  assert.equal(
+    result.calls.filter((name) => name === "studio_operator_send_message")
+      .length,
+    1,
+  );
+  assert.deepEqual(result.history.messages, []);
 });
 
 test("SEND never accepts a substring of the manager's quoted payload", async () => {
@@ -312,6 +476,43 @@ test("typed read claim overrides hostile old-planner discussion", async () => {
   assert.deepEqual(result.history.messages, []);
 });
 
+test("hostile typed conversation claim cannot fabricate named member progress", async () => {
+  const result = await run(
+    "Summarize Alex's progress now",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Alex completed two workouts.",
+    {},
+    claim("conversation"),
+    {
+      status: "advisory",
+      claim: {
+        kind: "read",
+        scope: "named",
+        scopeQuote: "Alex",
+        targets: [{ name: "Alex", quote: "Alex" }],
+        evidence: [{ level: "metadata", domains: ["feed"], quote: "progress" }],
+        actionQuote: "",
+        payloadQuote: "",
+      },
+    },
+  );
+  assert.equal(result.status, 400);
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("hostile typed conversation claim cannot claim a dojo action completed", async () => {
+  const result = await run(
+    "Set up tomorrow's dojo schedule",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Done, the schedule is set.",
+    {},
+    claim("conversation"),
+    unsupported("Set up"),
+  );
+  assert.equal(result.status, 400);
+  assert.deepEqual(result.history.messages, []);
+});
+
 test("typed dojo scope requires coverage beyond a named example", async () => {
   const result = await run(
     "How are all dojo members, including Alex, doing in the feed?",
@@ -351,6 +552,22 @@ test("source-anchored metadata claim cannot answer a visual question", async () 
   assert.deepEqual(result.history.messages, []);
 });
 
+test("hostile typed metadata claim cannot make a visual assertion after a feed read", async () => {
+  const result = await run(
+    "How do Alex's photos look in the feed?",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async (tools) => {
+      await feed(tools).execute("feed", { member_ref: "member-photo" });
+      return "Alex looks stronger in the photos.";
+    },
+    {},
+    claim("read", "named", ["feed"]),
+    claim("read", "named", ["checkins", "image"]),
+  );
+  assert.equal(result.status, 400);
+  assert.deepEqual(result.history.messages, []);
+});
+
 test("uncertain typed claim cannot fall through to old planner", async () => {
   const result = await run(
     "How is Alex doing?",
@@ -373,6 +590,7 @@ test("hostile typed named scope cannot narrow a dojo-wide request", async () => 
     },
     {},
     claim("read", "named", ["feed"]),
+    claim("read", "dojo", ["feed"]),
   );
   assert.equal(result.status, 400);
   assert.deepEqual(result.history.messages, []);

@@ -86,6 +86,60 @@ export type ClaimAssessment =
   | { status: "advisory"; claim: RequestClaim }
   | { status: "uncertain"; reason: string };
 
+// Two model readings are advice, never receipts. Disagreement on any subject,
+// evidence type, or action fails closed rather than silently narrowing a request.
+export function claimsAgree(a: RequestClaim, b: RequestClaim): boolean {
+  const sorted = (items: string[]) => [...new Set(items)].sort().join("\u0000");
+  const targets = (claim: RequestClaim) =>
+    sorted(
+      claim.targets.map(({ name }) =>
+        name.normalize("NFC").toLocaleLowerCase(),
+      ),
+    );
+  const evidence = (claim: RequestClaim) =>
+    sorted(
+      claim.evidence.flatMap(({ level, domains }) =>
+        domains.map((domain) => `${level}:${domain}`),
+      ),
+    );
+  return (
+    a.kind === b.kind &&
+    a.scope === b.scope &&
+    targets(a) === targets(b) &&
+    evidence(a) === evidence(b) &&
+    (a.kind !== "send" || a.payloadQuote === b.payloadQuote)
+  );
+}
+
+// Read-only domain disagreement can be resolved by gathering the union of
+// backend-authorized metadata, never by narrowing the subject or claiming
+// visual evidence. Both inputs must already pass validateRequestClaim.
+export function reconcileReadClaims(
+  a: RequestClaim,
+  b: RequestClaim,
+): RequestClaim | undefined {
+  if (a.kind !== "read" || b.kind !== "read" || a.scope !== b.scope)
+    return undefined;
+  const names = (claim: RequestClaim) =>
+    [
+      ...new Set(
+        claim.targets.map((t) => t.name.normalize("NFC").toLocaleLowerCase()),
+      ),
+    ]
+      .sort()
+      .join("\u0000");
+  if (names(a) !== names(b)) return undefined;
+  const all = [...a.evidence, ...b.evidence];
+  if (!all.length || all.some((entry) => entry.level !== "metadata"))
+    return undefined;
+  const domains = [...new Set(all.flatMap((entry) => entry.domains))].sort();
+  if (domains.length > 6) return undefined;
+  return {
+    ...a,
+    evidence: [{ level: "metadata", domains, quote: a.evidence[0].quote }],
+  };
+}
+
 const uncertain = (reason: string): ClaimAssessment => ({
   status: "uncertain",
   reason,
@@ -169,7 +223,7 @@ export function validateRequestClaim(
       ? scopeQuote !== "" || targets.length !== 0
       : !anchored(text, scopeQuote)
   )
-    return uncertain("scope-anchor");
+    return uncertain(`scope-anchor:${scope}:${scopeQuote.length}`);
   if (scope === "named" && targets.length === 0)
     return uncertain("missing-target");
   if (actionQuote && !anchored(text, actionQuote))
@@ -183,7 +237,9 @@ export function validateRequestClaim(
   )
     return uncertain("conversation-conflict");
   if (kind === "read" && (!evidence.length || actionQuote || payloadQuote))
-    return uncertain("read-conflict");
+    return uncertain(
+      `read-conflict:${evidence.length}:${Boolean(actionQuote)}:${Boolean(payloadQuote)}`,
+    );
   if (
     kind === "send" &&
     (scope !== "named" ||
@@ -439,12 +495,13 @@ export const modelPlanner: OperatorPlanner = async (
   return validatePlan(candidate as IntentPlan, tools);
 };
 
-export async function modelRequestPlanner(
+async function assessRequest(
   text: string,
   tools: AgentTool[],
   signal: AbortSignal,
   provider: Provider,
   deadlineAt: number,
+  format: { name: string; prompt: string },
 ): Promise<ClaimAssessment> {
   let candidate: unknown;
   try {
@@ -454,16 +511,68 @@ export async function modelRequestPlanner(
       signal,
       provider,
       deadlineAt,
+      { ...format, schema: requestSchema },
+    );
+  } catch (error) {
+    if (error instanceof SafeError) throw error;
+    return uncertain("provider-assessment");
+  }
+  const assessed = validateRequestClaim(text, candidate, tools);
+  if (
+    assessed.status === "advisory" ||
+    ["read-unavailable", "send-unavailable"].includes(assessed.reason) ||
+    signal.aborted ||
+    deadlineAt - Date.now() < 1000
+  )
+    return assessed;
+  // One read-only classification repair, never an action retry. A second
+  // explicit uncertainty still fails closed, as does an unavailable capability.
+  try {
+    candidate = await structuredCandidate(
+      text,
+      tools,
+      signal,
+      provider,
+      deadlineAt,
       {
-        name: "operator_request_claim",
+        ...format,
         schema: requestSchema,
-        prompt:
-          "Classify only the manager's CURRENT turn as conversation, read, explicit send, unsupported action, or uncertain. Return the JSON schema only. For current-data requests classify read; include each evidence need with exact source quote and required read domains. For visual interpretation use image level and image domain, not check-in metadata alone. Scope distinguishes named recipients from the whole dojo; keep named examples when scope is dojo. Every target name and scope quote must be a verbatim substring of the manager's turn. For send require a named recipient, an exact action quote, and the complete message as payloadQuote: include quote marks for a quoted message, or the complete unquoted tail after 'saying'. Unsupported mutations are unsupported, never send. If scope, evidence, or intent is ambiguous use uncertain. Claims are advice, never authorization or proof of execution.",
+        prompt: `${format.prompt} Your previous candidate was rejected (${assessed.reason}). Correct the schema and verbatim anchors. actionQuote/payloadQuote MUST be empty for read or conversation. For named scope quote an exact phrase containing the named people, not an inferred group label. For image-level evidence include the image domain. If correction is not justified, return uncertain.`,
       },
     );
   } catch (error) {
     if (error instanceof SafeError) throw error;
-    return uncertain("provider-claim");
+    return uncertain("provider-repair");
   }
   return validateRequestClaim(text, candidate, tools);
+}
+
+export async function modelRequestPlanner(
+  text: string,
+  tools: AgentTool[],
+  signal: AbortSignal,
+  provider: Provider,
+  deadlineAt: number,
+): Promise<ClaimAssessment> {
+  return assessRequest(text, tools, signal, provider, deadlineAt, {
+    name: "operator_request_claim",
+    prompt:
+      "Classify only the manager's CURRENT turn as conversation, read, explicit send, unsupported action, or uncertain. Return the JSON schema only. For current-data requests classify read; include each evidence need with exact source quote and required read domains. Use the member Coach feed for a broad status/progress question; check-ins for check-in records, activities for activity details, and image only when the manager explicitly requests visual inspection of actual photos. Do not infer image evidence from a generic member-status question. Do not classify an unknown permission as uncertain: the backend decides authorization when called. For read or conversation set actionQuote and payloadQuote to empty strings: asking, comparing, and summarizing are NOT mutations. For visual interpretation use image level and image domain, not check-in metadata alone. Scope distinguishes named people from the whole dojo; a comparison of named people remains named scope, not dojo scope. For named scope use a verbatim phrase containing the named people as scopeQuote; for dojo scope quote the exact group phrase from the request. Never invent a scope quote. Keep named examples when scope is dojo. Every target name and scope quote must be a verbatim substring of the manager's turn. For send require a named recipient, an exact action quote, and the complete message as payloadQuote: include quote marks for a quoted message, or the complete unquoted tail after 'saying'. Unsupported mutations are unsupported, never send. If scope, evidence, or intent is ambiguous use uncertain. Claims are advice, never authorization or proof of execution.",
+  });
+}
+
+// A second, independent reading of the original turn. Do not pass the first
+// interpretation to this call: agreement must not be manufactured by context.
+export async function modelRequestAudit(
+  text: string,
+  tools: AgentTool[],
+  signal: AbortSignal,
+  provider: Provider,
+  deadlineAt: number,
+): Promise<ClaimAssessment> {
+  return assessRequest(text, tools, signal, provider, deadlineAt, {
+    name: "operator_request_audit",
+    prompt:
+      "Independently audit only the manager's CURRENT turn. Return the structured JSON schema only. Be skeptical: do not infer a named target, dojo-wide scope, evidence level, or action from available tools or likely intent. The backend alone decides authorization; uncertainty about permission is not ambiguity about what the manager requested. A broad current-status/progress request for named people is a named feed read, including comparisons; a broad dojo status request is a dojo-wide read. Check-ins are for check-in records; image evidence is only for explicit visual interpretation of actual photos, never generic 'how is this person doing'. For read or conversation actionQuote and payloadQuote MUST be empty: a request to compare, summarize, or inspect records is not a mutation. Named people being compared imply named scope, not dojo scope; use a verbatim phrase containing those names as scopeQuote. Whole-dojo scope requires a verbatim group phrase in the request. Preserve named examples within dojo scope. Separate metadata reads from visual/image interpretation: visual claims require image evidence and its image domain; list every required evidence domain with the exact phrase that demands it. A send requires an explicit instruction, one named recipient, and the complete message payload (include surrounding quotation marks for quoted text, or the entire unquoted tail after 'saying'); do not treat a question, suggestion, or unsupported mutation as send. Quote scope, target names, evidence, action, and payload verbatim from the current turn. If any interpretation is ambiguous or insufficiently supported, return uncertain rather than inventing coverage. Your assessment is advisory, not permission, authorization, or proof of execution.",
+  });
 }

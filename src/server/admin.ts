@@ -21,8 +21,15 @@ export async function admin(
   auto?: AutoUpdateSetting,
   operatorPlanner?: import("../chat/operatorPlan.js").OperatorPlanner,
   requestPlanner?: typeof import("../chat/operatorPlan.js").modelRequestPlanner,
+  requestAudit?: typeof import("../chat/operatorPlan.js").modelRequestAudit,
 ) {
-  const chat = new OperatorChat(store, infer, operatorPlanner, requestPlanner);
+  const chat = new OperatorChat(
+    store,
+    infer,
+    operatorPlanner,
+    requestPlanner,
+    requestAudit,
+  );
   const logs = new Diagnostics(store.dir);
   logs.record({ source: "studio", stage: "studio-started" });
   let worker: Worker | undefined;
@@ -581,9 +588,13 @@ export async function admin(
           receiptsUnavailable: true,
         };
         try {
+          const actions = chat.snapshot().actions;
           operatorOutcome = {
             ...operatorOutcome,
-            actions: chat.snapshot().actions,
+            actions,
+            hint: actions.length
+              ? failure.hint + " Review action receipts before retry."
+              : failure.hint,
             receiptsUnavailable: false,
           };
         } catch {}

@@ -18,7 +18,10 @@ import { OperatorEvidenceLedger } from "./operatorEvidence.js";
 import {
   modelPlanner,
   modelRequestPlanner,
+  modelRequestAudit,
   validateRequestClaim,
+  claimsAgree,
+  reconcileReadClaims,
   validatePlan,
   toolFor,
   type OperatorPlanner,
@@ -175,6 +178,7 @@ export class OperatorChat {
     private infer = complete,
     private planner?: OperatorPlanner,
     private requestPlanner?: typeof modelRequestPlanner,
+    private auditPlanner?: typeof modelRequestAudit,
   ) {
     this.history = new History(store.dir);
     this.messages = this.history.load();
@@ -418,7 +422,23 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
               : typed;
           if (assessment.status !== "advisory")
             throw new SafeError("READ_UNAVAILABLE");
-          const claim = assessment.claim;
+          const auditCandidate = await (this.auditPlanner ?? modelRequestAudit)(
+            text,
+            baseTools,
+            signal,
+            provider,
+            deadlineAt,
+          );
+          const audit =
+            auditCandidate.status === "advisory"
+              ? validateRequestClaim(text, auditCandidate.claim, baseTools)
+              : auditCandidate;
+          if (audit.status !== "advisory")
+            throw new SafeError("PLAN_UNAVAILABLE");
+          const claim = claimsAgree(assessment.claim, audit.claim)
+            ? assessment.claim
+            : reconcileReadClaims(assessment.claim, audit.claim);
+          if (!claim) throw new SafeError("PLAN_UNAVAILABLE");
           requestScope = claim.scope;
           requestedEvidence = claim.evidence;
           const requestedPayload = explicitSendPayload(text);
@@ -682,7 +702,7 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
         for (const row of matched) requiredMembers.add(row.member_ref);
         if (plan.kind === "action") actionTargetName = matched[0]?.display_name;
       }
-      const context = JSON.stringify({
+      let context = JSON.stringify({
         scope: "local operator conversation",
         authority: session
           ? `Unified dojo Operator session. Only these currently authorized turn tools may be used: ${baseTools
@@ -742,6 +762,134 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
                 },
               },
         );
+      if (session && plan?.kind === "action" && sendRequested) {
+        const send = tools.find(
+          (tool) => tool.name === "studio_operator_send_message",
+        );
+        const [member_ref] = [...requiredMembers];
+        const payload = explicitSendPayload(text);
+        if (
+          !send ||
+          !member_ref ||
+          requiredMembers.size !== 1 ||
+          !payload ||
+          !actionTargetName
+        )
+          throw new SafeError("READ_UNAVAILABLE");
+        // Backend rechecks authorization and owns the idempotent one-send receipt.
+        // A failed response can mean unknown delivery: never retry or let the
+        // model turn a missing receipt into a success claim.
+        await session.authorize();
+        let output;
+        try {
+          output = await send.execute(randomUUID(), {
+            member_ref,
+            text: payload,
+          });
+        } catch {
+          throw new SafeError(
+            actionAttempted ? "DELIVERY_UNVERIFIED" : "READ_UNAVAILABLE",
+          );
+        }
+        const part = output.content.find((item) => item.type === "text");
+        if (!part || part.type !== "text")
+          throw new SafeError("DELIVERY_UNVERIFIED");
+        let receipt;
+        try {
+          receipt = JSON.parse(part.text);
+        } catch {
+          throw new SafeError("DELIVERY_UNVERIFIED");
+        }
+        if (
+          receipt.status !== "delivered" ||
+          !receipt.action_id ||
+          !receipt.message_id
+        )
+          throw new SafeError("DELIVERY_UNVERIFIED");
+        const deliveredText = `Message delivered to ${actionTargetName}.`;
+        committed = true;
+        return {
+          images: [],
+          coverage_notice: false,
+          text: deliveredText,
+          ...this.snapshot(),
+          revision: c.revision,
+          configuration: "saved",
+          instructionsStatus: "fetched",
+          ephemeral: true,
+        };
+      }
+      // Read the requested, backend-authorized subjects before asking the model
+      // to summarize. Tool suggestions alone are not an honest read attempt.
+      // This path is read-only and bounded; never preflight or retry SEND.
+      if (session && plan?.kind === "read") {
+        const packets: {
+          tool: string;
+          member_ref?: string;
+          result: unknown;
+        }[] = [];
+        let packetBytes = 0;
+        const fetchPages = async (
+          domain: "feed" | "checkins" | "activities",
+          member_ref?: string,
+        ) => {
+          const tool = tools.find((t) => t.name === toolFor(domain));
+          if (!tool) throw new SafeError("READ_UNAVAILABLE");
+          let cursor: string | undefined;
+          for (let page = 0; page < 4; page++) {
+            const args = {
+              ...(member_ref ? { member_ref } : {}),
+              limit: domain === "checkins" ? 10 : 25,
+              ...(cursor ? { cursor } : {}),
+            };
+            let output;
+            try {
+              output = await tool.execute(randomUUID(), args);
+            } catch {
+              if (signal.aborted) throw new SafeError("CANCELLED");
+              throw new SafeError("READ_UNAVAILABLE");
+            }
+            const textResult = output.content.find(
+              (part) => part.type === "text",
+            );
+            if (!textResult || textResult.type !== "text")
+              throw new SafeError("READ_UNAVAILABLE");
+            let value;
+            try {
+              value = JSON.parse(textResult.text);
+            } catch {
+              throw new SafeError("READ_UNAVAILABLE");
+            }
+            packetBytes += Buffer.byteLength(textResult.text);
+            if (packetBytes > 48 * 1024)
+              throw new SafeError("READ_UNAVAILABLE");
+            packets.push({
+              tool: tool.name,
+              ...(member_ref ? { member_ref } : {}),
+              result: value,
+            });
+            if (value.has_more !== true) return;
+            if (
+              typeof value.next_cursor !== "string" ||
+              !value.next_cursor ||
+              value.next_cursor === cursor
+            )
+              throw new SafeError("READ_UNAVAILABLE");
+            cursor = value.next_cursor;
+          }
+          throw new SafeError("READ_UNAVAILABLE");
+        };
+        for (const domain of plan.domains) {
+          if (domain === "checkins") await fetchPages(domain);
+          if (domain === "feed" || domain === "activities")
+            for (const ref of requiredMembers) await fetchPages(domain, ref);
+        }
+        if (packets.length)
+          context = JSON.stringify({
+            ...JSON.parse(context),
+            prefetched_evidence: packets,
+          });
+      }
       const missing = () => {
         if (plan?.kind !== "read") return false;
         if (
