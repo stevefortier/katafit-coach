@@ -22,6 +22,7 @@ import { evaluate } from "./operator-question-bank-evaluate.mjs";
 import { seed } from "./operator-question-bank-fixture.mjs";
 import { streamedTurn } from "./operator-question-bank-transport.mjs";
 import { verifyPersona } from "./operator-question-bank-persona.mjs";
+import { diagnosticPhase } from "./operator-question-bank-diagnostics.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 const transportMode = process.argv.includes("--transport");
 const sha = (x) => createHash("sha256").update(x).digest("hex");
@@ -384,8 +385,18 @@ try {
   const inference = async (...args) => {
     assert.equal(active, false, "Only one inference at a time");
     active = true;
-    const observation = { input: args[2], modelImageBytes: 0 };
+    const observation = {
+      input: args[2],
+      modelImageBytes: 0,
+      nativePhases: [],
+    };
     observations.push(observation);
+    const onDiagnostic = args[5];
+    args[5] = (event) => {
+      const phase = diagnosticPhase(event);
+      if (phase) observation.nativePhases.push(phase);
+      onDiagnostic?.(event);
+    };
     args[4] = (args[4] || []).map((tool) => ({
       ...tool,
       execute: async (...params) => {
