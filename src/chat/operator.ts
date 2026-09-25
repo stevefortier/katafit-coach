@@ -13,6 +13,7 @@ import {
 } from "../katafit/operatorTools.js";
 import { Actions } from "./actions.js";
 import { randomUUID, createHash } from "node:crypto";
+import { explicitSendPayload } from "./operatorPayload.js";
 import {
   modelPlanner,
   validatePlan,
@@ -436,7 +437,8 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
           `^(?:\\s*please\\s+)?(?:send|deliver|message|notify)\\s+${target}(?![\\p{L}\\p{N}])|\\bto\\s+${target}(?![\\p{L}\\p{N}])`,
           "iu",
         ).test(text);
-        if (!directive || !destination) throw new SafeError("READ_UNAVAILABLE");
+        if (!directive || !destination || !explicitSendPayload(text))
+          throw new SafeError("READ_UNAVAILABLE");
       }
       let isComparison =
         plan.kind === "read" &&
@@ -625,9 +627,7 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
                         .toLocaleLowerCase()
                         .includes(actionTargetName.toLocaleLowerCase()) ||
                       typeof args.text !== "string" ||
-                      !text
-                        .toLocaleLowerCase()
-                        .includes(args.text.trim().toLocaleLowerCase()))
+                      args.text !== explicitSendPayload(text))
                   )
                     throw new SafeError("READ_UNAVAILABLE");
                   try {
@@ -666,6 +666,7 @@ Use only server-authorized operator tools. Choose each member_ref from the curre
       let reply = await this.infer(provider, prompt, context, signal, tools, {
         deadlineAt,
       });
+      if (denied.size) throw new SafeError("READ_UNAVAILABLE");
       // One corrective inference for missing evidence, with a read-only catalog.
       // Never retry after a mutation, and never offer SEND in the correction.
       if (session && missing() && !actionAttempted) {

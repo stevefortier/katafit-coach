@@ -97,6 +97,27 @@ test("imperative named progress summary cannot use discussion classification to 
   assert.deepEqual(result.history.messages, []);
 });
 
+test("unrecognized wording about a named member still needs evidence", async () => {
+  const result = await run(
+    "Give me Alex's latest standing",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Alex is improving quickly.",
+  );
+  assert.equal(result.status, 400);
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("an unsupported action paraphrase has no completion without an action receipt", async () => {
+  const result = await run(
+    "Set up Alex's next appointment",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "I arranged the appointment.",
+  );
+  assert.equal(result.status, 400);
+  assert.equal(result.calls.includes("studio_operator_send_message"), false);
+  assert.deepEqual(result.history.messages, []);
+});
+
 test("unsupported mutation paraphrase cannot claim completion without a receipt", async () => {
   const result = await run(
     "Arrange Alex’s session tomorrow",
@@ -105,6 +126,52 @@ test("unsupported mutation paraphrase cannot claim completion without a receipt"
   );
   assert.notEqual(result.status, 200);
   assert.deepEqual(result.history.messages, []);
+});
+
+test("unsupported dojo-wide action cannot claim completion without a receipt", async () => {
+  const result = await run(
+    "Set up tomorrow's dojo schedule",
+    { kind: "discussion", targets: [], domains: [], action: "none" },
+    async () => "Done, the schedule is set.",
+  );
+  assert.notEqual(result.status, 200);
+  assert.deepEqual(result.history.messages, []);
+});
+
+test("unquoted send cannot dispatch a substring of the requested content", async () => {
+  const result = await run(
+    "Send Alex a note saying do not train today",
+    { kind: "action", targets: ["Alex"], domains: [], action: "send" },
+    async (tools) => {
+      await tools
+        .find((t) => t.name === "studio_operator_send_message")!
+        .execute("send", {
+          member_ref: "member-photo",
+          text: "train",
+        });
+      return "Sent.";
+    },
+  );
+  assert.equal(result.status, 400);
+  assert.equal(result.calls.includes("studio_operator_send_message"), false);
+});
+
+test("a quote followed by additional instructions is not a complete send payload", async () => {
+  const result = await run(
+    'Send Alex "Hi" and tell him to rest',
+    { kind: "action", targets: ["Alex"], domains: [], action: "send" },
+    async (tools) => {
+      await tools
+        .find((t) => t.name === "studio_operator_send_message")!
+        .execute("send", {
+          member_ref: "member-photo",
+          text: "Hi",
+        });
+      return "Sent.";
+    },
+  );
+  assert.equal(result.status, 400);
+  assert.equal(result.calls.includes("studio_operator_send_message"), false);
 });
 
 test("group coverage includes unnamed members despite one named member", async () => {
