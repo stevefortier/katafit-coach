@@ -1,0 +1,49 @@
+{
+  "synthetic": true,
+  "fingerprints": {
+    "app.js": "670b941b3b5f2c32f7291e4f592eaaac5eef73ba9eb83145c44d08908b6f5a2a",
+    "index.html": "1ca2d60b4ee22622d116c8e2c3c84b3d14426e1b613701c1546fae85d25de230",
+    "style.css": "73c4cc991a0d914dec023366c68d1fafd02670d4c8b4afd285e90eb5a29ca861"
+  },
+  "geometry": [
+    {
+      "label": "desktop",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "statusHeight": 0,
+      "rosterStatusHeight": 0,
+      "feedTop": 364.390625,
+      "feedHeight": 360
+    },
+    {
+      "label": "mobile",
+      "width": 390,
+      "scrollWidth": 390,
+      "statusHeight": 0,
+      "rosterStatusHeight": 0,
+      "feedTop": 350.390625,
+      "feedHeight": 303.828125
+    },
+    {
+      "label": "narrow",
+      "width": 320,
+      "scrollWidth": 320,
+      "statusHeight": 0,
+      "rosterStatusHeight": 0,
+      "feedTop": 395.578125,
+      "feedHeight": 220
+    }
+  ],
+  "feedRequests": [
+    "/api/members/feed?member_ref=alex",
+    "/api/members/feed?member_ref=alex",
+    "/api/members/feed?member_ref=alex",
+    "/api/members/feed?member_ref=alex",
+    "/api/members/feed?member_ref=alex",
+    "/api/members/feed?member_ref=alex"
+  ],
+  "inlineDetails": true,
+  "revalidationClearsDetail": true,
+  "deepLinkReload": true,
+  "errors": []
+}
