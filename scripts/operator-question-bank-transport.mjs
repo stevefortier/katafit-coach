@@ -32,11 +32,13 @@ export async function streamedTurn(
       body: JSON.stringify({ text }),
       signal: controller.signal,
     });
+    const decoder = new TextDecoder("utf-8", { fatal: true });
     for await (const bytes of response.body) {
       reset();
       chunks.push({ elapsedMs: Date.now() - start, bytes: bytes.length });
-      raw += Buffer.from(bytes).toString("utf8");
+      raw += decoder.decode(bytes, { stream: true });
     }
+    raw += decoder.decode();
     return {
       status: response.status,
       body: JSON.parse(raw),

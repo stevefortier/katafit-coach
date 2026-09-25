@@ -118,6 +118,10 @@ for (const request of [
         assert.match(prompt, /manager/);
         assert.match(prompt, /persona/i);
         assert.match(prompt, /coachee behavior/i);
+        assert.match(prompt, /broad assessment or comparison/i);
+        assert.match(prompt, /recent main conversation/i);
+        assert.match(prompt, /missing or denied data is not evidence of/i);
+        assert.match(prompt, /completed_at.*created_at/);
         assert.match(context, /studio_operator_send_message/);
         const roster = tools.find(
           (t) => t.name === "studio_operator_list_members",

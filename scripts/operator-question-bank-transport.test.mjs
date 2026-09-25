@@ -61,6 +61,24 @@ test("missing heartbeat fails an actual idle deadline without replay", () => {
     },
   );
 });
+test("split UTF-8 response chunks preserve exact review evidence", () => {
+  const text = "Coach’s answer — 日本語";
+  const body = Buffer.from(JSON.stringify({ text }));
+  const split = body.indexOf(Buffer.from("’")) + 1;
+  return server(
+    (_req, res) => {
+      res.writeHead(200);
+      res.write(body.subarray(0, split));
+      const end = setTimeout(() => res.end(body.subarray(split)), 30);
+      res.on("close", () => clearTimeout(end));
+    },
+    async (url) => {
+      const r = await streamedTurn(url, {}, "Exact question", { idleMs: 1000 });
+      assert.ok(r.transport.chunks.length >= 2);
+      assert.equal(r.body.text, text);
+    },
+  );
+});
 test("HTTP 200 terminal JSON error stays an error, not fabricated text", () =>
   server(
     (_req, res) => {
