@@ -317,6 +317,59 @@ test("deadline exhaustion after the draft prevents review and publication", asyn
   );
 });
 
+for (const imageParts of [0, 1]) {
+  test(`review carries ${imageParts} successful native image parts, not historical photo prose`, async () => {
+    await fixture(
+      async (baseUrl, requests) => {
+        const result = await complete(
+          { baseUrl, model: "synthetic", apiKey: "fixture-key", vision: true },
+          "Coach",
+          "Compare",
+          AbortSignal.timeout(5000),
+          [
+            {
+              name: "studio_operator_read_member_coach_feed",
+              label: "Read",
+              description: "Read",
+              parameters: { type: "object", properties: {} } as any,
+              execute: async () => ({
+                content: [
+                  {
+                    type: "text" as const,
+                    text: "Historical assistant report: I viewed the photo.",
+                  },
+                  ...(imageParts
+                    ? [
+                        {
+                          type: "image" as const,
+                          mimeType: "image/png",
+                          data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+                        },
+                      ]
+                    : []),
+                ],
+                details: {},
+              }),
+            },
+          ],
+          { finalGroundingReview: true },
+        );
+        assert.equal(result, "REVIEWED_FINAL");
+        assert.match(
+          JSON.stringify(requests[2].messages),
+          new RegExp(
+            `Successful native image parts returned this turn: ${imageParts}`,
+          ),
+        );
+      },
+      (_request, turn) =>
+        turn === 1
+          ? native("studio_operator_read_member_coach_feed")
+          : prose(turn === 2 ? "DRAFT_PRIVATE" : "REVIEWED_FINAL"),
+    );
+  });
+}
+
 test("default runtime returns the first final without review", async () => {
   await fixture(async (baseUrl, requests) => {
     assert.equal(
