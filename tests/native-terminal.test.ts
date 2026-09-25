@@ -10,7 +10,10 @@ import {
   GENERIC,
   answer,
   toolCall,
+  type ContinuityOptions,
 } from "./helpers/continuity.js";
+import { Updates } from "../src/update/updates.js";
+import { AutoUpdateSetting } from "../src/update/auto.js";
 
 test(
   "Stop aborts a pending MCP startup rather than waiting for its backend",
@@ -250,10 +253,24 @@ test(
 // Real admin server, ticket, WebSocket, NativeTerminal, Docker Pi and relay.
 // Only the continuity backend and model provider are synthetic loopback.
 async function continuityTerminal(
-  provider: Parameters<typeof continuityFixture>[0]["provider"],
+  provider: ContinuityOptions["provider"],
+  options: Omit<ContinuityOptions, "provider"> & { auto?: boolean } = {},
 ) {
-  const f = await continuityFixture({ provider });
-  const app = await admin(f.store, 0);
+  const { auto, ...fixtureOptions } = options;
+  const f = await continuityFixture({ ...fixtureOptions, provider });
+  let setting: AutoUpdateSetting | undefined;
+  if (auto) {
+    setting = new AutoUpdateSetting(f.store.dir);
+    await setting.write(true);
+  }
+  const app = await admin(
+    f.store,
+    0,
+    undefined,
+    undefined,
+    auto ? new Updates(null, async () => {}) : undefined,
+    setting,
+  );
   const headers = {
     Authorization: "Bearer " + f.store.secrets.admin,
     Origin: app.origin,
@@ -283,7 +300,10 @@ async function continuityTerminal(
     ws.once("error", j);
   });
   ws.send(JSON.stringify({ ticket: ticket.ticket }));
-  const waitFor = async (check: () => boolean | Promise<boolean>, what: string) => {
+  const waitFor = async (
+    check: () => boolean | Promise<boolean>,
+    what: string,
+  ) => {
     const end = Date.now() + 40000;
     while (!(await check())) {
       if (Date.now() > end)
@@ -426,3 +446,142 @@ test(
     }
   },
 );
+
+const postJson = (
+  h: Awaited<ReturnType<typeof continuityTerminal>>,
+  path: string,
+) =>
+  fetch(h.app.origin + path, {
+    method: "POST",
+    headers: h.headers,
+    body: "{}",
+  });
+
+test(
+  "real terminal: auto quiesce defers while native Pi is live or tearing down; once acknowledged no native SEND can occur",
+  { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 150000 },
+  async () => {
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((r) => (releaseClose = r));
+    const h = await continuityTerminal(
+      (body) => {
+        const { turn, results } = turnOf(body);
+        return results.length
+          ? answer(`TERM_${turn}_SENT`)
+          : toolCall(
+              "studio_operator_send_message",
+              { member_ref: "fixture-member", text: `Intentional ${turn}` },
+              `s_${turn}`,
+            );
+      },
+      { auto: true, closeGate },
+    );
+    try {
+      h.type("Perform the first synthetic task\r");
+      await h.waitFor(() => h.output().includes("TERM_first_SENT"), "send");
+      const live = await postJson(h, "/api/update/auto/quiesce");
+      assert.equal(live.status, 409);
+      assert.deepEqual(await live.json(), { error: "AUTO_UPDATE_BUSY" });
+      const spare = (await (
+        await postJson(h, "/api/terminal/ticket")
+      ).json()) as any;
+      const stopping = postJson(h, "/api/terminal/stop");
+      await h.waitFor(
+        () => h.f.named("studio_operator_close_session").length > 0,
+        "gateway disposal in progress",
+      );
+      // Runtime teardown is still reconciling receipts into the journal.
+      assert.equal((await postJson(h, "/api/update/auto/quiesce")).status, 409);
+      releaseClose();
+      assert.equal((await stopping).status, 200);
+      await h.waitFor(
+        async () =>
+          (await postJson(h, "/api/update/auto/quiesce")).status === 200,
+        "quiescence after complete teardown",
+      );
+      const sends = h.f.named("studio_operator_send_message").length;
+      const opens = h.f.named("studio_operator_open_session").length;
+      assert.equal((await postJson(h, "/api/terminal/ticket")).status, 409);
+      const late = new WebSocket(
+        h.app.origin.replace("http:", "ws:") + "/api/terminal/ws",
+        { origin: h.app.origin },
+      );
+      const lateClosed = new Promise<number>((r) => late.once("close", r));
+      await new Promise<void>((r, j) => {
+        late.once("open", r);
+        late.once("error", j);
+      });
+      late.send(JSON.stringify({ ticket: spare.ticket }));
+      assert.equal(await lateClosed, 1008);
+      assert.equal(h.f.named("studio_operator_send_message").length, sends);
+      assert.equal(h.f.named("studio_operator_open_session").length, opens);
+      assert.equal(owned(), "");
+      assert.deepEqual(
+        new Actions(h.f.store).snapshot().map((a) => a.status),
+        ["delivered"],
+      );
+    } finally {
+      releaseClose();
+      await h.close();
+    }
+  },
+);
+
+for (const revocationMarker of [true, false])
+  test(
+    `real terminal: retained authority revoked after a provider post-check tears Pi down on its next tool, with no further provider call (marker ${revocationMarker})`,
+    { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 150000 },
+    async () => {
+      let armed = false,
+        sinceArmed = 0,
+        providerAtRevoke = -1;
+      const h = await continuityTerminal(
+        (body) => {
+          const { turn, results } = turnOf(body);
+          return results.length
+            ? answer(`TERM_${turn}_ANSWERED`)
+            : toolCall(GENERIC, { topic: turn }, `g_${turn}`);
+        },
+        {
+          revocationMarker,
+          afterAuthorize: (state) => {
+            // Revoke right after the successful post-provider check.
+            if (armed && ++sinceArmed === 2) {
+              state.revoked = true;
+              providerAtRevoke = h.f.providerCalls();
+            }
+          },
+        },
+      );
+      try {
+        h.type("Read the first private synthetic source\r");
+        await h.waitFor(
+          () => h.output().includes("TERM_first_ANSWERED"),
+          "first answer",
+        );
+        armed = true;
+        h.type("Read the second private synthetic source\r");
+        await h.waitFor(() => h.closeCode() !== undefined, "browser close");
+        assert.equal(h.closeCode(), 1008);
+        assert.match(h.errors.join("\n"), /revoked or expired/);
+        await h.waitFor(() => owned() === "", "runtime destruction");
+        assert.ok(providerAtRevoke > 0);
+        assert.equal(h.f.providerCalls(), providerAtRevoke);
+        assert.equal(h.f.named(GENERIC).length, 2, "denied tool not replayed");
+        // Discriminating check: the denied TOOL itself triggers teardown. With
+        // the marker no authorization (e.g. a later provider pre-check) runs
+        // after it; unmarked, exactly one content-free resolution runs.
+        const denied = h.f.calls.findLastIndex((c) => c.name === GENERIC);
+        assert.equal(
+          h.f.calls
+            .slice(denied)
+            .filter((c) => c.name === "studio_operator_authorize_context")
+            .length,
+          revocationMarker ? 0 : 1,
+        );
+        assert.equal(h.f.named("studio_operator_open_session").length, 1);
+      } finally {
+        await h.close();
+      }
+    },
+  );

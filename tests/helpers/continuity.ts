@@ -15,6 +15,8 @@ const GET = "studio_operator_get_action";
 const AUTHORIZE = "studio_operator_authorize_context";
 const ADVANCE = "studio_operator_advance_turn";
 export const GENERIC = "studio_operator_read_synthetic_generic";
+export const CHECKINS = "studio_operator_list_dojo_checkins";
+export const IMAGE = "studio_operator_read_dojo_checkin_image";
 const digest = (v: unknown) =>
   createHash("sha256").update(JSON.stringify(v)).digest("hex");
 const generation = {
@@ -84,6 +86,24 @@ export const schemas: Record<string, any> = {
   ),
   // Deliberately permissive: reserved continuity identity must be rejected
   // by the host regardless of what a backend schema admits.
+  [CHECKINS]: strict(
+    {
+      session_id: sid,
+      limit: { type: "integer", minimum: 1, maximum: 10 },
+      cursor: { type: "string", maxLength: 4096 },
+      turn_generation: generation,
+    },
+    ["session_id"],
+  ),
+  [IMAGE]: strict(
+    {
+      session_id: sid,
+      member_ref: { type: "string", minLength: 1, maxLength: 256 },
+      media_ref: { type: "string", minLength: 1, maxLength: 4096 },
+      turn_generation: generation,
+    },
+    ["session_id", "member_ref", "media_ref"],
+  ),
   [GENERIC]: {
     type: "object",
     properties: {
@@ -151,6 +171,21 @@ export interface ContinuityOptions {
   unavailable?: { authorize?: number; advance?: number; getAction?: number };
   // Commit the advance, then answer OPERATOR_UNAVAILABLE (worst case).
   unavailableAfterAdvanceCommit?: number;
+  // Additive terminal marker (context_revoked:true) on definite retained
+  // failures; omitted to model a backend without the marker.
+  revocationMarker?: boolean;
+  // The denying call cannot persist the revoked tombstone.
+  tombstoneFails?: boolean;
+  // Hold close_session (models slow runtime/gateway teardown).
+  closeGate?: Promise<void>;
+  // Negotiate check-in listing and original image reads.
+  images?: boolean;
+  // Runs after each successful authorize_context (1-based count).
+  afterAuthorize?: (state: Backend, count: number) => void;
+  // Answer a tools/call with this bare HTTP status (401/403 credential
+  // rejection, 5xx outage) or drop the connection ("drop"), before any MCP
+  // processing. The body carries private text the host must never surface.
+  httpFailure?: (name: string, args: any) => number | "drop" | undefined;
   // Number of advance responses to drop AFTER committing.
   loseAdvanceAcks?: number;
   authorizeResponse?: (value: any) => any;
@@ -184,6 +219,21 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
     body: any;
   }[] = [];
   const now = Date.now();
+  const png = options.images
+    ? await (
+        await import("sharp")
+      )
+        .default({
+          create: {
+            width: 3,
+            height: 2,
+            channels: 3,
+            background: "#123456",
+          },
+        })
+        .png()
+        .toBuffer()
+    : undefined;
   const state: Backend = {
     session_id: randomBytes(32).toString("hex"),
     generation: 0,
@@ -210,6 +260,7 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
   };
   let unavailableAfterCommit = options.unavailableAfterAdvanceCommit ?? 0;
   let lateSend: (() => void) | undefined;
+  let authorizations = 0;
   let lostSend = options.sendAck && options.sendAck !== "delivered" ? 1 : 0;
   const iso = (ms: number) => new Date(ms).toISOString();
   const maxTurns = options.maxTurns ?? 64;
@@ -222,6 +273,24 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
       },
     ],
   });
+  // Definite retained-authority failure (backend retainedFailure()).
+  const denyRetained = () =>
+    options.revocationMarker
+      ? {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                code: "OPERATOR_NOT_AUTHORIZED",
+                error:
+                  "Operator command is unavailable or no longer authorized.",
+                context_revoked: true,
+              }),
+            },
+          ],
+        }
+      : deny();
   const exactKeys = (name: string, args: any) => {
     const schema = schemas[name];
     if (!schema || !args || typeof args !== "object") return false;
@@ -239,9 +308,13 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
       args.turn_generation !== state.generation
     )
       return deny("OPERATOR_CONFLICT");
-    if (state.revoked && state.status === "active") state.status = "revoked";
+    if (state.revoked) {
+      if (!options.tombstoneFails && state.status === "active")
+        state.status = "revoked";
+      return denyRetained();
+    }
     if (state.status !== "active" || state.contextExpires <= Date.now())
-      return deny();
+      return denyRetained();
     return null;
   };
   const tool = (name: string, args: any): any => {
@@ -259,7 +332,13 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         failure_requires: "destroy_runtime",
         generation_field: "turn_generation",
       };
-      const allowed = [ROSTER, SEND, GET, GENERIC];
+      const allowed = [
+        ROSTER,
+        SEND,
+        GET,
+        GENERIC,
+        ...(options.images ? [CHECKINS, IMAGE] : []),
+      ];
       return {
         schema_version: 1,
         session_id: state.session_id,
@@ -290,6 +369,12 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
               "delivered_or_not_found",
             ),
             capability(GENERIC, "read", "dojo", "synthetic_generic"),
+            ...(options.images
+              ? [
+                  capability(CHECKINS, "read", "dojo", "checkin_media"),
+                  capability(IMAGE, "read", "member_ref", "checkin_image"),
+                ]
+              : []),
           ],
         },
         ...(options.continuity === false
@@ -396,11 +481,31 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         expires_at: iso(state.commandExpires),
         context_expires_at: iso(state.contextExpires),
       };
+      options.afterAuthorize?.(state, ++authorizations);
       return options.authorizeResponse
         ? options.authorizeResponse(value)
         : value;
     }
     if (state.calls >= 12) return deny("READ_LIMIT");
+    // Ordinary invalid model argument: a per-call denial that rolls back and
+    // neither consumes budget nor revokes retained authority.
+    if (name === GENERIC && args.topic === "invalid") return deny();
+    // Arbitrary, non-allowlisted error payload the host must never surface.
+    if (name === GENERIC && args.topic === "payload")
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              code: "OPERATOR_NOT_AUTHORIZED",
+              error: "PRIVATE MEMBER PAYLOAD",
+              context_revoked: "true",
+              detail: { member: "Synthetic Alice" },
+            }),
+          },
+        ],
+      };
     state.calls++;
     if (name === ROSTER)
       return {
@@ -417,6 +522,45 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         private_context: "SYNTHETIC GENERIC RETAINED SOURCE",
       };
     if (name === SEND) return send(args);
+    if (name === CHECKINS && options.images)
+      return {
+        schema_version: 1,
+        items: [
+          {
+            member_ref: "fixture-member",
+            display_name: "Synthetic Alice",
+            access: "shared",
+            checkin_status: "completed_media",
+            images: [{ media_ref: "media-1", checkin_at: iso(now) }],
+          },
+        ],
+        has_more: false,
+        next_cursor: null,
+      };
+    if (name === IMAGE && options.images) {
+      if (args.member_ref !== "fixture-member" || args.media_ref !== "media-1")
+        return deny();
+      const m = {
+        schema_version: 1,
+        representation: "original",
+        mime_type: "image/png",
+        byte_count: png!.length,
+        sha256: createHash("sha256").update(png!).digest("hex"),
+        width: 3,
+        height: 2,
+      };
+      return {
+        structuredContent: m,
+        content: [
+          { type: "text", text: JSON.stringify(m) },
+          {
+            type: "image",
+            data: png!.toString("base64"),
+            mimeType: m.mime_type,
+          },
+        ],
+      };
+    }
     return deny();
   };
   const send = (args: any): any => {
@@ -493,6 +637,19 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
           })),
       };
     if (body.method === "tools/call") {
+      const failure = options.httpFailure?.(name, body.params?.arguments);
+      if (failure === "drop") {
+        res.destroy();
+        return;
+      }
+      if (failure !== undefined) {
+        res.statusCode = failure;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ error: "PRIVATE HTTP FAILURE BODY" }));
+        return;
+      }
+      if (name === "studio_operator_close_session" && options.closeGate)
+        await options.closeGate;
       if (name === SEND && options.sendAck === "lost_uncommitted" && lostSend) {
         lostSend--;
         res.destroy();
@@ -542,7 +699,10 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         res.destroy();
         return;
       }
-      result = value.isError ? value : { structuredContent: value };
+      result =
+        value.isError || (name === IMAGE && options.images)
+          ? value
+          : { structuredContent: value };
     }
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));

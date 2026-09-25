@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Ajv } from "ajv";
 import { fullFormats } from "ajv-formats/dist/formats.js";
-import { Client } from "./client.js";
+import { Client, ToolFailure, toolFailure } from "./client.js";
 import { assertNoSecrets } from "../config/store.js";
 import { dimensions } from "./studio.js";
 import {
@@ -305,6 +305,28 @@ export async function openOperatorTools(
       revoked ??= reason;
       return new Error("CONTINUITY_REVOKED");
     };
+    // A retained-context denial first observed on an ordinary tool, image or
+    // SEND is terminal at once; no later provider call or backend tombstone is
+    // awaited. An unmarked authorization failure is ambiguous (an older backend
+    // or an ordinary invalid argument): resolve it with the content-free
+    // authorize_context, never a replay, and tear down unless it is ruled out.
+    const resolveDenial = async (error: unknown) => {
+      if (!continuity || revoked) return;
+      // Transport HTTP 401/403 is a definite credential denial; outages and
+      // timeouts are not, and later disclosure still requires authorization.
+      if (error instanceof Error && error.message === "CREDENTIAL_REJECTED")
+        throw revoke("CREDENTIAL_REJECTED");
+      if (!(error instanceof ToolFailure)) return;
+      if (error.contextRevoked) throw revoke("CONTEXT_REVOKED");
+      if (error.code !== undefined && error.code !== "OPERATOR_NOT_AUTHORIZED")
+        return;
+      try {
+        await authorizeContext();
+      } catch (resolution) {
+        if (revoked || closed || client.signal.aborted) throw resolution;
+        throw revoke("AUTHORITY_UNRESOLVED");
+      }
+    };
     const hostFields = () =>
       continuity ? { session_id, turn_generation: generation } : { session_id };
     let uncertainWrite = false;
@@ -606,13 +628,9 @@ export async function openOperatorTools(
                 10000,
                 12 * 1024 * 1024,
               );
+              if (r?.isError) throw toolFailure(r);
               check();
-              if (
-                r?.isError ||
-                !r ||
-                !Array.isArray(r.content) ||
-                r.content.length !== 2
-              )
+              if (!r || !Array.isArray(r.content) || r.content.length !== 2)
                 throw new Error("RESULT_REJECTED");
               const m = r.structuredContent;
               if (
@@ -866,9 +884,11 @@ export async function openOperatorTools(
                 ...hostFields(),
               });
               return result(delivered(value));
-            } catch {
+            } catch (error) {
+              // The original identity stays unknown; it is never replayed.
               uncertainWrite = true;
               emit({ ...action!, status: "unknown" });
+              await resolveDenial(error);
               throw new Error("MCP_TOOL_FAILED");
             }
           },
@@ -882,7 +902,11 @@ export async function openOperatorTools(
           async execute(id, args) {
             try {
               return await execute(id, args as Record<string, any>);
-            } catch (error) {
+            } catch (failure) {
+              let error = failure;
+              await resolveDenial(failure).catch((terminal) => {
+                error = terminal;
+              });
               options.onFailure?.({
                 tool: tool.name,
                 domain: domainFor(tool.name),
@@ -1024,6 +1048,7 @@ export async function openOperatorTools(
                 options.onAction({ ...operation, status: "unknown" });
               throw new Error("DELIVERY_UNVERIFIED");
             }
+            await resolveDenial(error);
             throw error;
           }
         },

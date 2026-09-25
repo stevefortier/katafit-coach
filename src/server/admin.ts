@@ -332,11 +332,16 @@ export async function admin(
             return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
           }
         }
+        // Native Pi can SEND and write the action journal; defer rather than
+        // let the supervisor snapshot journals under live native work. The
+        // check and autoQuiesced are set synchronously, and terminal admission
+        // re-checks autoQuiesced, so no native work can begin afterwards.
         if (
           updates.applying ||
           busy ||
           preview ||
           chat.active ||
+          !terminal.idle ||
           (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
         )
           return send(409, { error: "AUTO_UPDATE_BUSY" });

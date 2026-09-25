@@ -48,6 +48,20 @@ export class NativeTerminal {
   get active() {
     return !!(this.runtime || this.starting);
   }
+  /**
+   * No native start, runtime, teardown (including gateway disposal, which
+   * reconciles the action journal) or unconfirmed cleanup exists. Automatic
+   * update quiescence requires this before protected journals are snapshotted.
+   */
+  get idle() {
+    return (
+      !this.runtime &&
+      !this.starting &&
+      !this.stopping &&
+      !this.gateway &&
+      !this.cleanupFailed
+    );
+  }
   private authority() {
     return hash(
       JSON.stringify([this.store.publicConfig().revision, this.store.secrets]),
