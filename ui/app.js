@@ -722,7 +722,8 @@ function renderUpdate() {
   const relevantAuto =
     autoOutcome &&
     sourceSha(autoOutcome.sha) &&
-    (autoOutcome.sha === data.latest || autoOutcome.sha === data.installed);
+    (autoOutcome.sha === data.latest || autoOutcome.sha === data.installed) &&
+    !(autoOutcome.state === "suppressed" && autoOutcome.sha === data.installed);
   $("updateAutoStatus").textContent =
     relevantAuto && autoOutcome.state === "deferred" && failedLatest
       ? "Last attempt for this revision failed. See the failure details before retrying manually."
