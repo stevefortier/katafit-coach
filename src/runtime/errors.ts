@@ -55,6 +55,18 @@ export const hints = {
     "Authorized context or attachment access could not be validated. Check request scope and image opt-in; access was not expanded.",
   DELIVERY_UNVERIFIED:
     "A reply may already be saved. Check the canonical Kata.fit conversation before retrying; delivery could not be verified.",
+  TASK_SOURCE_CHANGED:
+    "Task receipt verification was denied because its source changed. Delivery remains uncertain; inspect canonical Kata.fit state before retrying.",
+  TASK_ROUTING_CHANGED:
+    "Task receipt verification was denied because Coach routing changed. Delivery remains uncertain; inspect canonical Kata.fit state before retrying.",
+  CONVERSATION_CLEARED:
+    "Task receipt verification was denied after conversation Clear. Delivery remains uncertain; do not replay the old result.",
+  SCOPE_CHANGED:
+    "Task receipt verification was denied because its authorization scope changed. Delivery remains uncertain; do not bypass current authority.",
+  REQUESTER_SCOPE_CHANGED:
+    "Task receipt verification was denied because requester scope changed. Delivery remains uncertain; do not bypass current authority.",
+  EXTERNAL_COACH_AUTO_ACCEPTANCE_CONFLICT:
+    "Task receipt verification was denied by an acceptance conflict. Delivery remains uncertain; inspect canonical Kata.fit state before retrying.",
   CANCELLED:
     "The operation was cancelled. No further publication will be attempted; check Kata.fit if publication had already started.",
   LEASE_EXPIRED:

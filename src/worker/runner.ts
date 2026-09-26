@@ -60,7 +60,7 @@ export interface WorkerOptions {
   modelMs?: number;
   isolationMs?: number;
 }
-type PendingTask = { task: any; digest: string };
+type PendingTask = { task: any; digest: string; ref: string };
 type Incident = PendingTask & { reason: string; nextCheck: number };
 const DENIAL_CODES = new Set([
   "TASK_SOURCE_CHANGED",
@@ -461,6 +461,10 @@ export class Worker {
           source: "worker",
           stage: "task-result-unknown",
           level: "warn",
+          ref: pending.ref,
+          // Only the already-allowlisted denial survives, never backend prose.
+          // This explains the failed read, not the completion's outcome.
+          error: safeError(new Error(reason)),
           metadata: { leaseGeneration: pending.task.lease_generation },
         });
       }
@@ -622,6 +626,7 @@ export class Worker {
       // has its own live transport even if stop aborted the completion transport.
       this.pendingTask = {
         task,
+        ref,
         digest: createHash("sha256")
           .update(JSON.stringify(result))
           .digest("hex"),
