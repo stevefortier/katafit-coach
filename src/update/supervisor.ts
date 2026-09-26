@@ -3,7 +3,7 @@ import { nativePreflight } from "../sandbox/artifact.js";
 import { Store } from "../config/store.js";
 import { Updates, validSha } from "./updates.js";
 import { AutoUpdater, AutoUpdateSetting, isMainDescendant } from "./auto.js";
-import { UpdateJournal } from "./journal.js";
+import { UpdateJournal, atomicWrite } from "./journal.js";
 import {
   stage,
   metadata,
@@ -66,6 +66,9 @@ export async function supervise(
   let recoveryWasRunning: boolean | undefined;
   let recoverySha: string | undefined;
   let recoveryOutcome = "deferred";
+  let manualRecovery = false;
+  let manualPending = false;
+  let manualWork: Promise<void> | undefined;
   let supported =
     process.platform === "linux" &&
     process.env.KATAFIT_COACH_UPDATES !== "disabled";
@@ -121,17 +124,48 @@ export async function supervise(
         return;
       }
       if (message.method === "apply") {
+        if (manualPending || ambiguousQuiesce)
+          return reply(undefined, "UPDATE_IN_PROGRESS");
         try {
-          updates.validate(message.sha);
-          const promise = updates.apply(message.sha);
+          const resume = message.sha?.resume === true;
+          const sha = resume ? message.sha.sha : message.sha;
+          updates.validate(sha);
+          manualPending = true;
+          if (resume) {
+            await atomicWrite(home, "update-resume.json", {
+              sha,
+              pending: true,
+            });
+            manualRecovery = true;
+            recoveryWasRunning = true;
+            recoverySha = sha;
+            updates.recovering = true;
+          }
+          const promise = updates.apply(sha);
           void promise.catch(() => {});
+          manualWork = promise
+            .catch(() => {})
+            .finally(async () => {
+              manualPending = false;
+              if (resume) {
+                ambiguousQuiesce = true;
+                recoveryOutcome =
+                  updates.installed === sha ? "running" : "restored-running";
+                updates.autoOutcome = { sha, state: "resume-failed" };
+              }
+              send({ type: "state", data: updates.snapshot() });
+              if (resume) await recoverAmbiguousQuiesce();
+              if (ambiguousQuiesce && !closing) {
+                clearTimeout(autoTimer);
+                schedule(10000);
+              }
+              send({ type: "state", data: updates.snapshot() });
+            });
           await updates.accepted;
           reply(updates.snapshot());
           send({ type: "state", data: updates.snapshot() });
-          void promise
-            .catch(() => {})
-            .finally(() => send({ type: "state", data: updates.snapshot() }));
         } catch {
+          manualPending = false;
           reply(undefined, "TARGET_REJECTED");
         }
       }
@@ -304,6 +338,31 @@ export async function supervise(
   );
   const journal = new UpdateJournal(home);
   updates.lastOperation = await journal.recover(installed);
+  updates.manualRestartSupported = supported;
+  try {
+    const intent = JSON.parse(
+      (await managedFile(join(home, "update-resume.json"), 256)).toString(
+        "utf8",
+      ),
+    );
+    if (
+      Object.keys(intent).sort().join(",") !== "pending,sha" ||
+      !validSha(intent.sha) ||
+      typeof intent.pending !== "boolean"
+    )
+      throw new Error("UPDATE_RESUME_INVALID");
+    if (intent.pending) {
+      manualRecovery = true;
+      ambiguousQuiesce = true;
+      recoveryWasRunning = true;
+      recoverySha = intent.sha;
+      recoveryOutcome =
+        installed === intent.sha ? "running" : "restored-running";
+      updates.recovering = true;
+    }
+  } catch (error: any) {
+    if (error.code !== "ENOENT") throw error;
+  }
   await launch(
     active ? join(home, "versions", active.revision) : root,
     installed,
@@ -358,7 +417,13 @@ export async function supervise(
       }
       if (recoveryWasRunning && state.state === "stopped") {
         if (closing) return false;
-        if (!(await postRetry("/api/run")).ok) return false;
+        let resumed = await postRetry(
+          manualRecovery ? "/api/update/resume" : "/api/run",
+        );
+        // A compatible legacy rollback application predates the recovery gate.
+        if (manualRecovery && resumed.status === 404 && !closing)
+          resumed = await postRetry("/api/run");
+        if (!resumed.ok) return false;
       }
       if (recoveryWasRunning) {
         let confirmed = false;
@@ -393,6 +458,14 @@ export async function supervise(
             ? { reason: "LOCAL_UNAVAILABLE" as const }
             : {}),
         };
+      if (manualRecovery && recoverySha) {
+        await atomicWrite(home, "update-resume.json", {
+          sha: recoverySha,
+          pending: false,
+        });
+        manualRecovery = false;
+        updates.recovering = false;
+      }
       ambiguousQuiesce = false;
       recoveryWasRunning = undefined;
       recoverySha = undefined;
@@ -422,7 +495,10 @@ export async function supervise(
       // A local transport failure before acceptance is not a bad source SHA.
       const paused = await postRetry("/api/update/auto/quiesce");
       if (!paused.ok) {
-        if (paused.status === 503) {
+        if (
+          paused.status === 503 ||
+          paused.data?.error === "WORKER_STOP_UNCONFIRMED"
+        ) {
           ambiguousQuiesce = true;
           recoverySha = sha;
           recoveryOutcome = "deferred";
@@ -537,6 +613,7 @@ export async function supervise(
     },
   });
   const tickAuto = async () => {
+    if (manualPending || updates.applying) return;
     if (ambiguousQuiesce) {
       await recoverAmbiguousQuiesce();
       return; // Restore the previous worker first; check source on a later tick.
@@ -575,7 +652,7 @@ export async function supervise(
     }, ms);
     autoTimer.unref();
   };
-  if (supported) schedule(90000);
+  if (supported) schedule(ambiguousQuiesce ? 1 : 90000);
   // Refresh state even for code-driven updates and across a replaced child.
   const timer = setInterval(
     () => send({ type: "state", data: updates.snapshot() }),
@@ -597,6 +674,7 @@ export async function supervise(
       clearInterval(timer);
       await autoTimerWork?.catch(() => {});
       await auto.settle();
+      await manualWork?.catch(() => {});
       await operation?.catch(() => {});
       await stop();
     },

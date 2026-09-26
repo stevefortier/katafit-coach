@@ -134,3 +134,8 @@ test("authenticated updater requires explicit pinned confirmation; asynchronous 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("manual restart support is explicit, never inferred from generic update support", async () => {
+  const updates = new Updates(null, async () => {});
+  assert.equal(updates.snapshot().manualRestartSupported, false);
+});

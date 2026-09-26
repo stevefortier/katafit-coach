@@ -11,7 +11,7 @@ import { Diagnostics } from "../diagnostics/log.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { timingSafeEqual, randomUUID } from "node:crypto";
+import { timingSafeEqual, randomUUID, createHash } from "node:crypto";
 import { Store, compile, stockPersona } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
 import { Worker } from "../worker/runner.js";
@@ -31,10 +31,154 @@ export async function admin(
   let worker: Worker | undefined;
   let preview: AbortController | undefined;
   let busy = false;
+  let configurationUncertain = false;
+  let closing = false;
+  let lifecycleDone = Promise.resolve();
   let autoQuiesced = false;
   let autoWasRunning = false;
   let autoQuiescePending: Promise<void> | undefined;
+  const completed = new Map<
+    string,
+    { fingerprint: string; status: number; data: unknown }
+  >();
   let origin = "";
+  // One server-owned operation holds busy from admission through resume. HTTP
+  // disconnects never cancel configuration application or restart recovery.
+  let lifecycle:
+    | {
+        id: string;
+        operation: string;
+        phase: string;
+        wasRunning: boolean;
+        running: boolean;
+        applied: boolean;
+        resumed: boolean;
+        error?: string;
+        hint?: string;
+        applicationUncertain?: boolean;
+      }
+    | undefined;
+  const startWorker = async () => {
+    if (closing) throw new SafeError("CANCELLED");
+    if (configurationUncertain)
+      throw new SafeError("CONFIGURATION_STATE_UNCONFIRMED");
+    if (
+      worker?.state === "stopped" &&
+      (!worker.stopConfirmed || !worker.safeToReplace)
+    )
+      throw new SafeError("WORKER_STOP_UNCONFIRMED");
+    if (!store.secrets.token || !store.secrets.apiKey)
+      throw new Error("CONNECTION_AND_PROVIDER_REQUIRED");
+    if (!worker || worker.state === "stopped") {
+      // Capture the active endpoint and its key together.
+      const c = store.publicConfig();
+      const apiKey = store.secrets.apiKey;
+      worker = new Worker({
+        origin: c.origin,
+        token: store.secrets.token,
+        system: compile(c, Object.values(store.secrets)),
+        secrets: Object.values(store.secrets),
+        vision: c.provider.vision === true,
+        onDiagnostic: (event) => logs.record(event),
+        complete: (context, signal, system, tools, ref, budget) =>
+          infer(
+            {
+              ...c.provider,
+              onDiagnostic: (event) => logs.record({ ...event, ref }),
+              apiKey,
+              secrets: Object.values(store.secrets),
+            },
+            system,
+            context,
+            signal,
+            tools,
+            budget,
+          ),
+      });
+      try {
+        await worker.start();
+      } catch (error) {
+        await worker.stop();
+        throw error;
+      }
+    }
+  };
+  const transition = async <T>(
+    operation: string,
+    body: any,
+    apply: () => Promise<T>,
+  ) => {
+    const wasRunning = !!worker && worker.state !== "stopped";
+    if ((wasRunning || terminal.active) && body.confirmRestart !== true)
+      throw new SafeError("RESTART_CONFIRMATION_REQUIRED");
+    let settled!: () => void;
+    lifecycleDone = new Promise<void>((resolve) => {
+      settled = resolve;
+    });
+    lifecycle = {
+      id: body.operationId ?? randomUUID(),
+      operation,
+      phase: "stopping",
+      wasRunning,
+      running: wasRunning,
+      applied: false,
+      resumed: false,
+    };
+    let safeToResume = false;
+    try {
+      await terminal.stop();
+      if (wasRunning) await worker!.stop();
+      if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+        throw new SafeError("WORKER_STOP_UNCONFIRMED");
+      safeToResume = true;
+      lifecycle.phase = "applying";
+      const result = await apply();
+      lifecycle.applied = true;
+      return result;
+    } catch (error) {
+      const failure = safeError(error);
+      lifecycle.error = failure.code;
+      lifecycle.hint = failure.hint;
+      if (safeToResume && operation !== "/api/preview") {
+        try {
+          const disk = new Store(store.dir);
+          await disk.init();
+          if (
+            JSON.stringify(disk.publicConfig()) !==
+              JSON.stringify(store.publicConfig()) ||
+            disk.secrets.apiKey !== store.secrets.apiKey ||
+            disk.secrets.token !== store.secrets.token
+          )
+            throw new Error("CONFIGURATION_STATE_UNCONFIRMED");
+        } catch {
+          safeToResume = false;
+          configurationUncertain = true;
+          lifecycle.applicationUncertain = true;
+          lifecycle.error = "CONFIGURATION_STATE_UNCONFIRMED";
+          lifecycle.hint = safeError(
+            new SafeError("CONFIGURATION_STATE_UNCONFIRMED"),
+          ).hint;
+        }
+      }
+      throw error;
+    } finally {
+      if (wasRunning && safeToResume && !closing) {
+        lifecycle.phase = "restarting";
+        try {
+          await startWorker();
+          lifecycle.resumed = true;
+        } catch {
+          lifecycle.error = "COACH_RESTART_FAILED";
+          lifecycle.hint =
+            "Coach could not restart. Retry starts the saved revision only; it never saves again or replays chat or actions.";
+        }
+      }
+      lifecycle.running = !!worker && worker.state !== "stopped";
+      lifecycle.phase = "complete";
+      settled();
+    }
+  };
+
   const updateSnapshot = async () => {
     const state = updates.snapshot();
     return {
@@ -49,8 +193,15 @@ export async function admin(
   const server = createServer(async (req, res) => {
     const ref = randomUUID();
     const started = Date.now();
+    let acceptedId: string | undefined;
+    let fingerprint = "";
     let operatorTurnActions: Map<string, OperatorAction> | undefined;
     const send = (status: number, data: unknown) => {
+      if (acceptedId) {
+        completed.set(acceptedId, { fingerprint, status, data });
+        while (completed.size > 32)
+          completed.delete(completed.keys().next().value!);
+      }
       if (res.destroyed || res.writableEnded) return;
       if (!res.headersSent)
         res.writeHead(status, { "Content-Type": "application/json" });
@@ -123,7 +274,15 @@ export async function admin(
       if (req.method === "GET" && path === "/api/terminal/receipts")
         return send(200, { actions: new Actions(store).snapshot() });
       if (req.method === "POST" && path === "/api/terminal/ticket") {
-        if (busy || chat.active || updates.applying || autoQuiesced)
+        if (
+          closing ||
+          busy ||
+          configurationUncertain ||
+          chat.active ||
+          updates.applying ||
+          updates.recovering ||
+          autoQuiesced
+        )
           return send(409, { error: "OPERATION_IN_PROGRESS" });
         return send(200, terminal.ticket());
       }
@@ -310,13 +469,17 @@ export async function admin(
           presence: worker?.presence ?? "unconfirmed",
           preview: !!preview,
           operatorChat: chat.active,
+          nativeActive: terminal.active,
           lastError: logs.lastError,
           revision: store.publicConfig().revision,
+          lifecycle,
+          transition: busy,
           autoQuiesced,
           autoQuiesceReady: autoQuiesced && !autoQuiescePending,
           autoWasRunning: autoQuiesced && autoWasRunning,
         });
       if (req.method !== "POST") return send(404, { error: "NOT_FOUND" });
+      if (closing) return send(503, { error: "SERVICE_CLOSING" });
       if (!req.headers["content-type"]?.startsWith("application/json"))
         return send(415, { error: "JSON_REQUIRED" });
       let raw = "";
@@ -325,7 +488,60 @@ export async function admin(
         if (Buffer.byteLength(raw) > 65536)
           return send(413, { error: "TOO_LARGE" });
       }
-      const body = JSON.parse(raw || "{}");
+      const input = JSON.parse(raw || "{}");
+      if (!input || typeof input !== "object" || Array.isArray(input))
+        return send(400, { error: "ARGUMENTS_REJECTED" });
+      const { confirmRestart, operationId, expectedRevision, ...body } = input;
+      const configuration = [
+        "/api/config",
+        "/api/rollback",
+        "/api/persona-restore",
+      ].includes(path);
+      if (
+        (operationId !== undefined || expectedRevision !== undefined) &&
+        !configuration
+      )
+        return send(400, { error: "ARGUMENTS_REJECTED" });
+      if (
+        operationId !== undefined &&
+        (typeof operationId !== "string" ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
+            operationId,
+          ) ||
+          !Number.isSafeInteger(expectedRevision) ||
+          expectedRevision < 1)
+      )
+        return send(400, { error: "ARGUMENTS_REJECTED" });
+      if (operationId) {
+        fingerprint = createHash("sha256")
+          .update(path + raw)
+          .digest("hex");
+        const prior = completed.get(operationId);
+        if (prior)
+          return prior.fingerprint === fingerprint
+            ? send(prior.status, prior.data)
+            : send(409, { error: "OPERATION_ID_REUSED" });
+      }
+      if (
+        configuration &&
+        expectedRevision !== undefined &&
+        expectedRevision !== store.publicConfig().revision
+      )
+        return send(409, {
+          error: "CONFIGURATION_CHANGED",
+          hint: "The saved revision changed. Check the saved configuration before applying your retained draft.",
+        });
+      if (
+        confirmRestart !== undefined &&
+        (typeof confirmRestart !== "boolean" ||
+          (!configuration && path !== "/api/preview"))
+      )
+        return send(400, { error: "ARGUMENTS_REJECTED" });
+      if (
+        configurationUncertain &&
+        !["/api/stop", "/api/cancel", "/api/shutdown"].includes(path)
+      )
+        throw new SafeError("CONFIGURATION_STATE_UNCONFIRMED");
       if (path === "/api/update/auto") {
         if (!auto && updates.snapshot().supported)
           return send(409, { error: "LAUNCHER_UPGRADE_REQUIRED" });
@@ -344,6 +560,7 @@ export async function admin(
         return send(200, { auto: await auto.read() });
       }
       if (path === "/api/update/auto/release" && auto) {
+        if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
         if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
         if (Object.keys(body).length)
           return send(400, { error: "ARGUMENTS_REJECTED" });
@@ -363,6 +580,8 @@ export async function admin(
         if (autoQuiesced) {
           try {
             await autoQuiescePending;
+            if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+              throw new Error("WORKER_STOP_UNCONFIRMED");
             return send(200, { wasRunning: autoWasRunning });
           } catch {
             return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
@@ -374,6 +593,7 @@ export async function admin(
         // re-checks autoQuiesced, so no native work can begin afterwards.
         if (
           updates.applying ||
+          updates.recovering ||
           busy ||
           preview ||
           chat.active ||
@@ -385,7 +605,7 @@ export async function admin(
         autoWasRunning = !!worker && worker.state !== "stopped";
         const stopping = (async () => {
           if (autoWasRunning) await worker!.stop();
-          if (worker && worker.state !== "stopped")
+          if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
             throw new Error("WORKER_STOP_UNCONFIRMED");
         })();
         autoQuiescePending = stopping;
@@ -393,9 +613,8 @@ export async function admin(
           await stopping;
           return send(200, { wasRunning: autoWasRunning });
         } catch {
-          autoQuiesced = false;
-          autoWasRunning = false;
-          worker?.releaseUpdateQuiesce();
+          // Keep the admission barrier and pre-stop intent until the owner
+          // reads status and explicitly releases it, including lost replies.
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
         } finally {
           if (autoQuiescePending === stopping) autoQuiescePending = undefined;
@@ -403,6 +622,13 @@ export async function admin(
       }
       if (autoQuiesced) return send(409, { error: "AUTO_UPDATE_QUIESCED" });
       if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+      if (updates.recovering && path !== "/api/update/resume")
+        return send(409, {
+          error: "UPDATE_RECOVERING",
+          hint: "The launcher is restoring Coach. Check worker status; do not reapply the update.",
+        });
+      if (busy && path !== "/api/cancel")
+        return send(409, { error: "OPERATION_IN_PROGRESS" });
       if (path === "/api/operator/cancel") {
         await chat.cancel();
         return send(200, { ok: true, ...chat.snapshot() });
@@ -418,6 +644,7 @@ export async function admin(
           "/api/config",
           "/api/rollback",
           "/api/persona-restore",
+          "/api/preview",
           "/api/update/check",
           "/api/update/apply",
         ].includes(path)
@@ -489,10 +716,10 @@ export async function admin(
         return send(200, await updateSnapshot());
       }
       if (path === "/api/update/apply") {
-        if (busy || preview || (worker && worker.state !== "stopped"))
+        if (busy || preview)
           return send(409, {
-            error: "PAUSE_BEFORE_UPGRADE",
-            hint: "Pause the worker and finish or cancel preview first.",
+            error: "OPERATION_IN_PROGRESS",
+            hint: "Finish or cancel preview before upgrading.",
           });
         if (
           !body ||
@@ -505,15 +732,36 @@ export async function admin(
         } catch (e: any) {
           return send(400, { error: e.message });
         }
-        await terminal.stop();
-        void updates.apply(body.sha).catch(() => {});
+        const wasRunning = !!worker && worker.state !== "stopped";
+        if (wasRunning && !updates.snapshot().manualRestartSupported)
+          return send(409, {
+            error: "LAUNCHER_UPGRADE_REQUIRED",
+            hint: "This older launcher cannot preserve running Coach across a manual update. Nothing was stopped or applied. Replace the stable launcher with a reviewed current build using the same Coach home; settings and preview restarts do not need this upgrade.",
+          });
+        busy = true;
         try {
+          await terminal.stop();
+          if (wasRunning) await worker!.stop();
+          if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+            throw new SafeError("WORKER_STOP_UNCONFIRMED");
+          void updates.apply(body.sha, wasRunning).catch(() => {});
           await updates.accepted;
-        } catch {
+        } catch (error) {
+          if (
+            wasRunning &&
+            !updates.applying &&
+            worker?.presence !== "unconfirmed" &&
+            worker?.safeToReplace
+          )
+            await startWorker().catch(() => {});
+          if (error instanceof SafeError)
+            return send(400, { error: error.code, hint: error.hint });
           return send(503, {
             error: "UPDATE_NOT_ACCEPTED",
             hint: "Could not persist the update request. Check protected home storage.",
           });
+        } finally {
+          busy = false;
         }
         return send(202, { ok: true });
       }
@@ -531,40 +779,48 @@ export async function admin(
       }
       if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
       busy = true;
+      if (configuration && operationId) acceptedId = operationId;
       try {
         if (
           ["/api/config", "/api/rollback", "/api/persona-restore"].includes(
             path,
           )
         ) {
-          if (worker && worker.state !== "stopped")
-            return send(409, { error: "STOP_WORKER_BEFORE_CONFIGURE" });
-          await terminal.stop();
-          if (path === "/api/config") {
-            // Every incoming credential, including inactive and new registry
-            // providers, must be absent from persisted chat and receipts.
-            chat.assertPersisted([
-              ...Object.values(store.secrets),
-              ...[
-                body?.apiKey,
-                body?.token,
-                ...(Array.isArray(body?.models?.providers)
-                  ? body.models.providers.map((p: any) => p?.apiKey)
-                  : []),
-              ].filter((v): v is string => typeof v === "string"),
-            ]);
-            await store.save(body);
-          } else if (path === "/api/persona-restore") {
-            if (
-              !body ||
-              Array.isArray(body) ||
-              Object.keys(body).join() !== "revision"
-            )
-              throw new Error("INVALID_REVISION");
-            await store.restorePersona(body.revision);
-          } else await store.rollback();
-          await chat.cancel();
-          return send(200, { ok: true });
+          if (
+            ((worker && worker.state !== "stopped") || terminal.active) &&
+            confirmRestart !== true
+          )
+            return send(409, {
+              error: "RESTART_CONFIRMATION_REQUIRED",
+              hint: "Confirm to stop Coach, apply this change and restart it if it was running. Native sessions close; chat and actions are never replayed.",
+            });
+          await transition(path, { confirmRestart, operationId }, async () => {
+            if (path === "/api/config") {
+              // Every incoming credential, including inactive and new registry
+              // providers, must be absent from persisted chat and receipts.
+              chat.assertPersisted([
+                ...Object.values(store.secrets),
+                ...[
+                  body?.apiKey,
+                  body?.token,
+                  ...(Array.isArray(body?.models?.providers)
+                    ? body.models.providers.map((p: any) => p?.apiKey)
+                    : []),
+                ].filter((v): v is string => typeof v === "string"),
+              ]);
+              await store.save(body);
+            } else if (path === "/api/persona-restore") {
+              if (
+                !body ||
+                Array.isArray(body) ||
+                Object.keys(body).join() !== "revision"
+              )
+                throw new Error("INVALID_REVISION");
+              await store.restorePersona(body.revision);
+            } else await store.rollback();
+            await chat.cancel();
+          });
+          return send(200, { ok: true, lifecycle });
         }
         if (path === "/api/connect") {
           if (!store.secrets.token) throw new Error("TOKEN_REQUIRED");
@@ -582,113 +838,90 @@ export async function admin(
           });
         }
         if (path === "/api/preview") {
-          if (worker && worker.state !== "stopped")
-            throw new Error("STOP_WORKER_BEFORE_PREVIEW");
           if (
             typeof body.text !== "string" ||
             !body.text.trim() ||
             body.text.length > 8000
           )
             throw new Error("INVALID_PREVIEW");
-          preview = new AbortController();
-          const previewRef = ref;
-          logs.record({
-            source: "studio",
-            stage: "preview-started",
-            ref: previewRef,
-          });
-          const controller = preview;
-          const cancel = () => controller.abort();
-          res.once("close", cancel);
-          try {
-            const c = store.publicConfig();
-            const apiKey = store.secrets.apiKey;
-            const signal = AbortSignal.any([
-              controller.signal,
-              AbortSignal.timeout(60000),
-            ]);
-            const instructions = await fetchInstructions(
-              new Client(c.origin, store.secrets.token, signal),
-            ).catch(() => {
-              if (controller.signal.aborted) throw new SafeError("CANCELLED");
-              throw new Error("BACKEND_INSTRUCTIONS_UNAVAILABLE");
-            });
-            const prompt = effectivePrompt(
-              compile(c, Object.values(store.secrets)),
-              instructions,
-              Object.values(store.secrets),
-            );
-            const text = await infer(
-              {
-                ...c.provider,
-                onDiagnostic: (event) =>
-                  logs.record({ ...event, ref: previewRef }),
-                apiKey,
-                secrets: Object.values(store.secrets),
-              },
-              prompt,
-              body.text,
-              signal,
-            );
-            for (const secret of Object.values(store.secrets))
-              if (secret && text.includes(secret))
-                throw new Error("OUTPUT_REJECTED");
-            logs.record({
-              source: "studio",
-              stage: "preview-completed",
-              ref: previewRef,
-            });
-            return send(200, {
-              text,
-              prompt,
-              revision: c.revision,
-              instructionsStatus: "fetched",
-              configuration: "saved",
-              dataAuthority:
-                "none: preview has no claimed request or data tools",
-            });
-          } finally {
-            res.removeListener("close", cancel);
-            preview = undefined;
-          }
-        }
-        if (path === "/api/run") {
-          if (!store.secrets.token || !store.secrets.apiKey)
-            throw new Error("CONNECTION_AND_PROVIDER_REQUIRED");
-          if (!worker || worker.state === "stopped") {
-            // Capture the active endpoint and its key together.
-            const c = store.publicConfig();
-            const apiKey = store.secrets.apiKey;
-            worker = new Worker({
-              origin: c.origin,
-              token: store.secrets.token,
-              system: compile(c, Object.values(store.secrets)),
-              secrets: Object.values(store.secrets),
-              vision: c.provider.vision === true,
-              onDiagnostic: (event) => logs.record(event),
-              complete: (context, signal, system, tools, ref, budget) =>
-                infer(
+          const result = await transition(
+            path,
+            { confirmRestart },
+            async () => {
+              preview = new AbortController();
+              const previewRef = ref;
+              logs.record({
+                source: "studio",
+                stage: "preview-started",
+                ref: previewRef,
+              });
+              const controller = preview;
+              const cancel = () => controller.abort();
+              res.once("close", cancel);
+              try {
+                const c = store.publicConfig();
+                const apiKey = store.secrets.apiKey;
+                const signal = AbortSignal.any([
+                  controller.signal,
+                  AbortSignal.timeout(60000),
+                ]);
+                const instructions = await fetchInstructions(
+                  new Client(c.origin, store.secrets.token, signal),
+                ).catch(() => {
+                  if (controller.signal.aborted)
+                    throw new SafeError("CANCELLED");
+                  throw new Error("BACKEND_INSTRUCTIONS_UNAVAILABLE");
+                });
+                const prompt = effectivePrompt(
+                  compile(c, Object.values(store.secrets)),
+                  instructions,
+                  Object.values(store.secrets),
+                );
+                const text = await infer(
                   {
                     ...c.provider,
-                    onDiagnostic: (event) => logs.record({ ...event, ref }),
+                    onDiagnostic: (event) =>
+                      logs.record({ ...event, ref: previewRef }),
                     apiKey,
                     secrets: Object.values(store.secrets),
                   },
-                  system,
-                  context,
+                  prompt,
+                  body.text,
                   signal,
-                  tools,
-                  budget,
-                ),
-            });
-            try {
-              await worker.start();
-            } catch (error) {
-              await worker.stop();
-              throw error;
-            }
+                );
+                for (const secret of Object.values(store.secrets))
+                  if (secret && text.includes(secret))
+                    throw new Error("OUTPUT_REJECTED");
+                logs.record({
+                  source: "studio",
+                  stage: "preview-completed",
+                  ref: previewRef,
+                });
+                return {
+                  text,
+                  prompt,
+                  revision: c.revision,
+                  instructionsStatus: "fetched",
+                  configuration: "saved",
+                  dataAuthority:
+                    "none: preview has no claimed request or data tools",
+                };
+              } finally {
+                res.removeListener("close", cancel);
+                preview = undefined;
+              }
+            },
+          );
+          return send(200, { ...result, lifecycle });
+        }
+        if (path === "/api/run" || path === "/api/update/resume") {
+          await startWorker();
+          if (lifecycle?.error === "COACH_RESTART_FAILED") {
+            lifecycle.resumed = true;
+            delete lifecycle.error;
+            delete lifecycle.hint;
           }
-          return send(200, { ok: true, presence: worker.presence });
+          return send(200, { ok: true, presence: worker!.presence });
         }
         if (path === "/api/stop") {
           await worker?.stop();
@@ -741,6 +974,7 @@ export async function admin(
         error: failure.code,
         hint: failure.hint,
         metadata: failure.metadata,
+        lifecycle,
         ...operatorOutcome,
       });
     }
@@ -749,7 +983,14 @@ export async function admin(
     store,
     server,
     () => origin,
-    () => !busy && !chat.active && !updates.applying && !autoQuiesced,
+    () =>
+      !closing &&
+      !busy &&
+      !configurationUncertain &&
+      !chat.active &&
+      !updates.applying &&
+      !updates.recovering &&
+      !autoQuiesced,
   );
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -759,6 +1000,9 @@ export async function admin(
   return {
     origin,
     async close() {
+      closing = true;
+      preview?.abort();
+      await lifecycleDone;
       await terminal.close();
       for (const controller of memberReads) controller.abort();
       await chat.cancel();

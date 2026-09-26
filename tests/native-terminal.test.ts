@@ -119,8 +119,24 @@ test(
         1008,
       );
       const closed = new Promise<number>((r) => ws!.once("close", r));
+      const revision = f.store.publicConfig().revision;
       assert.equal(
         (await post("/api/config", f.store.publicConfig())).status,
+        409,
+      );
+      assert.equal(f.store.publicConfig().revision, revision);
+      assert.equal(
+        ws.readyState,
+        WebSocket.OPEN,
+        "unconfirmed save must not stop native Pi",
+      );
+      assert.equal(
+        (
+          await post("/api/config", {
+            ...f.store.publicConfig(),
+            confirmRestart: true,
+          })
+        ).status,
         200,
       );
       assert.equal(

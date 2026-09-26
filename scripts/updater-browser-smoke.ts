@@ -135,6 +135,10 @@ try {
   await page.getByRole("tab", { name: "Updates", exact: true }).click();
   await page.locator("#updateApply").click();
   await page.locator("#updateConfirm").waitFor({ state: "visible" });
+  assert.match(
+    await page.locator("#updates").innerText(),
+    /restarts it if it was/,
+  );
   await page.setViewportSize({ width: 360, height: 800 });
   assert.equal(
     await page.evaluate(

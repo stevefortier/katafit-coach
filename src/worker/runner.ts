@@ -93,6 +93,21 @@ export class Worker {
   private preferTask = true;
   private pendingTask?: PendingTask;
   private isolated: Incident[] = [];
+  get safeToReplace() {
+    // Never throw away unresolved publication identities by constructing a
+    // replacement worker. They require read-only reconciliation, not replay.
+    return (
+      !this.pendingTask &&
+      this.isolated.length === 0 &&
+      this.lastError?.code !== "DELIVERY_UNVERIFIED"
+    );
+  }
+  get stopConfirmed() {
+    return (
+      this.state === "stopped" &&
+      (!this.presenceAttempted || this.presence === "reported")
+    );
+  }
   get incidents() {
     return this.isolated.map(({ task, digest, reason, nextCheck }) => ({
       taskId: task.id,

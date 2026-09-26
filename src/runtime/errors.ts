@@ -1,5 +1,11 @@
 // Only fixed local codes/hints and finite numeric metadata cross diagnostics boundaries.
 export const hints = {
+  CONFIGURATION_STATE_UNCONFIRMED:
+    "Configuration storage could not be reconciled after a failed write. Coach remains stopped; do not resave or restart blindly. Repair protected home storage and verify the saved revision and credential binding before restarting the service.",
+  RESTART_CONFIRMATION_REQUIRED:
+    "Confirm to pause Coach, apply this operation and restart it only if it was running. Native sessions close; actions and chat are never replayed.",
+  WORKER_STOP_UNCONFIRMED:
+    "Coach stopped locally but backend stop or publication safety is unconfirmed. Nothing was applied. Check backend connectivity and canonical receipts before restarting.",
   DISCOVERY_REJECTED:
     "Request data-tool discovery failed validation. Check backend and worker compatibility; no access was expanded.",
   CAPABILITIES_REJECTED:

@@ -41,7 +41,7 @@ function validate(value: unknown): Operation {
 }
 
 /** Atomic private JSON write; refuses symlinked or oversized existing targets. */
-async function atomicWrite(home: string, name: string, value: unknown) {
+export async function atomicWrite(home: string, name: string, value: unknown) {
   await directory(home);
   const target = join(home, name);
   try {
