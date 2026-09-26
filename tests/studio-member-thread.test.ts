@@ -151,7 +151,7 @@ test("member threads retain both canonical directions in chronological chat orde
       /Should I increase[\s\S]*Keep the next set/,
     );
     assert.equal(
-      await page.locator("#memberTitle").innerText(),
+      await page.locator("#memberView").getAttribute("aria-label"),
       "Synthetic Alex",
     );
     assert.doesNotMatch(
@@ -279,7 +279,7 @@ test("member threads retain both canonical directions in chronological chat orde
       .click();
     await page.locator(".member-thread .member-item").first().waitFor();
     assert.equal(
-      await page.locator("#memberTitle").innerText(),
+      await page.locator("#memberView").getAttribute("aria-label"),
       "Synthetic Kai",
     );
     assert.doesNotMatch(

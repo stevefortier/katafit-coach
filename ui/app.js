@@ -1750,7 +1750,7 @@ function selectConversation(member, navigate = true) {
         : "/chat/operator",
     );
   if (!member) return;
-  $("memberTitle").textContent = member.display_name;
+  $("memberView").setAttribute("aria-label", member.display_name);
   $("memberRefresh").disabled = member.access !== "granted";
   if (member.access !== "granted")
     $("memberStatus").textContent =

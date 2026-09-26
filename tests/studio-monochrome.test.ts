@@ -306,6 +306,57 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         .getByRole("button", { name: "Alex · synthetic preview", exact: true })
         .click();
       await page.locator("#memberItems .chat-message").first().waitFor();
+      assert.equal(
+        await page.locator("#memberView h2").count(),
+        0,
+        "the selected member tab replaces the redundant member heading",
+      );
+      const refresh = page.getByRole("button", {
+        name: "Refresh members",
+        exact: true,
+      });
+      assert.equal(
+        (await refresh.innerText()).trim(),
+        "",
+        "refresh uses an icon, not visible text",
+      );
+      assert.equal(await refresh.locator('svg[aria-hidden="true"]').count(), 1);
+      const toolbarGeometry = await page.evaluate(() => {
+        const tabs = document
+          .getElementById("conversationTabs")!
+          .getBoundingClientRect();
+        const button = document
+          .getElementById("membersRefresh")!
+          .getBoundingClientRect();
+        const row = document
+          .querySelector(".conversation-toolbar")!
+          .getBoundingClientRect();
+        return {
+          sameRow: Math.abs(tabs.top - button.top) < 2,
+          atRight: Math.abs(button.right - row.right) < 2,
+          separate: tabs.right <= button.left,
+          touch: button.width >= 44 && button.height >= 44,
+        };
+      });
+      assert.deepEqual(toolbarGeometry, {
+        sameRow: true,
+        atRight: true,
+        separate: true,
+        touch: true,
+      });
+      const rosterRefresh = page.waitForRequest(
+        (request) => new URL(request.url()).pathname === "/api/members",
+      );
+      await refresh.focus();
+      await page.keyboard.press("Enter");
+      await rosterRefresh;
+      await page.waitForFunction(
+        () => !document.getElementById("membersStatus")!.textContent,
+      );
+      assert.equal(
+        await page.locator('.member-tab[aria-pressed="true"]').innerText(),
+        "Alex · synthetic preview",
+      );
       async function capture(surface: string) {
         await page.evaluate(() => window.scrollTo(0, 0));
         assert.ok(
@@ -357,6 +408,55 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       );
       await primaryContrast(page, "#coachTab");
       await capture("coach-chat");
+      // Stress the real roster renderer, not a hand-built tab row.
+      await page.route("**/api/members?*", (route) =>
+        route.fulfill({
+          json: {
+            members: [
+              {
+                member_ref: "synthetic-alex",
+                display_name: "Alex · synthetic preview",
+                access: "granted",
+              },
+              ...Array.from({ length: 10 }, (_, i) => ({
+                member_ref: `synthetic-${i}`,
+                display_name: `Long synthetic member ${i}`,
+                access: "granted",
+              })),
+            ],
+            has_more: true,
+            next_cursor: "synthetic-next",
+          },
+        }),
+      );
+      await refresh.click();
+      await page.waitForFunction(
+        () => document.querySelectorAll(".member-tab").length === 11,
+      );
+      const fixedRefresh = await refresh.boundingBox();
+      await page.locator("#conversationTabs").evaluate((el) => {
+        el.scrollLeft = el.scrollWidth;
+      });
+      assert.deepEqual(
+        await refresh.boundingBox(),
+        fixedRefresh,
+        "refresh stays fixed when tabs scroll",
+      );
+      assert.ok(
+        await page.locator("#membersMore").isVisible(),
+        "roster pagination remains accessible",
+      );
+      assert.ok(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        "long roster stays inside the viewport",
+      );
+      await page.unroute("**/api/members?*");
+      await refresh.click();
+      await page.waitForFunction(
+        () => document.querySelectorAll(".member-tab").length === 1,
+      );
       await page.locator("#settingsTab").click();
       await primaryContrast(page, "#settings-katafit-tab");
       await capture("settings-katafit");
