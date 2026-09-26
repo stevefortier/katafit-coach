@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 let revision = null;
 try {
@@ -26,13 +26,24 @@ try {
     revision = process.env.KATAFIT_BUILD_REVISION;
 }
 const identity = createHash("sha256").update("katafit-native-contract-2\0");
+const sandboxModules = [
+  "sandbox/katafit.mjs",
+  "sandbox/launch.mjs",
+  "sandbox/relay.mjs",
+];
+// The image copies sandbox/*.mjs, and receipts are reused by fingerprint, so
+// every copied module must be fingerprinted.
+const copied = readdirSync("sandbox")
+  .filter((name) => name.endsWith(".mjs"))
+  .map((name) => "sandbox/" + name)
+  .sort();
+if (copied.join(",") !== sandboxModules.join(","))
+  throw new Error("UNFINGERPRINTED_SANDBOX_INPUT: " + copied.join(","));
 for (const name of [
   "package.json",
   "package-lock.json",
   "sandbox/Dockerfile",
-  "sandbox/launch.mjs",
-  "sandbox/relay.mjs",
-  "sandbox/katafit.mjs",
+  ...sandboxModules,
 ]) {
   const bytes = readFileSync(name);
   identity.update(name + "\0" + bytes.length + "\0").update(bytes);

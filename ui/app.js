@@ -541,7 +541,21 @@ action("logPause", async () => {
 });
 $("logLevel").onchange = renderLogs;
 const logJSON = () =>
-  JSON.stringify({ ...logData, entries: filteredLogs() }, null, 2);
+  JSON.stringify(
+    {
+      ...logData,
+      entries: filteredLogs(),
+      update: {
+        installed: sourceSha(updateData?.installed)
+          ? updateData.installed
+          : null,
+        latest: sourceSha(updateData?.latest) ? updateData.latest : null,
+        lastOperation: safeUpdateOperation(updateData?.lastOperation),
+      },
+    },
+    null,
+    2,
+  );
 action("logCopy", async () => {
   await navigator.clipboard.writeText(logJSON());
   notice(
@@ -570,6 +584,72 @@ let updateData,
   updateInitialRevision;
 const sourceSha = (value) =>
   typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+const updateFailureHelp = {
+  EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED:
+    "Matching native artifact or bootstrap required. Provision and preflight the exact candidate image outside Pi, then retry manually. The updater never builds or pulls sandbox images.",
+  INSUFFICIENT_DISK:
+    "Not enough free disk. Free at least 1.5 GiB in the Coach home filesystem, then retry manually.",
+  BUILD_TOOL_UNAVAILABLE:
+    "A required build tool could not start. Check Git, npm and Node in the launcher environment.",
+  BUILD_FAILED:
+    "Source build or candidate probe failed or exceeded a resource/time limit. Check disk, Git/npm network access and candidate compatibility.",
+  BUILD_CANCELLED:
+    "Preparation was cancelled. Check that the service is running before retrying.",
+  INCOMPATIBLE_BUILD:
+    "Candidate metadata is incompatible. Verify the reviewed source and installed launcher protocol.",
+  SOURCE_MISMATCH:
+    "Candidate source did not match the approved revision. Do not bypass source verification.",
+  PACKAGE_REJECTED:
+    "Candidate package identity was rejected. Do not bypass package verification.",
+  UNSAFE_PATH:
+    "An unsafe managed path was rejected. Check protected home ownership and symlinks without deleting live files.",
+  ACTIVATION_ROLLED_BACK:
+    "Candidate activation failed and rollback was attempted. Verify the installed revision and worker status before retrying.",
+  STARTUP_FAILED:
+    "Candidate startup failed. Verify launcher compatibility and the installed revision.",
+  STARTUP_TIMEOUT:
+    "Candidate startup timed out. Verify host resources and the installed revision.",
+  HEALTH_FAILED:
+    "Candidate health check failed. Verify the installed revision and worker status.",
+  AUTO_UPDATE_DISABLED:
+    "Automatic consent was withdrawn before activation. Review the setting before a manual retry.",
+  UPGRADE_FAILED:
+    "No specific safe failure code is available. Check host disk, Git/npm access and exact native artifact readiness before retrying manually.",
+};
+const updateOutcomeNames = {
+  applying: "Upgrade accepted",
+  succeeded: "Last upgrade succeeded",
+  failed: "Last upgrade failed",
+  interrupted: "Last upgrade was interrupted",
+};
+function safeUpdateOperation(outcome) {
+  if (
+    !outcome ||
+    !sourceSha(outcome.sha) ||
+    typeof outcome.id !== "string" ||
+    !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
+      outcome.id,
+    ) ||
+    !Object.hasOwn(updateOutcomeNames, outcome.state) ||
+    !Number.isSafeInteger(outcome.at) ||
+    outcome.at <= 0 ||
+    !Number.isFinite(new Date(outcome.at).getTime())
+  )
+    return undefined;
+  return {
+    id: outcome.id,
+    sha: outcome.sha,
+    state: outcome.state,
+    at: outcome.at,
+    ...(["preparing", "activating"].includes(outcome.phase)
+      ? { phase: outcome.phase }
+      : {}),
+    ...(outcome.state === "failed" &&
+    Object.hasOwn(updateFailureHelp, outcome.reason)
+      ? { reason: outcome.reason }
+      : {}),
+  };
+}
 function renderHeaderStatus() {
   if (!key || $("studio").hidden) return;
   if (updatePending || updateData?.applying === true) {
@@ -585,6 +665,10 @@ function renderUpdate() {
   const data = updateData;
   if (!data) return;
   const locked = updatePending || data.applying;
+  const outcome = safeUpdateOperation(data.lastOperation);
+  const failed = outcome && ["failed", "interrupted"].includes(outcome.state);
+  const failedLatest =
+    failed && outcome.sha === data.latest && outcome.sha !== data.installed;
   $("updateReload").hidden =
     locked ||
     !sourceSha(data.installed) ||
@@ -602,7 +686,9 @@ function renderUpdate() {
   $("updateStatus").textContent =
     updateError ||
     (data.auto?.enabled && data.guidance?.startsWith("New source available.")
-      ? "Main differs from the installed source. Automatic upgrade will verify it and wait for an idle worker."
+      ? failedLatest
+        ? "Main differs from the installed source. The last attempt failed; see the upgrade failure below."
+        : "Main differs from the installed source. Automatic upgrade will verify it and wait for an idle worker."
       : data.guidance);
   $("updateAuto").disabled =
     !data.supported || data.auto?.available !== true || updateRequest;
@@ -611,7 +697,10 @@ function renderUpdate() {
     running:
       "Upgrade committed; worker started locally. Check Worker status for ongoing connectivity.",
     stopped: "Upgrade committed; previously stopped worker remains stopped.",
-    deferred: "Automatic upgrade was deferred; no source change was made.",
+    deferred:
+      "Automatic attempt deferred before installation. The launcher did not record a specific reason; see the last upgrade result separately.",
+    suppressed:
+      "Automatic retry suppressed: this revision already failed. Resolve the failure, then retry manually, or wait for a different main revision.",
     "restored-running":
       "Upgrade failed; previous runtime restored and worker started locally. Check Worker status.",
     failed:
@@ -619,37 +708,57 @@ function renderUpdate() {
     "resume-failed":
       "Worker restart could not be confirmed. Check Worker status and start it manually if needed; inspect upgrade result separately.",
   };
-  $("updateAutoStatus").textContent =
-    data.autoOutcome &&
-    sourceSha(data.autoOutcome.sha) &&
-    Object.hasOwn(autoStates, data.autoOutcome.state)
-      ? autoStates[data.autoOutcome.state]
-      : data.supported && data.auto?.available === false
-        ? "Launcher upgrade required. Replace the launcher or container image with the current build, restart the service using the same Coach home, then reload Studio. Source upgrades alone leave the old launcher running."
-        : data.auto?.enabled
-          ? "Enabled. Waiting for a newer verified main revision and an idle worker."
-          : "Off. Enable to upgrade from main automatically.";
-  const outcome = data.lastOperation;
-  const outcomeNames = {
-    applying: "Upgrade accepted",
-    succeeded: "Last upgrade succeeded",
-    failed: "Last upgrade failed",
-    interrupted: "Last upgrade was interrupted",
+  const deferReasons = {
+    AUTO_UPDATE_BUSY:
+      "Automatic attempt deferred: worker, preview, Operator or native terminal activity is still busy. It will check again after activity finishes.",
+    WORKER_STOP_UNCONFIRMED:
+      "Automatic attempt deferred: worker stop could not be confirmed. Check Worker status.",
+    LOCAL_UNAVAILABLE:
+      "Automatic attempt deferred: local Studio communication failed. No source operation was accepted; the supervisor will reconcile worker state before retrying.",
+    AUTO_UPDATE_DISABLED:
+      "Automatic attempt cancelled before installation because automatic updates were disabled or the owner was shutting down.",
   };
-  const validOutcome =
-    outcome &&
-    sourceSha(outcome.sha) &&
-    typeof outcome.id === "string" &&
-    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
-      outcome.id,
-    ) &&
-    Object.hasOwn(outcomeNames, outcome.state) &&
-    Number.isSafeInteger(outcome.at) &&
-    outcome.at > 0 &&
-    Number.isFinite(new Date(outcome.at).getTime());
+  const autoOutcome = data.autoOutcome;
+  const relevantAuto =
+    autoOutcome &&
+    sourceSha(autoOutcome.sha) &&
+    (autoOutcome.sha === data.latest || autoOutcome.sha === data.installed);
+  $("updateAutoStatus").textContent =
+    relevantAuto && autoOutcome.state === "deferred" && failedLatest
+      ? "Last attempt for this revision failed. See the failure details before retrying manually."
+      : relevantAuto &&
+          autoOutcome.state === "deferred" &&
+          Object.hasOwn(deferReasons, autoOutcome.reason)
+        ? deferReasons[autoOutcome.reason]
+        : relevantAuto &&
+            sourceSha(data.autoOutcome.sha) &&
+            Object.hasOwn(autoStates, data.autoOutcome.state)
+          ? autoStates[data.autoOutcome.state]
+          : data.supported && data.auto?.available === false
+            ? "Launcher upgrade required. Replace the launcher or container image with the current build, restart the service using the same Coach home, then reload Studio. Source upgrades alone leave the old launcher running."
+            : data.auto?.enabled
+              ? "Enabled. Waiting for a newer verified main revision and an idle worker."
+              : "Off. Enable to upgrade from main automatically.";
+  const validOutcome = !!outcome;
+  $("updateOutcome").dataset.tone = failed ? "error" : "neutral";
+  $("updateOutcome").setAttribute("role", failed ? "alert" : "status");
+  $("updateAutoStatus").dataset.tone =
+    relevantAuto &&
+    ["failed", "suppressed", "restored-running", "resume-failed"].includes(
+      autoOutcome.state,
+    )
+      ? "error"
+      : "neutral";
+  const failureHelp = !failed
+    ? ""
+    : outcome.state === "interrupted"
+      ? " Completion was not confirmed. Verify the installed revision and worker status before retrying."
+      : outcome.reason
+        ? ` ${outcome.reason}: ${updateFailureHelp[outcome.reason]}`
+        : " Failure reason was not recorded by this launcher. Check host prerequisites; replacing the stable launcher is required to retain reasons for future failures. Older failures cannot be reconstructed.";
   $("updateOutcome").hidden = !validOutcome;
   $("updateOutcome").textContent = validOutcome
-    ? `${outcomeNames[outcome.state]} · ${outcome.sha.slice(0, 12)} · ${new Date(outcome.at).toLocaleString()}`
+    ? `${updateOutcomeNames[outcome.state]} · ${outcome.sha.slice(0, 12)} · ${new Date(outcome.at).toLocaleString()}${failureHelp}${failed ? ` Diagnostic operation: ${outcome.id}${outcome.phase ? `; phase: ${outcome.phase}` : ""}. Included in diagnostic JSON; worker/preview errors are separate.` : ""}`
     : "";
   $("updateOutcome").title = validOutcome
     ? `Operation ${outcome.id}; target ${outcome.sha}`

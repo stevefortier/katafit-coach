@@ -1,5 +1,5 @@
 import { chromium } from "playwright-core";
-import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { Store } from "../src/config/store.js";
@@ -227,9 +227,144 @@ try {
     ),
     false,
   );
-  await page
-    .locator("#updates")
-    .screenshot({ path: evidence + "/studio-updates-failure.png" });
+  // Old owners may only supply a failed receipt and stale deferred status.
+  updates.autoOutcome = { sha: latest, state: "deferred" };
+  updates.checkedAt = 0;
+  await page.locator("#updateCheck").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#updateStatus")
+      ?.textContent?.includes("Main differs"),
+  );
+  assert.equal(
+    await page.locator("#updateOutcome").getAttribute("role"),
+    "alert",
+  );
+  assert.equal(
+    await page.locator("#updateOutcome").getAttribute("data-tone"),
+    "error",
+  );
+  assert.equal(
+    await page
+      .locator("#updateOutcome")
+      .evaluate((el) => getComputedStyle(el).color),
+    "rgb(255, 180, 180)",
+  );
+  assert.match(
+    await page.locator("#updateOutcome").innerText(),
+    /reason was not recorded/i,
+  );
+  assert.doesNotMatch(
+    await page.locator("#updateAutoStatus").innerText(),
+    /was deferred|will verify/,
+  );
+  assert.doesNotMatch(
+    await page.locator("#updateStatus").innerText(),
+    /will verify/,
+  );
+  for (const state of ["failed", "suppressed", "restored-running"] as const) {
+    updates.autoOutcome = { sha: latest, state };
+    fixtureOperation = {
+      ...fixtureOperation!,
+      reason: "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED",
+    };
+    const reply = page.waitForResponse("**/api/update/check");
+    await page.locator("#updateCheck").click();
+    await reply;
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#updateOutcome")
+        ?.textContent?.includes("EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"),
+    );
+    assert.match(
+      await page.locator("#updateOutcome").innerText(),
+      /outside Pi/,
+    );
+    assert.doesNotMatch(
+      await page.locator("#updateAutoStatus").innerText(),
+      /was deferred/,
+    );
+  }
+  await page.locator("#logsView").evaluate((el: HTMLDetailsElement) => {
+    el.open = true;
+  });
+  const downloaded = page.waitForEvent("download");
+  await page.locator("#logDownload").click();
+  const diagnostic = JSON.parse(
+    await readFile((await (await downloaded).path())!, "utf8"),
+  );
+  assert.equal(
+    diagnostic.update.lastOperation.reason,
+    "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED",
+  );
+  assert.equal(diagnostic.update.lastOperation.sha, latest);
+  assert.equal(
+    JSON.stringify(diagnostic.update).includes(store.secrets.admin),
+    false,
+  );
+  for (const width of [320, 360, 1280]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    await page
+      .locator("#updates")
+      .screenshot({ path: evidence + `/studio-updates-failure-${width}.png` });
+  }
+  fixtureOperation = { ...fixtureOperation!, reason: "private-output" as any };
+  await page.locator("#updateCheck").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#updateOutcome")
+      ?.textContent?.includes("reason was not recorded"),
+  );
+  assert.equal(
+    (await page.locator("#updates").innerText()).includes("private-output"),
+    false,
+  );
+  fixtureOperation = {
+    ...fixtureOperation!,
+    state: "interrupted",
+    reason: undefined,
+  };
+  await page.locator("#updateCheck").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#updateOutcome")
+      ?.textContent?.includes("interrupted"),
+  );
+  assert.equal(
+    await page.locator("#updateOutcome").getAttribute("role"),
+    "alert",
+  );
+  fixtureOperation = {
+    ...fixtureOperation!,
+    state: "succeeded",
+    reason: undefined,
+  };
+  updates.autoOutcome = undefined;
+  await page.locator("#updateCheck").click();
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#updateOutcome")
+      ?.textContent?.includes("succeeded"),
+  );
+  assert.equal(
+    await page.locator("#updateOutcome").getAttribute("role"),
+    "status",
+  );
+  assert.notEqual(
+    await page.locator("#updateOutcome").getAttribute("data-tone"),
+    "error",
+  );
+  fixtureOperation = {
+    ...fixtureOperation!,
+    state: "failed",
+    reason: "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED",
+  };
   assert.equal(
     await page.locator("#updateReload").count(),
     1,

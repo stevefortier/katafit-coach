@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { failureReason, type FailureReason } from "./failure.js";
 export interface LastOperation {
   id: string;
   sha: string;
   state: "applying" | "succeeded" | "failed" | "interrupted";
   at: number;
   phase?: "preparing" | "activating";
+  reason?: FailureReason;
 }
 export const repository = "https://github.com/stevefortier/katafit-coach.git";
 export const validSha = (value: unknown): value is string =>
@@ -14,7 +16,16 @@ export class Updates {
   checkedAt = 0;
   applying = false;
   cleanupWarning = false;
-  autoOutcome?: { sha: string; state: string };
+  autoOutcome?: {
+    sha: string;
+    state: string;
+    reason?:
+      | "FAILED_TARGET"
+      | "AUTO_UPDATE_BUSY"
+      | "WORKER_STOP_UNCONFIRMED"
+      | "LOCAL_UNAVAILABLE"
+      | "AUTO_UPDATE_DISABLED";
+  };
   accepted: Promise<void> = Promise.resolve();
   lastOperation: LastOperation | undefined;
   guidance = "Use a managed Linux launcher to enable upgrades.";
@@ -73,6 +84,7 @@ export class Updates {
           ? " Cleanup incomplete; check protected home permissions before the next upgrade."
           : "");
     } catch (error) {
+      this.lastOperation.reason = failureReason(error);
       this.guidance =
         error instanceof Error &&
         error.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"

@@ -142,6 +142,7 @@ export class AutoUpdater {
       check: () => Promise<{ installed: string | null; latest: string | null }>;
       isDescendant: (installed: string, latest: string) => Promise<boolean>;
       apply: (sha: string) => Promise<void>;
+      suppressed?: (sha: string) => void;
     },
   ) {}
   tick(): Promise<void> {
@@ -157,13 +158,12 @@ export class AutoUpdater {
   private async run() {
     if (!(await this.setting.read()).enabled) return;
     const { installed, latest } = await this.hooks.check();
-    if (
-      !validSha(installed) ||
-      !validSha(latest) ||
-      installed === latest ||
-      latest === (await this.setting.failedTarget())
-    )
+    if (!validSha(installed) || !validSha(latest) || installed === latest)
       return;
+    if (latest === (await this.setting.failedTarget())) {
+      this.hooks.suppressed?.(latest);
+      return;
+    }
     if (!(await this.hooks.isDescendant(installed, latest))) return;
     if (!(await this.setting.read()).enabled) return;
     try {
