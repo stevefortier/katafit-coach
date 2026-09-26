@@ -78,6 +78,11 @@ export class Updates {
       if (this.persist) await this.accepted;
       await this.applyTarget!(sha);
       this.installed = sha;
+      if (
+        this.autoOutcome?.sha === sha &&
+        this.autoOutcome.state === "suppressed"
+      )
+        this.autoOutcome = undefined;
       this.guidance =
         "Upgrade healthy. Worker remains stopped; preview before Run." +
         (this.cleanupWarning

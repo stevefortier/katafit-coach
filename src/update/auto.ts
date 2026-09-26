@@ -63,6 +63,18 @@ export class AutoUpdateSetting {
       throw e;
     }
   }
+  /** Forget a failure record once that exact revision is installed. */
+  async clearFailed(installed: string) {
+    if (!validSha(installed)) return;
+    if ((await this.failedTarget()) !== installed) return;
+    await rm(join(this.home, "auto-failed.json"), { force: true });
+    const parent = await open(this.home, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+  }
   async markFailed(sha: string) {
     if (!validSha(sha)) throw new Error("INVALID_AUTO_FAILURE");
     await this.failedTarget();
@@ -158,6 +170,8 @@ export class AutoUpdater {
   private async run() {
     if (!(await this.setting.read()).enabled) return;
     const { installed, latest } = await this.hooks.check();
+    // A later manual (or other) success supersedes an earlier failed attempt.
+    if (validSha(installed)) await this.setting.clearFailed(installed);
     if (!validSha(installed) || !validSha(latest) || installed === latest)
       return;
     if (latest === (await this.setting.failedTarget())) {
