@@ -380,7 +380,7 @@ try {
       .locator(".log-entry")
       .first()
       .evaluate((e) => getComputedStyle(e).backgroundColor),
-    "rgb(16, 23, 21)",
+    "rgb(11, 11, 11)",
   );
   await page.locator("#logLevel").selectOption("all");
   const downloadWait = page.waitForEvent("download");

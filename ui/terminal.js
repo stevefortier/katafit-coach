@@ -48,7 +48,7 @@ function nativeTerminal({ api, authorized }) {
         scrollback: 1000,
         fontSize: 13,
         convertEol: false,
-        theme: { background: "#10151b", foreground: "#e3e8ee" },
+        theme: { background: "#101010", foreground: "#e8e8e8" },
       });
       fit = new window.FitAddon.FitAddon();
       terminal.loadAddon(fit);
