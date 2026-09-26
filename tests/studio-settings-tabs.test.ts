@@ -65,13 +65,13 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     const tabs = page.getByRole("tab");
-    assert.equal(await tabs.count(), 7);
+    assert.equal(await tabs.count(), 6);
+    assert.equal(await page.locator("#diagnosticsTab").count(), 1);
     assert.equal(await page.getByRole("tabpanel").count(), 1);
     await page.locator("#token").fill("unsaved-secret");
     for (const name of [
       "Persona",
       "Preview",
-      "Diagnostics",
       "Updates",
       "Worker",
       "Models",
@@ -180,7 +180,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       location.hash = "logsView";
     });
     await page
-      .getByRole("tabpanel", { name: "Diagnostics", exact: true })
+      .getByRole("region", { name: "Diagnostics", exact: true })
       .waitFor();
     await page.goBack();
     await page
@@ -229,9 +229,12 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.route("**/api/logs", (route) =>
       route.fulfill({ json: { entries: [] } }),
     );
-    await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
-    await page.locator("#logsView summary").click();
-    await page.waitForResponse("**/api/logs");
+    const loaded = page.waitForResponse("**/api/logs");
+    await page
+      .getByRole("button", { name: "Diagnostics", exact: true })
+      .click();
+    await loaded;
+    await page.locator("#settingsTab").click();
     await page.getByRole("tab", { name: "Persona", exact: true }).click();
     const stoppedCount = logRequests;
     await page.waitForTimeout(2200);
@@ -250,7 +253,6 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       "Models",
       "Persona",
       "Preview",
-      "Diagnostics",
       "Updates",
       "Worker",
     ]) {

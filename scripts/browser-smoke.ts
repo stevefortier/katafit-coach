@@ -292,8 +292,7 @@ try {
   page.on("request", (r) => {
     if (r.url().endsWith("/api/logs")) logRequests++;
   });
-  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
-  await page.locator("#logsView > summary").click();
+  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
   await page.waitForFunction(() =>
     document
       .querySelector("#logRows")
@@ -303,7 +302,7 @@ try {
     await page.setViewportSize({ width, height: 700 });
     const layout = await page.evaluate(() => {
       const viewport = document.documentElement.clientWidth;
-      const wide = [...document.querySelectorAll("#settingsPanel *")]
+      const wide = [...document.querySelectorAll("#diagnostics *")]
         .filter((node) => node.getClientRects().length)
         .filter((node) => {
           const box = node.getBoundingClientRect();
@@ -425,8 +424,8 @@ try {
     document.dispatchEvent(new Event("visibilitychange"));
   });
   await page.waitForTimeout(100);
-  await page.locator("#logsView > summary").click();
   await page.waitForTimeout(100);
+  await page.locator("#settingsTab").click();
   const closedCount = logRequests;
   await page.waitForTimeout(2200);
   assert.equal(logRequests, closedCount);
@@ -448,8 +447,7 @@ try {
   await page.getByRole("tab", { name: "Models", exact: true }).click();
   await entry("vision").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-vision-mobile.png" });
-  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
-  await page.locator("#logsView > summary").click();
+  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
   await page.locator("#logsView").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/studio-logs-mobile.png" });
   assert.equal(
@@ -458,6 +456,7 @@ try {
     ),
     true,
   );
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   const savedVision = store.publicConfig().provider.vision;
   await page.locator("#personaHistory summary").click();

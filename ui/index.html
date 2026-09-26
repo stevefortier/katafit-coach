@@ -40,6 +40,14 @@
           >
             Settings
           </button>
+          <button
+            id="diagnosticsTab"
+            class="secondary"
+            aria-controls="diagnostics"
+            aria-pressed="false"
+          >
+            Diagnostics
+          </button>
         </nav>
         <section id="coachPanel" class="card">
           <div
@@ -155,17 +163,6 @@
               class="secondary"
             >
               Preview
-            </button>
-            <button
-              type="button"
-              id="settings-diagnostics-tab"
-              role="tab"
-              aria-controls="diagnostics"
-              aria-selected="false"
-              tabindex="-1"
-              class="secondary"
-            >
-              Diagnostics
             </button>
             <button
               type="button"
@@ -366,46 +363,6 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
           </section>
           <section
             class="card diagnostics"
-            id="diagnostics"
-            role="tabpanel"
-            aria-labelledby="settings-diagnostics-tab"
-            tabindex="0"
-            hidden
-          >
-            <h2>Diagnostics</h2>
-            <p id="lastError" role="status">No retained error.</p>
-            <details id="logsView">
-              <summary>Open diagnostic logs</summary>
-              <p class="hint">
-                Logs may contain health or meal details. Inspect and redact
-                copied or downloaded JSON before sharing it.
-              </p>
-              <div class="log-controls">
-                <button id="logRefresh" class="secondary">Refresh</button>
-                <button id="logPause" class="secondary" aria-pressed="false">
-                  Pause live
-                </button>
-                <label
-                  >Level<select id="logLevel">
-                    <option value="all">All levels</option>
-                    <option value="info">Info</option>
-                    <option value="warn">Warnings</option>
-                    <option value="error">Errors</option>
-                  </select></label
-                >
-                <button id="logCopy" class="secondary">Copy JSON</button>
-                <button id="logDownload" class="secondary">
-                  Download JSON
-                </button>
-              </div>
-              <p id="logStatus" role="status">
-                Logs load only while this view is open and the tab is visible.
-              </p>
-              <div id="logRows" aria-label="Diagnostic entries"></div>
-            </details>
-          </section>
-          <section
-            class="card diagnostics"
             id="updates"
             role="tabpanel"
             aria-labelledby="settings-updates-tab"
@@ -506,6 +463,43 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             Save applies Kata.fit, Models and Persona drafts across tabs.
             Preview and worker use saved settings.
           </p>
+        </section>
+        <section
+          class="card diagnostics"
+          id="diagnostics"
+          role="region"
+          aria-labelledby="diagnosticsTab"
+          tabindex="0"
+          hidden
+        >
+          <h2>Diagnostics</h2>
+          <p id="lastError" role="status">No retained error.</p>
+          <div id="logsView">
+            <p class="hint">
+              Logs may contain health or meal details. Inspect and redact copied
+              or downloaded JSON before sharing it.
+            </p>
+            <div class="log-controls">
+              <button id="logRefresh" class="secondary">Refresh</button>
+              <button id="logPause" class="secondary" aria-pressed="false">
+                Pause live
+              </button>
+              <label
+                >Level<select id="logLevel">
+                  <option value="all">All levels</option>
+                  <option value="info">Info</option>
+                  <option value="warn">Warnings</option>
+                  <option value="error">Errors</option>
+                </select></label
+              >
+              <button id="logCopy" class="secondary">Copy JSON</button>
+              <button id="logDownload" class="secondary">Download JSON</button>
+            </div>
+            <p id="logStatus" role="status">
+              Logs load only while Diagnostics is active and the tab is visible.
+            </p>
+            <div id="logRows" aria-label="Diagnostic entries"></div>
+          </div>
         </section>
       </div>
       <p id="notice" role="status" aria-live="polite"></p>

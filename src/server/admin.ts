@@ -82,7 +82,9 @@ export async function admin(
       }
       const viewPath = path.split("?")[0];
       if (
-        (["/", "/settings", "/chat/operator"].includes(viewPath) ||
+        (["/", "/settings", "/diagnostics", "/chat/operator"].includes(
+          viewPath,
+        ) ||
           /^\/chat\/member\/[^/]+$/.test(viewPath) ||
           ["/app.js", "/terminal.js", "/style.css", "/favicon.svg"].includes(
             path,
@@ -90,8 +92,9 @@ export async function admin(
         req.method === "GET"
       ) {
         const file =
-          ["/", "/settings", "/chat/operator"].includes(viewPath) ||
-          /^\/chat\/member\/[^/]+$/.test(viewPath)
+          ["/", "/settings", "/diagnostics", "/chat/operator"].includes(
+            viewPath,
+          ) || /^\/chat\/member\/[^/]+$/.test(viewPath)
             ? "index.html"
             : path.slice(1);
         res.setHeader(

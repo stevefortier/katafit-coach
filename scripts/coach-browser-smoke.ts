@@ -149,8 +149,7 @@ try {
   assert.equal(await page.locator("#settingsPanel").isVisible(), false);
   await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#katafit").isVisible(), true);
-  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
-  await page.locator("#logsView summary").click();
+  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
   await page.waitForTimeout(200);
   let logs = 0;
   page.on("request", (r) => {
