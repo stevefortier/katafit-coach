@@ -145,9 +145,13 @@ export async function metadata(root: string) {
   const data = JSON.parse(
     (await managedFile(join(root, "dist/build.json"), 1024)).toString("utf8"),
   );
-  if (!validSha(data.revision) || data.protocol !== 1)
+  if (
+    !validSha(data.revision) ||
+    ![1, 2].includes(data.protocol) ||
+    (data.protocol === 2 && !/^[a-f0-9]{64}$/.test(data.fingerprint))
+  )
     throw new Error("INCOMPATIBLE_BUILD");
-  return data as { revision: string; protocol: 1 };
+  return data as { revision: string; protocol: 1 | 2; fingerprint?: string };
 }
 export async function stage(
   home: string,

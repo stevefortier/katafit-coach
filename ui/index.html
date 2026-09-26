@@ -6,6 +6,9 @@
     <title>Kata.fit Coach · Studio</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/xterm.css" />
+    <script src="/xterm.js"></script>
+    <script src="/xterm-fit.js"></script>
   </head>
   <body>
     <main>
@@ -55,60 +58,28 @@
           </div>
           <p id="membersStatus" class="hint" role="status"></p>
           <div id="operatorView">
-            <h2>Operator</h2>
+            <h2>Operator · Native Pi</h2>
             <p class="hint">
-              Ask the Coach to review authorized member data or send one
-              explicit message. The Coach chooses the member from Kata.fit's
-              authorized roster; Kata.fit controls access. Save lasting
-              instructions in Settings.
+              Isolated Pi 0.86.1 · ephemeral workspace. Files and terminal
+              context are deleted on Stop. No private Pi transcript is saved.
+              Use /model and the Kata.fit /mcp extension command.
             </p>
             <p class="hint" id="operatorSnapshot"></p>
-            <div
-              id="operatorMessages"
-              class="chat-messages"
-              role="log"
-              aria-label="Operator conversation"
-              aria-live="polite"
-            >
-              <article
-                id="operatorCommandResult"
-                class="chat-message chat-assistant"
-                hidden
-                aria-label="Current command result"
-              ></article>
+            <div class="chat-actions">
+              <button id="nativeStart">Start / reconnect Pi</button
+              ><button id="nativeStop" class="secondary">
+                Stop &amp; erase workspace
+              </button>
             </div>
-            <div
-              id="operatorPending"
-              class="chat-pending"
-              role="status"
-              hidden
-              aria-label="Coach is thinking"
-            >
-              <span></span><span></span><span></span>
-            </div>
+            <p id="nativeStatus" role="status">
+              Stopped. Docker isolation is required; there is no host fallback.
+            </p>
+            <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
+            <details>
+              <summary>Saved legacy chat · read-only · not sent to Pi</summary>
+              <div id="operatorMessages" class="chat-messages"></div>
+            </details>
             <p id="operatorStatus" role="status"></p>
-            <form id="operatorForm">
-              <textarea
-                id="operatorText"
-                aria-label="Message your Coach"
-                rows="2"
-                maxlength="8000"
-                placeholder="Message your Coach…"
-              ></textarea>
-              <div class="chat-actions">
-                <button id="operatorSend" type="submit">Send</button
-                ><button
-                  id="operatorCancel"
-                  type="button"
-                  class="secondary"
-                  disabled
-                >
-                  Cancel response</button
-                ><button id="operatorClear" type="button" class="secondary">
-                  Clear chat
-                </button>
-              </div>
-            </form>
             <div id="operatorActions" role="status" aria-live="polite"></div>
             <button
               id="operatorReconcile"
@@ -369,6 +340,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
       </div>
       <p id="notice" role="status" aria-live="polite"></p>
     </main>
+    <script src="/terminal.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

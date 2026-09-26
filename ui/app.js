@@ -1,93 +1,7 @@
 let key = "",
   workerState,
   config,
-  authGeneration = 0,
-  commandViewEpoch = 0;
-const commandImageUrls = new Set();
-function clearCommandResult() {
-  ++commandViewEpoch;
-  for (const url of commandImageUrls) URL.revokeObjectURL(url);
-  commandImageUrls.clear();
-  $("operatorCommandResult").replaceChildren();
-  $("operatorCommandResult").hidden = true;
-}
-async function showOperatorImages(images, view, generation) {
-  for (const card of images.slice(0, 4)) {
-    if (
-      !card ||
-      typeof card.id !== "string" ||
-      !/^[0-9a-f-]{36}$/.test(card.id)
-    )
-      continue;
-    let url;
-    try {
-      const response = await fetch(
-        "/api/operator/image?id=" + encodeURIComponent(card.id),
-        {
-          headers: { Authorization: "Bearer " + key },
-          cache: "no-store",
-        },
-      );
-      if (
-        !response.ok ||
-        !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
-          response.headers.get("content-type"),
-        )
-      )
-        throw new Error("IMAGE_UNAVAILABLE");
-      const blob = await response.blob();
-      if (blob.size > 8 * 1024 * 1024 || !blob.size)
-        throw new Error("IMAGE_UNAVAILABLE");
-      if (
-        generation !== authGeneration ||
-        view !== commandViewEpoch ||
-        document.hidden
-      )
-        return;
-      url = URL.createObjectURL(blob);
-      const image = document.createElement("img");
-      image.alt = "Authorized check-in photo";
-      image.src = url;
-      await new Promise((resolve, reject) => {
-        image.onload = resolve;
-        image.onerror = reject;
-      });
-      if (
-        generation !== authGeneration ||
-        view !== commandViewEpoch ||
-        document.hidden
-      )
-        return;
-      commandImageUrls.add(url);
-      const figure = document.createElement("figure");
-      figure.className = "operator-image-card";
-      figure.append(
-        image,
-        detailText(
-          "figcaption",
-          (typeof card.display_name === "string" &&
-          card.display_name.length <= 128
-            ? card.display_name
-            : "Authorized member") +
-            (typeof card.checkin_at === "string" &&
-            card.checkin_at.length <= 64 &&
-            Number.isFinite(Date.parse(card.checkin_at))
-              ? " · Media date " + card.checkin_at
-              : ""),
-        ),
-      );
-      $("operatorCommandResult").append(figure);
-      url = undefined;
-    } catch {
-      if (generation === authGeneration && view === commandViewEpoch)
-        $("operatorCommandResult").append(
-          detailText("p", "Photo unavailable or authorization changed."),
-        );
-    } finally {
-      if (url) URL.revokeObjectURL(url);
-    }
-  }
-}
+  authGeneration = 0;
 function renderOperatorActions(actions = []) {
   const labels = {
     delivered: "Delivered",
@@ -318,7 +232,7 @@ function chatKeyboard(inputId, sendId) {
     $(sendId).click();
   });
 }
-chatKeyboard("operatorText", "operatorSend");
+
 chatKeyboard("question", "previewButton");
 let previewBusy = false;
 action("previewButton", async () => {
@@ -473,7 +387,6 @@ window.addEventListener("popstate", () => {
   if (key) restoreStudioRoute();
 });
 function selectStudioTab(tab, navigate = true) {
-  clearCommandResult();
   const coach = tab === "coach";
   $("coachPanel").hidden = !coach;
   $("settingsPanel").hidden = coach;
@@ -899,13 +812,12 @@ document.addEventListener("visibilitychange", () => {
   else void refreshUpdate();
 });
 window.addEventListener("pagehide", () => {
-  clearCommandResult();
   clearTimeout(updateTimer);
   updateController?.abort();
 });
 function lockSession(message) {
   if (key)
-    void fetch("/api/operator/cancel", {
+    void fetch("/api/terminal/stop", {
       method: "POST",
       keepalive: true,
       headers: {
@@ -914,8 +826,8 @@ function lockSession(message) {
       },
       body: "{}",
     }).catch(() => {});
+  native.reset();
   authGeneration++;
-  clearCommandResult();
   key = "";
   rememberAdmin("");
   config = undefined;
@@ -923,10 +835,7 @@ function lockSession(message) {
   ++operatorEpoch;
   operatorMessages = [];
   renderOperatorActions();
-  operatorDraft = "";
-  operatorBusy = false;
-  operatorControlPending = false;
-  $("operatorText").value = "";
+
   $("operatorStatus").textContent = "";
   renderOperator();
   clearTimeout(updateTimer);
@@ -954,55 +863,29 @@ action("lockStudio", async () =>
   ),
 );
 
-// Operator state is memory-only and fenced independently of authentication.
+// Legacy history is read-only; no old Operator inference/composer remains.
 let operatorMessages = [],
-  operatorBusy = false,
-  operatorControlPending = false,
   operatorEpoch = 0,
-  operatorDraft = "";
-let operatorScrollMax = 0;
+  operatorScrollMax = 0;
 function operatorSnapshotLabel() {
-  if (!config) return;
-  $("operatorSnapshot").textContent =
-    "Uses saved configuration · revision " +
-    config.revision +
-    (hasUnsavedEdits()
-      ? " · Unsaved Settings edits are not used."
-      : " · Settings changes must be explicitly saved.");
+  if (config)
+    $("operatorSnapshot").textContent =
+      "Saved default: " +
+      config.provider.model +
+      " · revision " +
+      config.revision +
+      ". Native /model changes only this ephemeral session.";
 }
-function renderOperator(scrollToResult = false) {
+function renderOperator() {
   const list = $("operatorMessages");
-  // Keep the current read-derived result out of durable conversation state.
-  const currentResult = $("operatorCommandResult");
-  const pinned = list.scrollHeight - list.clientHeight - list.scrollTop <= 40;
   list.replaceChildren();
   for (const message of operatorMessages) {
-    if (
-      !["user", "assistant"].includes(message.role) ||
-      typeof message.text !== "string"
-    )
-      continue;
-    const bubble = document.createElement("article");
-    bubble.className = "chat-message chat-" + message.role;
-    const label = document.createElement("strong");
-    label.textContent =
-      message.role === "user" ? "You · Manager" : "Coach · Saved history";
-    const text = document.createElement("p");
-    text.textContent = message.text;
-    bubble.append(label, text);
-
-    list.append(bubble);
+    const article = document.createElement("article");
+    article.className = "chat-message";
+    article.textContent = message.role + ": " + message.text;
+    list.append(article);
   }
-  if (!operatorMessages.length && currentResult.hidden)
-    list.textContent = "Start a private conversation with your Coach.";
-  list.append(currentResult);
-  if (pinned || scrollToResult) list.scrollTop = list.scrollHeight;
   operatorScrollMax = list.scrollHeight - list.clientHeight;
-  $("operatorPending").hidden = !operatorBusy;
-
-  $("operatorSend").disabled = operatorBusy || operatorControlPending;
-  $("operatorCancel").disabled = !operatorBusy || operatorControlPending;
-  $("operatorClear").disabled = operatorControlPending;
   operatorSnapshotLabel();
 }
 async function loadOperator() {
@@ -1011,153 +894,18 @@ async function loadOperator() {
   try {
     const data = await api("operator/chat");
     if (epoch !== operatorEpoch || generation !== authGeneration) return;
+    const receipts = await api("terminal/receipts");
+    if (epoch !== operatorEpoch || generation !== authGeneration) return;
     operatorMessages = data.messages || [];
-    renderOperatorActions(data.actions);
-    operatorBusy = data.pending === true;
+    renderOperatorActions(receipts.actions);
     renderOperator();
   } catch (error) {
-    if (!error.stale && generation === authGeneration)
-      $("operatorStatus").textContent =
-        "Operator history is unavailable. Try unlocking Studio again.";
+    if (!error.stale)
+      $("operatorStatus").textContent = "Saved history unavailable.";
   }
 }
-function operatorFailureStatus(error) {
-  const receipts = Array.isArray(error.turnActions)
-    ? error.turnActions
-    : error.actions;
-  if (
-    Array.isArray(receipts) &&
-    receipts.some((a) => a.status === "unknown" || a.status === "pending")
-  )
-    return "Coach could not complete this response. Action outcome unknown; review receipts before retrying that action.";
-  if (
-    Array.isArray(receipts) &&
-    receipts.some((a) => a.status === "delivered" || a.status === "completed")
-  )
-    return "The requested action completed, but the Coach response did not. Review its receipt; do not repeat the action.";
-  if (!error.code)
-    return "The connection ended and the Coach result was not received. Reconnect before retrying; if you requested an action, check its receipts first.";
-  const messages = {
-    READ_UNAVAILABLE:
-      "Authorized member data is temporarily unavailable. Try again later.",
-    BACKEND_TIMEOUT:
-      "Kata.fit timed out while preparing or reading this request. Try again later.",
-    BACKEND_INSTRUCTIONS_UNAVAILABLE:
-      "Kata.fit instructions are unavailable. Check the connection and retry.",
-    PROVIDER_TIMEOUT:
-      "The model provider timed out before completing this response. Try again later.",
-    CANCELLED: "This Operator response was cancelled.",
-  };
-  return (
-    messages[error.code] ||
-    "Coach could not complete this response. Check diagnostics for the cause."
-  );
-}
-$("operatorForm").onsubmit = async (event) => {
-  event.preventDefault();
-  const text = $("operatorText").value.trim();
-  if (!key || operatorBusy || operatorControlPending || !text) return;
-  clearCommandResult();
-  const view = commandViewEpoch;
-  const epoch = ++operatorEpoch,
-    generation = authGeneration;
-  operatorBusy = true;
-  operatorDraft = text;
-  const previous = operatorMessages.slice();
-  operatorMessages.push({ role: "user", text });
-  $("operatorText").value = "";
-  $("operatorStatus").textContent = "";
-  renderOperator();
-  try {
-    const data = await api("operator/chat", { text });
-    if (epoch !== operatorEpoch || generation !== authGeneration) return;
-    operatorMessages = data.messages;
-    renderOperatorActions(data.actions);
-    if (
-      data.ephemeral &&
-      typeof data.text === "string" &&
-      view === commandViewEpoch &&
-      !document.hidden &&
-      !$("operatorView").hidden
-    ) {
-      $("operatorCommandResult").hidden = false;
-      $("operatorCommandResult").append(
-        detailText("strong", "Coach · Current result · not retained in chat"),
-        detailText("p", data.text),
-      );
-      if (
-        typeof data.coverage_notice === "string" &&
-        data.coverage_notice.length <= 240
-      )
-        $("operatorCommandResult").append(
-          detailText("p", data.coverage_notice),
-        );
-      renderOperator(true);
-      if (Array.isArray(data.images))
-        await showOperatorImages(data.images, view, generation);
-    }
-    operatorDraft = "";
-  } catch (error) {
-    if (epoch !== operatorEpoch || generation !== authGeneration) return;
-    clearCommandResult();
-    operatorMessages = previous;
-    if (Array.isArray(error.actions)) renderOperatorActions(error.actions);
-    if (!$("operatorText").value) $("operatorText").value = text;
-    $("operatorStatus").textContent = operatorFailureStatus(error);
-  } finally {
-    if (epoch === operatorEpoch && generation === authGeneration) {
-      operatorBusy = false;
-      renderOperator(
-        view === commandViewEpoch && !$("operatorCommandResult").hidden,
-      );
-    }
-  }
-};
-async function controlOperator(command) {
-  if (!key || operatorControlPending) return;
-  clearCommandResult();
-  operatorControlPending = true;
-  renderOperator();
-  const generation = authGeneration;
-  const epoch = ++operatorEpoch;
-  try {
-    await api("operator/" + command, {});
-    if (generation !== authGeneration || epoch !== operatorEpoch) return;
-    if (command === "cancel" && !$("operatorText").value)
-      $("operatorText").value = operatorDraft;
-    if (command === "clear") $("operatorText").value = "";
-    operatorDraft = "";
-    operatorBusy = false;
-    $("operatorStatus").textContent =
-      command === "clear"
-        ? "Operator chat cleared. Messages already delivered cannot be recalled."
-        : "Response cancelled. Messages already delivered cannot be recalled.";
-    if (command === "clear") operatorMessages = [];
-    renderOperator();
-    await loadOperator();
-  } catch (error) {
-    if (!error.stale && generation === authGeneration)
-      $("operatorStatus").textContent =
-        "Could not confirm the chat action. Unlock again to refresh its state.";
-  } finally {
-    if (generation === authGeneration && epoch === operatorEpoch) {
-      operatorControlPending = false;
-      renderOperator();
-    }
-  }
-}
-
-$("operatorReconcile").onclick = async () => {
-  if (operatorBusy || operatorControlPending) return;
-  $("operatorReconcile").disabled = true;
-  try {
-    await loadOperator();
-  } finally {
-    $("operatorReconcile").disabled = false;
-  }
-};
-$("operatorCancel").onclick = () => controlOperator("cancel");
-$("operatorClear").onclick = () => controlOperator("clear");
+$("operatorReconcile").onclick = () => loadOperator();
+const native = nativeTerminal({ api, authorized: () => !!key });
 
 // Member feed data never crosses into operator state or browser storage.
 let members = [],
@@ -1259,7 +1007,6 @@ async function loadMembers(more = false, routePages = 0) {
   }
 }
 function selectConversation(member, navigate = true) {
-  clearCommandResult();
   clearActivities();
   ++memberEpoch;
   clearTimeout(memberTimer);
@@ -1794,7 +1541,6 @@ function activityCard(activity) {
   );
 }
 function memberVisibility() {
-  clearCommandResult();
   clearActivities();
   ++memberEpoch;
   clearTimeout(memberTimer);

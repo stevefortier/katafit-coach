@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from "node:child_process";
+import { nativePreflight } from "../sandbox/artifact.js";
 import { Store } from "../config/store.js";
 import { Updates, validSha } from "./updates.js";
 import { AutoUpdater, AutoUpdateSetting, isMainDescendant } from "./auto.js";
@@ -97,6 +98,7 @@ export async function supervise(
   ) {
     if (revision && (await metadata(path)).revision !== revision)
       throw new Error("INVALID_ACTIVE");
+    if (revision) await nativePreflight(path, home);
     const nonce = randomUUID();
     const target = fork(
       join(root, "dist/update/runtime.js"),
@@ -203,6 +205,7 @@ export async function supervise(
       try {
         if ((await metadata(candidate)).revision !== sha)
           throw new Error("SOURCE_MISMATCH");
+        const image = await nativePreflight(candidate, home);
         await rm(probeHome, { recursive: true, force: true });
         await mkdir(probeHome, { mode: 0o700 });
         await command(
@@ -237,10 +240,14 @@ export async function supervise(
           await launch(candidate, sha, oldPort);
           const pointer = join(home, "active-" + randomUUID() + ".tmp");
           try {
-            await writeFile(pointer, JSON.stringify({ revision: sha }), {
-              mode: 0o600,
-              flag: "wx",
-            });
+            await writeFile(
+              pointer,
+              JSON.stringify({ revision: sha, ...(image ? { image } : {}) }),
+              {
+                mode: 0o600,
+                flag: "wx",
+              },
+            );
             await rename(pointer, join(home, "active.json"));
             active = { revision: sha };
             updates.installed = sha;

@@ -4,9 +4,11 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { activateLegacyFixture } from "./helpers/legacy-supervisor.js";
 const exec = promisify(execFile);
 test("killing foreground wrapper also closes its owner and runtime", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-wrapper-");
+  await activateLegacyFixture(dir);
   const child = spawn(
     process.execPath,
     ["--import", "tsx", "src/cli.ts", "serve"],
@@ -96,6 +98,7 @@ test("legacy non-Linux launcher retains Studio with upgrades disabled (synthetic
 });
 test("CLI starts an installed service, reports health, rejects duplicate ownership and stops", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-cli-");
+  await activateLegacyFixture(dir);
   const run = (...args: string[]) =>
     exec(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], {
       env: { ...process.env, KATAFIT_COACH_HOME: dir, KATAFIT_COACH_PORT: "0" },

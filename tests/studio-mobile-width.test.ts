@@ -57,7 +57,7 @@ for (const width of [320, 390]) {
           .getBoundingClientRect()
           .toJSON(),
         form: document
-          .querySelector("#operatorForm")!
+          .querySelector("#nativeTerminal")!
           .getBoundingClientRect()
           .toJSON(),
       }));

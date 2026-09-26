@@ -41,6 +41,16 @@ try {
   cli = join(dir, "install/node_modules/@katafit/coach/dist/cli.js");
   // Exercise the native decoder in the production-only, ignore-scripts install.
   const installedRoot = join(dir, "install/node_modules/@katafit/coach");
+  if (process.env.NATIVE_TEST_IMAGE) {
+    const { provisionArtifact } = await import(
+      join(installedRoot, "dist/sandbox/artifact.js")
+    );
+    await provisionArtifact(
+      env.KATAFIT_COACH_HOME,
+      installedRoot,
+      process.env.NATIVE_TEST_IMAGE,
+    );
+  }
   const installedSharp = createRequire(join(installedRoot, "package.json"))(
     "sharp",
   );

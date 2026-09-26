@@ -1,5 +1,41 @@
 import { SafeError, safeError } from "../runtime/errors.js";
 import { backendWireBudget } from "./wireBudget.js";
+// Bounded classification of an MCP tool error. Only an allowlisted code and an
+// exact boolean retained-context marker survive; the payload itself never does.
+export class ToolFailure extends Error {
+  constructor(
+    readonly code: string | undefined,
+    readonly contextRevoked: boolean,
+  ) {
+    super("MCP_TOOL_FAILED");
+  }
+}
+const toolCodes = [
+  "OPERATOR_NOT_AUTHORIZED",
+  "OPERATOR_CONFLICT",
+  "OPERATOR_UNAVAILABLE",
+  "READ_LIMIT",
+  "HISTORY_CHANGED",
+];
+export function toolFailure(r: any) {
+  let code: string | undefined;
+  let contextRevoked = false;
+  try {
+    const text = Array.isArray(r?.content)
+      ? r.content.find((part: any) => part?.type === "text")?.text
+      : undefined;
+    const parsed =
+      typeof text === "string" && text.length <= 4096
+        ? JSON.parse(text)
+        : undefined;
+    if (toolCodes.includes(parsed?.code)) code = parsed.code;
+    contextRevoked =
+      code === "OPERATOR_NOT_AUTHORIZED" && parsed.context_revoked === true;
+  } catch {
+    /* Unclassified: handled as ambiguous, never as authorization. */
+  }
+  return new ToolFailure(code, contextRevoked);
+}
 export class Client {
   private id = 0;
   constructor(
@@ -128,7 +164,7 @@ export class Client {
       // Only this context transport gets extra headroom; provider input is 1 MiB.
       name === "coach_read_context" ? 4 * 1024 * 1024 : 1024 * 1024,
     );
-    if (r.isError) throw new Error("MCP_TOOL_FAILED");
+    if (r.isError) throw toolFailure(r);
     const value =
       r.structuredContent ??
       JSON.parse(r.content?.find((v: any) => v.type === "text")?.text);

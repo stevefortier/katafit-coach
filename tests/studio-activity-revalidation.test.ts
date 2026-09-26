@@ -12,7 +12,11 @@ for (const mode of ["refresh", "timed"] as const)
     await mkdir(evidence, { recursive: true });
     const server = createServer(async (req, res) => {
       const file = req.url === "/" ? "index.html" : req.url?.slice(1);
-      if (!["index.html", "app.js", "style.css"].includes(file || ""))
+      if (
+        !["index.html", "app.js", "terminal.js", "style.css"].includes(
+          file || "",
+        )
+      )
         return void res.writeHead(404).end();
       res.setHeader(
         "Content-Type",

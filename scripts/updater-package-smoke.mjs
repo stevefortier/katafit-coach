@@ -51,9 +51,17 @@ try {
     { stdio: "pipe", timeout: 120000 },
   );
   cli = join(root, "install/node_modules/@katafit/coach/dist/cli.js");
+  if (process.env.NATIVE_TEST_IMAGE) {
+    const installedRoot = join(root, "install/node_modules/@katafit/coach");
+    const { provisionArtifact } = await import(
+      join(installedRoot, "dist/sandbox/artifact.js")
+    );
+    await provisionArtifact(home, installedRoot, process.env.NATIVE_TEST_IMAGE);
+  }
   await mkdir(source);
   for (const name of [
     "src",
+    "sandbox",
     "ui",
     "package.json",
     "package-lock.json",
@@ -64,6 +72,17 @@ try {
   await cp(
     resolve("scripts/build-metadata.mjs"),
     join(source, "scripts/build-metadata.mjs"),
+  );
+  // This daemon-independent lifecycle matrix deliberately exercises legacy
+  // protocol-1 rollback compatibility. Native artifacts have a separate Docker
+  // qualification; never relabel real released native source as protocol 1.
+  const fixtureMetadata = join(source, "scripts/build-metadata.mjs");
+  await writeFile(
+    fixtureMetadata,
+    (await readFile(fixtureMetadata, "utf8")).replace(
+      "protocol: 2",
+      "protocol: 1",
+    ),
   );
   const git = (...args) =>
     execFileSync("git", args, { cwd: source, encoding: "utf8" }).trim();

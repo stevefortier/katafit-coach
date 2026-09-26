@@ -1,3 +1,7 @@
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+import { Actions } from "../chat/actions.js";
+import { NativeTerminal } from "./terminal.js";
 import { OperatorChat } from "../chat/operator.js";
 import type { OperatorAction } from "../katafit/operatorTools.js";
 import { StudioReads } from "../katafit/studio.js";
@@ -57,17 +61,32 @@ export async function admin(
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; img-src 'self' blob:; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; img-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     try {
       if (req.headers.host !== new URL(origin).host)
         return send(403, { error: "HOST_REJECTED" });
       const path = req.url ?? "/";
+      const terminalAssets: Record<string, string> = {
+        "/xterm.js": "@xterm/xterm/lib/xterm.js",
+        "/xterm.css": "@xterm/xterm/css/xterm.css",
+        "/xterm-fit.js": "@xterm/addon-fit/lib/addon-fit.js",
+      };
+      if (req.method === "GET" && terminalAssets[path]) {
+        res.setHeader(
+          "Content-Type",
+          path.endsWith(".css") ? "text/css" : "text/javascript",
+        );
+        res.end(await readFile(require.resolve(terminalAssets[path])));
+        return;
+      }
       const viewPath = path.split("?")[0];
       if (
         (["/", "/settings", "/chat/operator"].includes(viewPath) ||
           /^\/chat\/member\/[^/]+$/.test(viewPath) ||
-          ["/app.js", "/style.css", "/favicon.svg"].includes(path)) &&
+          ["/app.js", "/terminal.js", "/style.css", "/favicon.svg"].includes(
+            path,
+          )) &&
         req.method === "GET"
       ) {
         const file =
@@ -98,6 +117,17 @@ export async function admin(
         return send(403, { error: "ORIGIN_REJECTED" });
       if (req.method === "POST" && req.headers.origin !== origin)
         return send(403, { error: "ORIGIN_REQUIRED" });
+      if (req.method === "GET" && path === "/api/terminal/receipts")
+        return send(200, { actions: new Actions(store).snapshot() });
+      if (req.method === "POST" && path === "/api/terminal/ticket") {
+        if (busy || chat.active || updates.applying || autoQuiesced)
+          return send(409, { error: "OPERATION_IN_PROGRESS" });
+        return send(200, terminal.ticket());
+      }
+      if (req.method === "POST" && path === "/api/terminal/stop") {
+        await terminal.stop();
+        return send(200, { stopped: true });
+      }
       if (
         req.method === "GET" &&
         path.split("?")[0] &&
@@ -222,7 +252,10 @@ export async function admin(
         return;
       }
       if (req.method === "GET" && path === "/api/operator/chat")
-        return send(200, await chat.reconcile());
+        return send(
+          200,
+          terminal.active ? chat.snapshot() : await chat.reconcile(),
+        );
       if (req.method === "GET" && path === "/api/update")
         return send(200, await updateSnapshot());
       if (req.method === "GET" && path === "/api/config")
@@ -299,11 +332,16 @@ export async function admin(
             return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
           }
         }
+        // Native Pi can SEND and write the action journal; defer rather than
+        // let the supervisor snapshot journals under live native work. The
+        // check and autoQuiesced are set synchronously, and terminal admission
+        // re-checks autoQuiesced, so no native work can begin afterwards.
         if (
           updates.applying ||
           busy ||
           preview ||
           chat.active ||
+          !terminal.idle ||
           (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
         )
           return send(409, { error: "AUTO_UPDATE_BUSY" });
@@ -349,6 +387,8 @@ export async function admin(
       )
         return send(409, { error: "OPERATOR_CHAT_IN_PROGRESS" });
       if (path === "/api/operator/chat") {
+        if (terminal.active)
+          return send(409, { error: "OPERATION_IN_PROGRESS" });
         if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
         if (
           !body ||
@@ -428,6 +468,7 @@ export async function admin(
         } catch (e: any) {
           return send(400, { error: e.message });
         }
+        await terminal.stop();
         void updates.apply(body.sha).catch(() => {});
         try {
           await updates.accepted;
@@ -440,6 +481,7 @@ export async function admin(
         return send(202, { ok: true });
       }
       if (path === "/api/shutdown" && onShutdown) {
+        await terminal.stop();
         await chat.cancel();
         preview?.abort();
         send(200, { ok: true });
@@ -456,6 +498,7 @@ export async function admin(
         if (path === "/api/config" || path === "/api/rollback") {
           if (worker && worker.state !== "stopped")
             return send(409, { error: "STOP_WORKER_BEFORE_CONFIGURE" });
+          await terminal.stop();
           if (path === "/api/config") {
             chat.assertSecrets([
               ...Object.values(store.secrets),
@@ -648,6 +691,12 @@ export async function admin(
       });
     }
   });
+  const terminal = new NativeTerminal(
+    store,
+    server,
+    () => origin,
+    () => !busy && !chat.active && !updates.applying && !autoQuiesced,
+  );
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", resolve);
@@ -656,6 +705,7 @@ export async function admin(
   return {
     origin,
     async close() {
+      await terminal.close();
       for (const controller of memberReads) controller.abort();
       await chat.cancel();
       preview?.abort();

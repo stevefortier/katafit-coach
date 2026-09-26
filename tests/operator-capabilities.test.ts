@@ -305,9 +305,17 @@ for (const kind of ["read", "write"] as const)
           tool.execute("bad", { value: -1 }),
           /ARGUMENTS_REJECTED/,
         );
-        const output = await tool.execute("valid", { value: 7 });
-        assert.match((output.content[0] as any).text, /completed/);
-        if (kind === "write") {
+        if (kind === "read") {
+          // A schema is not a source-reauthorization contract. Fail closed until
+          // the backend exposes a transactional retained-source check.
+          await assert.rejects(
+            tool.execute("valid", { value: 7 }),
+            /SOURCE_AUTHORIZATION_UNSUPPORTED/,
+          );
+          assert.equal(attempts, 0);
+        } else {
+          const output = await tool.execute("valid", { value: 7 });
+          assert.match((output.content[0] as any).text, /completed/);
           await tool.execute("repeat", { value: 7 });
           assert.equal(attempts, 1);
           assert.deepEqual(

@@ -16,7 +16,9 @@ test("member threads retain both canonical directions in chronological chat orde
       req.url?.startsWith("/chat/member/")
         ? "index.html"
         : req.url?.slice(1);
-    if (!["index.html", "app.js", "style.css"].includes(file || ""))
+    if (
+      !["index.html", "app.js", "terminal.js", "style.css"].includes(file || "")
+    )
       return void res.writeHead(404).end();
     res.setHeader(
       "Content-Type",

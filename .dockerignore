@@ -1,6 +1,9 @@
 .git
 node_modules
-dist
+dist/*
+!dist/native
+dist/native/*
+!dist/native/npm-lock.json
 *.tgz
 .env
 .env.*

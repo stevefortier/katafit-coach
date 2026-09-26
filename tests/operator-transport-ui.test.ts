@@ -42,63 +42,12 @@ test("Operator UI negotiates heartbeat JSON and recognizes a terminal error afte
   assert.equal(requests, 1, "never replay the turn on a terminal error");
 });
 
-test("Operator error status attributes transport, read and current write failures separately", async () => {
+test("native terminal failure guidance never automatically replays input", async () => {
   const source = await readFile(
-    new URL("../ui/app.js", import.meta.url),
+    new URL("../ui/terminal.js", import.meta.url),
     "utf8",
   );
-  const status = source.slice(
-    source.indexOf("function operatorFailureStatus("),
-    source.indexOf('$("operatorForm").onsubmit'),
-  );
-  const context: any = {};
-  runInNewContext(status, context);
-  assert.equal(typeof context.operatorFailureStatus, "function");
-  const describe = context.operatorFailureStatus;
-  for (const status of ["delivered", "completed"])
-    for (const code of ["PROVIDER_TIMEOUT", "CANCELLED"]) {
-      const text = describe({ code, turnActions: [{ status }], actions: [] });
-      assert.match(text, /action.*completed.*do not repeat/i);
-      assert.doesNotMatch(text, /try again|retry/i);
-    }
-  assert.match(
-    describe({
-      code: "READ_UNAVAILABLE",
-      actions: [{ status: "unknown" }],
-      turnActions: [],
-    }),
-    /member data.*unavailable/i,
-  );
-  assert.doesNotMatch(
-    describe({
-      code: "READ_UNAVAILABLE",
-      actions: [{ status: "unknown" }],
-      turnActions: [],
-    }),
-    /delivery|sharing|compare/i,
-  );
-  assert.match(
-    describe({ code: "PROVIDER_TIMEOUT", actions: [], turnActions: [] }),
-    /provider.*timed out/i,
-  );
-  assert.match(
-    describe({
-      actions: [],
-      turnActions: [
-        { status: "unknown", tool_name: "studio_operator_future_write" },
-      ],
-    }),
-    /action.*unknown/i,
-  );
-  assert.doesNotMatch(
-    describe({
-      actions: [],
-      turnActions: [
-        { status: "unknown", tool_name: "studio_operator_future_write" },
-      ],
-    }),
-    /message delivery/i,
-  );
-  assert.match(describe({}), /connection.*result.*not received/i);
-  assert.doesNotMatch(describe({}), /check delivery status/i);
+  assert.match(source, /No input is replayed/);
+  assert.match(source, /Stop unconfirmed/);
+  assert.doesNotMatch(source, /setInterval|operator\/chat/);
 });

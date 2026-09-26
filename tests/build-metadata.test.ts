@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, writeFile, readFile, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm, mkdir, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 test("build receipt identifies clean source; dirty/unknown builds never claim exact revision", async () => {
@@ -16,8 +16,10 @@ test("build receipt identifies clean source; dirty/unknown builds never claim ex
   try {
     await mkdir(join(root, "dist"));
     await writeFile(join(root, "source"), "one");
+    for (const name of ["package.json", "package-lock.json", "sandbox"])
+      await cp(name, join(root, name), { recursive: true });
     git("init", "-q");
-    git("add", "source");
+    git("add", "source", "package.json", "package-lock.json", "sandbox");
     git(
       "-c",
       "user.name=Test",

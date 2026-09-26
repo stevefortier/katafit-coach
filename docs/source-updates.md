@@ -1,5 +1,14 @@
 # Studio source upgrades
 
+**Native Pi releases use launcher protocol 2.** Read the [native bootstrap
+transaction](native-bootstrap.md) before cutover. Old protocol-1 launchers reject
+native candidates before stopping their healthy application. New launchers accept
+legacy rollback applications, but require a preinstalled exact immutable sandbox
+artifact and successful synthetic relay/TUI preflight for every native candidate.
+No image is pulled or built by the source updater. Missing prerequisites report
+**external artifact or native bootstrap required**; provision outside Pi and retry.
+This is a launcher prerequisite change, not a data migration.
+
 ## User workflow
 
 **Automatic upgrades are opt-in and off by default.** In Settings → Updates,
@@ -39,7 +48,7 @@ Older installations have no stable updater launcher. **Once**, pause and stop th
 
 **Important when adding auto-update to an existing managed installation:** an in-Studio source upgrade replaces only the runtime child, **not** its stable launcher or Docker image. A pre-auto-update launcher can show the newer checkbox but cannot poll or write the auto-update preference; it returns `409 UNSUPPORTED_INSTALLATION`. Replace the installed launcher/package or rebuild and recreate the container from the current reviewed source, preserving the exact Coach home/volume, then reload Studio. Merely stopping and restarting the old package/image does not add the feature. The worker is stopped after the service restart; verify it before choosing Run. The revised UI identifies this as “Launcher upgrade required.”
 
-Supported updater: Linux, Node 22.19+, `git`, `npm`, and `flock` on PATH, a writable private Coach home on a local filesystem supporting atomic rename and kernel locks, and outbound access to GitHub/npm. The same OS user owns all processes and files. No sudo/root or Docker socket is used. macOS retains the legacy Studio/worker launcher, but source apply is disabled; macOS hardware was not tested. `KATAFIT_COACH_UPDATES=disabled` explicitly disables managed apply. A directly embedded admin server without the launcher reports unsupported rather than pretending it can replace itself.
+Supported updater: Linux, Node 22.19+, `git`, `npm`, and `flock` on PATH, a writable private Coach home on a local filesystem supporting atomic rename and kernel locks, and outbound access to GitHub/npm. The same OS user owns all processes and files. Native protocol-2 applications additionally require the trusted control-plane Docker CLI/socket and matching provisioned image; Pi never receives that authority. macOS retains the legacy Studio/worker launcher, but source apply is disabled; macOS hardware was not tested. `KATAFIT_COACH_UPDATES=disabled` explicitly disables managed apply. A directly embedded admin server without the launcher reports unsupported rather than pretending it can replace itself.
 
 A read-only/immutable application directory is fine because it is never overwritten. A read-only Coach home cannot run the managed lifecycle. Arbitrary immutable container images cannot self-update: use the supplied [managed Docker recipe](docker.md), with the stable launcher/image plus persistent writable home and build tools. Managed versions survive container recreation on the same volume. The image/launcher itself still changes through your normal deployment process.
 
@@ -59,7 +68,7 @@ An isolated child loads the candidate's **own Store and admin code**, with a dis
 
 ### Compatibility and limits
 
-`dist/build.json` is `{revision: <40 lowercase hex|null>, protocol: 1}`. Protocol 1 means the current CLI/IPC/admin contract and **unchanged existing JSON data schema**; it forbids data migrations. Future launcher/schema requirements must use a different protocol and require an explicit bootstrap upgrade. Unknown or incompatible candidates fail before activation. The updater does not promise reversible arbitrary migrations, signed release verification, offline installs, support for custom forks, or an npm registry release.
+`dist/build.json` is `{revision: <40 lowercase hex|null>, protocol: 2, fingerprint: <64 lowercase hex>}` for native releases. The fingerprint binds the dependency lock, package, bridge and image recipe to native contract 2; the protected provisioning receipt additionally binds the exact application revision and local immutable image ID/platform. Protocol 1 remains accepted for legacy rollback. Both protocols require the **unchanged existing JSON data schema** and forbid migrations. Native readiness runs before stopping the previous child and again before launch. `active.json` commits the native image ID with its application revision; image receipt drift on the active revision fails closed. Unknown/incompatible candidates fail before activation. The updater does not promise arbitrary migrations, signed release verification, automatic image publication, support for custom forks, or an npm registry release.
 
 The installed stable launcher and protocol stay fixed while managed runtime source changes. Current source identity is the active runtime revision, not a claim that the global launcher package has been overwritten. Clean Git builds embed HEAD. Dirty builds embed null. Git-less builders can attest a clean exported tree through `KATAFIT_BUILD_REVISION`; do not set it for dirty exports.
 
@@ -73,6 +82,19 @@ The installed stable launcher and protocol stay fixed while managed runtime sour
 - **Corrupt active installation/manual recovery:** stop the owner first and preserve a private backup. Restore a known-good home/active pointer or remove `active.json` to return to the installed bootstrap application only if it is compatible with your unchanged data schema. Never delete a live lock inode.
 
 ## Verification
+
+For clean protocol-2 builds, first build the exact sandbox artifact as in
+[native-bootstrap.md](native-bootstrap.md), then pass its immutable local ID as
+`NATIVE_TEST_IMAGE` to `npm run test:package` and `npm run test:updates-package`.
+Those scripts provision and exercise native bootstrap from the actual installed
+production-only package. The updater package's subsequent good/crash/good source
+fixtures are explicitly protocol 1 to retain legacy rollback coverage without
+inventing an image service. The opt-in `NATIVE_DOCKER_TEST=1` native deployment
+matrix separately verifies real native A→B pairing, missing artifacts, failed
+post-stop activation, restart and image-pointer drift, using synthetic candidate
+identities (not published releases). CI runs both matrices. Daemon-independent
+CLI/supervisor tests use explicit legacy fixtures, never a production bypass.
+
 
 `npm test` builds and exercises revision checking, explicit confirmation/auth fences, metadata, isolated staging, child replacement, incompatible Store probing, immediate and delayed startup rollback, stable port/auth/data, disabled support and legacy-platform behavior. `npm run test:package` verifies the normal production-only package.
 

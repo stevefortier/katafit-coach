@@ -228,7 +228,7 @@ test("auto quiesce refuses active work and fences new worker claims", async () =
 });
 
 test("managed supervisor checks only after persisted consent and suppresses failed SHA", async () => {
-  const { supervise } = await import("../src/update/supervisor.js");
+  const { supervise } = await import("./helpers/legacy-supervisor.js");
   const home = await mkdtemp(join(tmpdir(), "coach-auto-owner-"));
   const store = new Store(home);
   await store.init();
@@ -267,7 +267,7 @@ test("managed supervisor checks only after persisted consent and suppresses fail
 });
 
 test("auto tick replaces a real managed child on the same port and retains stopped intent", async () => {
-  const { supervise } = await import("../src/update/supervisor.js");
+  const { supervise } = await import("./helpers/legacy-supervisor.js");
   const { mkdir, writeFile } = await import("node:fs/promises");
   const { resolve } = await import("node:path");
   const { pathToFileURL } = await import("node:url");

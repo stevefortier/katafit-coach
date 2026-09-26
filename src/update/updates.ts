@@ -72,9 +72,12 @@ export class Updates {
         (this.cleanupWarning
           ? " Cleanup incomplete; check protected home permissions before the next upgrade."
           : "");
-    } catch {
+    } catch (error) {
       this.guidance =
-        "Upgrade failed; previous version restored if available. Check free disk and Git/npm network access.";
+        error instanceof Error &&
+        error.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
+          ? "Upgrade failed: matching external artifact or native bootstrap required. Provision and preflight the exact candidate image outside Pi, then retry. Previous runtime was not replaced."
+          : "Upgrade failed; previous version restored if available. Check free disk and Git/npm network access.";
       throw new Error("UPGRADE_FAILED");
     } finally {
       this.lastOperation = {
