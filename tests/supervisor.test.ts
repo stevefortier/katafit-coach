@@ -7,6 +7,12 @@ import { pathToFileURL } from "node:url";
 import { Store } from "../src/config/store.js";
 import { supervise } from "./helpers/legacy-supervisor.js";
 
+// Launchers persist only the original key set; the reason lives in a sidecar.
+const legacyOperation = ({
+  reason: _reason,
+  ...rest
+}: { reason?: unknown } & Record<string, unknown>) => rest;
+
 test("failed and interrupted accepted operations retain durable outcome across restart", async () => {
   const home = await mkdtemp(join(tmpdir(), "coach-outcome-"));
   const store = new Store(home);
@@ -29,7 +35,7 @@ test("failed and interrupted accepted operations retain durable outcome across r
     await owner.close();
     await writeFile(
       join(home, "update-operation.json"),
-      JSON.stringify({ ...outcome, state: "applying" }),
+      JSON.stringify({ ...legacyOperation(outcome!), state: "applying" }),
     );
     owner = await supervise(store, 0);
     assert.equal(owner.updates.snapshot().lastOperation?.state, "interrupted");

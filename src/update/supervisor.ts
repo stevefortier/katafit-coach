@@ -386,7 +386,13 @@ export async function supervise(
         if (!confirmed) return false;
       }
       if (recoverySha)
-        updates.autoOutcome = { sha: recoverySha, state: recoveryOutcome };
+        updates.autoOutcome = {
+          sha: recoverySha,
+          state: recoveryOutcome,
+          ...(recoveryOutcome === "deferred"
+            ? { reason: "LOCAL_UNAVAILABLE" as const }
+            : {}),
+        };
       ambiguousQuiesce = false;
       recoveryWasRunning = undefined;
       recoverySha = undefined;
@@ -404,6 +410,13 @@ export async function supervise(
       return { installed: state.installed, latest: state.latest };
     },
     isDescendant: (old, next) => isMainDescendant(old, next, boundary.request),
+    suppressed: (sha) => {
+      updates.autoOutcome = {
+        sha,
+        state: "suppressed",
+        reason: "FAILED_TARGET",
+      };
+    },
     apply: async (sha) => {
       if (closing || !supported) return;
       // A local transport failure before acceptance is not a bad source SHA.
@@ -417,8 +430,19 @@ export async function supervise(
           updates.autoOutcome = {
             sha,
             state: recovered ? "deferred" : "resume-failed",
+            reason: "LOCAL_UNAVAILABLE",
           };
-        } else updates.autoOutcome = { sha, state: "deferred" };
+        } else
+          updates.autoOutcome = {
+            sha,
+            state: "deferred",
+            reason:
+              paused.data?.error === "AUTO_UPDATE_BUSY"
+                ? "AUTO_UPDATE_BUSY"
+                : paused.data?.error === "WORKER_STOP_UNCONFIRMED"
+                  ? "WORKER_STOP_UNCONFIRMED"
+                  : "LOCAL_UNAVAILABLE",
+          };
         return; // Busy/unavailable; no source operation was accepted.
       }
       const wasRunning = paused.data.wasRunning === true;
@@ -507,6 +531,8 @@ export async function supervise(
                 : "stopped";
         }
       }
+      if (!attempted && updates.autoOutcome?.state === "deferred")
+        updates.autoOutcome.reason = "AUTO_UPDATE_DISABLED";
       if (failure) throw failure;
     },
   });

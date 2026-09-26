@@ -395,6 +395,18 @@ header {
   padding-left: 12px;
   overflow-wrap: anywhere;
 }
+#updateOutcome[data-tone="error"] {
+  color: #ffb4b4;
+  background: #321c20;
+  border: 1px solid #c85c65;
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 16px;
+  font-weight: 600;
+}
+#updateAutoStatus[data-tone="error"] {
+  color: #ffb4b4;
+}
 @media (max-width: 480px) {
   .update-versions {
     grid-template-columns: 1fr;

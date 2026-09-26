@@ -154,7 +154,8 @@ test("auto scheduler is consent gated and does not retry a failed target after r
   const home = await mkdtemp(join(tmpdir(), "coach-auto-scheduler-"));
   const setting = new AutoUpdateSetting(home);
   let checks = 0,
-    applied = 0;
+    applied = 0,
+    suppressed = 0;
   const sha = "a".repeat(40);
   const hooks = {
     check: async () => {
@@ -162,6 +163,10 @@ test("auto scheduler is consent gated and does not retry a failed target after r
       return { latest: sha, installed: "b".repeat(40) };
     },
     isDescendant: async () => true,
+    suppressed: (target: string) => {
+      assert.equal(target, sha);
+      suppressed++;
+    },
     apply: async () => {
       applied++;
       throw new Error("fixture");
@@ -175,6 +180,7 @@ test("auto scheduler is consent gated and does not retry a failed target after r
     await assert.rejects(scheduler.tick(), /fixture/);
     await new AutoUpdater(setting, hooks).tick();
     assert.equal(applied, 1);
+    assert.equal(suppressed, 1);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -260,6 +266,15 @@ test("managed supervisor checks only after persisted consent and suppresses fail
     assert.equal(prepares, 1);
     await owner.auto.tick();
     assert.equal(prepares, 1);
+    assert.deepEqual(owner.updates.snapshot().autoOutcome, {
+      sha: latest,
+      state: "suppressed",
+      reason: "FAILED_TARGET",
+    });
+    assert.equal(
+      owner.updates.snapshot().lastOperation?.reason,
+      "UPGRADE_FAILED",
+    );
   } finally {
     await owner.close();
     await rm(home, { recursive: true, force: true });
@@ -332,6 +347,10 @@ test("auto tick replaces a real managed child on the same port and retains stopp
     }
     assert.equal(owner.updates.snapshot().installed, "b".repeat(40));
     assert.equal(owner.updates.snapshot().autoOutcome?.state, "deferred");
+    assert.equal(
+      owner.updates.snapshot().autoOutcome?.reason,
+      "LOCAL_UNAVAILABLE",
+    );
     assert.equal(await new AutoUpdateSetting(home).failedTarget(), null);
     await owner.auto.tick();
     assert.equal(owner.origin, origin);

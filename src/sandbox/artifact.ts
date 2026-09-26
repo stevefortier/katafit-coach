@@ -61,6 +61,37 @@ export async function provisionArtifact(
     throw error;
   }
 }
+/**
+ * Exact-revision receipt first. Otherwise reuse a protected receipt with the
+ * same native fingerprint: identical fingerprinted inputs build an identical
+ * image, so source-only commits need no new out-of-band provisioning.
+ */
+async function nativeReceipt(
+  home: string,
+  build: { revision: string; fingerprint: string },
+): Promise<any> {
+  const folder = join(home, "native-artifacts");
+  const read = async (name: string) =>
+    JSON.parse((await managedFile(join(folder, name), 2048)).toString());
+  try {
+    const exact = await read(build.revision + ".json");
+    if (exact.revision !== build.revision) throw new Error();
+    return exact;
+  } catch (error: any) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const { readdir } = await import("node:fs/promises");
+  for (const name of (await readdir(folder)).sort()) {
+    if (!/^[a-f0-9]{40}\.json$/.test(name)) continue;
+    const candidate = await read(name);
+    if (
+      candidate.revision + ".json" === name &&
+      candidate.fingerprint === build.fingerprint
+    )
+      return candidate;
+  }
+  throw new Error();
+}
 /** Protected host provisioning receipt, never a caller-selected tag or pull. */
 export async function nativeImage(
   home: string,
@@ -81,16 +112,9 @@ export async function nativeImage(
       !/^[a-f0-9]{64}$/.test(build.fingerprint)
     )
       throw new Error();
-    const binding = JSON.parse(
-      (
-        await managedFile(
-          join(home, "native-artifacts", build.revision + ".json"),
-          2048,
-        )
-      ).toString(),
-    );
+    const binding = await nativeReceipt(home, build);
     if (
-      binding.revision !== build.revision ||
+      !/^[a-f0-9]{40}$/.test(binding.revision) ||
       binding.fingerprint !== build.fingerprint ||
       !/^sha256:[a-f0-9]{64}$/.test(binding.image)
     )
@@ -112,7 +136,7 @@ export async function nativeImage(
       image.Id !== binding.image ||
       binding.platform !== `${image.Os}/${image.Architecture}` ||
       image.Os !== "linux" ||
-      image.Config?.Labels?.["fit.kata.native.revision"] !== build.revision ||
+      image.Config?.Labels?.["fit.kata.native.revision"] !== binding.revision ||
       image.Config?.Labels?.["fit.kata.native.fingerprint"] !==
         build.fingerprint
     )
