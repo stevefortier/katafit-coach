@@ -505,7 +505,6 @@ const settingsSections = [
   "connection",
   "persona",
   "preview",
-  "diagnostics",
   "updates",
   "worker",
 ];
@@ -552,15 +551,15 @@ for (const [index, section] of settingsSections.entries()) {
   };
 }
 function studioRoute() {
-  if (location.pathname === "/settings")
-    return {
-      tab: "settings",
-      section:
-        new URLSearchParams(location.search).get("section") ??
-        (location.hash === "#logsView"
-          ? "diagnostics"
-          : location.hash.slice(1)),
-    };
+  if (location.pathname === "/diagnostics") return { tab: "diagnostics" };
+  if (location.pathname === "/settings") {
+    const section =
+      new URLSearchParams(location.search).get("section") ??
+      (location.hash === "#logsView" ? "diagnostics" : location.hash.slice(1));
+    return section === "diagnostics"
+      ? { tab: "diagnostics", legacy: true }
+      : { tab: "settings", section };
+  }
   if (location.pathname.startsWith("/chat/member/")) {
     try {
       return {
@@ -577,6 +576,7 @@ function navigateStudio(path) {
 }
 function restoreStudioRoute() {
   const route = studioRoute();
+  if (route.legacy) history.replaceState(null, "", "/diagnostics");
   if (route.tab === "settings") selectSettingsSection(route.section, false);
   selectStudioTab(route.tab, false);
   if (route.tab === "coach") {
@@ -600,11 +600,13 @@ window.addEventListener("hashchange", () => {
 function selectStudioTab(tab, navigate = true) {
   const coach = tab === "coach";
   $("coachPanel").hidden = !coach;
-  $("settingsPanel").hidden = coach;
+  $("settingsPanel").hidden = tab !== "settings";
+  $("diagnostics").hidden = tab !== "diagnostics";
   if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
     ["coachTab", coach],
-    ["settingsTab", !coach],
+    ["settingsTab", tab === "settings"],
+    ["diagnosticsTab", tab === "diagnostics"],
   ]) {
     $(id).setAttribute("aria-pressed", String(active));
     $(id).classList.toggle("secondary", !active);
@@ -619,17 +621,15 @@ function selectStudioTab(tab, navigate = true) {
         ? selectedMember
           ? "/chat/member/" + encodeURIComponent(selectedMember.member_ref)
           : "/chat/operator"
-        : settingsPath(),
+        : tab === "diagnostics"
+          ? "/diagnostics"
+          : settingsPath(),
     );
 }
 $("coachTab").onclick = () => selectStudioTab("coach");
 $("settingsTab").onclick = () => selectStudioTab("settings");
-const logActive = () =>
-  key &&
-  !$("settingsPanel").hidden &&
-  !$("diagnostics").hidden &&
-  $("logsView").open &&
-  !document.hidden;
+$("diagnosticsTab").onclick = () => selectStudioTab("diagnostics");
+const logActive = () => key && !$("diagnostics").hidden && !document.hidden;
 function filteredLogs() {
   return logData.entries.filter(
     (e) => $("logLevel").value === "all" || e.level === $("logLevel").value,
@@ -716,7 +716,7 @@ function renderLogs() {
   }
   if (!rows.length) $("logRows").textContent = "No entries match this level.";
   $("logStatus").textContent =
-    `${rows.length} shown / ${logData.entries.length} retained (max ${logData.capacity ?? 500}) · ${logPaused ? "Paused" : "Live when open and visible"} · ${logData.persistence === false ? "Disk logging unavailable; memory only" : "Protected rotating files"}`;
+    `${rows.length} shown / ${logData.entries.length} retained (max ${logData.capacity ?? 500}) · ${logPaused ? "Paused" : "Live while visible"} · ${logData.persistence === false ? "Disk logging unavailable; memory only" : "Protected rotating files"}`;
 }
 async function refreshLogs() {
   clearTimeout(logTimer);
@@ -745,7 +745,6 @@ function logVisibility() {
   logController = undefined;
   if (logActive() && !logPaused) refreshLogs();
 }
-$("logsView").addEventListener("toggle", logVisibility);
 document.addEventListener("visibilitychange", logVisibility);
 action("logRefresh", refreshLogs);
 action("logPause", async () => {

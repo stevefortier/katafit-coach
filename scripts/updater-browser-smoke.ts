@@ -292,10 +292,8 @@ try {
       /was deferred/,
     );
   }
-  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
-  await page.locator("#logsView").evaluate((el: HTMLDetailsElement) => {
-    el.open = true;
-  });
+  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.locator("#logRefresh").waitFor({ state: "visible" });
   const downloaded = page.waitForEvent("download");
   await page.locator("#logDownload").click();
   const diagnostic = JSON.parse(
@@ -310,6 +308,7 @@ try {
     JSON.stringify(diagnostic.update).includes(store.secrets.admin),
     false,
   );
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("tab", { name: "Updates", exact: true }).click();
   for (const width of [320, 360, 1280]) {
     await page.setViewportSize({ width, height: 1000 });

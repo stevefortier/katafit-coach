@@ -176,7 +176,9 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
         JSON.stringify(anchor),
       );
       await refresh("task-publication-confirmed");
-      await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Diagnostics", exact: true })
+        .click();
       const tallAnchor = await page.evaluate(() => ({
         headerBottom: document.querySelector("header")!.getBoundingClientRect()
           .bottom,
