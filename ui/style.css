@@ -459,7 +459,13 @@ header {
   display: none !important;
 }
 .studio-tabs {
-  gap: 10px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.log-controls button,
+.studio-tabs button {
+  min-height: 44px;
+  flex: 1 1 auto;
 }
 .conversation-tabs {
   display: flex;

@@ -170,7 +170,6 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
       await page.locator("#adminKey").fill("synthetic-admin");
       await page.locator("#unlock").click();
       await page.locator("#studio").waitFor({ state: "visible" });
-      await page.locator("#logsView > summary").click();
       await page.locator(".log-entry").first().waitFor();
       // Independent expected formatter: no production helper call or host timezone.
       const expected = await page.evaluate(
@@ -258,6 +257,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
       });
       await page.setViewportSize({ width: 1280, height: 1000 });
       assert.deepEqual(JSON.parse(copied).update.lastOperation, operation);
+      await page.locator("#settingsTab").click();
       await page.getByRole("tab", { name: "Persona", exact: true }).click();
       await page.locator("#personaHistory > summary").click();
       await page.locator('#historyList button[data-revision="3"]').waitFor();
