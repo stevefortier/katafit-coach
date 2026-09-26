@@ -26,10 +26,12 @@ try {
     revision = process.env.KATAFIT_BUILD_REVISION;
 }
 const identity = createHash("sha256").update("katafit-native-contract-2\0");
+// Hash order is part of the fingerprint; keep it stable so existing receipts
+// remain reusable.
 const sandboxModules = [
-  "sandbox/katafit.mjs",
   "sandbox/launch.mjs",
   "sandbox/relay.mjs",
+  "sandbox/katafit.mjs",
 ];
 // The image copies sandbox/*.mjs, and receipts are reused by fingerprint, so
 // every copied module must be fingerprinted.
@@ -37,7 +39,7 @@ const copied = readdirSync("sandbox")
   .filter((name) => name.endsWith(".mjs"))
   .map((name) => "sandbox/" + name)
   .sort();
-if (copied.join(",") !== sandboxModules.join(","))
+if (copied.join(",") !== [...sandboxModules].sort().join(","))
   throw new Error("UNFINGERPRINTED_SANDBOX_INPUT: " + copied.join(","));
 for (const name of [
   "package.json",
