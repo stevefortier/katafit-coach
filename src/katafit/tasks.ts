@@ -321,6 +321,18 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
       JSON.stringify(validator.errors ?? []),
       schemaRepairHint(kind, validator.errors ?? []),
     );
+  // Ordinary activity reactions are not day closeouts. Keep the shared catalog
+  // compatible, but mirror the consumer's truthy guard after normalization.
+  if (
+    kind === "activity_reaction" &&
+    "day_closeout_meal_assessment" in value &&
+    value.day_closeout_meal_assessment
+  )
+    throw new TaskOutputError(
+      "SEMANTIC",
+      "day_closeout_meal_assessment is not allowed for an individual activity reaction",
+      "Omit day_closeout_meal_assessment for an individual activity reaction; return feedback only for the triggering activity.",
+    );
   if (
     (kind === "activity_reaction" &&
       value.activity_feedback.reply_worthwhile !==
