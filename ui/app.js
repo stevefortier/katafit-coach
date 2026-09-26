@@ -1194,12 +1194,24 @@ function renderLogs() {
     const row = document.createElement("article");
     row.className = "log-entry log-" + e.level;
     const title = document.createElement("strong");
+    // Descriptors have passed the fixed-vocabulary sanitizer at capture and
+    // restore. Never infer a missing historical or unknown tool name.
+    const call = e.backendCall;
+    const callName = call
+      ? call.tool && call.tool !== "other"
+        ? call.tool
+        : call.operation === "tools/call"
+          ? "tools/call — tool name unavailable"
+          : call.operation && call.operation !== "other"
+            ? call.operation
+            : `${call.method} ${call.route}`
+      : e.source === "backend" && e.stage === "backend-call"
+        ? "Backend call — name unavailable"
+        : undefined;
     title.textContent =
-      e.level.toUpperCase() +
-      " · " +
-      e.source +
-      " / " +
-      e.stage +
+      (callName
+        ? callName + " · " + e.level.toUpperCase()
+        : e.level.toUpperCase() + " · " + e.source + " / " + e.stage) +
       (e.code ? " · " + e.code : "");
     const meta = document.createElement("small");
     meta.textContent =

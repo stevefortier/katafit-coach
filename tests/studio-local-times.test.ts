@@ -170,6 +170,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
       await page.locator("#adminKey").fill("synthetic-admin");
       await page.locator("#unlock").click();
       await page.locator("#studio").waitFor({ state: "visible" });
+      await page.locator("#logLevel").selectOption("all");
       await page.locator(".log-entry").first().waitFor();
       // Independent expected formatter: no production helper call or host timezone.
       const expected = await page.evaluate(

@@ -297,6 +297,8 @@ try {
     if (r.url().endsWith("/api/logs")) logRequests++;
   });
   await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  assert.equal(await page.locator("#logLevel").inputValue(), "info");
+  await page.locator("#logLevel").selectOption("all");
   await page.waitForFunction(() =>
     document
       .querySelector("#logRows")
