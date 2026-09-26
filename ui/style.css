@@ -536,11 +536,33 @@ header {
   min-height: 44px;
   flex: 1 1 auto;
 }
-.conversation-tabs {
+.conversation-toolbar {
   display: flex;
-  gap: 16px;
+  align-items: flex-start;
+  gap: 12px;
   border-bottom: 1px solid var(--line);
   margin-bottom: 16px;
+  min-width: 0;
+}
+.conversation-toolbar #membersRefresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  border-color: transparent;
+}
+.conversation-toolbar #membersRefresh:focus-visible {
+  outline-offset: -3px;
+}
+.conversation-tabs {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 16px;
   overflow-x: auto;
   max-width: 100%;
   flex-wrap: nowrap;
