@@ -106,6 +106,159 @@ test("strict task output rejects whitespace-only, semantic silent mismatch and e
     { text: "OK" },
   );
 });
+test("activity reaction rejects nonempty day closeout assessment as repairable semantics", () => {
+  const value = {
+    activity_feedback: { reaction: "check", reply_worthwhile: true },
+    general_advice: "Synthetic meal note.",
+  };
+  assert.throws(
+    () =>
+      parseTaskResult(
+        "activity_reaction",
+        JSON.stringify({
+          ...value,
+          day_closeout_meal_assessment: "  Synthetic day assessment.  ",
+        }),
+        [],
+      ),
+    (e: any) =>
+      e instanceof TaskOutputError &&
+      e.category === "SEMANTIC" &&
+      e.reason.includes("day_closeout_meal_assessment") &&
+      e.repairHint.includes("Omit day_closeout_meal_assessment"),
+  );
+  for (const assessment of [undefined, "", "   "]) {
+    const candidate = {
+      ...value,
+      ...(assessment === undefined
+        ? {}
+        : {
+            day_closeout_meal_assessment: assessment,
+          }),
+    };
+    assert.deepEqual(
+      parseTaskResult("activity_reaction", JSON.stringify(candidate), []),
+      {
+        ...value,
+        ...(assessment === undefined
+          ? {}
+          : { day_closeout_meal_assessment: "" }),
+      },
+    );
+  }
+});
+for (const outcome of ["corrected", "permanent", "meal", "workout"] as const) {
+  test(`individual activity closeout guard: ${outcome}`, async () => {
+    const f = await taskFixture({
+      evidence: {
+        timezone: "UTC",
+        observations: [
+          {
+            label: "Activity",
+            text:
+              outcome === "workout"
+                ? "Synthetic completed workout"
+                : "Synthetic completed meal",
+          },
+        ],
+        conversation: [],
+      },
+    });
+    const valid = {
+      activity_feedback: {
+        reaction: outcome === "workout" ? "flex" : "check",
+        reply_worthwhile: true,
+      },
+      general_advice: "Synthetic individual activity note.",
+      ...(outcome === "meal"
+        ? { meal_recommendations: ["Synthetic meal suggestion."] }
+        : {}),
+      ...(outcome === "workout"
+        ? { recovery_recommendations: ["Synthetic recovery suggestion."] }
+        : {}),
+    };
+    const bad = {
+      ...valid,
+      day_closeout_meal_assessment: "Synthetic day assessment.",
+    };
+    const prompts: string[] = [];
+    const w = new Worker({
+      origin: f.origin,
+      token: "worker-secret",
+      system: "Coach",
+      complete: async (_context, _signal, system, tools) => {
+        prompts.push(system!);
+        assert.deepEqual(tools, []);
+        assert.equal(f.saved.length, 0);
+        return JSON.stringify(
+          outcome === "permanent" ||
+            (outcome === "corrected" && prompts.length === 1)
+            ? bad
+            : valid,
+        );
+      },
+    });
+    try {
+      f.enqueue("activity_reaction");
+      if (outcome === "permanent") {
+        await assert.rejects(w.pollOnce(), { message: "TASK_OUTPUT_SEMANTIC" });
+        assert.equal(f.saved.length, 0);
+        assert.equal(
+          f.calls.filter((c) => c.name === "coach_complete_task").length,
+          0,
+        );
+        assert.deepEqual(
+          f.calls
+            .filter((c) => c.name === "coach_fail_task")
+            .map((c) => c.args.code),
+          ["TASK_INVALID_OUTPUT"],
+        );
+        assert.equal(
+          f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+          1,
+        );
+        assert.equal(w.state, "task-failure-reported");
+      } else {
+        await w.pollOnce();
+        assert.deepEqual(
+          f.saved.map((s) => s.result),
+          [valid],
+        );
+        assert.equal(
+          f.calls.filter((c) => c.name === "coach_complete_task").length,
+          1,
+        );
+        assert.equal(
+          f.calls.filter((c) => c.name === "coach_reconcile_task").length,
+          1,
+        );
+        assert.equal(
+          f.calls.filter((c) => c.name === "coach_fail_task").length,
+          0,
+        );
+        assert.equal(w.state, "task-result-stored");
+      }
+      assert.equal(
+        prompts.length,
+        ["corrected", "permanent"].includes(outcome) ? 2 : 1,
+      );
+      assert.match(
+        prompts[0],
+        /individual activity.*Omit day_closeout_meal_assessment/,
+      );
+      if (prompts.length === 2) {
+        assert.match(
+          prompts[1],
+          /Structural correction: Omit day_closeout_meal_assessment/,
+        );
+        assert.ok(!prompts[1].includes(bad.day_closeout_meal_assessment));
+      }
+    } finally {
+      await w.stop();
+      await f.close();
+    }
+  });
+}
 test("task context rejects evidence extras and byte overflow before inference", async () => {
   for (const evidence of [
     {
