@@ -123,6 +123,7 @@ test("Settings preview composer retains Enter, Shift+Enter and IME behavior", as
       ["question", "previewButton", "/api/preview"],
     ]) {
       if (input === "question") await page.locator("#settingsTab").click();
+      await page.getByRole("tab", { name: "Preview", exact: true }).click();
       const composer = page.locator("#" + input);
       await composer.fill("Keyboard message");
       const before = sent.length;

@@ -164,7 +164,7 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
         JSON.stringify(geometry),
       );
       await page.locator("#settingsTab").click();
-      await page.locator('a[href="#updates"]').click();
+      await page.getByRole("tab", { name: "Updates", exact: true }).click();
       const anchor = await page.evaluate(() => ({
         headerBottom: document.querySelector("header")!.getBoundingClientRect()
           .bottom,
@@ -176,7 +176,7 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
         JSON.stringify(anchor),
       );
       await refresh("task-publication-confirmed");
-      await page.locator('a[href="#logsView"]').click();
+      await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
       const tallAnchor = await page.evaluate(() => ({
         headerBottom: document.querySelector("header")!.getBoundingClientRect()
           .bottom,

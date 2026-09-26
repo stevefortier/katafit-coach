@@ -12,7 +12,7 @@ test("member threads retain both canonical directions in chronological chat orde
   const server = createServer(async (req, res) => {
     const file =
       req.url === "/" ||
-      req.url === "/settings" ||
+      new URL(req.url!, "http://localhost").pathname === "/settings" ||
       req.url?.startsWith("/chat/member/")
         ? "index.html"
         : req.url?.slice(1);
@@ -190,6 +190,13 @@ test("member threads retain both canonical directions in chronological chat orde
     await page.locator(".member-item").first().waitFor();
     assert.equal(await page.locator("#memberView").isVisible(), true);
     await page.locator("#settingsTab").click();
+    await page.getByRole("tab", { name: "Persona", exact: true }).click();
+    await page.goBack();
+    await page.goBack();
+    await page.locator(".member-item").first().waitFor();
+    assert.equal(new URL(page.url()).pathname, "/chat/member/alex");
+    await page.goForward();
+    await page.goForward();
     await page.reload();
     await page.locator("#studio").waitFor({ state: "visible" });
     await page.locator("#coachTab").click();

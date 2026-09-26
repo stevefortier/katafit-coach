@@ -174,6 +174,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#vision").isChecked(), false);
+  await page.getByRole("tab", { name: "Connection", exact: true }).click();
   assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
   await page.locator("#vision").check();
   await page
@@ -181,6 +182,7 @@ try {
     .fill(`http://127.0.0.1:${(provider.address() as any).port}/v1`);
   await page.locator("#model").fill("synthetic-qa");
   await page.locator("#apiKey").fill("synthetic-qa-key");
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Sage");
   await page.locator("#save").click();
   await page.waitForFunction(() =>
@@ -231,19 +233,24 @@ try {
     savedBeforeReset.origin,
   );
   assert.equal(await page.locator("#vision").isChecked(), true);
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.locator("#previewButton").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.includes("Unsaved edits"),
   );
   assert.equal(providerCalls, 0);
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Unsaved name");
   assert.equal(store.publicConfig().provider.vision, true);
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.locator("#previewButton").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.includes("Unsaved edits"),
   );
   assert.equal(providerCalls, 0);
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Sage");
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.locator("#previewButton").click();
   await page.waitForFunction(() =>
     document
@@ -274,6 +281,7 @@ try {
   page.on("request", (r) => {
     if (r.url().endsWith("/api/logs")) logRequests++;
   });
+  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
   await page.locator("#logsView > summary").click();
   await page.waitForFunction(() =>
     document
@@ -412,8 +420,10 @@ try {
   await page.waitForTimeout(2200);
   assert.equal(logRequests, closedCount);
   await page.evaluate(() => scrollTo(0, 0));
+  await page.getByRole("tab", { name: "Connection", exact: true }).click();
   await page.locator("#vision").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-vision-desktop.png" });
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.locator("#preview").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-preview.png" });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -424,8 +434,10 @@ try {
     ),
     true,
   );
+  await page.getByRole("tab", { name: "Connection", exact: true }).click();
   await page.locator("#vision").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-vision-mobile.png" });
+  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
   await page.locator("#logsView > summary").click();
   await page.locator("#logsView").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/studio-logs-mobile.png" });
@@ -435,14 +447,17 @@ try {
     ),
     true,
   );
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#rollback").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.includes("restored"),
   );
   assert.equal(await page.locator("#vision").isChecked(), false);
+  await page.getByRole("tab", { name: "Connection", exact: true }).click();
   assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
   assert.equal(store.publicConfig().provider.vision, false);
   const beforeSaveReset = store.publicConfig();
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Another custom name");
   await page.locator("#resetPersona").click();
   await page.waitForFunction(() =>

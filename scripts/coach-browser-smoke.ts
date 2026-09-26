@@ -119,6 +119,7 @@ try {
   assert.equal(await page.locator("#settingsPanel").isVisible(), false);
   await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#connection").isVisible(), true);
+  await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
   await page.locator("#logsView summary").click();
   await page.waitForTimeout(200);
   let logs = 0;
@@ -129,6 +130,7 @@ try {
   await page.waitForTimeout(2300);
   assert.equal(logs, 0, "Settings-hidden logs do not poll");
   await page.locator("#settingsTab").click();
+  await page.getByRole("tab", { name: "Worker", exact: true }).click();
   await page.locator("#run").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent === "IDLE",
@@ -138,6 +140,7 @@ try {
   assert.equal(await page.locator("#operatorText").count(), 0);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator("#settingsTab").click();
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Unsaved operator draft");
   await page.locator("#coachTab").click();
   assert.match(
@@ -156,7 +159,9 @@ try {
   );
   const revisionBeforeDraft = store.publicConfig().revision;
   await page.locator("#settingsTab").click();
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#persona details summary").click();
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#markdown").fill("Explicit Settings rule");
   await page.locator("#coachTab").click();
   assert.equal(await page.locator(".chat-user button").count(), 0);
@@ -166,6 +171,7 @@ try {
     "chat never writes config",
   );
   await page.locator("#settingsTab").click();
+  await page.getByRole("tab", { name: "Worker", exact: true }).click();
   await page.locator("#stop").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent === "STOPPED",
@@ -432,6 +438,7 @@ try {
     false,
   );
   await page.locator("#settingsTab").click();
+  await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Synthetic authority reload");
   await page.locator("#save").click();
   await page.waitForFunction(() =>
@@ -477,6 +484,7 @@ try {
   await page.locator("#settingsTab").click();
   // Representative evidence uses the same real Pi transport; adversarial text
   // above remains tested, but does not stand in for the readable UI receipt.
+  await page.getByRole("tab", { name: "Worker", exact: true }).click();
   await page.locator("#run").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent !== "STOPPED",
