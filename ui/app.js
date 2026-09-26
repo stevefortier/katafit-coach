@@ -358,8 +358,65 @@ let logData = { entries: [] },
   logPaused = false,
   logTimer,
   logController;
+const settingsSections = [
+  "connection",
+  "persona",
+  "preview",
+  "diagnostics",
+  "updates",
+  "worker",
+];
+let settingsSection = "connection";
+function settingsPath() {
+  return settingsSection === "connection"
+    ? "/settings"
+    : "/settings?section=" + settingsSection;
+}
+function selectSettingsSection(section, navigate = true) {
+  settingsSection = settingsSections.includes(section) ? section : "connection";
+  for (const name of settingsSections) {
+    const selected = name === settingsSection;
+    $(name).hidden = !selected;
+    const tab = $("settings-" + name + "-tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    tab.classList.toggle("secondary", !selected);
+  }
+  if (navigate) navigateStudio(settingsPath());
+  logVisibility();
+}
+for (const [index, section] of settingsSections.entries()) {
+  const tab = $("settings-" + section + "-tab");
+  tab.onclick = () => selectSettingsSection(section);
+  tab.onkeydown = (event) => {
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? settingsSections.length - 1
+          : event.key === "ArrowRight"
+            ? (index + 1) % settingsSections.length
+            : event.key === "ArrowLeft"
+              ? (index + settingsSections.length - 1) % settingsSections.length
+              : null;
+    if (next === null || event.altKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    selectSettingsSection(settingsSections[next]);
+    $("settings-" + settingsSections[next] + "-tab").focus({
+      preventScroll: true,
+    });
+  };
+}
 function studioRoute() {
-  if (location.pathname === "/settings") return { tab: "settings" };
+  if (location.pathname === "/settings")
+    return {
+      tab: "settings",
+      section:
+        new URLSearchParams(location.search).get("section") ??
+        (location.hash === "#logsView"
+          ? "diagnostics"
+          : location.hash.slice(1)),
+    };
   if (location.pathname.startsWith("/chat/member/")) {
     try {
       return {
@@ -371,10 +428,12 @@ function studioRoute() {
   return { tab: "coach" };
 }
 function navigateStudio(path) {
-  if (location.pathname !== path) history.pushState(null, "", path);
+  if (location.pathname + location.search + location.hash !== path)
+    history.pushState(null, "", path);
 }
 function restoreStudioRoute() {
   const route = studioRoute();
+  if (route.tab === "settings") selectSettingsSection(route.section, false);
   selectStudioTab(route.tab, false);
   if (route.tab === "coach") {
     const member = route.member
@@ -385,6 +444,14 @@ function restoreStudioRoute() {
 }
 window.addEventListener("popstate", () => {
   if (key) restoreStudioRoute();
+});
+window.addEventListener("hashchange", () => {
+  if (
+    key &&
+    location.pathname === "/settings" &&
+    !/^[a-f0-9]{64}$/i.test(location.hash.slice(1))
+  )
+    restoreStudioRoute();
 });
 function selectStudioTab(tab, navigate = true) {
   const coach = tab === "coach";
@@ -407,13 +474,17 @@ function selectStudioTab(tab, navigate = true) {
         ? selectedMember
           ? "/chat/member/" + encodeURIComponent(selectedMember.member_ref)
           : "/chat/operator"
-        : "/settings",
+        : settingsPath(),
     );
 }
 $("coachTab").onclick = () => selectStudioTab("coach");
 $("settingsTab").onclick = () => selectStudioTab("settings");
 const logActive = () =>
-  key && !$("settingsPanel").hidden && $("logsView").open && !document.hidden;
+  key &&
+  !$("settingsPanel").hidden &&
+  !$("diagnostics").hidden &&
+  $("logsView").open &&
+  !document.hidden;
 function filteredLogs() {
   return logData.entries.filter(
     (e) => $("logLevel").value === "all" || e.level === $("logLevel").value,

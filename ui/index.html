@@ -107,107 +107,188 @@
           </section>
         </section>
         <section id="settingsPanel" hidden>
-          <nav>
-            <a href="#connection">Connection</a><a href="#persona">Persona</a
-            ><a href="#preview">Preview</a><a href="#logsView">Diagnostics</a>
-            <a href="#updates">Updates</a>
-          </nav>
-          <div class="grid">
-            <section class="card" id="connection">
-              <h2>Connection</h2>
-              <label>Kata.fit origin<input id="origin" type="url" /></label
-              ><label
-                >Kata.fit connection credential<input
-                  id="token"
-                  type="password"
-                  placeholder="Leave blank to keep saved credential"
-                  autocomplete="off"
-              /></label>
-              <p class="hint">
-                Create a credential in Kata.fit's external Coach settings.
-              </p>
-              <div class="split">
-                <label
-                  >Provider preset<select id="preset">
-                    <option value="custom">Custom / OpenAI-compatible</option>
-                    <option value="openai">OpenAI API</option>
-                  </select></label
-                ><label>Model ID<input id="model" /></label>
-              </div>
-              <label>API base URL<input id="baseUrl" type="url" /></label
-              ><label
-                >Provider API key<input
-                  id="apiKey"
-                  type="password"
-                  placeholder="Leave blank to keep saved key"
-                  autocomplete="off"
-              /></label>
-              <p class="hint">
-                A remote provider receives Coach requests and any data included
-                in them.
-              </p>
-              <button id="connect" class="secondary">
-                Test saved connection
-              </button>
-              <label class="vision-option"
-                ><input id="vision" type="checkbox" /> Enable original-image
-                input for a vision-capable provider</label
-              >
-              <p class="hint">
-                When enabled, original images may be sent to your configured
-                provider.
-              </p>
-            </section>
-            <section class="card" id="persona">
-              <h2>Persona</h2>
-              <label>Coach name<input id="name" /></label
-              ><label>Voice<input id="voice" /></label>
-              <div class="split">
-                <label
-                  >Verbosity<select id="verbosity">
-                    <option>Concise</option>
-                    <option>Balanced</option>
-                    <option>Detailed</option>
-                  </select></label
-                ><label>Initiative<input id="initiative" /></label>
-              </div>
+          <div
+            class="settings-tabs"
+            role="tablist"
+            aria-label="Settings sections"
+          >
+            <button
+              type="button"
+              id="settings-connection-tab"
+              role="tab"
+              aria-controls="connection"
+              aria-selected="true"
+              tabindex="0"
+              class=""
+            >
+              Connection
+            </button>
+            <button
+              type="button"
+              id="settings-persona-tab"
+              role="tab"
+              aria-controls="persona"
+              aria-selected="false"
+              tabindex="-1"
+              class="secondary"
+            >
+              Persona
+            </button>
+            <button
+              type="button"
+              id="settings-preview-tab"
+              role="tab"
+              aria-controls="preview"
+              aria-selected="false"
+              tabindex="-1"
+              class="secondary"
+            >
+              Preview
+            </button>
+            <button
+              type="button"
+              id="settings-diagnostics-tab"
+              role="tab"
+              aria-controls="diagnostics"
+              aria-selected="false"
+              tabindex="-1"
+              class="secondary"
+            >
+              Diagnostics
+            </button>
+            <button
+              type="button"
+              id="settings-updates-tab"
+              role="tab"
+              aria-controls="updates"
+              aria-selected="false"
+              tabindex="-1"
+              class="secondary"
+            >
+              Updates
+            </button>
+            <button
+              type="button"
+              id="settings-worker-tab"
+              role="tab"
+              aria-controls="worker"
+              aria-selected="false"
+              tabindex="-1"
+              class="secondary"
+            >
+              Worker
+            </button>
+          </div>
+          <section
+            class="card"
+            id="connection"
+            role="tabpanel"
+            aria-labelledby="settings-connection-tab"
+            tabindex="0"
+          >
+            <h2>Connection</h2>
+            <label>Kata.fit origin<input id="origin" type="url" /></label
+            ><label
+              >Kata.fit connection credential<input
+                id="token"
+                type="password"
+                placeholder="Leave blank to keep saved credential"
+                autocomplete="off"
+            /></label>
+            <p class="hint">
+              Create a credential in Kata.fit's external Coach settings.
+            </p>
+            <div class="split">
               <label
-                >Coaching principles<textarea
-                  id="principles"
-                  rows="2"
-                ></textarea></label
-              ><label
-                >Example guidance<textarea
-                  id="examples"
-                  rows="2"
-                ></textarea></label
-              ><label
-                >Boundaries<textarea id="boundaries" rows="2"></textarea>
-              </label>
-              <details>
-                <summary>Advanced Markdown</summary>
-                <textarea
-                  id="markdown"
-                  rows="5"
-                  placeholder="Additional persona instructions"
-                ></textarea>
-              </details>
-              <button id="resetPersona" type="button" class="secondary">
-                Reset to stock defaults
-              </button>
-              <p class="hint">
-                Only persona fields change. Save a new revision to apply.
-              </p>
-            </section>
-          </div>
-          <div class="actions">
-            <button id="save">Save new revision</button
-            ><button id="rollback" class="secondary">Roll back persona</button
-            ><button id="export" class="secondary">
-              Export nonsecret configuration</button
-            ><span id="revision"></span>
-          </div>
-          <section class="card" id="preview">
+                >Provider preset<select id="preset">
+                  <option value="custom">Custom / OpenAI-compatible</option>
+                  <option value="openai">OpenAI API</option>
+                </select></label
+              ><label>Model ID<input id="model" /></label>
+            </div>
+            <label>API base URL<input id="baseUrl" type="url" /></label
+            ><label
+              >Provider API key<input
+                id="apiKey"
+                type="password"
+                placeholder="Leave blank to keep saved key"
+                autocomplete="off"
+            /></label>
+            <p class="hint">
+              A remote provider receives Coach requests and any data included in
+              them.
+            </p>
+            <button id="connect" class="secondary">
+              Test saved connection
+            </button>
+            <label class="vision-option"
+              ><input id="vision" type="checkbox" /> Enable original-image input
+              for a vision-capable provider</label
+            >
+            <p class="hint">
+              When enabled, original images may be sent to your configured
+              provider.
+            </p>
+          </section>
+          <section
+            class="card"
+            id="persona"
+            role="tabpanel"
+            aria-labelledby="settings-persona-tab"
+            tabindex="0"
+            hidden
+          >
+            <h2>Persona</h2>
+            <label>Coach name<input id="name" /></label
+            ><label>Voice<input id="voice" /></label>
+            <div class="split">
+              <label
+                >Verbosity<select id="verbosity">
+                  <option>Concise</option>
+                  <option>Balanced</option>
+                  <option>Detailed</option>
+                </select></label
+              ><label>Initiative<input id="initiative" /></label>
+            </div>
+            <label
+              >Coaching principles<textarea
+                id="principles"
+                rows="2"
+              ></textarea></label
+            ><label
+              >Example guidance<textarea
+                id="examples"
+                rows="2"
+              ></textarea></label
+            ><label
+              >Boundaries<textarea id="boundaries" rows="2"></textarea>
+            </label>
+            <details>
+              <summary>Advanced Markdown</summary>
+              <textarea
+                id="markdown"
+                rows="5"
+                placeholder="Additional persona instructions"
+              ></textarea>
+            </details>
+            <button id="resetPersona" type="button" class="secondary">
+              Reset to stock defaults
+            </button>
+            <button id="rollback" type="button" class="secondary">
+              Roll back persona
+            </button>
+            <p class="hint">
+              Only persona fields change. Save a new revision to apply.
+            </p>
+          </section>
+          <section
+            class="card"
+            id="preview"
+            role="tabpanel"
+            aria-labelledby="settings-preview-tab"
+            tabindex="0"
+            hidden
+          >
             <h2>Preview</h2>
             <p>
               Save your changes first. Preview uses the saved settings and a
@@ -225,7 +306,14 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               <pre id="prompt"></pre>
             </details>
           </section>
-          <section class="card diagnostics">
+          <section
+            class="card diagnostics"
+            id="diagnostics"
+            role="tabpanel"
+            aria-labelledby="settings-diagnostics-tab"
+            tabindex="0"
+            hidden
+          >
             <h2>Diagnostics</h2>
             <p id="lastError" role="status">No retained error.</p>
             <details id="logsView">
@@ -258,7 +346,14 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               <div id="logRows" aria-label="Diagnostic entries"></div>
             </details>
           </section>
-          <section class="card diagnostics" id="updates">
+          <section
+            class="card diagnostics"
+            id="updates"
+            role="tabpanel"
+            aria-labelledby="settings-updates-tab"
+            tabindex="0"
+            hidden
+          >
             <h2>Updates</h2>
             <p>
               Updates come from the official Kata.fit Coach repository on
@@ -324,7 +419,14 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               <button id="updateCancel" class="secondary">Not now</button>
             </div>
           </section>
-          <section class="runbar">
+          <section
+            class="card runbar"
+            id="worker"
+            role="tabpanel"
+            aria-labelledby="settings-worker-tab"
+            tabindex="0"
+            hidden
+          >
             <div>
               <h2>Worker</h2>
               <p>
@@ -336,6 +438,16 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               ><button id="stop" class="secondary">Stop worker</button>
             </div>
           </section>
+          <div class="actions">
+            <button id="save">Save new revision</button
+            ><button id="export" class="secondary">
+              Export nonsecret configuration</button
+            ><span id="revision"></span>
+          </div>
+          <p class="hint">
+            Save applies Connection and Persona drafts across tabs. Preview and
+            worker use saved settings.
+          </p>
         </section>
       </div>
       <p id="notice" role="status" aria-live="polite"></p>
