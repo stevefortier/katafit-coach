@@ -2,6 +2,28 @@ let key = "",
   workerState,
   config,
   authGeneration = 0;
+// Presentation only: retain original instants in API data and JSON exports.
+// Omit locale/timeZone overrides so the browser uses the viewer's settings.
+const localTimestamp = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+  timeZoneName: "short",
+});
+function formatTimestamp(value, fallback = "Time unavailable") {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value !== "string" && typeof value !== "number") return fallback;
+  // Calendar dates are not instants: never shift them across a day boundary.
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value))
+    return value;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? localTimestamp.format(date)
+    : fallback;
+}
 function renderOperatorActions(actions = []) {
   const labels = {
     delivered: "Delivered",
@@ -223,7 +245,7 @@ function clearPersonaHistory() {
   $("historyStatus").textContent = "";
 }
 const historyLabel = (e) =>
-  `Revision ${e.revision} · ${e.current ? "Current · " : ""}${e.savedAt ? new Date(e.savedAt).toLocaleString() : "Save time unavailable"}`;
+  `Revision ${e.revision} · ${e.current ? "Current · " : ""}${formatTimestamp(e.savedAt, "Save time unavailable")}`;
 async function loadPersonaHistory(before) {
   if (!historyVisible()) return;
   const epoch = ++historyEpoch;
@@ -434,7 +456,7 @@ async function status() {
     renderUpdate();
     $("lastError").textContent = s.lastError
       ? "Last error · " +
-        s.lastError.time +
+        formatTimestamp(s.lastError.time) +
         " · " +
         s.lastError.code +
         " — " +
@@ -629,7 +651,7 @@ function renderLogs() {
       (e.code ? " · " + e.code : "");
     const meta = document.createElement("small");
     meta.textContent =
-      e.time +
+      formatTimestamp(e.time) +
       (e.ref ? " · ref " + e.ref : "") +
       " · " +
       JSON.stringify(e.metadata);
@@ -955,13 +977,13 @@ function renderUpdate() {
         : " Failure reason was not recorded by this launcher. Check host prerequisites; replacing the stable launcher is required to retain reasons for future failures. Older failures cannot be reconstructed.";
   $("updateOutcome").hidden = !validOutcome;
   $("updateOutcome").textContent = validOutcome
-    ? `${updateOutcomeNames[outcome.state]} · ${outcome.sha.slice(0, 12)} · ${new Date(outcome.at).toLocaleString()}${failureHelp}${failed ? ` Diagnostic operation: ${outcome.id}${outcome.phase ? `; phase: ${outcome.phase}` : ""}. Included in diagnostic JSON; worker/preview errors are separate.` : ""}`
+    ? `${updateOutcomeNames[outcome.state]} · ${outcome.sha.slice(0, 12)} · ${formatTimestamp(outcome.at)}${failureHelp}${failed ? ` Diagnostic operation: ${outcome.id}${outcome.phase ? `; phase: ${outcome.phase}` : ""}. Included in diagnostic JSON; worker/preview errors are separate.` : ""}`
     : "";
   $("updateOutcome").title = validOutcome
     ? `Operation ${outcome.id}; target ${outcome.sha}`
     : "";
   $("updateChecked").textContent = data.checkedAt
-    ? "Last check · " + new Date(data.checkedAt).toLocaleString()
+    ? "Last check · " + formatTimestamp(data.checkedAt)
     : "Not checked yet.";
   $("updateCheck").disabled = updateRequest || locked;
   $("updateApply").disabled =
@@ -1391,7 +1413,7 @@ function renderMemberFeed() {
           : kinds[item.type] || "Feed item") +
       (item.status ? " · " + item.status : "");
     const time = document.createElement("small");
-    time.textContent = item.created_at;
+    time.textContent = formatTimestamp(item.created_at);
     const text = document.createElement("p");
     text.textContent =
       item.text ||
@@ -1598,7 +1620,15 @@ function renderDetailFields(body, row, fields) {
   for (const [key, label] of fields) {
     const value = row[key];
     if (!["string", "number", "boolean"].includes(typeof value)) continue;
-    list.append(detailText("dt", label), detailText("dd", value));
+    list.append(
+      detailText("dt", label),
+      detailText(
+        "dd",
+        key.endsWith("_at") || key.endsWith("_date")
+          ? formatTimestamp(value)
+          : value,
+      ),
+    );
   }
   body.append(list);
 }
