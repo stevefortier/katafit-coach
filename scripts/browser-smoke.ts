@@ -190,7 +190,7 @@ try {
   );
   const savedBeforeReset = store.publicConfig();
   await page.locator("#name").fill("Unsaved name");
-  await page.locator("#persona details > summary").click();
+  await page.getByText("Advanced Markdown", { exact: true }).click();
   await page.locator("#markdown").fill("Unsaved custom instruction");
   await page.locator("#resetPersona").click();
   await page.waitForFunction(() =>
@@ -448,14 +448,18 @@ try {
     true,
   );
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
-  await page.locator("#rollback").click();
+  const savedVision = store.publicConfig().provider.vision;
+  await page.locator("#personaHistory summary").click();
+  await page.locator("#historyList button").last().click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#restorePersona").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.includes("restored"),
   );
-  assert.equal(await page.locator("#vision").isChecked(), false);
+  assert.equal(await page.locator("#vision").isChecked(), savedVision);
   await page.getByRole("tab", { name: "Connection", exact: true }).click();
   assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
-  assert.equal(store.publicConfig().provider.vision, false);
+  assert.equal(store.publicConfig().provider.vision, savedVision);
   const beforeSaveReset = store.publicConfig();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Another custom name");

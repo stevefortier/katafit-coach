@@ -103,6 +103,12 @@ export const hints = {
     "Save both the Kata.fit credential and provider API key first.",
   STOP_WORKER_BEFORE_PREVIEW: "Stop the worker before previewing.",
   PROVIDER_KEY_REQUIRED: "Save a provider API key first.",
+  INVALID_REVISION: "Select a valid positive whole-number persona revision.",
+  REVISION_NOT_FOUND:
+    "That persona revision does not exist. Refresh the revision list.",
+  INVALID_PAGE: "Request a valid history page with a limit from 1 to 50.",
+  INVALID_HISTORY:
+    "Saved persona history failed validation. No history was replaced. Check protected local storage or restore a trusted backup.",
   NO_PREVIOUS_REVISION: "There is no previous saved revision to restore.",
   SECRET_IN_CONFIG:
     "A known credential was detected at a protected boundary. Remove credentials from nonsecret configuration and context.",

@@ -264,6 +264,38 @@ export async function admin(
           hasToken: !!store.secrets.token,
           hasApiKey: !!store.secrets.apiKey,
         });
+      if (
+        req.method === "GET" &&
+        (path === "/api/persona-history" ||
+          path.startsWith("/api/persona-history?"))
+      ) {
+        const params = new URL(path, origin).searchParams;
+        const number = (v: string | null) => {
+          if (v === null) return undefined;
+          if (!/^[1-9][0-9]*$/.test(v) || !Number.isSafeInteger(Number(v)))
+            throw new Error("INVALID_REVISION");
+          return Number(v);
+        };
+        if (
+          [...params.keys()].some(
+            (k) =>
+              !["before", "limit"].includes(k) || params.getAll(k).length !== 1,
+          )
+        )
+          throw new Error("INVALID_PAGE");
+        return send(
+          200,
+          store.personaHistory(
+            number(params.get("before")),
+            number(params.get("limit")),
+          ),
+        );
+      }
+      if (req.method === "GET" && path.startsWith("/api/persona-history/")) {
+        const id = path.slice("/api/persona-history/".length);
+        if (!/^[1-9][0-9]*$/.test(id)) throw new Error("INVALID_REVISION");
+        return send(200, store.personaRevision(Number(id)));
+      }
       if (req.method === "GET" && path === "/api/persona-defaults")
         return send(200, { persona: stockPersona() });
       if (req.method === "GET" && path === "/api/logs")
@@ -381,6 +413,7 @@ export async function admin(
           "/api/operator/chat",
           "/api/config",
           "/api/rollback",
+          "/api/persona-restore",
           "/api/update/check",
           "/api/update/apply",
         ].includes(path)
@@ -495,7 +528,11 @@ export async function admin(
       if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
       busy = true;
       try {
-        if (path === "/api/config" || path === "/api/rollback") {
+        if (
+          ["/api/config", "/api/rollback", "/api/persona-restore"].includes(
+            path,
+          )
+        ) {
           if (worker && worker.state !== "stopped")
             return send(409, { error: "STOP_WORKER_BEFORE_CONFIGURE" });
           await terminal.stop();
@@ -507,6 +544,14 @@ export async function admin(
               ),
             ]);
             await store.save(body);
+          } else if (path === "/api/persona-restore") {
+            if (
+              !body ||
+              Array.isArray(body) ||
+              Object.keys(body).join() !== "revision"
+            )
+              throw new Error("INVALID_REVISION");
+            await store.restorePersona(body.revision);
           } else await store.rollback();
           await chat.cancel();
           return send(200, { ok: true });

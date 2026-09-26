@@ -160,7 +160,7 @@ try {
   const revisionBeforeDraft = store.publicConfig().revision;
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
-  await page.locator("#persona details summary").click();
+  await page.getByText("Advanced Markdown", { exact: true }).click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#markdown").fill("Explicit Settings rule");
   await page.locator("#coachTab").click();

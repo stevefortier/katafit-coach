@@ -10,7 +10,7 @@ test("Operator UI negotiates heartbeat JSON and recognizes a terminal error afte
   );
   const api = source.slice(
     source.indexOf("async function api("),
-    source.indexOf("async function load()"),
+    source.indexOf("async function load("),
   );
   let requests = 0;
   let accept: string | undefined;

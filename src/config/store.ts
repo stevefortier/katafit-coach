@@ -1,12 +1,63 @@
 import {
   mkdir,
-  readFile,
   writeFile,
   rename,
   chmod,
   lstat,
+  open,
+  unlink,
+  link,
 } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { constants } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+
+// Bounded even for maximal JSON escaping; below the stable owner's 4MiB cap.
+const snapshotLimit = 1024 * 1024;
+const snapshotPattern = /^persona-[a-f0-9]{64}\.json$/;
+function snapshotName(bytes: Buffer) {
+  return (
+    "persona-" + createHash("sha256").update(bytes).digest("hex") + ".json"
+  );
+}
+async function syncDirectory(path: string) {
+  const directory = await open(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+// Open before checking type: NOFOLLOW rejects symlinks and NONBLOCK prevents
+// FIFOs from hanging startup. Read at most the bound, even if a file grows.
+async function regularBytes(path: string, limit: number) {
+  const file = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.size >= limit) throw new Error("UNSAFE_STORAGE");
+    const bytes = Buffer.alloc(Math.min(info.size + 1, limit));
+    let length = 0;
+    while (length < bytes.length) {
+      const result = await file.read(
+        bytes,
+        length,
+        bytes.length - length,
+        null,
+      );
+      if (!result.bytesRead) return bytes.subarray(0, length);
+      length += result.bytesRead;
+    }
+    throw new Error("UNSAFE_STORAGE");
+  } finally {
+    await file.close();
+  }
+}
+
 export interface Config {
   revision: number;
   origin: string;
@@ -98,16 +149,43 @@ export function validateUrl(value: string, allowPrivate = false) {
     throw new Error("INVALID_URL");
   return value.replace(/\/$/, "");
 }
+export interface PersonaRevision {
+  revision: number;
+  savedAt: string | null;
+  persona: Config["persona"];
+}
+function positiveId(value: unknown): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1)
+    throw new Error("INVALID_REVISION");
+}
 export class Store {
   private config = structuredClone(defaults);
   private previous?: Config;
+  private history: PersonaRevision[] = [];
+  private historyHead: string | null = null;
+  private pending: Promise<unknown> = Promise.resolve();
   secrets = { token: "", apiKey: "", admin: randomBytes(32).toString("hex") };
   constructor(readonly dir: string) {}
+  private get snapshotDir() {
+    return this.dir + "/persona-history";
+  }
+  private async prepareSnapshotDir() {
+    // Immutable archives live outside the old owner's root-only JSON backup.
+    // Restoring its small config manifest reselects the old chain; never GC
+    // committed records, even if a later owner's rollback leaves orphan heads.
+    await mkdir(this.snapshotDir, { recursive: true, mode: 0o700 });
+    if (!(await lstat(this.snapshotDir)).isDirectory())
+      throw new Error("UNSAFE_STORAGE");
+    await chmod(this.snapshotDir, 0o700);
+    // Also cover a prior process interrupted immediately after mkdir.
+    await syncDirectory(this.dir);
+  }
   async init() {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
     if ((await lstat(this.dir)).isSymbolicLink())
       throw new Error("UNSAFE_STORAGE");
     await chmod(this.dir, 0o700);
+    await this.prepareSnapshotDir();
     for (const file of ["config", "secrets"]) {
       const p = this.dir + "/" + file + ".json";
       const initial =
@@ -121,10 +199,29 @@ export class Store {
         if (e.code !== "EEXIST") throw e;
       }
       if ((await lstat(p)).isSymbolicLink()) throw new Error("UNSAFE_STORAGE");
-      const data = JSON.parse(await readFile(p, "utf8"));
+      const data = JSON.parse(
+        (
+          await regularBytes(
+            p,
+            file === "config" ? 64 * 1024 * 1024 : 256 * 1024,
+          )
+        ).toString("utf8"),
+      );
       if (file === "config") {
         this.config = data.current;
         this.previous = data.previous;
+        this.history =
+          data.history === undefined
+            ? [this.previous, this.config]
+                .filter((c): c is Config => !!c)
+                .map((c) => ({
+                  revision: c.revision,
+                  savedAt: null,
+                  persona: structuredClone(c.persona),
+                }))
+            : Array.isArray(data.history)
+              ? data.history
+              : await this.readHistory(data.history);
         for (const c of [this.config, this.previous])
           if (c) {
             if (c.provider.vision === undefined) c.provider.vision = false;
@@ -134,7 +231,11 @@ export class Store {
       } else this.secrets = data;
       await chmod(p, 0o600);
     }
-    assertNoSecrets([this.config, this.previous], Object.values(this.secrets));
+    this.checkHistory();
+    assertNoSecrets(
+      [this.config, this.previous, this.history],
+      Object.values(this.secrets),
+    );
   }
   publicConfig(): Config {
     assertNoSecrets(this.config, Object.values(this.secrets));
@@ -143,20 +244,256 @@ export class Store {
   async atomic(file: string, data: unknown) {
     const p = this.dir + "/" + file + ".json";
     const temp = p + "." + randomBytes(8).toString("hex");
-    await writeFile(temp, JSON.stringify(data, null, 2), {
-      mode: 0o600,
-      flag: "wx",
-    });
-    await rename(temp, p);
+    try {
+      await writeFile(temp, JSON.stringify(data, null, 2), {
+        mode: 0o600,
+        flag: "wx",
+      });
+      await rename(temp, p);
+    } finally {
+      await unlink(temp).catch(() => {});
+    }
   }
-  private async persist() {
-    await this.atomic("secrets", this.secrets);
-    await this.atomic("config", {
-      current: this.config,
-      previous: this.previous,
-    });
+  private async readHistory(manifest: any): Promise<PersonaRevision[]> {
+    if (
+      !manifest ||
+      Object.keys(manifest).sort().join() !== "head,version" ||
+      manifest.version !== 1 ||
+      typeof manifest.head !== "string" ||
+      !snapshotPattern.test(manifest.head)
+    )
+      throw new Error("INVALID_HISTORY");
+    const entries: PersonaRevision[] = [];
+    const seen = new Set<string>();
+    let name: string | null = manifest.head;
+    let last = Infinity;
+    while (name !== null) {
+      if (!snapshotPattern.test(name) || seen.has(name))
+        throw new Error("INVALID_HISTORY");
+      seen.add(name);
+      const bytes = await regularBytes(
+        this.snapshotDir + "/" + name,
+        snapshotLimit,
+      );
+      if (snapshotName(bytes) !== name) throw new Error("INVALID_HISTORY");
+      const record = JSON.parse(bytes.toString("utf8"));
+      if (
+        !record ||
+        Object.keys(record).sort().join() !==
+          "persona,previous,revision,savedAt,version" ||
+        record.version !== 1 ||
+        (record.previous !== null &&
+          (typeof record.previous !== "string" ||
+            !snapshotPattern.test(record.previous)))
+      )
+        throw new Error("INVALID_HISTORY");
+      positiveId(record.revision);
+      if (
+        record.revision >= last ||
+        !record.persona ||
+        typeof record.persona !== "object" ||
+        Object.keys(record.persona).sort().join() !==
+          Object.keys(defaults.persona).sort().join()
+      )
+        throw new Error("INVALID_HISTORY");
+      entries.push({
+        revision: record.revision,
+        savedAt: record.savedAt,
+        persona: record.persona,
+      });
+      last = record.revision;
+      name = record.previous;
+    }
+    this.historyHead = manifest.head;
+    return entries.reverse();
   }
-  async save(input: any) {
+  private async writeSnapshot(
+    entry: PersonaRevision,
+    previous: string | null,
+    created: string[],
+  ) {
+    const bytes = Buffer.from(
+      JSON.stringify({ version: 1, ...entry, previous }, null, 2),
+    );
+    if (bytes.length >= snapshotLimit) throw new Error("INVALID_HISTORY");
+    const name = snapshotName(bytes);
+    const path = this.snapshotDir + "/" + name;
+    // Never expose a partial deterministic hash name: interrupted writes leave
+    // only unique unreferenced temps, so legacy migration remains retryable.
+    const temp =
+      this.snapshotDir +
+      "/.snapshot-" +
+      randomBytes(16).toString("hex") +
+      ".tmp";
+    const file = await open(
+      temp,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      try {
+        await file.writeFile(bytes);
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      try {
+        await link(temp, path);
+        created.push(name);
+      } catch (error: any) {
+        if (error.code !== "EEXIST") throw error;
+        // Identical complete orphans can be reused, never overwritten. Reject
+        // corrupt collisions, including symlinks and non-regular files.
+        if (!(await regularBytes(path, snapshotLimit)).equals(bytes))
+          throw new Error("INVALID_HISTORY");
+      }
+      return name;
+    } finally {
+      await unlink(temp).catch(() => {});
+    }
+  }
+  private checkHistory() {
+    positiveId(this.config.revision);
+    if (!Array.isArray(this.history) || !this.history.length)
+      throw new Error("INVALID_HISTORY");
+    let last = 0;
+    for (const entry of this.history) {
+      if (
+        !entry ||
+        Object.keys(entry).sort().join() !== "persona,revision,savedAt"
+      )
+        throw new Error("INVALID_HISTORY");
+      positiveId(entry.revision);
+      if (
+        entry.revision <= last ||
+        entry.revision > this.config.revision ||
+        (entry.savedAt !== null &&
+          (typeof entry.savedAt !== "string" ||
+            !Number.isFinite(Date.parse(entry.savedAt))))
+      )
+        throw new Error("INVALID_HISTORY");
+      if (
+        !entry.persona ||
+        Object.keys(entry.persona).sort().join() !==
+          Object.keys(defaults.persona).sort().join() ||
+        Object.values(entry.persona).some(
+          (v) => typeof v !== "string" || v.length > 8000,
+        ) ||
+        !entry.persona.name.trim()
+      )
+        throw new Error("INVALID_HISTORY");
+      last = entry.revision;
+    }
+    const latest = this.history.at(-1)!;
+    if (
+      last !== this.config.revision ||
+      Object.keys(defaults.persona).some(
+        (k) =>
+          latest.persona[k as keyof Config["persona"]] !==
+          this.config.persona[k as keyof Config["persona"]],
+      )
+    )
+      throw new Error("INVALID_HISTORY");
+    assertNoSecrets(this.history, Object.values(this.secrets));
+  }
+  personaHistory(before?: number, limit = 20) {
+    this.checkHistory();
+    if (before !== undefined) positiveId(before);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50)
+      throw new Error("INVALID_PAGE");
+    const eligible = this.history
+      .filter((e) => before === undefined || e.revision < before)
+      .reverse();
+    const items = eligible.slice(0, limit).map(({ revision, savedAt }) => ({
+      revision,
+      savedAt,
+      current: revision === this.config.revision,
+    }));
+    return {
+      items,
+      total: this.history.length,
+      nextBefore: eligible.length > limit ? items.at(-1)!.revision : null,
+    };
+  }
+  personaRevision(revision: number) {
+    positiveId(revision);
+    this.checkHistory();
+    const entry = this.history.find((e) => e.revision === revision);
+    if (!entry) throw new Error("REVISION_NOT_FOUND");
+    return {
+      ...structuredClone(entry),
+      current: revision === this.config.revision,
+    };
+  }
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.pending.then(work);
+    this.pending = result.catch(() => {});
+    return result;
+  }
+  private async persist(next: Config, secrets = this.secrets) {
+    const history = [
+      ...this.history,
+      {
+        revision: next.revision,
+        savedAt: new Date().toISOString(),
+        persona: structuredClone(next.persona),
+      },
+    ];
+    const created: string[] = [];
+    let head = this.historyHead;
+    let secretsWritten = false;
+    try {
+      await this.prepareSnapshotDir();
+      // Legacy history is synthesized on read and materialized only on save.
+      for (const entry of head === null ? history : history.slice(-1)) {
+        head = await this.writeSnapshot(entry, head, created);
+      }
+      // The linked records must survive power loss before a head can name them.
+      // Keep every throwing durability operation before config publication.
+      await syncDirectory(this.snapshotDir);
+      await this.atomic("secrets", secrets);
+      secretsWritten = true;
+      await this.atomic("config", {
+        current: next,
+        previous: this.config,
+        history: { version: 1, head },
+      });
+    } catch (error) {
+      try {
+        if (secretsWritten) await this.atomic("secrets", this.secrets);
+      } finally {
+        await Promise.all(
+          created.map((name) =>
+            unlink(this.snapshotDir + "/" + name).catch(() => {}),
+          ),
+        );
+      }
+      throw error;
+    }
+    this.historyHead = head;
+    this.previous = this.config;
+    this.config = next;
+    this.history = history;
+    this.secrets = secrets;
+  }
+  save(input: any) {
+    const copy = structuredClone(input);
+    return this.serial(() => this.saveNext(copy));
+  }
+  restorePersona(revision: number) {
+    return this.serial(() =>
+      this.saveNext({
+        ...this.config,
+        persona: this.personaRevision(revision).persona,
+      }),
+    );
+  }
+  private async saveNext(input: any) {
+    this.checkHistory();
+    positiveId(this.config.revision + 1);
     if (!input || typeof input !== "object") throw new Error("INVALID_CONFIG");
     const persona = {} as Config["persona"];
     for (const k of Object.keys(
@@ -200,20 +537,24 @@ export class Store {
       }
     }
     assertNoSecrets(
-      [next, this.config, this.previous],
+      [next, this.config, this.previous, this.history],
       [...Object.values(this.secrets), ...Object.values(secrets)],
     );
-    this.secrets = secrets;
-    this.previous = this.config;
-    this.config = next;
-    await this.persist();
+    await this.persist(next, secrets);
   }
-  async rollback() {
-    if (!this.previous) throw new Error("NO_PREVIOUS_REVISION");
-    assertNoSecrets([this.config, this.previous], Object.values(this.secrets));
-    const old = this.config;
-    this.config = { ...this.previous, revision: old.revision + 1 };
-    this.previous = old;
-    await this.persist();
+  rollback() {
+    return this.serial(async () => {
+      this.checkHistory();
+      if (!this.previous) throw new Error("NO_PREVIOUS_REVISION");
+      positiveId(this.config.revision + 1);
+      assertNoSecrets(
+        [this.config, this.previous, this.history],
+        Object.values(this.secrets),
+      );
+      await this.persist({
+        ...this.previous,
+        revision: this.config.revision + 1,
+      });
+    });
   }
 }

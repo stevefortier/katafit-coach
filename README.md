@@ -31,7 +31,7 @@ The package is not published on npm; use the produced tarball from the reviewed 
 
 Stop the worker **before** changing connection/provider/persona. Blank password fields retain saved values; secrets are never returned to the UI. To revoke credentials, revoke at the provider/Kata.fit and replace them while stopped.
 
-Credential replacement is rejected if its value occurs in the new, current or previous configuration. Remove the value and save clean configuration twice before retrying replacement, so neither retained revision contains it. Unsafe legacy storage also fails closed on load/rollback/export; stop the service and repair the protected local configuration rather than exporting it. Never paste real credentials into persona fields.
+Credential replacement is rejected if its value occurs in the new, current or previous configuration, or any retained persona revision. Saving clean fields does not erase history. If a credential has been pasted into persona text, revoke it and generate a fresh replacement that is absent from all retained settings. Unsafe legacy storage also fails closed on load, history reads, restore and export; stop the service and recover a known-good protected backup rather than exporting unsafe configuration. Never paste real credentials into persona fields.
 
 Clear-generation/anchor completion fencing remains backend-owned. v2 reads require technical credential scopes plus server-side data authority: existing Dojo Chief sharing for chief-managed dojo Coaches, or requester grants for personal credentials. A persona cannot grant access. Enable original-image input only for a known vision-capable provider. Preview has no claimed-request authority and exposes no data tools. Renewable leases remain unsupported. See the v2 contract and limitations below; earlier text-only receipts do not certify this expansion or its deployment.
 
@@ -42,6 +42,14 @@ Studio opens on **Coach**. The current section has a shareable path: `/settings`
 Read-only member tabs show both member messages and Coach replies as chronological threads. Messages **to and from Coach** are baseline current-leader-readable through dojo membership—not gated on all five category settings or a separate external-agent permission. Expand authorized activities for workout sets, meal ingredients/nutrition, supported details and original pictures. Raw details/images still follow per-category Dojo Chief sharing plus technical scopes; a visible conversation never unlocks a private activity. Current chief, membership, source and Clear checks remain enforced. Protect installation credentials as chief access. Browsing member tabs does not automatically add their content to operator AI context. Deploy the companion chief-command/activity-read backend and upgrade Studio separately; unsupported tools fail closed.
 
 To make instructions lasting, edit the Settings persona directly, pause the worker and explicitly save. Ordinary Operator chat never silently changes global behavior. See [conversation isolation, sharing and rollout](docs/studio-conversations.md).
+
+### Persona revision history
+
+Open **Settings → Persona → Persona revision history** to browse saved snapshots. Every successful save creates a revision, even if only Connection settings changed or the persona fields stayed the same. Select a revision to read all eight persona fields without changing the editor; use **Older revisions** and **Latest revisions** to navigate the paginated list.
+
+**Restore as new revision** requires confirmation and saves the selected persona as a new, increasing revision. It never rewinds or removes existing history. Saved Connection settings and credentials are unchanged. Unsaved persona edits are replaced after confirmation; unsaved Connection drafts remain in the editor and are not saved by restore. Preview the restored revision before starting Coach again. **Reset to stock defaults**, in contrast, only changes the editor until you save.
+
+Snapshots live in immutable, protected local JSON files referenced by `config.json` and survive restarts. The configuration keeps only a small history-head manifest, so accumulated persona text does not exceed the existing updater's per-file backup limit. Back up the entire protected Coach home, not `config.json` alone. There is no automatic history pruning. On upgrade, the existing current and previous revisions are retained; older revisions already discarded by earlier releases cannot be recovered. Revisions without a recorded save time show that the time is unavailable rather than inventing a date. Persona history contains no Connection settings or credentials.
 
 ## Studio source updates
 

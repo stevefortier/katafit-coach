@@ -218,6 +218,30 @@ summary {
   font-size: 13px;
   margin: 18px 0;
 }
+#historyTitle {
+  scroll-margin-top: 7rem;
+}
+.history-list button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: #30452f;
+  outline: 1px solid currentColor;
+}
+#historySnapshot dt {
+  font-weight: 600;
+  margin-top: 12px;
+}
+#historySnapshot dd {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.history-list {
+  max-height: 18rem;
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
 pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

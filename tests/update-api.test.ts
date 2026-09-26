@@ -111,6 +111,7 @@ test("authenticated updater requires explicit pinned confirmation; asynchronous 
       "run",
       "config",
       "rollback",
+      "persona-restore",
       "preview",
       "shutdown",
       "update/apply",

@@ -274,12 +274,48 @@
             <button id="resetPersona" type="button" class="secondary">
               Reset to stock defaults
             </button>
-            <button id="rollback" type="button" class="secondary">
-              Roll back persona
-            </button>
             <p class="hint">
-              Only persona fields change. Save a new revision to apply.
+              Reset changes only the persona editor. Save a new revision to
+              apply.
             </p>
+            <details id="personaHistory">
+              <summary>Persona revision history</summary>
+              <p class="hint">
+                Every save retains a snapshot, including Connection-only saves.
+                Restoring creates a new revision; history is never removed.
+              </p>
+              <p id="historyStatus" role="status"></p>
+              <div id="historyList" class="history-list"></div>
+              <div class="actions">
+                <button id="historyLatest" type="button" class="secondary">
+                  Latest revisions
+                </button>
+                <button
+                  id="historyOlder"
+                  type="button"
+                  class="secondary"
+                  hidden
+                >
+                  Older revisions
+                </button>
+              </div>
+              <section
+                id="historyDetail"
+                hidden
+                aria-label="Read-only persona snapshot"
+              >
+                <h3 id="historyTitle"></h3>
+                <dl id="historySnapshot"></dl>
+                <button id="restorePersona" type="button">
+                  Restore as new revision
+                </button>
+                <p class="hint">
+                  Only saved persona fields are restored. Saved Connection
+                  settings and credentials stay unchanged. Unsaved Connection
+                  drafts remain in the editor.
+                </p>
+              </section>
+            </details>
           </section>
           <section
             class="card"
