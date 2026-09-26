@@ -114,14 +114,25 @@
           >
             <button
               type="button"
-              id="settings-connection-tab"
+              id="settings-katafit-tab"
               role="tab"
-              aria-controls="connection"
+              aria-controls="katafit"
               aria-selected="true"
               tabindex="0"
               class=""
             >
-              Connection
+              Kata.fit
+            </button>
+            <button
+              type="button"
+              id="settings-models-tab"
+              role="tab"
+              aria-controls="models"
+              aria-selected="false"
+              tabindex="-1"
+              class="secondary"
+            >
+              Models
             </button>
             <button
               type="button"
@@ -181,12 +192,12 @@
           </div>
           <section
             class="card"
-            id="connection"
+            id="katafit"
             role="tabpanel"
-            aria-labelledby="settings-connection-tab"
+            aria-labelledby="settings-katafit-tab"
             tabindex="0"
           >
-            <h2>Connection</h2>
+            <h2>Kata.fit</h2>
             <label>Kata.fit origin<input id="origin" type="url" /></label
             ><label
               >Kata.fit connection credential<input
@@ -198,36 +209,46 @@
             <p class="hint">
               Create a credential in Kata.fit's external Coach settings.
             </p>
-            <div class="split">
-              <label
-                >Provider preset<select id="preset">
-                  <option value="custom">Custom / OpenAI-compatible</option>
-                  <option value="openai">OpenAI API</option>
-                </select></label
-              ><label>Model ID<input id="model" /></label>
-            </div>
-            <label>API base URL<input id="baseUrl" type="url" /></label
-            ><label
-              >Provider API key<input
-                id="apiKey"
-                type="password"
-                placeholder="Leave blank to keep saved key"
-                autocomplete="off"
-            /></label>
-            <p class="hint">
-              A remote provider receives Coach requests and any data included in
-              them.
-            </p>
             <button id="connect" class="secondary">
               Test saved connection
             </button>
-            <label class="vision-option"
-              ><input id="vision" type="checkbox" /> Enable original-image input
-              for a vision-capable provider</label
-            >
+          </section>
+          <section
+            class="card"
+            id="models"
+            role="tabpanel"
+            aria-labelledby="settings-models-tab"
+            tabindex="0"
+            hidden
+          >
+            <h2>Models</h2>
+            <p id="activeModelBadge" class="active-badge"></p>
+            <p id="modelDraftStatus" class="hint" role="status"></p>
             <p class="hint">
-              When enabled, original images may be sent to your configured
-              provider.
+              Providers must offer an OpenAI-compatible Chat Completions API:
+              Coach sends requests to the base URL plus /chat/completions. Coach
+              does not discover, list or verify models; enter model IDs exactly
+              as your provider documents them. Browsing and editing here
+              contacts nobody. Save applies the selected model; Preview, the
+              worker and Operator chat use the saved active model.
+            </p>
+            <div id="providerList"></div>
+            <div class="provider-add">
+              <label
+                >New provider template<select id="providerPreset">
+                  <option value="custom">Custom OpenAI-compatible</option>
+                  <option value="openai">OpenAI API</option>
+                </select></label
+              ><button id="addProvider" type="button" class="secondary">
+                Add provider
+              </button>
+            </div>
+            <p class="hint">
+              API keys are stored privately and never shown again. Changing a
+              provider's base URL requires re-entering its key or removing it. A
+              remote provider receives Coach requests and any data included in
+              them; original images are sent only when the saved active model
+              has vision enabled.
             </p>
           </section>
           <section
@@ -281,8 +302,9 @@
             <details id="personaHistory">
               <summary>Persona revision history</summary>
               <p class="hint">
-                Every save retains a snapshot, including Connection-only saves.
-                Restoring creates a new revision; history is never removed.
+                Every save retains a snapshot, including Kata.fit- or
+                Models-only saves. Restoring creates a new revision; history is
+                never removed.
               </p>
               <p id="historyStatus" role="status"></p>
               <div id="historyList" class="history-list"></div>
@@ -310,9 +332,9 @@
                   Restore as new revision
                 </button>
                 <p class="hint">
-                  Only saved persona fields are restored. Saved Connection
-                  settings and credentials stay unchanged. Unsaved Connection
-                  drafts remain in the editor.
+                  Only saved persona fields are restored. Saved Kata.fit and
+                  Models settings and credentials stay unchanged. Unsaved
+                  Kata.fit and Models drafts remain in the editor.
                 </p>
               </section>
             </details>
@@ -481,8 +503,8 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             ><span id="revision"></span>
           </div>
           <p class="hint">
-            Save applies Connection and Persona drafts across tabs. Preview and
-            worker use saved settings.
+            Save applies Kata.fit, Models and Persona drafts across tabs.
+            Preview and worker use saved settings.
           </p>
         </section>
       </div>

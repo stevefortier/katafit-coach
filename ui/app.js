@@ -130,22 +130,20 @@ async function api(path, body, signal) {
   }
   return data;
 }
-async function load(preserveConnection = false) {
+async function load(preserveDrafts = false) {
   const generation = authGeneration;
   const data = await api("config");
   if (generation !== authGeneration) throw staleAuthentication();
   if (config) resetMembers();
   config = data;
   for (const f of fields) $(f).value = config.persona[f];
-  if (!preserveConnection) {
+  if (!preserveDrafts || !modelsDraft) {
     $("origin").value = config.origin;
-    $("model").value = config.provider.model;
-    $("baseUrl").value = config.provider.baseUrl;
-    $("vision").checked = config.provider.vision === true;
-
     $("token").value = "";
-    $("apiKey").value = "";
+    modelsDraft = draftModels(savedModels());
+    renderProviders();
   }
+  renderModelStatus();
   $("revision").textContent = "Saved revision " + config.revision;
   clearPersonaHistory();
   if (historyVisible()) void loadPersonaHistory();
@@ -179,19 +177,418 @@ action("unlock", async () => {
 });
 action("save", async () => {
   const persona = Object.fromEntries(fields.map((f) => [f, $(f).value]));
+  const draft = modelsDraft;
+  if (!draftActive(draft)) {
+    notice(
+      "Choose the active model to use after Save. The active model cannot be removed without choosing another.",
+    );
+    return;
+  }
+  const moved = draft.providers.find((p) => keyIntentMissing(p));
+  if (moved) {
+    notice(
+      `Base URL changed for ${moved.name || "a provider"}: re-enter its API key or tick Remove saved key, then save.`,
+    );
+    return;
+  }
   await api("config", {
     persona,
     origin: $("origin").value,
-    provider: {
-      baseUrl: $("baseUrl").value,
-      model: $("model").value,
-      vision: $("vision").checked,
-    },
     token: $("token").value,
-    apiKey: $("apiKey").value,
+    models: {
+      active: { ...draft.active },
+      providers: draft.providers.map((p) => ({
+        id: p.id,
+        name: p.name,
+        baseUrl: p.baseUrl,
+        ...(p.apiKey ? { apiKey: p.apiKey } : {}),
+        ...(p.clearApiKey && !p.apiKey ? { clearApiKey: true } : {}),
+        models: p.models.map((m) => ({
+          id: m.id,
+          name: m.name.trim() || m.model,
+          model: m.model,
+          vision: m.vision,
+        })),
+      })),
+    },
   });
   await load();
   notice("Saved. Preview this revision before starting the worker.");
+});
+// Models registry editor. The draft lives in memory and in hidden-not-removed
+// panels; nothing here contacts the Studio server or any provider until Save.
+let modelsDraft;
+const normalUrl = (url) => String(url).replace(/\/$/, "");
+function savedModels() {
+  if (config?.models) return config.models;
+  // Older servers report only the single canonical provider.
+  const provider = config?.provider ?? {};
+  return {
+    active: { provider: "default", model: "default" },
+    providers: [
+      {
+        id: "default",
+        name: "Default provider",
+        baseUrl: provider.baseUrl ?? "",
+        hasCredential: config?.hasApiKey === true,
+        models: [
+          {
+            id: "default",
+            name: provider.model ?? "",
+            model: provider.model ?? "",
+            vision: provider.vision === true,
+          },
+        ],
+      },
+    ],
+  };
+}
+function draftModels(saved) {
+  return {
+    active: { ...saved.active },
+    providers: saved.providers.map((p) => ({
+      id: p.id,
+      name: p.name,
+      baseUrl: p.baseUrl,
+      savedBaseUrl: p.baseUrl,
+      hasCredential: p.hasCredential === true,
+      apiKey: "",
+      clearApiKey: false,
+      models: p.models.map((m) => ({ ...m })),
+    })),
+  };
+}
+function draftActive(draft) {
+  const provider = draft?.providers.find((p) => p.id === draft.active.provider);
+  const model = provider?.models.find((m) => m.id === draft.active.model);
+  return provider && model ? { provider, model } : null;
+}
+const keyIntentMissing = (p) =>
+  p.hasCredential &&
+  !p.apiKey &&
+  !p.clearApiKey &&
+  normalUrl(p.baseUrl) !== normalUrl(p.savedBaseUrl);
+function comparableModels(m) {
+  return JSON.stringify({
+    active: m.active,
+    providers: m.providers.map((p) => ({
+      id: p.id,
+      name: p.name,
+      baseUrl: normalUrl(p.baseUrl),
+      models: p.models.map(({ id, name, model, vision }) => ({
+        id,
+        name,
+        model,
+        vision: vision === true,
+      })),
+    })),
+  });
+}
+function modelsDirty() {
+  return (
+    !!modelsDraft &&
+    !!config &&
+    (comparableModels(modelsDraft) !== comparableModels(savedModels()) ||
+      modelsDraft.providers.some((p) => p.apiKey || p.clearApiKey))
+  );
+}
+const modelLabel = (provider, model) =>
+  `${provider.name} · ${model.name || model.model} (${model.model})${model.vision ? " · vision" : ""}`;
+function renderModelStatus() {
+  if (!config || !modelsDraft) {
+    $("activeModelBadge").textContent = "";
+    $("modelDraftStatus").textContent = "";
+    return;
+  }
+  const saved = savedModels();
+  const provider = saved.providers.find((p) => p.id === saved.active.provider);
+  const model = provider?.models.find((m) => m.id === saved.active.model);
+  $("activeModelBadge").textContent =
+    provider && model
+      ? "Saved active model: " +
+        modelLabel(provider, model) +
+        (provider.hasCredential ? "" : " · no API key saved")
+      : "No saved active model.";
+  const draft = draftActive(modelsDraft);
+  $("modelDraftStatus").textContent = !draft
+    ? "No draft active model. Choose one before saving."
+    : draft.provider.id !== saved.active.provider ||
+        draft.model.id !== saved.active.model
+      ? "Draft selection: " +
+        modelLabel(draft.provider, draft.model) +
+        " — becomes active only after Save."
+      : "";
+  for (const card of $("providerList").querySelectorAll("[data-provider]")) {
+    const p = modelsDraft.providers.find((x) => x.id === card.dataset.provider);
+    if (!p) continue;
+    card.querySelector(".key-status").textContent = keyStatus(p);
+    card.querySelector('[data-field="clearApiKey"]').checked = p.clearApiKey;
+    for (const radio of card.querySelectorAll('input[type="radio"]')) {
+      const m = p.models.find((x) => x.id === radio.value);
+      if (m)
+        radio.setAttribute(
+          "aria-label",
+          `Use ${p.name || "provider"} · ${m.name || m.model || "model"} after Save`,
+        );
+    }
+  }
+}
+function keyStatus(p) {
+  if (p.apiKey) return "A new key will be saved privately for this base URL.";
+  if (p.clearApiKey) return "The saved key will be removed on Save.";
+  if (!p.hasCredential) return "No key saved.";
+  if (keyIntentMissing(p))
+    return "Base URL changed: re-enter the API key or remove the saved key before saving.";
+  return "Key saved privately. Leave blank to keep it.";
+}
+function randomId(prefix) {
+  return (
+    prefix +
+    "-" +
+    [...crypto.getRandomValues(new Uint8Array(4))]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+function editorInput(label, value, attributes, onInput) {
+  const wrapper = document.createElement("label");
+  wrapper.textContent = label;
+  const input = document.createElement("input");
+  Object.assign(input, attributes);
+  if (attributes.type === "checkbox" || attributes.type === "radio") {
+    wrapper.className = "vision-option";
+    input.checked = value;
+    wrapper.prepend(input);
+  } else {
+    input.value = value;
+    wrapper.append(input);
+  }
+  input.addEventListener(
+    attributes.type === "checkbox" || attributes.type === "radio"
+      ? "change"
+      : "input",
+    () => {
+      onInput(input);
+      renderModelStatus();
+    },
+  );
+  return { wrapper, input };
+}
+function editorButton(label, actionName, onClick, disabled = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "secondary";
+  button.textContent = label;
+  button.dataset.action = actionName;
+  if (disabled) button.dataset.fixed = "disabled";
+  button.onclick = onClick;
+  return button;
+}
+function renderProviders(focus) {
+  const list = $("providerList");
+  list.replaceChildren();
+  if (!modelsDraft) return;
+  const saved = config ? savedModels() : null;
+  for (const p of modelsDraft.providers) {
+    const card = document.createElement("fieldset");
+    card.className = "provider-card";
+    card.dataset.provider = p.id;
+    const legend = document.createElement("legend");
+    legend.textContent = p.name || "New provider";
+    card.append(legend);
+    const top = document.createElement("div");
+    top.className = "split";
+    const name = editorInput(
+      "Provider name",
+      p.name,
+      { type: "text", maxLength: 100 },
+      (input) => {
+        p.name = input.value;
+        legend.textContent = p.name || "New provider";
+      },
+    );
+    name.input.dataset.field = "name";
+    const base = editorInput(
+      "API base URL",
+      p.baseUrl,
+      { type: "url", placeholder: "https://provider.example/v1" },
+      (input) => (p.baseUrl = input.value),
+    );
+    base.input.dataset.field = "baseUrl";
+    top.append(name.wrapper, base.wrapper);
+    const key = editorInput(
+      "API key",
+      p.apiKey,
+      {
+        type: "password",
+        autocomplete: "off",
+        placeholder: p.hasCredential
+          ? "Saved key hidden — leave blank to keep it"
+          : "Enter this provider's API key",
+      },
+      (input) => {
+        p.apiKey = input.value;
+        if (p.apiKey) p.clearApiKey = false;
+      },
+    );
+    key.input.dataset.field = "apiKey";
+    const clear = editorInput(
+      "Remove saved key on Save",
+      p.clearApiKey,
+      { type: "checkbox" },
+      (input) => {
+        p.clearApiKey = input.checked;
+        if (p.clearApiKey) key.input.value = p.apiKey = "";
+      },
+    );
+    clear.input.dataset.field = "clearApiKey";
+    clear.wrapper.hidden = !p.hasCredential;
+    const status = document.createElement("p");
+    status.className = "hint key-status";
+    status.setAttribute("aria-live", "polite");
+    card.append(top, key.wrapper, clear.wrapper, status);
+    const rows = document.createElement("div");
+    rows.className = "model-list";
+    for (const m of p.models) {
+      const row = document.createElement("div");
+      row.className = "model-row";
+      row.dataset.model = m.id;
+      const pick = editorInput(
+        "Active after Save",
+        modelsDraft.active.provider === p.id &&
+          modelsDraft.active.model === m.id,
+        { type: "radio", name: "activeModel", value: m.id },
+        () => (modelsDraft.active = { provider: p.id, model: m.id }),
+      );
+      pick.wrapper.classList.add("active-pick");
+      if (
+        saved &&
+        saved.active.provider === p.id &&
+        saved.active.model === m.id
+      ) {
+        const badge = document.createElement("span");
+        badge.className = "saved-badge";
+        badge.textContent = "Saved active";
+        pick.wrapper.append(badge);
+      }
+      const fieldsRow = document.createElement("div");
+      fieldsRow.className = "split";
+      const label = editorInput(
+        "Display name (optional)",
+        m.name,
+        { type: "text", maxLength: 100 },
+        (input) => (m.name = input.value),
+      );
+      label.input.dataset.field = "name";
+      const id = editorInput(
+        "Model ID",
+        m.model,
+        {
+          type: "text",
+          maxLength: 200,
+          placeholder: "exact provider model ID",
+        },
+        (input) => (m.model = input.value),
+      );
+      id.input.dataset.field = "model";
+      fieldsRow.append(label.wrapper, id.wrapper);
+      const vision = editorInput(
+        "Vision-capable: allow original-image input",
+        m.vision === true,
+        { type: "checkbox" },
+        (input) => (m.vision = input.checked),
+      );
+      vision.input.dataset.field = "vision";
+      row.append(
+        pick.wrapper,
+        fieldsRow,
+        vision.wrapper,
+        editorButton(
+          "Remove model",
+          "removeModel",
+          () => {
+            p.models = p.models.filter((x) => x !== m);
+            renderProviders(card.dataset.provider);
+          },
+          p.models.length < 2,
+        ),
+      );
+      rows.append(row);
+    }
+    const tools = document.createElement("div");
+    tools.className = "log-controls";
+    tools.append(
+      editorButton(
+        "Add model",
+        "addModel",
+        () => {
+          p.models.push({
+            id: randomId("m"),
+            name: "",
+            model: "",
+            vision: false,
+          });
+          renderProviders(p.id);
+        },
+        p.models.length >= 32,
+      ),
+      editorButton(
+        "Remove provider",
+        "removeProvider",
+        () => {
+          modelsDraft.providers = modelsDraft.providers.filter((x) => x !== p);
+          renderProviders();
+          $("addProvider").focus({ preventScroll: true });
+        },
+        modelsDraft.providers.length < 2,
+      ),
+    );
+    card.append(rows, tools);
+    list.append(card);
+  }
+  $("addProvider").dataset.fixed =
+    modelsDraft.providers.length >= 16 ? "disabled" : "";
+  applyEditorLock();
+  renderModelStatus();
+  if (focus)
+    list
+      .querySelector(
+        `[data-provider="${focus}"] .model-row:last-child input[data-field="model"]`,
+      )
+      ?.focus({ preventScroll: true });
+}
+let editorsLocked = false;
+function applyEditorLock() {
+  for (const input of document.querySelectorAll(
+    "#katafit input, #models input, #models select, #models button, #persona input, #persona textarea, #persona select",
+  ))
+    input.disabled = editorsLocked || input.dataset.fixed === "disabled";
+}
+action("addProvider", async () => {
+  if (!modelsDraft || modelsDraft.providers.length >= 16) return;
+  const openai = $("providerPreset").value === "openai";
+  const provider = {
+    id: randomId("p"),
+    name: openai ? "OpenAI" : "",
+    baseUrl: openai ? "https://api.openai.com/v1" : "",
+    savedBaseUrl: "",
+    hasCredential: false,
+    apiKey: "",
+    clearApiKey: false,
+    models: [
+      {
+        id: randomId("m"),
+        name: openai ? "GPT-4.1 mini" : "",
+        model: openai ? "gpt-4.1-mini" : "",
+        vision: false,
+      },
+    ],
+  };
+  modelsDraft.providers.push(provider);
+  renderProviders();
+  $("providerList")
+    .querySelector(`[data-provider="${provider.id}"] input[data-field="name"]`)
+    ?.focus();
 });
 action("resetPersona", async () => {
   const { persona } = await api("persona-defaults");
@@ -301,7 +698,7 @@ action("restorePersona", async () => {
   const unsaved = fields.some((f) => $(f).value !== config.persona[f]);
   if (
     !confirm(
-      `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Connection settings and credentials will not change. Unsaved Connection drafts will remain unsaved. History is kept.`,
+      `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Kata.fit and Models settings and credentials will not change. Unsaved Kata.fit and Models drafts will remain unsaved. History is kept.`,
     )
   ) {
     notice("Restore cancelled. No settings changed.");
@@ -314,7 +711,7 @@ action("restorePersona", async () => {
     await load(true);
     $("personaHistory").querySelector("summary").focus({ preventScroll: true });
     notice(
-      "Persona restored as a new revision. Connection drafts remain unsaved; saved Connection settings and credentials are unchanged.",
+      "Persona restored as a new revision. Kata.fit and Models drafts remain unsaved; saved settings and credentials are unchanged.",
     );
   } finally {
     if (generation === authGeneration) {
@@ -328,11 +725,8 @@ function hasUnsavedEdits() {
   return (
     fields.some((f) => $(f).value !== config.persona[f]) ||
     $("origin").value !== config.origin ||
-    $("baseUrl").value !== config.provider.baseUrl ||
-    $("model").value !== config.provider.model ||
-    $("vision").checked !== (config.provider.vision === true) ||
     !!$("token").value ||
-    !!$("apiKey").value
+    modelsDirty()
   );
 }
 // Bind only conversational inputs, never persona/configuration editors.
@@ -406,6 +800,7 @@ action("export", async () => {
   const c = await api("config");
   delete c.hasToken;
   delete c.hasApiKey;
+  if (c.models) delete c.models.limits;
   const url = URL.createObjectURL(
     new Blob([JSON.stringify(c, null, 2)], { type: "application/json" }),
   );
@@ -415,12 +810,6 @@ action("export", async () => {
   a.click();
   URL.revokeObjectURL(url);
 });
-$("preset").onchange = () => {
-  if ($("preset").value === "openai") {
-    $("baseUrl").value = "https://api.openai.com/v1";
-    $("model").value = "gpt-4.1-mini";
-  }
-};
 async function status() {
   if (!key || document.hidden) return;
   const generation = authGeneration;
@@ -480,21 +869,24 @@ let logData = { entries: [] },
   logTimer,
   logController;
 const settingsSections = [
-  "connection",
+  "katafit",
+  "models",
   "persona",
   "preview",
   "diagnostics",
   "updates",
   "worker",
 ];
-let settingsSection = "connection";
+let settingsSection = "katafit";
 function settingsPath() {
-  return settingsSection === "connection"
+  return settingsSection === "katafit"
     ? "/settings"
     : "/settings?section=" + settingsSection;
 }
 function selectSettingsSection(section, navigate = true) {
-  settingsSection = settingsSections.includes(section) ? section : "connection";
+  // The former Connection section's links open its Kata.fit successor.
+  if (section === "connection") section = "katafit";
+  settingsSection = settingsSections.includes(section) ? section : "katafit";
   for (const name of settingsSections) {
     const selected = name === settingsSection;
     $(name).hidden = !selected;
@@ -983,10 +1375,8 @@ function renderUpdate() {
     "cancel",
   ])
     $(id).disabled = locked || (id === "restorePersona" && historyBusy);
-  for (const input of document.querySelectorAll(
-    "#connection input, #connection select, #persona input, #persona textarea, #persona select",
-  ))
-    input.disabled = locked;
+  editorsLocked = locked;
+  applyEditorLock();
   $("updateSource").hidden = !sourceSha(data.latest);
   if (sourceSha(data.latest))
     $("updateSource").href =
@@ -1137,6 +1527,10 @@ function lockSession(message) {
   key = "";
   rememberAdmin("");
   config = undefined;
+  // Typed provider keys never outlive the authenticated session.
+  modelsDraft = undefined;
+  renderProviders();
+  renderModelStatus();
   historyBusy = false;
   clearPersonaHistory();
   resetMembers();

@@ -261,6 +261,7 @@ export async function admin(
       if (req.method === "GET" && path === "/api/config")
         return send(200, {
           ...store.publicConfig(),
+          models: store.modelRegistry(),
           hasToken: !!store.secrets.token,
           hasApiKey: !!store.secrets.apiKey,
         });
@@ -537,11 +538,17 @@ export async function admin(
             return send(409, { error: "STOP_WORKER_BEFORE_CONFIGURE" });
           await terminal.stop();
           if (path === "/api/config") {
-            chat.assertSecrets([
+            // Every incoming credential, including inactive and new registry
+            // providers, must be absent from persisted chat and receipts.
+            chat.assertPersisted([
               ...Object.values(store.secrets),
-              ...[body?.apiKey, body?.token].filter(
-                (v): v is string => typeof v === "string",
-              ),
+              ...[
+                body?.apiKey,
+                body?.token,
+                ...(Array.isArray(body?.models?.providers)
+                  ? body.models.providers.map((p: any) => p?.apiKey)
+                  : []),
+              ].filter((v): v is string => typeof v === "string"),
             ]);
             await store.save(body);
           } else if (path === "/api/persona-restore") {
@@ -592,6 +599,7 @@ export async function admin(
           res.once("close", cancel);
           try {
             const c = store.publicConfig();
+            const apiKey = store.secrets.apiKey;
             const signal = AbortSignal.any([
               controller.signal,
               AbortSignal.timeout(60000),
@@ -612,18 +620,14 @@ export async function admin(
                 ...c.provider,
                 onDiagnostic: (event) =>
                   logs.record({ ...event, ref: previewRef }),
-                apiKey: store.secrets.apiKey,
+                apiKey,
                 secrets: Object.values(store.secrets),
               },
               prompt,
               body.text,
               signal,
             );
-            for (const secret of [
-              store.secrets.token,
-              store.secrets.apiKey,
-              store.secrets.admin,
-            ])
+            for (const secret of Object.values(store.secrets))
               if (secret && text.includes(secret))
                 throw new Error("OUTPUT_REJECTED");
             logs.record({
@@ -649,7 +653,9 @@ export async function admin(
           if (!store.secrets.token || !store.secrets.apiKey)
             throw new Error("CONNECTION_AND_PROVIDER_REQUIRED");
           if (!worker || worker.state === "stopped") {
+            // Capture the active endpoint and its key together.
             const c = store.publicConfig();
+            const apiKey = store.secrets.apiKey;
             worker = new Worker({
               origin: c.origin,
               token: store.secrets.token,
@@ -662,7 +668,7 @@ export async function admin(
                   {
                     ...c.provider,
                     onDiagnostic: (event) => logs.record({ ...event, ref }),
-                    apiKey: store.secrets.apiKey,
+                    apiKey,
                     secrets: Object.values(store.secrets),
                   },
                   system,

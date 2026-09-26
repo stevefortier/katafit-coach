@@ -65,7 +65,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     const tabs = page.getByRole("tab");
-    assert.equal(await tabs.count(), 6);
+    assert.equal(await tabs.count(), 7);
     assert.equal(await page.getByRole("tabpanel").count(), 1);
     await page.locator("#token").fill("unsaved-secret");
     for (const name of [
@@ -74,13 +74,14 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       "Diagnostics",
       "Updates",
       "Worker",
-      "Connection",
+      "Models",
+      "Kata.fit",
     ]) {
       await page.getByRole("tab", { name, exact: true }).click();
       assert.equal(await page.getByRole("tabpanel").count(), 1);
       assert.equal(
         await page.getByRole("tabpanel").getAttribute("id"),
-        name.toLowerCase(),
+        name.toLowerCase().replace(".", ""),
       );
       assert.equal(
         await page.getByRole("tab", { selected: true }).innerText(),
@@ -93,7 +94,14 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     }
     assert.equal(await page.locator("#token").inputValue(), "unsaved-secret");
     await page
-      .getByRole("tab", { name: "Connection", exact: true })
+      .getByRole("tab", { name: "Kata.fit", exact: true })
+      .press("ArrowRight");
+    assert.equal(
+      await page.getByRole("tab", { selected: true }).innerText(),
+      "Models",
+    );
+    await page
+      .getByRole("tab", { name: "Models", exact: true })
       .press("ArrowRight");
     assert.equal(
       await page.getByRole("tab", { selected: true }).innerText(),
@@ -111,14 +119,17 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       .press("ArrowRight");
     assert.equal(
       await page.getByRole("tab", { selected: true }).innerText(),
-      "Connection",
+      "Kata.fit",
     );
     await page
-      .getByRole("tab", { name: "Connection", exact: true })
+      .getByRole("tab", { name: "Kata.fit", exact: true })
       .press("ArrowLeft");
     await page.getByRole("tab", { name: "Worker", exact: true }).press("Home");
     await page
-      .getByRole("tab", { name: "Connection", exact: true })
+      .getByRole("tab", { name: "Kata.fit", exact: true })
+      .press("ArrowRight");
+    await page
+      .getByRole("tab", { name: "Models", exact: true })
       .press("ArrowRight");
     assert.equal(await page.locator("#name").inputValue(), "Draft coach");
     await page.getByRole("tab", { name: "Preview", exact: true }).click();
@@ -158,7 +169,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
       await page.getByRole("tab", { selected: true }).innerText(),
-      "Connection",
+      "Kata.fit",
     );
     await page.goto(new URL("/settings#updates", page.url()).href);
     assert.equal(
@@ -195,7 +206,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
       await page.getByRole("tab", { selected: true }).innerText(),
-      "Connection",
+      "Kata.fit",
     );
     await page.locator("#lockStudio").click();
     await page.goto(
@@ -235,7 +246,8 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     });
     await page.setViewportSize({ width: 390, height: 844 });
     for (const name of [
-      "Connection",
+      "Kata.fit",
+      "Models",
       "Persona",
       "Preview",
       "Diagnostics",
@@ -258,7 +270,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       assert.equal(await page.getByRole("tabpanel").count(), 1);
       await page.evaluate(() => scrollTo(0, 0));
       await page.screenshot({
-        path: `${evidence}/settings-mobile-${name.toLowerCase()}.png`,
+        path: `${evidence}/settings-mobile-${name.toLowerCase().replace(".", "")}.png`,
         fullPage: true,
       });
     }

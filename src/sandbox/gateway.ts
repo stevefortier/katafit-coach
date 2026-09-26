@@ -94,6 +94,8 @@ export async function openNativeGateway(
     !closed &&
     !lifetime.aborted &&
     config.revision === store.publicConfig().revision &&
+    // Every credential slot, including ones added or removed since capture.
+    Object.keys(store.secrets).length === Object.keys(secrets).length &&
     Object.keys(secrets).every(
       (k) =>
         secrets[k as keyof typeof secrets] ===

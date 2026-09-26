@@ -45,6 +45,12 @@ const backend = createServer(async (req, res) => {
 const provider = createServer(async (req, res) => {
   for await (const _ of req) {
   }
+  // Parse the path separately from any query string.
+  if (
+    new URL(req.url ?? "/", "http://fixture.invalid").pathname !==
+    "/v1/chat/completions"
+  )
+    return void res.writeHead(404).end();
   calls++;
   if (delay) {
     res.on("close", () => {});
@@ -91,6 +97,30 @@ await store.save({
   apiKey: "synthetic-private-key",
   token: "synthetic-worker-token",
 });
+// An inactive registered provider: never contacted, its key never displayed.
+const inactiveKey = "synthetic-inactive-coach-key";
+{
+  const { origin, persona } = store.publicConfig();
+  const registry = store.modelRegistry();
+  await store.save({
+    origin,
+    persona,
+    models: {
+      active: registry.active,
+      providers: [
+        ...registry.providers.map(({ hasCredential, ...p }) => p),
+        {
+          id: "spare",
+          name: "Synthetic spare",
+          baseUrl: "https://spare.synthetic.invalid/v1",
+          apiKey: inactiveKey,
+          models: [{ id: "s1", name: "Spare", model: "spare-1" }],
+        },
+      ],
+    },
+  });
+  assert.equal(store.secrets.apiKey, "synthetic-private-key");
+}
 const app = await admin(store, 0);
 let browser;
 try {
@@ -118,7 +148,7 @@ try {
   assert.equal(await page.locator("#coachPanel").isVisible(), true);
   assert.equal(await page.locator("#settingsPanel").isVisible(), false);
   await page.locator("#settingsTab").click();
-  assert.equal(await page.locator("#connection").isVisible(), true);
+  assert.equal(await page.locator("#katafit").isVisible(), true);
   await page.getByRole("tab", { name: "Diagnostics", exact: true }).click();
   await page.locator("#logsView summary").click();
   await page.waitForTimeout(200);
@@ -510,6 +540,8 @@ try {
     path: evidence + "/coach-mobile.png",
     fullPage: true,
   });
+  assert.equal((await page.content()).includes(inactiveKey), false);
+  assert.equal(store.secrets.apiKey, "synthetic-private-key");
   console.log(
     "Coach browser PASS: navigation, hidden logs, native terminal entry while worker runs, explicit Settings edit, mobile geometry, synthetic member feed isolation and revoke. Actual Docker Pi covered separately by native-browser tests.",
   );

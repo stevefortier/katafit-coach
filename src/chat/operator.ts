@@ -175,6 +175,11 @@ export class OperatorChat {
   assertSecrets(secrets = Object.values(this.store.secrets)) {
     assertNoSecrets(this.messages, secrets);
   }
+  /** Before saving credentials: conversation and every retained receipt. */
+  assertPersisted(secrets: string[]) {
+    this.assertSecrets(secrets);
+    this.actions.assertSecrets(secrets);
+  }
   snapshot() {
     this.assertSecrets();
     return {
@@ -241,6 +246,7 @@ export class OperatorChat {
     onAction?: (action: OperatorAction) => void,
   ) {
     const c = this.store.publicConfig();
+    const apiKey = this.store.secrets.apiKey;
     const secrets = Object.values(this.store.secrets);
     const requestScope = createHash("sha256")
       .update(JSON.stringify([c.revision, c.origin, secrets]))
@@ -356,7 +362,7 @@ For the final answer, bind every factual comparison and final verdict to the exa
       );
       const provider = {
         ...c.provider,
-        apiKey: this.store.secrets.apiKey,
+        apiKey,
         secrets,
         authorize: session?.authorize,
         onDiagnostic,
