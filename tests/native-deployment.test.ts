@@ -51,9 +51,17 @@ test(
           if (error.code !== "EEXIST") throw error;
         },
       );
+      // A changed native fingerprint has no provisioned image; same-fingerprint
+      // source-only candidates legitimately reuse the base receipt.
+      const fingerprint =
+        revision === missing
+          ? createHash("sha256")
+              .update("missing:" + base.fingerprint)
+              .digest("hex")
+          : base.fingerprint;
       await writeFile(
         join(root, "dist/build.json"),
-        JSON.stringify({ ...base, revision }),
+        JSON.stringify({ ...base, revision, fingerprint }),
       );
       if (revision === crash) {
         const path = join(root, "dist/server/admin.js");
