@@ -36,7 +36,11 @@ test("synthetic real Studio history browses read-only and restores without savin
     });
     await page.goto(app.origin + "/settings#" + store.secrets.admin);
     await page.locator("#studio").waitFor({ state: "visible" });
-    await page.locator("#model").fill("unsaved-model");
+    await page.locator("#settings-models-tab").click();
+    await page
+      .locator('[data-provider="default"] [data-field="model"]')
+      .fill("unsaved-model");
+    await page.locator("#settings-katafit-tab").click();
     await page.locator("#token").fill("unsaved-token");
     await page.locator("#settings-persona-tab").click();
     await page.locator("#name").fill("unsaved-persona");
@@ -76,7 +80,12 @@ test("synthetic real Studio history browses read-only and restores without savin
       ),
       true,
     );
-    assert.equal(await page.locator("#model").inputValue(), "unsaved-model");
+    assert.equal(
+      await page
+        .locator('[data-provider="default"] [data-field="model"]')
+        .inputValue(),
+      "unsaved-model",
+    );
     assert.equal(await page.locator("#token").inputValue(), "unsaved-token");
     assert.notEqual(store.publicConfig().provider.model, "unsaved-model");
     assert.equal(store.secrets.token, "");

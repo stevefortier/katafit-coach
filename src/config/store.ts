@@ -58,10 +58,36 @@ async function regularBytes(path: string, limit: number) {
   }
 }
 
+export interface ModelEntry {
+  id: string;
+  name: string;
+  model: string;
+  vision: boolean;
+}
+export interface ProviderEntry {
+  id: string;
+  name: string;
+  baseUrl: string;
+  // Opaque reference to one private secrets slot, never the credential.
+  credential: string | null;
+  models: ModelEntry[];
+}
+export interface Registry {
+  version: 1;
+  active: { provider: string; model: string };
+  providers: ProviderEntry[];
+}
+export const registryLimits = {
+  providers: 16,
+  modelsPerProvider: 32,
+  models: 64,
+};
 export interface Config {
   revision: number;
   origin: string;
+  // Canonical mirror of the active registry entry for existing consumers.
   provider: { baseUrl: string; model: string; vision?: boolean };
+  models?: Registry;
   persona: {
     name: string;
     voice: string;
@@ -149,6 +175,200 @@ export function validateUrl(value: string, allowPrivate = false) {
     throw new Error("INVALID_URL");
   return value.replace(/\/$/, "");
 }
+// Legacy installations keep their single key in `apiKey`; the synthesized
+// in-memory entry references it until a save materializes a private slot.
+const legacyCredential = "legacy";
+const slotPrefix = "provider.";
+const idPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const refPattern = /^[a-f0-9]{32}$/;
+const controlPattern = /[\u0000-\u001f\u007f]/;
+const slotName = (ref: string) => slotPrefix + ref;
+export type Secrets = {
+  token: string;
+  apiKey: string;
+  admin: string;
+  [slot: string]: string;
+};
+type Intent = { set: string } | "clear" | "keep";
+function exactKeys(value: any, required: string[], optional: string[] = []) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    required.every((k) => keys.includes(k)) &&
+    keys.every((k) => required.includes(k) || optional.includes(k))
+  );
+}
+function registryName(value: unknown) {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > 100 ||
+    controlPattern.test(value)
+  )
+    throw new Error("INVALID_REGISTRY");
+  return value.trim();
+}
+function registryUrl(value: unknown) {
+  if (typeof value !== "string" || value.length > 2048)
+    throw new Error("INVALID_REGISTRY");
+  try {
+    return validateUrl(value, true);
+  } catch {
+    throw new Error("INVALID_URL");
+  }
+}
+/**
+ * Validates stored (`credential`) or submitted (`apiKey`/`clearApiKey`)
+ * registries. Returns per-provider credential intents for submissions.
+ */
+function checkRegistry(value: any, stored: boolean) {
+  if (
+    !exactKeys(value, ["active", "providers"], ["version"]) ||
+    (stored && value.version !== 1) ||
+    (value.version !== undefined && value.version !== 1) ||
+    !Array.isArray(value.providers)
+  )
+    throw new Error("INVALID_REGISTRY");
+  const total = value.providers.reduce(
+    (n: number, p: any) => n + (Array.isArray(p?.models) ? p.models.length : 0),
+    0,
+  );
+  if (
+    !value.providers.length ||
+    value.providers.length > registryLimits.providers ||
+    total > registryLimits.models ||
+    value.providers.some(
+      (p: any) =>
+        Array.isArray(p?.models) &&
+        (!p.models.length ||
+          p.models.length > registryLimits.modelsPerProvider),
+    )
+  )
+    throw new Error("REGISTRY_LIMIT");
+  const intents: Intent[] = [];
+  const ids = new Set<string>();
+  const providers = value.providers.map((p: any): ProviderEntry => {
+    if (
+      !(stored
+        ? exactKeys(p, ["id", "name", "baseUrl", "credential", "models"])
+        : exactKeys(
+            p,
+            ["id", "name", "baseUrl", "models"],
+            ["apiKey", "clearApiKey"],
+          )) ||
+      typeof p.id !== "string" ||
+      !idPattern.test(p.id) ||
+      ids.has(p.id) ||
+      !Array.isArray(p.models)
+    )
+      throw new Error("INVALID_REGISTRY");
+    ids.add(p.id);
+    let credential: string | null = null;
+    if (stored) {
+      if (
+        p.credential !== null &&
+        (typeof p.credential !== "string" || !refPattern.test(p.credential))
+      )
+        throw new Error("INVALID_REGISTRY");
+      credential = p.credential;
+    } else {
+      if (p.clearApiKey !== undefined && p.clearApiKey !== true)
+        throw new Error("INVALID_REGISTRY");
+      if (p.apiKey !== undefined && typeof p.apiKey !== "string")
+        throw new Error("INVALID_SECRET");
+      if (p.apiKey && p.clearApiKey) throw new Error("INVALID_REGISTRY");
+      if (p.apiKey && (p.apiKey.length > 4096 || controlPattern.test(p.apiKey)))
+        throw new Error("INVALID_SECRET");
+      intents.push(
+        p.apiKey ? { set: p.apiKey } : p.clearApiKey ? "clear" : "keep",
+      );
+    }
+    const modelIds = new Set<string>();
+    const models = p.models.map((m: any): ModelEntry => {
+      if (
+        !exactKeys(m, ["id", "name", "model"], ["vision"]) ||
+        typeof m.id !== "string" ||
+        !idPattern.test(m.id) ||
+        modelIds.has(m.id) ||
+        typeof m.model !== "string" ||
+        !m.model.trim() ||
+        m.model.length > 200 ||
+        (m.vision !== undefined && typeof m.vision !== "boolean") ||
+        (stored && typeof m.vision !== "boolean")
+      )
+        throw new Error("INVALID_REGISTRY");
+      modelIds.add(m.id);
+      return {
+        id: m.id,
+        name: registryName(m.name),
+        model: m.model,
+        vision: m.vision === true,
+      };
+    });
+    return {
+      id: p.id,
+      name: registryName(p.name),
+      baseUrl: registryUrl(p.baseUrl),
+      credential,
+      models,
+    };
+  });
+  if (
+    !exactKeys(value.active, ["provider", "model"]) ||
+    !providers
+      .find((p: ProviderEntry) => p.id === value.active.provider)
+      ?.models.some((m: ModelEntry) => m.id === value.active.model)
+  )
+    throw new Error("ACTIVE_MODEL_REQUIRED");
+  const registry: Registry = {
+    version: 1,
+    active: { provider: value.active.provider, model: value.active.model },
+    providers,
+  };
+  return { registry, intents };
+}
+function activeProvider(r: Registry) {
+  return r.providers.find((p) => p.id === r.active.provider)!;
+}
+function mirror(r: Registry): Config["provider"] {
+  const model = activeProvider(r).models.find((m) => m.id === r.active.model)!;
+  return {
+    baseUrl: activeProvider(r).baseUrl,
+    model: model.model,
+    vision: model.vision,
+  };
+}
+function legacyRegistry(c: Config, credential: string | null): Registry {
+  return {
+    version: 1,
+    active: { provider: "default", model: "default" },
+    providers: [
+      {
+        id: "default",
+        name: "Default provider",
+        baseUrl: c.provider.baseUrl,
+        credential,
+        models: [
+          {
+            id: "default",
+            name:
+              c.provider.model
+                .replace(/[\u0000-\u001f\u007f]/g, " ")
+                .trim()
+                .slice(0, 100)
+                .trim() || "Default model",
+            model: c.provider.model,
+            vision: c.provider.vision === true,
+          },
+        ],
+      },
+    ],
+  };
+}
+const refs = (r: Registry) =>
+  r.providers.flatMap((p) =>
+    p.credential && p.credential !== legacyCredential ? [p.credential] : [],
+  );
 export interface PersonaRevision {
   revision: number;
   savedAt: string | null;
@@ -164,7 +384,13 @@ export class Store {
   private history: PersonaRevision[] = [];
   private historyHead: string | null = null;
   private pending: Promise<unknown> = Promise.resolve();
-  secrets = { token: "", apiKey: "", admin: randomBytes(32).toString("hex") };
+  // Current registry; synthesized in memory for legacy configurations.
+  private registry = legacyRegistry(defaults, null);
+  secrets: Secrets = {
+    token: "",
+    apiKey: "",
+    admin: randomBytes(32).toString("hex"),
+  };
   constructor(readonly dir: string) {}
   private get snapshotDir() {
     return this.dir + "/persona-history";
@@ -227,19 +453,69 @@ export class Store {
             if (c.provider.vision === undefined) c.provider.vision = false;
             if (typeof c.provider.vision !== "boolean")
               throw new Error("INVALID_CONFIG");
+            if (c.models !== undefined)
+              c.models = checkRegistry(c.models, true).registry;
           }
-      } else this.secrets = data;
+      } else {
+        // Consumers rely on Object.values(secrets) being credential strings.
+        if (
+          !data ||
+          typeof data !== "object" ||
+          Array.isArray(data) ||
+          Object.values(data).some((v) => typeof v !== "string")
+        )
+          throw new Error("UNSAFE_STORAGE");
+        this.secrets = data;
+      }
       await chmod(p, 0o600);
+    }
+    // Scan with every loaded value too, even one the mirror re-derivation drops.
+    const loaded = Object.values(this.secrets);
+    this.registry = this.resolve(this.config);
+    if (this.config.models) {
+      // The registry is authoritative. Re-derive both legacy mirrors so an
+      // interrupted write can never pair one provider's key with another's
+      // endpoint; unresolvable references simply have no credential.
+      this.config.provider = mirror(this.registry);
+      this.secrets.apiKey = this.keyOf(activeProvider(this.registry));
     }
     this.checkHistory();
     assertNoSecrets(
       [this.config, this.previous, this.history],
-      Object.values(this.secrets),
+      [...loaded, ...Object.values(this.secrets)],
     );
   }
+  private resolve(c: Config) {
+    return (
+      c.models ??
+      legacyRegistry(c, this.secrets.apiKey ? legacyCredential : null)
+    );
+  }
+  private keyOf(p: ProviderEntry, secrets: Secrets = this.secrets) {
+    if (p.credential === legacyCredential) return secrets.apiKey;
+    const value = p.credential ? secrets[slotName(p.credential)] : undefined;
+    return typeof value === "string" ? value : "";
+  }
   publicConfig(): Config {
-    assertNoSecrets(this.config, Object.values(this.secrets));
-    return structuredClone(this.config);
+    assertNoSecrets([this.config, this.registry], Object.values(this.secrets));
+    const config = structuredClone(this.config);
+    delete config.models;
+    return config;
+  }
+  /** Public registry view: credential presence only, never keys or refs. */
+  modelRegistry() {
+    assertNoSecrets(this.registry, Object.values(this.secrets));
+    return {
+      active: { ...this.registry.active },
+      providers: this.registry.providers.map((p) => ({
+        id: p.id,
+        name: p.name,
+        baseUrl: p.baseUrl,
+        hasCredential: !!this.keyOf(p),
+        models: p.models.map((m) => ({ ...m })),
+      })),
+      limits: { ...registryLimits },
+    };
   }
   async atomic(file: string, data: unknown) {
     const p = this.dir + "/" + file + ".json";
@@ -434,6 +710,30 @@ export class Store {
     return result;
   }
   private async persist(next: Config, secrets = this.secrets) {
+    // Root JSON must stay below the updater's 4 MiB snapshot cap and the
+    // 256 KiB secrets loader cap, including every retained revision.
+    if (
+      Buffer.byteLength(
+        JSON.stringify(
+          {
+            current: next,
+            previous: this.config,
+            history: { version: 1, head: snapshotName(Buffer.alloc(0)) },
+          },
+          null,
+          2,
+        ),
+      ) >=
+        3 * 1024 * 1024 ||
+      Buffer.byteLength(JSON.stringify(secrets, null, 2)) >= 240 * 1024
+    )
+      throw new Error("CONFIG_TOO_LARGE");
+    // Legacy readers pair `apiKey` with `provider`. When that pair changes,
+    // publish an empty mirror first so no interruption can combine one
+    // provider's key with another endpoint; registry slots are ref-bound.
+    const staged =
+      secrets.apiKey !== this.secrets.apiKey ||
+      next.provider.baseUrl !== this.config.provider.baseUrl;
     const history = [
       ...this.history,
       {
@@ -454,7 +754,10 @@ export class Store {
       // The linked records must survive power loss before a head can name them.
       // Keep every throwing durability operation before config publication.
       await syncDirectory(this.snapshotDir);
-      await this.atomic("secrets", secrets);
+      await this.atomic(
+        "secrets",
+        staged ? { ...secrets, apiKey: "" } : secrets,
+      );
       secretsWritten = true;
       await this.atomic("config", {
         current: next,
@@ -478,18 +781,53 @@ export class Store {
     this.config = next;
     this.history = history;
     this.secrets = secrets;
+    this.registry = this.resolve(next);
+    // Committed. A failed final mirror write leaves an empty legacy key, which
+    // startup re-derives from the bound registry slot.
+    if (staged) await this.atomic("secrets", secrets).catch(() => {});
+  }
+  /**
+   * Converts a legacy `apiKey` reference into a private slot, drops slots that
+   * neither the next nor the retained previous revision references, and
+   * re-derives the active `apiKey` mirror.
+   */
+  private bindCredentials(registry: Registry, secrets: Secrets) {
+    for (const p of registry.providers)
+      if (p.credential === legacyCredential) {
+        const key = this.keyOf(p);
+        p.credential = key ? randomBytes(16).toString("hex") : null;
+        if (p.credential) secrets[slotName(p.credential)] = key;
+      }
+    const keep = new Set([...refs(registry), ...refs(this.registry)]);
+    for (const name of Object.keys(secrets))
+      if (
+        name.startsWith(slotPrefix) &&
+        !keep.has(name.slice(slotPrefix.length))
+      )
+        delete secrets[name];
+    secrets.apiKey = this.keyOf(activeProvider(registry), secrets);
   }
   save(input: any) {
     const copy = structuredClone(input);
     return this.serial(() => this.saveNext(copy));
   }
   restorePersona(revision: number) {
-    return this.serial(() =>
-      this.saveNext({
-        ...this.config,
+    return this.serial(async () => {
+      this.checkHistory();
+      positiveId(this.config.revision + 1);
+      // Only persona changes: registry, active selection and every credential
+      // (including the secrets file contents) stay exactly as saved.
+      const next: Config = {
+        ...structuredClone(this.config),
+        revision: this.config.revision + 1,
         persona: this.personaRevision(revision).persona,
-      }),
-    );
+      };
+      assertNoSecrets(
+        [next, this.config, this.previous, this.history],
+        Object.values(this.secrets),
+      );
+      await this.persist(next);
+    });
   }
   private async saveNext(input: any) {
     this.checkHistory();
@@ -506,38 +844,83 @@ export class Store {
         throw new Error("INVALID_PERSONA");
       persona[k] = input.persona[k];
     }
-    if (
-      !persona.name.trim() ||
-      typeof input.provider?.model !== "string" ||
-      !input.provider.model.trim() ||
-      input.provider.model.length > 200
-    )
-      throw new Error("INVALID_CONFIG");
-    if (
-      input.provider.vision !== undefined &&
-      typeof input.provider.vision !== "boolean"
-    )
-      throw new Error("INVALID_CONFIG");
-    const next: Config = {
-      revision: this.config.revision + 1,
-      origin: validateUrl(input.origin),
-      provider: {
-        baseUrl: validateUrl(input.provider.baseUrl, true),
-        model: input.provider.model,
-        vision: input.provider.vision === true,
-      },
-      persona,
-    };
-    const secrets = { ...this.secrets };
-    for (const key of ["token", "apiKey"] as const) {
-      if (input[key] !== undefined) {
-        if (typeof input[key] !== "string" || input[key].length > 10000)
-          throw new Error("INVALID_SECRET");
-        if (input[key]) secrets[key] = input[key];
+    if (!persona.name.trim()) throw new Error("INVALID_CONFIG");
+    const origin = validateUrl(input.origin);
+    const secrets: Secrets = { ...this.secrets };
+    if (input.token !== undefined) {
+      if (typeof input.token !== "string" || input.token.length > 10000)
+        throw new Error("INVALID_SECRET");
+      if (input.token) secrets.token = input.token;
+    }
+    let registry: Registry;
+    let intents: Intent[];
+    if (input.models === undefined) {
+      // Legacy single-provider form edits the active entry in place.
+      if (
+        typeof input.provider?.model !== "string" ||
+        !input.provider.model.trim() ||
+        input.provider.model.length > 200 ||
+        (input.provider.vision !== undefined &&
+          typeof input.provider.vision !== "boolean")
+      )
+        throw new Error("INVALID_CONFIG");
+      const baseUrl = registryUrl(input.provider.baseUrl);
+      if (
+        input.apiKey !== undefined &&
+        (typeof input.apiKey !== "string" || input.apiKey.length > 10000)
+      )
+        throw new Error("INVALID_SECRET");
+      registry = structuredClone(this.registry);
+      const active = activeProvider(registry);
+      const model = active.models.find((m) => m.id === registry.active.model)!;
+      active.baseUrl = baseUrl;
+      model.model = input.provider.model;
+      model.vision = input.provider.vision === true;
+      intents = registry.providers.map((p) =>
+        p === active && input.apiKey ? { set: input.apiKey } : "keep",
+      );
+    } else {
+      // Credentials are per provider; a top-level key would be ambiguous.
+      if (input.apiKey !== undefined) throw new Error("INVALID_CONFIG");
+      ({ registry, intents } = checkRegistry(input.models, false));
+      if (input.provider !== undefined) {
+        const derived = mirror(registry);
+        let baseUrl = "";
+        try {
+          baseUrl = validateUrl(input.provider?.baseUrl, true);
+        } catch {}
+        if (
+          baseUrl !== derived.baseUrl ||
+          input.provider.model !== derived.model ||
+          (input.provider.vision ?? false) !== derived.vision
+        )
+          throw new Error("INVALID_CONFIG");
       }
     }
+    const saved = new Map(this.registry.providers.map((p) => [p.id, p]));
+    registry.providers.forEach((p, i) => {
+      const intent = intents[i];
+      const old = saved.get(p.id);
+      if (typeof intent === "object") {
+        p.credential = randomBytes(16).toString("hex");
+        secrets[slotName(p.credential)] = intent.set;
+      } else if (intent === "clear" || !old || !this.keyOf(old))
+        p.credential = null;
+      // Blank means retain, but only for the same identity and endpoint.
+      else if (old.baseUrl !== p.baseUrl)
+        throw new Error("CREDENTIAL_REQUIRED");
+      else p.credential = old.credential;
+    });
+    this.bindCredentials(registry, secrets);
+    const next: Config = {
+      revision: this.config.revision + 1,
+      origin,
+      provider: mirror(registry),
+      persona,
+      models: registry,
+    };
     assertNoSecrets(
-      [next, this.config, this.previous, this.history],
+      [next, this.config, this.previous, this.history, this.registry],
       [...Object.values(this.secrets), ...Object.values(secrets)],
     );
     await this.persist(next, secrets);
@@ -548,13 +931,32 @@ export class Store {
       if (!this.previous) throw new Error("NO_PREVIOUS_REVISION");
       positiveId(this.config.revision + 1);
       assertNoSecrets(
-        [this.config, this.previous, this.history],
+        [this.config, this.previous, this.history, this.registry],
         Object.values(this.secrets),
       );
-      await this.persist({
-        ...this.previous,
-        revision: this.config.revision + 1,
-      });
+      const current = activeProvider(this.registry);
+      // A legacy revision's key lived in the shared mirror: keep the current
+      // key only for the identical endpoint, never for another endpoint.
+      const registry = this.previous.models
+        ? structuredClone(this.previous.models)
+        : legacyRegistry(
+            this.previous,
+            current.baseUrl === this.previous.provider.baseUrl &&
+              this.keyOf(current)
+              ? current.credential
+              : null,
+          );
+      const secrets: Secrets = { ...this.secrets };
+      this.bindCredentials(registry, secrets);
+      await this.persist(
+        {
+          ...this.previous,
+          revision: this.config.revision + 1,
+          provider: mirror(registry),
+          models: registry,
+        },
+        secrets,
+      );
     });
   }
 }

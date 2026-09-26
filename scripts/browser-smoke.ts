@@ -14,6 +14,12 @@ const provider = createServer(async (req, res) => {
   providerCalls++;
   for await (const _ of req) {
   }
+  // Parse the path separately from any query string.
+  if (
+    new URL(req.url ?? "/", "http://fixture.invalid").pathname !==
+    "/v1/chat/completions"
+  )
+    return void res.writeHead(404).end();
   res.setHeader("Content-Type", "text/event-stream");
   res.end(
     "data: " +
@@ -96,6 +102,9 @@ try {
       });
   context = await browser.newContext();
   const page = await context.newPage();
+  // The saved registry entry for the pre-registry (legacy) installation.
+  const entry = (field: string) =>
+    page.locator(`#models [data-provider="default"] [data-field="${field}"]`);
   await page.setViewportSize({ width: 1440, height: 1000 });
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -173,15 +182,15 @@ try {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator("#settingsTab").click();
-  assert.equal(await page.locator("#vision").isChecked(), false);
-  await page.getByRole("tab", { name: "Connection", exact: true }).click();
-  assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
-  await page.locator("#vision").check();
-  await page
-    .locator("#baseUrl")
-    .fill(`http://127.0.0.1:${(provider.address() as any).port}/v1`);
-  await page.locator("#model").fill("synthetic-qa");
-  await page.locator("#apiKey").fill("synthetic-qa-key");
+  assert.equal(await entry("vision").isChecked(), false);
+  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  assert.ok((await entry("vision").boundingBox())!.width <= 24);
+  await entry("vision").check();
+  await entry("baseUrl").fill(
+    `http://127.0.0.1:${(provider.address() as any).port}/v1`,
+  );
+  await entry("model").fill("synthetic-qa");
+  await entry("apiKey").fill("synthetic-qa-key");
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Sage");
   await page.locator("#save").click();
@@ -221,18 +230,20 @@ try {
     "reset must not save",
   );
   assert.equal(
-    await page.locator("#baseUrl").inputValue(),
+    await entry("baseUrl").inputValue(),
     savedBeforeReset.provider.baseUrl,
   );
   assert.equal(
-    await page.locator("#model").inputValue(),
+    await entry("model").inputValue(),
     savedBeforeReset.provider.model,
   );
+  assert.equal(store.secrets.apiKey, "synthetic-qa-key");
+  assert.equal(store.modelRegistry().providers[0].hasCredential, true);
   assert.equal(
     await page.locator("#origin").inputValue(),
     savedBeforeReset.origin,
   );
-  assert.equal(await page.locator("#vision").isChecked(), true);
+  assert.equal(await entry("vision").isChecked(), true);
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.locator("#previewButton").click();
   await page.waitForFunction(() =>
@@ -270,7 +281,7 @@ try {
     (await page.locator("#prompt").textContent()) ?? "",
     /Synthetic browser backend policy/,
   );
-  assert.equal(await page.locator("#apiKey").inputValue(), "");
+  assert.equal(await entry("apiKey").inputValue(), "");
   assert.match(
     (await page.locator("#notice").textContent()) ?? "",
     /^Preview complete · revision \d+$/,
@@ -419,8 +430,8 @@ try {
   await page.waitForTimeout(2200);
   assert.equal(logRequests, closedCount);
   await page.evaluate(() => scrollTo(0, 0));
-  await page.getByRole("tab", { name: "Connection", exact: true }).click();
-  await page.locator("#vision").scrollIntoViewIfNeeded();
+  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  await entry("vision").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-vision-desktop.png" });
   await page.getByRole("tab", { name: "Preview", exact: true }).click();
   await page.locator("#preview").scrollIntoViewIfNeeded();
@@ -433,8 +444,8 @@ try {
     ),
     true,
   );
-  await page.getByRole("tab", { name: "Connection", exact: true }).click();
-  await page.locator("#vision").scrollIntoViewIfNeeded();
+  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  await entry("vision").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-vision-mobile.png" });
   await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
   await page.locator("#logsView").scrollIntoViewIfNeeded();
@@ -455,9 +466,9 @@ try {
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.includes("restored"),
   );
-  assert.equal(await page.locator("#vision").isChecked(), savedVision);
-  await page.getByRole("tab", { name: "Connection", exact: true }).click();
-  assert.ok((await page.locator("#vision").boundingBox())!.width <= 24);
+  assert.equal(await entry("vision").isChecked(), savedVision);
+  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  assert.ok((await entry("vision").boundingBox())!.width <= 24);
   assert.equal(store.publicConfig().provider.vision, savedVision);
   const beforeSaveReset = store.publicConfig();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
@@ -482,7 +493,8 @@ try {
   assert.equal(store.publicConfig().revision, beforeSaveReset.revision + 1);
   assert.deepEqual(store.publicConfig().provider, beforeSaveReset.provider);
   assert.equal(store.publicConfig().origin, beforeSaveReset.origin);
-  assert.equal(await page.locator("#apiKey").inputValue(), "");
+  assert.equal(await entry("apiKey").inputValue(), "");
+  assert.equal((await page.content()).includes("synthetic-qa-key"), false);
   assert.deepEqual(errors, []);
   console.log(
     "Browser PASS: unlock, config persistence, actual Pi + synthetic HTTP preview, cleared secret inputs, desktop/mobile no overflow; 0 page errors.",

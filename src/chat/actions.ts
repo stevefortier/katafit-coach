@@ -109,6 +109,13 @@ export class Actions {
     this.storage.save(next);
     this.rows = next;
   }
+  // Receipts from every authority scope, not only the current one.
+  assertSecrets(secrets: string[]) {
+    assertNoSecrets(
+      this.storage.load().filter((_, i) => i % 2 === 1),
+      secrets,
+    );
+  }
   recorder() {
     const scope = this.scope();
     return (action: OperatorAction) => this.save(action, scope);

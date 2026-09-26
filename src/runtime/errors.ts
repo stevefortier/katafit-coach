@@ -98,6 +98,16 @@ export const hints = {
   INVALID_URL:
     "Use a supported endpoint URL without embedded credentials, query or fragment.",
   INVALID_SECRET: "Check the credential format and length.",
+  INVALID_REGISTRY:
+    "Check model provider and model entries: unique lowercase IDs, names up to 100 characters, and model IDs up to 200 characters.",
+  REGISTRY_LIMIT:
+    "Use 1 to 16 providers, each with 1 to 32 models and at most 64 models in total.",
+  ACTIVE_MODEL_REQUIRED:
+    "Choose a saved provider and one of its models as the active model in the same save. The active entry cannot be removed without choosing another.",
+  CREDENTIAL_REQUIRED:
+    "The provider endpoint changed. Re-enter its API key or explicitly remove the saved key before saving.",
+  CONFIG_TOO_LARGE:
+    "The saved configuration would exceed local storage limits. Remove providers, models or long fields.",
   TOKEN_REQUIRED: "Save a Kata.fit connection credential first.",
   CONNECTION_AND_PROVIDER_REQUIRED:
     "Save both the Kata.fit credential and provider API key first.",

@@ -623,3 +623,59 @@ header {
   margin-top: 4px;
   font-size: 11px;
 }
+
+/* Models registry editor. */
+.active-badge {
+  color: #edf2e9;
+  border: 1px solid #397753;
+  background: #193826;
+  border-radius: 7px;
+  padding: 10px 12px;
+  margin: 0 0 8px;
+}
+.active-badge:empty,
+#modelDraftStatus:empty {
+  display: none;
+}
+#modelDraftStatus {
+  color: #ffda8b;
+}
+.provider-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 16px 12px;
+  margin: 16px 0;
+}
+.provider-card legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+.model-row {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 4px;
+}
+.saved-badge {
+  margin-left: auto;
+  font-size: 12px;
+  color: #9ee3ae;
+  border: 1px solid #397753;
+  border-radius: 6px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.provider-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+.provider-add label {
+  flex: 1 1 14rem;
+}
+@media (max-width: 760px) {
+  .provider-card {
+    padding: 4px 10px 10px;
+  }
+}

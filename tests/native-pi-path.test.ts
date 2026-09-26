@@ -8,8 +8,9 @@ import { openNativeGateway } from "../src/sandbox/gateway.js";
 test(
   "actual isolated Pi calls authorized MCP through extension and answers from tool result",
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 60000 },
-  async () => {
+  async (t) => {
     const f = await fixture();
+    t.after(() => f.close());
     const requests: any[] = [];
     let hold = false,
       entered!: () => void,
@@ -50,8 +51,14 @@ test(
       );
     });
     await new Promise<void>((r) => provider.listen(0, "127.0.0.1", r));
+    t.after(async () => {
+      provider.closeAllConnections();
+      await new Promise<void>((r) => provider.close(() => r()));
+    });
     await f.store.save({
       ...f.store.publicConfig(),
+      // Explicitly authorize the synthetic key for this new fixture endpoint.
+      apiKey: f.store.secrets.apiKey,
       provider: {
         baseUrl: `http://127.0.0.1:${(provider.address() as any).port}/v1`,
         model: "approved-custom-model",
@@ -109,9 +116,6 @@ test(
     } finally {
       await runtime.stop();
       await gateway.close();
-      provider.closeAllConnections();
-      await new Promise<void>((r) => provider.close(() => r()));
-      await f.close();
     }
   },
 );

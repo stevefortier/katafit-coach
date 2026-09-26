@@ -18,11 +18,22 @@ test("credential JSON stays compatible across vision save, restart and rollback"
     });
     const persisted = JSON.parse(await readFile(dir + "/secrets.json", "utf8"));
     assert.deepEqual(persisted, store.secrets);
-    assert.deepEqual(Object.keys(persisted).sort(), [
-      "admin",
-      "apiKey",
-      "token",
-    ]);
+    // Flat string values only: legacy readers keep `apiKey`, while the active
+    // registry entry references exactly one private credential slot.
+    const slots = Object.keys(persisted).filter((k) =>
+      k.startsWith("provider."),
+    );
+    assert.deepEqual(
+      Object.keys(persisted)
+        .filter((k) => !slots.includes(k))
+        .sort(),
+      ["admin", "apiKey", "token"],
+    );
+    assert.equal(slots.length, 1);
+    assert.match(slots[0], /^provider\.[a-f0-9]{32}$/);
+    assert.equal(persisted[slots[0]], "synthetic-provider-compatibility");
+    assert.equal(persisted.apiKey, "synthetic-provider-compatibility");
+    assert.ok(Object.values(persisted).every((v) => typeof v === "string"));
     assert.equal((await readdir(dir)).includes("secrets.key"), false);
     const restarted = new Store(dir);
     await restarted.init();

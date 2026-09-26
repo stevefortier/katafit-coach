@@ -157,6 +157,20 @@ try {
   assert.equal(await page.locator("#updateConfirm").isVisible(), false);
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill(store.publicConfig().persona.name);
+  // Models drafts, including an unsaved private key, also block upgrade.
+  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  const registryKey = page.locator('[data-field="apiKey"]').first();
+  await registryKey.fill("synthetic-unsaved-upgrade-registry-key");
+  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await page.locator("#updateApply").click();
+  assert.match(await page.locator("#notice").innerText(), /Unsaved edits/);
+  assert.equal(await page.locator("#updateConfirm").isVisible(), false);
+  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  assert.equal(
+    await registryKey.inputValue(),
+    "synthetic-unsaved-upgrade-registry-key",
+  );
+  await registryKey.fill("");
   await page.getByRole("tab", { name: "Updates", exact: true }).click();
   await page.locator("#updateApply").click();
   const accepted = page.waitForResponse((r) =>
@@ -178,6 +192,12 @@ try {
   await page.setViewportSize({ width: 1280, height: 1000 });
   assert.equal(await page.locator("#run").isDisabled(), true);
   assert.equal(await page.locator("#save").isDisabled(), true);
+  assert.equal(await page.locator("#addProvider").isDisabled(), true);
+  assert.equal(await registryKey.isDisabled(), true);
+  assert.equal(
+    await page.locator('[data-field="model"]').first().isDisabled(),
+    true,
+  );
   await page.route("**/api/update", (route) => route.abort());
   await page.waitForFunction(() =>
     document
