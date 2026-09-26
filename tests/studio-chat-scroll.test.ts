@@ -16,7 +16,13 @@ test("member chat opens at newest, loads older at top, and follows only while pi
   const server = createServer(async (req, res) => {
     const file = req.url === "/" ? "index.html" : req.url?.slice(1);
     if (
-      !["index.html", "app.js", "terminal.js", "style.css"].includes(file || "")
+      ![
+        "index.html",
+        "backend-performance.js",
+        "app.js",
+        "terminal.js",
+        "style.css",
+      ].includes(file || "")
     )
       return void res.writeHead(404).end();
     res.setHeader(

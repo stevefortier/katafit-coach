@@ -775,3 +775,34 @@ header {
     padding: 4px 10px 10px;
   }
 }
+
+#backendPerformance {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+}
+#performanceRows {
+  max-height: 32rem;
+  overflow: auto;
+}
+.performance-row {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.performance-row button {
+  justify-self: start;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.performance-row small {
+  display: block;
+}
+#performanceWindow,
+#performanceSelection {
+  overflow-wrap: anywhere;
+}

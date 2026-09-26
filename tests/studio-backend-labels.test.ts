@@ -9,7 +9,13 @@ import { Client } from "../src/katafit/client.js";
 import { Diagnostics } from "../src/diagnostics/log.js";
 
 test("Client receipts survive disk and HTTP into named browser rows with exact Info default", async (t) => {
-  const f = await fixture();
+  const f = await fixture(async (name, result) => {
+    if (name === "studio_operator_list_members")
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    if (name === "studio_operator_open_session")
+      await new Promise((resolve) => setTimeout(resolve, 70));
+    return result;
+  });
   t.after(() => f.close());
   const log = new Diagnostics(f.store.dir);
   const client = new Client(
@@ -25,6 +31,8 @@ test("Client receipts survive disk and HTTP into named browser rows with exact I
   await client.call("studio_operator_list_members", {
     private: "PRIVATE_ARGUMENT_MARKER",
   });
+  await client.call("studio_operator_list_members", {});
+  await client.call("studio_operator_open_session", {});
   // Historical entries without a descriptor must remain honest generic entries.
   log.record({ source: "backend", stage: "backend-call", level: "info" });
   log.record({ source: "studio", stage: "connecting", level: "warn" });
@@ -42,7 +50,7 @@ test("Client receipts survive disk and HTTP into named browser rows with exact I
       receipts,
       restarted.entries.filter((e) => e.backendCall),
     );
-    assert.equal(receipts.length, 4);
+    assert.equal(receipts.length, 6);
     assert.equal(receipts[3].backendCall?.tool, "studio_operator_list_members");
     assert.equal(receipts[2].backendCall?.tool, "other");
     assert.doesNotMatch(
@@ -81,8 +89,32 @@ test("Client receipts survive disk and HTTP into named browser rows with exact I
         "Backend call — name unavailable · INFO",
       ),
     );
+    assert.match(
+      await page
+        .locator("#performanceRows article")
+        .filter({ hasText: "Unknown — descriptor unavailable" })
+        .innerText(),
+      /— cumulative/,
+    );
+    assert.equal(
+      await page.locator("#performanceRows button").first().innerText(),
+      "studio_operator_list_members",
+    );
+    for (const sort of ["calls", "p95Ms", "timeouts", "totalMs"]) {
+      await page.locator("#performanceSort").selectOption(sort);
+      if (sort === "timeouts")
+        assert.match(
+          await page.locator("#performanceRows button").first().innerText(),
+          /^Unknown/,
+        );
+      if (sort !== "timeouts")
+        assert.equal(
+          await page.locator("#performanceRows button").first().innerText(),
+          "studio_operator_list_members",
+        );
+    }
     await page.locator("#logLevel").selectOption("verbose");
-    assert.equal(await page.locator("#logRows article").count(), 4);
+    assert.equal(await page.locator("#logRows article").count(), 6);
     assert.equal(
       await page.locator("#logRows .log-info, #logRows .log-warn").count(),
       0,
@@ -92,13 +124,13 @@ test("Client receipts survive disk and HTTP into named browser rows with exact I
         hasText: "studio_operator_list_members",
       }),
     });
-    assert.equal(await named.count(), 1);
+    assert.equal(await named.count(), 2);
     assert.equal(
-      await named.locator("strong").innerText(),
+      await named.first().locator("strong").innerText(),
       "studio_operator_list_members · VERBOSE",
     );
     assert.match(
-      await named.locator(".backend-call-summary").innerText(),
+      await named.first().locator(".backend-call-summary").innerText(),
       /POST mcp.*tools\/call.*\d+ ms.*HTTP 200.*ok/,
     );
     assert.ok(

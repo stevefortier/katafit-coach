@@ -499,7 +499,55 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
         >
           <h2>Diagnostics</h2>
           <p id="lastError" role="status">No retained error.</p>
+          <section id="backendPerformance" aria-labelledby="performanceHeading">
+            <h3 id="performanceHeading">Backend performance</h3>
+            <p class="hint">
+              All retained backend receipts, independent of log level.
+              Cumulative request time is not wallclock time: overlapping
+              requests add together. This is not lifetime usage; the 5,000-entry
+              window also includes other logs.
+            </p>
+            <p id="performanceWindow"></p>
+            <div class="log-controls">
+              <label
+                >Sort descending<select id="performanceSort">
+                  <option value="totalMs">Cumulative time</option>
+                  <option value="calls">Calls</option>
+                  <option value="p95Ms">p95 duration</option>
+                  <option value="timeouts">Timeouts</option>
+                </select></label
+              >
+              <button id="performanceExport" class="secondary" disabled>
+                Export aggregate JSON
+              </button>
+            </div>
+            <details>
+              <summary>How metrics are calculated</summary>
+              <p class="hint">
+                Durations use measured calls only; missing durations are not
+                zero. p95 uses nearest rank (small samples under 20 can
+                mislead); median uses the midpoint. Outcome rates use all calls,
+                including unknown outcomes. Failed time includes timeouts and
+                other failures, not cancellations.
+              </p>
+            </details>
+            <p class="hint">
+              Select a call to inspect receipts. Scroll the breakdown for more
+              calls.
+            </p>
+            <div
+              id="performanceRows"
+              tabindex="0"
+              role="region"
+              aria-label="Backend call breakdown"
+            ></div>
+          </section>
           <div id="logsView">
+            <h3>Raw diagnostic logs</h3>
+            <p id="performanceSelection" role="status"></p>
+            <button id="performanceClear" class="secondary" hidden>
+              Clear call selection
+            </button>
             <p class="hint">
               Logs may contain health or meal details. Inspect and redact copied
               or downloaded JSON before sharing it.
@@ -538,6 +586,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
       </button>
     </main>
     <script src="/terminal.js"></script>
+    <script src="/backend-performance.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

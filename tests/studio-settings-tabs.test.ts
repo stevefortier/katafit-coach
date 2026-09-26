@@ -8,7 +8,12 @@ import { chromium } from "playwright-core";
 test("Settings sections are exclusive accessible tabs and preserve drafts", async () => {
   const server = createServer(async (req, res) => {
     const path = new URL(req.url!, "http://localhost").pathname;
-    const file = ["/app.js", "/terminal.js", "/style.css"].includes(path)
+    const file = [
+      "/backend-performance.js",
+      "/app.js",
+      "/terminal.js",
+      "/style.css",
+    ].includes(path)
       ? path.slice(1)
       : "index.html";
     res.setHeader(

@@ -228,6 +228,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       !assets[file] &&
       ![
         "index.html",
+        "backend-performance.js",
         "app.js",
         "terminal.js",
         "style.css",
