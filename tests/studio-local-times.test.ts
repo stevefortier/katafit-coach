@@ -100,7 +100,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
                   },
                 }
               : path === "/api/logs"
-                ? { entries, capacity: 500 }
+                ? { entries, capacity: 5000 }
                 : path === "/api/members"
                   ? { members: [member], has_more: false }
                   : path === "/api/persona-history"

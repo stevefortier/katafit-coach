@@ -290,12 +290,15 @@ test("concurrent stop and start cannot report running after stopped", async () =
 
 test("heartbeat reports running while inference is busy, then stops cleanly", async () => {
   const f = await backend({ queued: true });
+  const diagnostics: import("../src/diagnostics/log.js").LogInput[] = [];
   const inference = deferred<string>();
   const entered = deferred<void>();
   try {
     // A pending model call must not block a separate presence RPC.
     const w = worker(f.origin, {
       presenceMs: 20,
+      onDiagnostic: (event: import("../src/diagnostics/log.js").LogInput) =>
+        diagnostics.push(event),
       complete: () => {
         entered.resolve();
         return inference.promise;
@@ -317,6 +320,17 @@ test("heartbeat reports running while inference is busy, then stops cleanly", as
     );
     assert.equal(f.accepted.length, f.reports.length);
     const stoppedCount = f.reports.length;
+    const receipts = diagnostics.filter(
+      (e) => e.backendCall?.tool === "coach_report_worker_presence",
+    );
+    assert.equal(receipts.length, stoppedCount);
+    assert.ok(
+      receipts.every(
+        (e) =>
+          e.backendCall?.outcome === "ok" &&
+          Number.isSafeInteger(e.metadata?.elapsedMs),
+      ),
+    );
     await new Promise((r) => setTimeout(r, 60));
     assert.equal(f.reports.length, stoppedCount);
   } finally {

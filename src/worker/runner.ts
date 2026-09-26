@@ -164,7 +164,12 @@ export class Worker {
   private async poll() {
     const signal = this.controller.signal;
     signal.throwIfAborted();
-    const c = new Client(this.options.origin, this.options.token, signal);
+    const c = new Client(
+      this.options.origin,
+      this.options.token,
+      signal,
+      (event) => this.diagnostic(event),
+    );
     const ref = randomUUID();
     const started = Date.now();
     const stage = (stage: Stage, metadata: Record<string, unknown> = {}) =>
@@ -300,6 +305,7 @@ export class Worker {
               this.options.origin,
               this.options.token,
               inferenceSignal,
+              (event) => this.diagnostic(event),
             ),
             fence,
             {
@@ -429,6 +435,7 @@ export class Worker {
       this.options.origin,
       this.options.token,
       AbortSignal.timeout(3000),
+      (event) => this.diagnostic(event),
     );
     let checked: any;
     try {
@@ -698,7 +705,12 @@ export class Worker {
     if (this.startup) return this.startup;
     this.startup = (async () => {
       const signal = this.controller.signal;
-      const c = new Client(this.options.origin, this.options.token, signal);
+      const c = new Client(
+        this.options.origin,
+        this.options.token,
+        signal,
+        (event) => this.diagnostic(event),
+      );
       try {
         await c.connect();
         const catalog = await c.rpc("tools/list", {});
@@ -750,7 +762,12 @@ export class Worker {
   private async report(state: "running" | "stopped", signal: AbortSignal) {
     if (state === "stopped" && !this.presenceGeneration)
       throw new Error("WORKER_PRESENCE_UNCONFIRMED");
-    const c = new Client(this.options.origin, this.options.token, signal);
+    const c = new Client(
+      this.options.origin,
+      this.options.token,
+      signal,
+      (event) => this.diagnostic(event),
+    );
     await c.connect();
     const result = await c.call(
       "coach_report_worker_presence",

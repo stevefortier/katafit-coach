@@ -63,13 +63,13 @@ test("authenticated no-store logs preserve safe admin failure across restart wit
     assert.equal(before.entries.at(-1).level, "error");
     assert.ok(!JSON.stringify(before).includes("PRIVATE"));
     assert.ok(!JSON.stringify(before).includes(store.secrets.admin));
-    for (let i = 0; i < 505; i++)
+    for (let i = 0; i < 5005; i++)
       await fetch(app.origin + "/api/config", {
         method: "POST",
         headers: headers(),
         body: "{}",
       });
-    assert.equal((await logs()).entries.length, 500);
+    assert.equal((await logs()).entries.length, 5000);
     await app.close();
     app = await admin(store, 0);
     const after = await logs();

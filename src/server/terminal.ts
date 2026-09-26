@@ -31,6 +31,7 @@ export class NativeTerminal {
     server: Server,
     origin: () => string,
     private allowed: () => boolean = () => true,
+    private onDiagnostic?: import("../katafit/client.js").BackendLogger,
   ) {
     server.on("upgrade", (req, socket, head) => {
       if (
@@ -171,6 +172,7 @@ export class NativeTerminal {
       if (generation !== this.generation) throw new Error("REVOKED");
       const controller = (this.controller = new AbortController());
       const gateway = await openNativeGateway(this.store, controller.signal, {
+        onDiagnostic: this.onDiagnostic,
         // Retained context was denied, expired or became unknown. The gateway
         // has closed its backend session; destroy this whole runtime (process,
         // transcript, filesystem, retained output). Never reopen it: a later

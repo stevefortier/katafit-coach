@@ -25,8 +25,11 @@ export async function admin(
   updates = new Updates(null, null),
   auto?: AutoUpdateSetting,
 ) {
-  const chat = new OperatorChat(store, infer);
   const logs = new Diagnostics(store.dir);
+  const onBackendDiagnostic = (
+    event: import("../diagnostics/log.js").LogInput,
+  ) => logs.record(event);
+  const chat = new OperatorChat(store, infer, onBackendDiagnostic);
   logs.record({ source: "studio", stage: "studio-started" });
   let worker: Worker | undefined;
   let preview: AbortController | undefined;
@@ -272,7 +275,9 @@ export async function admin(
       if (req.method === "POST" && req.headers.origin !== origin)
         return send(403, { error: "ORIGIN_REQUIRED" });
       if (req.method === "GET" && path === "/api/terminal/receipts")
-        return send(200, { actions: new Actions(store).snapshot() });
+        return send(200, {
+          actions: new Actions(store, onBackendDiagnostic).snapshot(),
+        });
       if (req.method === "POST" && path === "/api/terminal/ticket") {
         if (
           closing ||
@@ -358,7 +363,7 @@ export async function admin(
             AbortSignal.timeout(10000),
           ]);
           const reads = new StudioReads(
-            new Client(c.origin, token, signal),
+            new Client(c.origin, token, signal, onBackendDiagnostic),
             Object.values(store.secrets),
           );
           const cursor = url.searchParams.get("cursor") ?? undefined;
@@ -828,6 +833,7 @@ export async function admin(
             store.publicConfig().origin,
             store.secrets.token,
             AbortSignal.timeout(10000),
+            onBackendDiagnostic,
           );
           await c.connect();
           await c.call("coach_list_requests", { limit: 1 });
@@ -866,7 +872,12 @@ export async function admin(
                   AbortSignal.timeout(60000),
                 ]);
                 const instructions = await fetchInstructions(
-                  new Client(c.origin, store.secrets.token, signal),
+                  new Client(
+                    c.origin,
+                    store.secrets.token,
+                    signal,
+                    onBackendDiagnostic,
+                  ),
                 ).catch(() => {
                   if (controller.signal.aborted)
                     throw new SafeError("CANCELLED");
@@ -991,6 +1002,7 @@ export async function admin(
       !updates.applying &&
       !updates.recovering &&
       !autoQuiesced,
+    onBackendDiagnostic,
   );
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

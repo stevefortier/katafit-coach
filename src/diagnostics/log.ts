@@ -9,6 +9,10 @@ import {
   renameSync,
 } from "node:fs";
 import {
+  safeBackendCall,
+  type BackendCall,
+} from "../katafit/backendReceipt.js";
+import {
   hints,
   numericMetadata,
   safeError,
@@ -16,6 +20,7 @@ import {
 } from "../runtime/errors.js";
 
 export const stages = [
+  "backend-call",
   "studio-started",
   "operation-failed",
   "connecting",
@@ -48,9 +53,10 @@ export const stages = [
 ] as const;
 export type Stage = (typeof stages)[number];
 export interface LogInput {
-  source: "studio" | "worker" | "provider";
+  source: "studio" | "worker" | "provider" | "backend";
   stage: Stage;
-  level?: "info" | "warn" | "error";
+  level?: "verbose" | "info" | "warn" | "error";
+  backendCall?: BackendCall;
   ref?: string;
   error?: unknown;
   metadata?: Record<string, unknown>;
@@ -90,7 +96,8 @@ export interface Entry {
   time: string;
   source: LogInput["source"];
   stage: Stage;
-  level: "info" | "warn" | "error";
+  level: "verbose" | "info" | "warn" | "error";
+  backendCall?: BackendCall;
   ref?: string;
   code?: ErrorCode;
   hint?: string;
@@ -102,8 +109,10 @@ export interface Entry {
   calls?: NativeCall[];
   receipt?: ToolReceipt;
 }
-export const LOG_ENTRIES = 500;
-export const LOG_FILE_BYTES = 256 * 1024;
+export const LOG_ENTRIES = 5000;
+// Each file fits 5000 ordinary call receipts, including at a rotation boundary.
+// Large existing provider/task excerpts remain subject to this byte bound.
+export const LOG_FILE_BYTES = 4 * 1024 * 1024;
 const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
 const toolNamePattern = /^(?:coach_|studio_operator_)[a-z_]{1,48}$/;
@@ -337,7 +346,7 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
     !credentialPattern.test(rejection.reason);
   return {
     time,
-    source: ["studio", "worker", "provider"].includes(input.source)
+    source: ["studio", "worker", "provider", "backend"].includes(input.source)
       ? input.source
       : "studio",
     stage: stages.includes(input.stage) ? input.stage : "operation-failed",
@@ -345,7 +354,9 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
       ? input.level === "warn"
         ? "warn"
         : "error"
-      : input.level === "warn" || input.level === "error"
+      : input.level === "warn" ||
+          input.level === "error" ||
+          input.level === "verbose"
         ? input.level
         : "info",
     ...(typeof input.ref === "string" &&
@@ -356,6 +367,11 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
       : {}),
     ...(error ? { code: error.code, hint: error.hint } : {}),
     metadata: numericMetadata({ ...error?.metadata, ...input.metadata }),
+    ...(input.source === "backend" &&
+    input.stage === "backend-call" &&
+    safeBackendCall(input.backendCall)
+      ? { backendCall: safeBackendCall(input.backendCall) }
+      : {}),
     ...(["provider-payload", "provider-response"].includes(input.stage) &&
     input.source === "provider" &&
     safeTexts(input.texts)
