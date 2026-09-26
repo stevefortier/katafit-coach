@@ -87,7 +87,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
         name,
       );
       assert.equal(
-        await page.locator("#rollback").isVisible(),
+        await page.locator("#personaHistory").isVisible(),
         name === "Persona",
       );
     }

@@ -130,20 +130,25 @@ async function api(path, body, signal) {
   }
   return data;
 }
-async function load() {
+async function load(preserveConnection = false) {
   const generation = authGeneration;
   const data = await api("config");
   if (generation !== authGeneration) throw staleAuthentication();
   if (config) resetMembers();
   config = data;
   for (const f of fields) $(f).value = config.persona[f];
-  $("origin").value = config.origin;
-  $("model").value = config.provider.model;
-  $("baseUrl").value = config.provider.baseUrl;
-  $("vision").checked = config.provider.vision === true;
+  if (!preserveConnection) {
+    $("origin").value = config.origin;
+    $("model").value = config.provider.model;
+    $("baseUrl").value = config.provider.baseUrl;
+    $("vision").checked = config.provider.vision === true;
+
+    $("token").value = "";
+    $("apiKey").value = "";
+  }
   $("revision").textContent = "Saved revision " + config.revision;
-  $("token").value = "";
-  $("apiKey").value = "";
+  clearPersonaHistory();
+  if (historyVisible()) void loadPersonaHistory();
   $("prompt").textContent =
     "Preview the saved revision with freshly fetched backend instructions. Unsaved edits are not previewed.";
   $("answer").textContent = "Your preview will appear here.";
@@ -195,12 +200,128 @@ action("resetPersona", async () => {
     "Restored stock persona in the editor. Save a new revision to apply it.",
   );
 });
-action("rollback", async () => {
-  await api("rollback", {});
-  await load();
-  notice(
-    "Previous nonsecret configuration restored as a new revision. Credentials unchanged.",
+let historyEpoch = 0,
+  historyBefore = null,
+  historySelected = null,
+  historyBusy = false;
+function historyVisible() {
+  return (
+    key &&
+    !$("studio").hidden &&
+    !$("settingsPanel").hidden &&
+    !$("persona").hidden &&
+    $("personaHistory").open
   );
+}
+function clearPersonaHistory() {
+  historyEpoch++;
+  historyBefore = historySelected = null;
+  $("historyList").replaceChildren();
+  $("historySnapshot").replaceChildren();
+  $("historyDetail").hidden = true;
+  $("historyOlder").hidden = true;
+  $("historyStatus").textContent = "";
+}
+const historyLabel = (e) =>
+  `Revision ${e.revision} · ${e.current ? "Current · " : ""}${e.savedAt ? new Date(e.savedAt).toLocaleString() : "Save time unavailable"}`;
+async function loadPersonaHistory(before) {
+  if (!historyVisible()) return;
+  const epoch = ++historyEpoch;
+  historySelected = null;
+  $("historyDetail").hidden = true;
+  $("historyList").replaceChildren();
+  $("historyStatus").textContent = "Loading revisions…";
+  try {
+    const data = await api(
+      "persona-history" + (before ? "?before=" + before : ""),
+    );
+    if (epoch !== historyEpoch) return;
+    historyBefore = data.nextBefore;
+    $("historyOlder").hidden = !historyBefore;
+    $("historyStatus").textContent =
+      `${data.total} saved revisions. Select one to read all eight fields.`;
+    for (const entry of data.items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary";
+      button.textContent = historyLabel(entry);
+      button.dataset.revision = String(entry.revision);
+      button.setAttribute("aria-pressed", "false");
+      button.onclick = () => selectPersonaRevision(entry.revision);
+      $("historyList").append(button);
+    }
+  } catch (e) {
+    if (!e.stale && epoch === historyEpoch)
+      $("historyStatus").textContent =
+        "Could not load history: " +
+        e.message +
+        ". Use Latest revisions to retry.";
+  }
+}
+async function selectPersonaRevision(revision) {
+  if (historyBusy) return;
+  const epoch = ++historyEpoch;
+  historySelected = null;
+  $("historyDetail").hidden = true;
+  try {
+    const entry = await api("persona-history/" + revision);
+    if (epoch !== historyEpoch) return;
+    historySelected = revision;
+    for (const button of $("historyList").querySelectorAll("button"))
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.revision === String(revision)),
+      );
+    $("historyTitle").textContent = historyLabel(entry) + " — read-only";
+    $("historySnapshot").replaceChildren();
+    for (const field of fields) {
+      const label = document.createElement("dt"),
+        value = document.createElement("dd");
+      label.textContent = field;
+      value.textContent = entry.persona[field] || "(empty)";
+      $("historySnapshot").append(label, value);
+    }
+    $("historyDetail").hidden = false;
+    $("historyTitle").scrollIntoView({ block: "start" });
+  } catch (e) {
+    if (!e.stale && epoch === historyEpoch)
+      $("historyStatus").textContent = "Could not read revision: " + e.message;
+  }
+}
+$("personaHistory").addEventListener("toggle", () => {
+  if (historyVisible()) void loadPersonaHistory();
+  else clearPersonaHistory();
+});
+action("historyLatest", () => loadPersonaHistory());
+action("historyOlder", () => loadPersonaHistory(historyBefore));
+action("restorePersona", async () => {
+  if (historyBusy || !historySelected || updatePending) return;
+  const revision = historySelected,
+    generation = authGeneration;
+  const unsaved = fields.some((f) => $(f).value !== config.persona[f]);
+  if (
+    !confirm(
+      `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Connection settings and credentials will not change. Unsaved Connection drafts will remain unsaved. History is kept.`,
+    )
+  ) {
+    notice("Restore cancelled. No settings changed.");
+    return;
+  }
+  historyBusy = true;
+  $("restorePersona").disabled = true;
+  try {
+    await api("persona-restore", { revision });
+    await load(true);
+    $("personaHistory").querySelector("summary").focus({ preventScroll: true });
+    notice(
+      "Persona restored as a new revision. Connection drafts remain unsaved; saved Connection settings and credentials are unchanged.",
+    );
+  } finally {
+    if (generation === authGeneration) {
+      historyBusy = false;
+      renderUpdate();
+    }
+  }
 });
 action("connect", async () => notice((await api("connect", {})).message));
 function hasUnsavedEdits() {
@@ -383,6 +504,7 @@ function selectSettingsSection(section, navigate = true) {
     tab.classList.toggle("secondary", !selected);
   }
   if (navigate) navigateStudio(settingsPath());
+  if (historyVisible()) void loadPersonaHistory();
   logVisibility();
 }
 for (const [index, section] of settingsSections.entries()) {
@@ -457,6 +579,7 @@ function selectStudioTab(tab, navigate = true) {
   const coach = tab === "coach";
   $("coachPanel").hidden = !coach;
   $("settingsPanel").hidden = coach;
+  if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
     ["coachTab", coach],
     ["settingsTab", !coach],
@@ -734,6 +857,8 @@ function renderHeaderStatus() {
 function renderUpdate() {
   renderHeaderStatus();
   const data = updateData;
+  $("restorePersona").disabled =
+    historyBusy || updatePending || data?.applying === true;
   if (!data) return;
   const locked = updatePending || data.applying;
   const outcome = safeUpdateOperation(data.lastOperation);
@@ -852,12 +977,12 @@ function renderUpdate() {
     "run",
     "stop",
     "save",
-    "rollback",
+    "restorePersona",
     "previewButton",
     "connect",
     "cancel",
   ])
-    $(id).disabled = locked;
+    $(id).disabled = locked || (id === "restorePersona" && historyBusy);
   for (const input of document.querySelectorAll(
     "#connection input, #connection select, #persona input, #persona textarea, #persona select",
   ))
@@ -1012,6 +1137,8 @@ function lockSession(message) {
   key = "";
   rememberAdmin("");
   config = undefined;
+  historyBusy = false;
+  clearPersonaHistory();
   resetMembers();
   ++operatorEpoch;
   operatorMessages = [];

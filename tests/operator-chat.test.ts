@@ -499,6 +499,7 @@ test("operator lifecycle independently guards turns, permits worker stop, fences
     for (const path of [
       "/api/config",
       "/api/rollback",
+      "/api/persona-restore",
       "/api/update/apply",
       "/api/update/check",
     ])
