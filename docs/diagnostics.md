@@ -29,13 +29,13 @@ Pre-publication failures send the safe code and fixed hint to fenced `coach_fail
 
 ## Studio log viewer
 
-Unlock Studio with its existing admin key, then open the top-level **Diagnostics** tab. Refresh works while paused. Live polling runs every two seconds only while Diagnostics and the document are visible; leaving, locking or hiding the view cancels its in-flight read. Filter by level (including **Verbose**), copy JSON, or download JSON. Exports contain the displayed filtered entries, including private rejected output when present; the current retained count and maximum are shown. Up to **5,000 entries** are retained and available in the viewer. There is no destructive web Clear action.
+Unlock Studio with its existing admin key, then open the top-level **Diagnostics** tab. Refresh works while paused. Live polling runs every two seconds only while Diagnostics and the document are visible; leaving, locking or hiding the view cancels its in-flight read. The level dropdown starts at **Info** and includes an explicit **Verbose** option. Select **Verbose** for successful backend-call timings, **Warnings** for failed calls, or **All levels** for the combined timeline. Filters match the selected level exactly. Copy JSON or download JSON for the selected view. Exports contain the displayed filtered entries, including private rejected output when present; the current retained count and maximum are shown. Up to **5,000 entries** are retained and available in the viewer. There is no destructive web Clear action.
 
 ### Kata.fit backend-call timings
 
 Every physical request through the Kata.fit backend client emits one `backend / backend-call` receipt when it settles. This includes instruction downloads, MCP initialization/notifications, each discovery page, worker polling and presence, Studio member/feed/activity/media reads, Operator calls, and independent cleanup/reconciliation calls. Provider inference, GitHub update requests and local Studio health/control requests are separate surfaces, not Kata.fit backend calls.
 
-Successful calls use **Verbose**; unsuccessful calls remain visible under **Warning**. Each receipt carries a locally generated reference, a safe route/method/operation/tool descriptor, an outcome, and numeric metadata:
+Successful calls use **Verbose**; unsuccessful calls remain visible under **Warning**. The entry headline names the specific safe tool or operation, rather than just `backend-call`; instruction downloads are identified separately. An unknown tool or historical backend receipt without a descriptor is explicitly marked as having an unavailable name instead of guessing from private arguments or error text. Each receipt carries a locally generated reference, a safe route/method/operation/tool descriptor, an outcome, and numeric metadata:
 
 - `elapsedMs`: elapsed monotonic time including response-body consumption and RPC/tool decoding, not only response headers.
 - `statusCode`: HTTP status, when a response was received. HTTP 200 can still have a `tool_error` or `protocol_error` outcome.

@@ -46,6 +46,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(app.origin + "/diagnostics#" + store.secrets.admin);
+    await page.locator("#logLevel").selectOption("all");
     await page.waitForFunction(
       () => document.querySelectorAll("#logRows article").length === 5000,
     );
