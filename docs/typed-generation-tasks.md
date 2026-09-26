@@ -4,7 +4,7 @@ The standalone worker has a separate typed-generation path. It does **not** turn
 
 ## Negotiation and supported outputs
 
-All six backend tools must be present before polling: `coach_task_capabilities`, `coach_claim_task`, `coach_read_task_context`, `coach_complete_task`, `coach_read_task_receipt`, and `coach_fail_task`. Missing tools, unsupported protocol/limits, or mismatched schemas leave legacy chat available. Claims explicitly carry the protocol and the intersection of server-advertised kinds with the pinned local contracts. Remote schemas are compared with the catalog, never compiled or exposed as mutation tools.
+All seven backend tools must be present before polling: `coach_task_capabilities`, `coach_claim_task`, `coach_read_task_context`, `coach_complete_task`, `coach_read_task_receipt`, `coach_reconcile_task`, and `coach_fail_task`. Missing tools, unsupported protocol/limits, or mismatched schemas leave legacy chat available. Claims explicitly carry the protocol and the intersection of server-advertised kinds with the pinned local contracts. Remote schemas are compared with the catalog, never compiled or exposed as mutation tools.
 
 The finite catalog is pinned in `src/katafit/taskCatalog.ts`:
 
@@ -34,13 +34,15 @@ Invalid context/output/provider failures use only the contract's fixed failure c
 
 ## Completion is not publication
 
-A completion call happens at most once for a local generation attempt. Its acknowledgment is checked against the normalized result digest, then independently read with `coach_read_task_receipt`. That read has its own bounded live control transport, including when stop aborts the completion transport. A dropped completion response triggers the same read, **never** duplicate completion as a read or `coach_fail_task` as a substitute.
+A completion call happens at most once for a local generation attempt. Its acknowledgment is checked against the normalized result digest, then independently reconciled with `coach_reconcile_task`. That operation has its own bounded live control transport, including when stop aborts the completion transport. A dropped completion response triggers the same reconciliation, **never** duplicate completion as a read or `coach_fail_task` as a substitute. Failure reporting separately uses `coach_read_task_receipt`.
+
+When reconciliation is denied by an allowlisted source/authority code, the `task-result-unknown` warning now records that fixed code and the original generation reference. It contains no backend error prose, task ID, or result. The overall failure remains `DELIVERY_UNVERIFIED`: a denied read does not prove the completion was unsaved, and a source change must not be bypassed.
 
 - `task-result-stored`: independently verified `completed` generation, not a published chat.
 - `task-publication-confirmed`: independently verified `consumed` receipt.
 - `task-result-unknown`: receipt missing, denied, malformed or inconsistent; no resend/downgrade.
 
-One content-free pending task identity/digest is retained in memory for later read-only reconciliation. While unresolved, new task claims pause but main chat remains available. This conservative slot is bounded and is not a durable local receipt journal: process restart relies on the backend durable task/claim state and does not replay any stored local result. Authority loss can keep the slot unresolved until worker restart/operator investigation; the worker does not infer that a denial means unsent.
+One content-free pending task identity/digest/reference is retained in memory for later reconciliation. While its outcome is unresolved, new task claims pause but main chat remains available. An allowlisted source/authority denial moves it into a bounded collection of up to 32 isolated incidents, so unrelated tasks may proceed; a full collection stops new typed claims rather than discarding uncertainty. Isolated incidents are periodically reconciled but never replayed or marked unsaved from a denial. These slots are not a durable local receipt journal: process restart relies on backend durable task/claim state and does not replay stored local results. The diagnostic denial code/reference survives log restart, not the in-memory reconciliation state.
 
 ## Verification scope
 
