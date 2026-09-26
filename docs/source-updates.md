@@ -32,11 +32,13 @@ enable it. The browser does not schedule checks.
 
 Open **Settings → Updates** in Studio. Unlock performs a source check; checks never install anything. The installed identifier is an exact Git SHA, **not** npm `0.1.0` or a persona revision. Unknown/dirty builds report an unknown source rather than falsely claiming the checkout's HEAD.
 
-1. Save or revert unsaved edits. Pause Coach and finish/cancel any preview.
+1. Save or revert unsaved edits and finish/cancel any preview or Operator turn. No manual worker stop is required.
 2. Check the displayed latest revision from the fixed public repository, `stevefortier/katafit-coach`, branch `main`.
-3. Click Upgrade and explicitly confirm the full displayed SHA. This authorizes executing that trusted source and its pinned dependencies on your machine.
+3. Click Upgrade and explicitly confirm the full displayed SHA and stop/apply/restart operation. This authorizes executing that trusted source and its pinned dependencies on your machine. Cancel performs no stop or apply. A running Coach is stopped safely, native sessions are closed, and actions/chat are never replayed.
 4. Studio stages and validates the revision while the existing server stays available. Run, configuration changes, preview and shutdown are rejected during apply. Brief reconnecting is normal during replacement; disappearance is not success.
-5. Wait for the installed SHA to match the confirmed target and the success result. For **manual upgrades**, the worker intentionally remains **stopped**. Reload Studio to load its new UI assets, preview, then choose Run.
+5. Wait for the installed SHA to match the confirmed target and the success result. The stable owner resumes a previously running Coach after activation or rollback; an intentionally stopped Coach stays stopped. Read Worker status separately from source success. Resume failure exposes **Retry Coach restart**, which starts the saved configuration only, without reinstalling or replaying work. Reload Studio to load its new UI assets. Closing the browser does not cancel an accepted upgrade.
+
+Manual resume requires the explicitly advertised `manualRestartSupported` launcher capability. Source-upgrading an old child does **not** upgrade its stable owner. An old owner receives no stop/apply for a running manual upgrade: Studio reports `LAUNCHER_UPGRADE_REQUIRED` with instructions to replace the reviewed stable launcher using the same protected home. Do not bypass the guard. Settings, persona restore, legacy rollback and preview use the child-owned lifecycle and do not need this launcher upgrade.
 
 The admin credential stays in per-origin **sessionStorage**, not localStorage, after successful authentication so this tab can reload/reconnect across upgrades. **Lock studio** clears it and locks the UI; it does not stop the service, worker, or an in-progress upgrade. On a shared browser, lock the Studio and close the tab. Invalid credentials clear the saved session key. Credentials are never put into query strings or update requests.
 
@@ -64,7 +66,7 @@ Each build subprocess is limited to three minutes and a process group that is ki
 
 Managed directory ancestors cannot be symlinks; metadata/lockfile reads require bounded regular files with no-follow/nonblocking opens, rejecting symlinks and FIFOs. This prevents accidental redirected writes/reads, not a defense against a hostile same-user process racing filesystem operations. Protect the home as you would its plaintext credentials.
 
-An isolated child loads the candidate's **own Store and admin code**, with a disposable home and no real secrets. It must serve authenticated stopped-worker health. Only then does the owner snapshot existing JSON records, stop the old runtime, launch the candidate against the real home, wait through startup probation, and require authenticated health at the original port. The active pointer is atomically renamed only after health. Startup errors, hangs and early exits cause old-runtime restart and JSON restoration. Manual upgrades never auto-resume. Opt-in automatic upgrades restore a previously running worker only after healthy activation or rollback. This certifies startup health, not every future request.
+An isolated child loads the candidate's **own Store and admin code**, with a disposable home and no real secrets. It must serve authenticated stopped-worker health. Only then does the owner snapshot existing JSON records, stop the old runtime, launch the candidate against the real home, wait through startup probation, and require authenticated health at the original port. The active pointer is atomically renamed only after health. Startup errors, hangs and early exits cause old-runtime restart and JSON restoration. Confirmed manual upgrades and opt-in automatic upgrades restore a previously running worker only after healthy activation or rollback. This certifies startup health, not every future request.
 
 ### Compatibility and limits
 
@@ -74,11 +76,11 @@ The installed stable launcher and protocol stay fixed while managed runtime sour
 
 ## Troubleshooting and recovery
 
-- **Pause before upgrade:** stop the worker and finish or cancel preview; preserve unsaved edits before trying again.
+- **Operation in progress:** finish or cancel preview or Operator work; preserve unsaved edits. Confirming the upgrade performs the worker stop/start automatically.
 - **Check first/target rejected:** check again after the throttle period and confirm the currently shown target. Do not edit the request to force another SHA.
 - **GitHub unavailable/rate limit:** check access to `api.github.com`; wait at least one minute, then retry. No provider credentials are involved.
 - **Upgrade failed:** the active pointer remains previous unless the candidate passed health. Check free disk, Git/npm availability and outbound access. Do not infer success from a closed browser or a returned 202.
-- **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime; workers remain stopped. Keep the home and the bootstrap launcher.
+- **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime. Workers remain stopped unless a pending durable manual-update resume intent requires recovery; recovery never reapplies source or replays chat/actions. Keep the home and the bootstrap launcher.
 - **Corrupt active installation/manual recovery:** stop the owner first and preserve a private backup. Restore a known-good home/active pointer or remove `active.json` to return to the installed bootstrap application only if it is compatible with your unchanged data schema. Never delete a live lock inode.
 
 ## Verification

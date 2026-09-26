@@ -119,7 +119,10 @@ test("synthetic real Studio history browses read-only and restores without savin
     await page.route("**/api/persona-restore", (route) =>
       route.fulfill({
         status: 409,
-        json: { error: "STOP_WORKER_BEFORE_CONFIGURE" },
+        json: {
+          error: "OPERATION_IN_PROGRESS",
+          hint: "Coach is applying another operation. Your draft is retained.",
+        },
       }),
     );
     page.once("dialog", (d) => d.accept());
@@ -127,7 +130,7 @@ test("synthetic real Studio history browses read-only and restores without savin
     await page.waitForFunction(() =>
       document
         .querySelector("#notice")
-        ?.textContent?.includes("STOP_WORKER_BEFORE_CONFIGURE"),
+        ?.textContent?.includes("Your draft is retained"),
     );
     assert.equal(store.publicConfig().revision, 4);
     assert.equal(await page.locator("#token").inputValue(), "unsaved-token");

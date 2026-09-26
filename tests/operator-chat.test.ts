@@ -500,6 +500,7 @@ test("operator lifecycle independently guards turns, permits worker stop, fences
       "/api/config",
       "/api/rollback",
       "/api/persona-restore",
+      "/api/preview",
       "/api/update/apply",
       "/api/update/check",
     ])

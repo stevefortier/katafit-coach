@@ -28,12 +28,14 @@ class RemoteUpdates extends Updates {
     Object.assign(this, state);
     return this.snapshot();
   }
-  override async apply(sha: unknown) {
+  override async apply(sha: unknown, resume = false) {
     this.validate(sha);
     this.applying = true;
-    this.accepted = rpc("apply", sha).then((state) => {
-      Object.assign(this, state);
-    });
+    this.accepted = rpc("apply", resume ? { sha, resume: true } : sha).then(
+      (state) => {
+        Object.assign(this, state);
+      },
+    );
     try {
       await this.accepted;
     } catch {

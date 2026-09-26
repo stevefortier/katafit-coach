@@ -219,7 +219,7 @@ test("registry saves share preview, worker and operator guards without mutation"
     assert.equal((await h.call("run", {})).status, 200);
     const running = await h.save(change);
     assert.equal(running.status, 409);
-    assert.equal((await running.json()).error, "STOP_WORKER_BEFORE_CONFIGURE");
+    assert.equal((await running.json()).error, "RESTART_CONFIRMATION_REQUIRED");
     assert.equal(h.store.publicConfig().revision, revision);
     assert.equal(await readFile(h.dir + "/secrets.json", "utf8"), before);
     assert.equal(Object.values(h.store.secrets).includes(keyC), false);
@@ -282,3 +282,253 @@ for (const where of ["chat", "actions"] as const)
       await h.close();
     }
   });
+
+test("confirmed config change restarts a running Coach once with fresh provider credentials", async () => {
+  const seen: any[] = [];
+  const h = await harness(async (provider) => {
+    seen.push(provider);
+    return "synthetic preview";
+  });
+  try {
+    assert.equal((await h.save(h.registry())).status, 200);
+    assert.equal((await h.call("run", {})).status, 200);
+    const revision = h.store.publicConfig().revision;
+    const payload = {
+      origin: h.store.publicConfig().origin,
+      persona: h.store.publicConfig().persona,
+      models: h.registry("bravo"),
+      confirmRestart: true,
+    };
+    const result = await h.call("config", payload);
+    assert.equal(result.status, 200, await result.clone().text());
+    const data = await result.json();
+    assert.equal(data.lifecycle.applied, true);
+    assert.equal(data.lifecycle.resumed, true);
+    assert.equal(h.store.publicConfig().revision, revision + 1);
+    assert.notEqual((await (await h.call("status")).json()).state, "stopped");
+    const preview = await h.call("preview", {
+      text: "Synthetic",
+      confirmRestart: true,
+    });
+    assert.equal(preview.status, 200, await preview.clone().text());
+    assert.equal(seen.at(-1).apiKey, keyB);
+    assert.equal(seen.at(-1).baseUrl, h.providerOrigin + "/bravo/v1");
+    assert.notEqual((await (await h.call("status")).json()).state, "stopped");
+  } finally {
+    await h.close();
+  }
+});
+
+test("accepted config operations are idempotent and fence competing lifecycle admission", async () => {
+  const h = await harness();
+  const save = h.store.save.bind(h.store);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r)),
+    started = new Promise<void>((r) => (entered = r));
+  try {
+    await h.save(h.registry());
+    await h.call("run", {});
+    const revision = h.store.publicConfig().revision;
+    h.store.save = async (...args) => {
+      entered();
+      await gate;
+      return save(...args);
+    };
+    const payload = {
+      origin: h.store.publicConfig().origin,
+      persona: h.store.publicConfig().persona,
+      models: h.registry("bravo"),
+      confirmRestart: true,
+      operationId: "11111111-1111-4111-8111-111111111111",
+      expectedRevision: revision,
+    };
+    const saving = h.call("config", payload);
+    await started;
+    for (const path of [
+      "run",
+      "stop",
+      "config",
+      "rollback",
+      "persona-restore",
+      "terminal/ticket",
+      "update/apply",
+    ])
+      assert.equal((await h.call(path, {})).status, 409, path);
+    release();
+    assert.equal((await saving).status, 200);
+    const repeated = await h.call("config", payload);
+    assert.equal(repeated.status, 200, await repeated.clone().text());
+    assert.equal(
+      h.store.publicConfig().revision,
+      revision + 1,
+      "response loss must not save twice",
+    );
+    const stale = await h.call("config", {
+      ...payload,
+      operationId: "22222222-2222-4222-8222-222222222222",
+    });
+    assert.equal(stale.status, 409);
+  } finally {
+    release();
+    h.store.save = save;
+    await h.close();
+  }
+});
+
+test("validation and disk save failure restore prior running configuration; stopped restore and rollback stay stopped", async () => {
+  const h = await harness();
+  const atomic = h.store.atomic.bind(h.store);
+  try {
+    await h.save(h.registry());
+    await h.call("run", {});
+    const before = h.store.publicConfig();
+    const invalid = await h.call("config", {
+      origin: before.origin,
+      persona: { ...before.persona, name: "" },
+      models: h.registry(),
+      confirmRestart: true,
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).lifecycle.resumed, true);
+    assert.equal(h.store.publicConfig().revision, before.revision);
+    h.store.atomic = async (file, data) => {
+      if (file === "config") throw Error("synthetic disk failure");
+      return atomic(file, data);
+    };
+    const failed = await h.call("config", {
+      origin: before.origin,
+      persona: before.persona,
+      models: h.registry("bravo"),
+      confirmRestart: true,
+    });
+    assert.equal(failed.status, 400);
+    assert.equal((await failed.json()).lifecycle.resumed, true);
+    const disk = new Store(h.dir);
+    await disk.init();
+    assert.deepEqual(disk.publicConfig(), before);
+    assert.equal(disk.secrets.apiKey, keyA);
+    h.store.atomic = atomic;
+    const restore = await h.call("persona-restore", {
+      revision: 1,
+      confirmRestart: true,
+    });
+    assert.equal(restore.status, 200);
+    assert.equal((await restore.json()).lifecycle.resumed, true);
+    const rollback = await h.call("rollback", { confirmRestart: true });
+    assert.equal(rollback.status, 200);
+    assert.equal((await rollback.json()).lifecycle.resumed, true);
+    await h.call("stop", {});
+    const stopped = await h.call("persona-restore", { revision: 1 });
+    assert.equal(stopped.status, 200);
+    assert.equal((await stopped.json()).lifecycle.resumed, false);
+    assert.equal((await (await h.call("status")).json()).state, "stopped");
+  } finally {
+    h.store.atomic = atomic;
+    await h.close();
+  }
+});
+
+test("ambiguous config publication does not restart from stale in-memory credentials", async () => {
+  const h = await harness();
+  const atomic = h.store.atomic.bind(h.store);
+  try {
+    await h.save(h.registry());
+    await h.call("run", {});
+    h.store.atomic = async (file, data) => {
+      await atomic(file, data);
+      if (file === "config")
+        throw Error("synthetic lost write acknowledgement");
+    };
+    const result = await h.call("config", {
+      origin: h.store.publicConfig().origin,
+      persona: h.store.publicConfig().persona,
+      models: h.registry("bravo"),
+      confirmRestart: true,
+    });
+    assert.equal(result.status, 400);
+    const state = await (await h.call("status")).json();
+    assert.equal(state.state, "stopped");
+    assert.equal(state.lifecycle.applicationUncertain, true);
+    assert.equal((await h.call("run", {})).status, 400);
+  } finally {
+    h.store.atomic = atomic;
+    await h.close();
+  }
+});
+
+test("server shutdown settles an accepted save without restarting after close", async () => {
+  const h = await harness();
+  const save = h.store.save.bind(h.store);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r)),
+    started = new Promise<void>((r) => (entered = r));
+  let request: Promise<unknown> | undefined;
+  try {
+    await h.save(h.registry());
+    await h.call("run", {});
+    h.store.save = async (...args) => {
+      entered();
+      await gate;
+      return save(...args);
+    };
+    request = h
+      .call("config", {
+        origin: h.store.publicConfig().origin,
+        persona: h.store.publicConfig().persona,
+        models: h.registry("bravo"),
+        confirmRestart: true,
+      })
+      .catch(() => {});
+    await started;
+    const closing = h.app.close();
+    assert.equal(
+      await Promise.race([
+        closing.then(() => true),
+        new Promise((r) => setTimeout(() => r(false), 50)),
+      ]),
+      false,
+      "shutdown awaits accepted transition",
+    );
+    release();
+    await closing;
+    await request;
+  } finally {
+    release();
+    await request;
+    h.store.save = save;
+    await h.close();
+  }
+});
+
+test("cancelled preview resumes prior running Coach without a config revision", async () => {
+  let entered!: () => void;
+  const started = new Promise<void>((r) => (entered = r));
+  const h = await harness(async (_provider, _system, _text, signal) => {
+    entered();
+    await new Promise<void>((_resolve, reject) =>
+      signal.addEventListener("abort", () => reject(Error("CANCELLED")), {
+        once: true,
+      }),
+    );
+    return "never";
+  });
+  try {
+    await h.save(h.registry());
+    await h.call("run", {});
+    const revision = h.store.publicConfig().revision;
+    const preview = h.call("preview", {
+      text: "Synthetic cancelled preview",
+      confirmRestart: true,
+    });
+    await started;
+    assert.equal((await h.call("run", {})).status, 409);
+    assert.equal((await h.call("cancel", {})).status, 200);
+    const result = await preview;
+    assert.equal(result.status, 400);
+    assert.equal((await result.json()).lifecycle.resumed, true);
+    assert.equal(h.store.publicConfig().revision, revision);
+    assert.notEqual((await (await h.call("status")).json()).state, "stopped");
+  } finally {
+    await h.close();
+  }
+});

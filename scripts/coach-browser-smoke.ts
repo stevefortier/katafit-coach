@@ -201,15 +201,23 @@ try {
   );
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Worker", exact: true }).click();
-  await page.locator("#stop").click();
-  await page.waitForFunction(
-    () => document.querySelector("#state")?.textContent === "STOPPED",
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.locator("#save").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#notice")?.textContent?.includes("cancelled"),
   );
+  assert.equal(store.publicConfig().revision, revisionBeforeDraft);
+  page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#save").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
   assert.match(store.publicConfig().persona.markdown, /Explicit Settings rule/);
+  assert.match(await page.locator("#restartStatus").innerText(), /restarted/);
+  await page.locator("#stop").click();
+  await page.waitForFunction(
+    () => document.querySelector("#state")?.textContent === "STOPPED",
+  );
   await page.locator("#coachTab").click();
   await page.screenshot({ path: evidence + "/coach-desktop.png" });
   await page.setViewportSize({ width: 390, height: 844 });

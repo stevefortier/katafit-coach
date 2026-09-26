@@ -198,6 +198,10 @@ try {
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
   const savedBeforeReset = store.publicConfig();
+  assert.match(
+    await page.locator("#restartStatus").innerText(),
+    /remains stopped/,
+  );
   await page.locator("#name").fill("Unsaved name");
   await page.getByText("Advanced Markdown", { exact: true }).click();
   await page.locator("#markdown").fill("Unsaved custom instruction");

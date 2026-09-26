@@ -264,3 +264,130 @@ test("failed supervised activation keeps the original uncertain native action id
     await f.close();
   }
 });
+
+test("confirmed configuration revokes a starting native session and its spare admission ticket", async () => {
+  const hold = held();
+  const f = await fixture(async (name, result) => {
+    if (name === "initialize") {
+      hold.entered();
+      await hold.gate;
+    }
+    return result;
+  });
+  const app = await admin(f.store, 0);
+  const sockets: WebSocket[] = [];
+  const headers = {
+    Authorization: "Bearer " + f.store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string, body: unknown = {}) =>
+    fetch(app.origin + "/api/" + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  try {
+    const first = await (await post("terminal/ticket")).json(),
+      spare = await (await post("terminal/ticket")).json();
+    const session = await connect(app.origin, first.ticket);
+    sockets.push(session.ws);
+    await hold.started;
+    const revision = f.store.publicConfig().revision;
+    assert.equal((await post("config", f.store.publicConfig())).status, 409);
+    assert.equal(f.store.publicConfig().revision, revision);
+    assert.equal(session.ws.readyState, WebSocket.OPEN);
+    const saving = post("config", {
+      ...f.store.publicConfig(),
+      confirmRestart: true,
+    });
+    assert.equal(await session.closed, 1008);
+    hold.release();
+    const result = await saving;
+    assert.equal(result.status, 200, await result.clone().text());
+    assert.equal(
+      (await result.json()).lifecycle.resumed,
+      false,
+      "native Pi input is never replayed",
+    );
+    const late = await connect(app.origin, spare.ticket);
+    sockets.push(late.ws);
+    assert.equal(await late.closed, 1008);
+  } finally {
+    hold.release();
+    for (const ws of sockets) ws.terminate();
+    await app.close();
+    await f.close();
+  }
+});
+
+test("confirmed settings apply awaits native startup teardown and fences spare tickets", async () => {
+  const starting = held(),
+    saving = held();
+  const f = await fixture(async (name, result) => {
+    if (name === "initialize") {
+      starting.entered();
+      await starting.gate;
+    }
+    return result;
+  });
+  const app = await admin(f.store, 0);
+  const save = f.store.save.bind(f.store);
+  const headers = {
+    Authorization: "Bearer " + f.store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string, body: unknown = {}) =>
+    fetch(app.origin + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  const sockets: WebSocket[] = [];
+  let request: Promise<Response> | undefined;
+  try {
+    const first = await (await post("/api/terminal/ticket")).json(),
+      spare = await (await post("/api/terminal/ticket")).json();
+    const live = await connect(app.origin, first.ticket);
+    sockets.push(live.ws);
+    await starting.started;
+    const revision = f.store.publicConfig().revision;
+    assert.equal(
+      (await post("/api/config", f.store.publicConfig())).status,
+      409,
+    );
+    assert.equal(live.ws.readyState, WebSocket.OPEN);
+    assert.equal(f.store.publicConfig().revision, revision);
+    f.store.save = async (...args) => {
+      saving.entered();
+      await saving.gate;
+      return save(...args);
+    };
+    request = post("/api/config", {
+      ...f.store.publicConfig(),
+      confirmRestart: true,
+    });
+    await saving.started;
+    assert.equal(
+      await live.closed,
+      1008,
+      "native shutdown completes before Store save",
+    );
+    assert.equal((await post("/api/terminal/ticket")).status, 409);
+    const late = await connect(app.origin, spare.ticket);
+    sockets.push(late.ws);
+    assert.equal(await late.closed, 1008);
+    saving.release();
+    assert.equal((await request).status, 200);
+    assert.equal(f.store.publicConfig().revision, revision + 1);
+  } finally {
+    starting.release();
+    saving.release();
+    await request;
+    f.store.save = save;
+    for (const ws of sockets) ws.terminate();
+    await app.close();
+    await f.close();
+  }
+});

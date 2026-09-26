@@ -417,17 +417,21 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               >
             </div>
             <p class="hint">
-              Pause the worker and finish or cancel previews and Operator chat
-              before manual upgrades. Configuration and credentials stay in your
-              data directory. Manual upgrades leave the worker stopped.
+              Confirming an upgrade stops Coach safely and restarts it if it was
+              running. A stopped Coach stays stopped. Finish or cancel previews
+              and Operator chat first. Native sessions close; actions are never
+              replayed.
             </p>
             <div id="updateConfirm" class="update-confirm" hidden>
               <h3>Install this source revision?</h3>
               <code id="updateTarget"></code>
               <p>
                 This downloads and builds code from the official repository,
-                then briefly restarts Studio. Only continue if you trust this
-                source. Keep this tab open; a disconnect is not confirmation of
+                then briefly restarts Studio. Coach is stopped safely and
+                restarted only if it was running; a stopped Coach stays stopped.
+                Native sessions close and actions are never replayed. Only
+                continue if you trust this source. The launcher completes the
+                operation even if this tab closes. A disconnect is not proof of
                 success.
               </p>
               <button id="updateConfirmApply">Install and restart</button>
@@ -503,6 +507,13 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
         </section>
       </div>
       <p id="notice" role="status" aria-live="polite"></p>
+      <p id="restartStatus" role="status" aria-live="polite"></p>
+      <button id="restartRetry" class="secondary" hidden>
+        Retry Coach restart
+      </button>
+      <button id="restartCheck" class="secondary" hidden>
+        Check operation status
+      </button>
     </main>
     <script src="/terminal.js"></script>
     <script src="/app.js"></script>

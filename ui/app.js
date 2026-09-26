@@ -84,6 +84,130 @@ const fields = [
   "markdown",
 ];
 const notice = (t) => ($("notice").textContent = t);
+let lifecycleBusy = false;
+let lifecycleUncertain = false;
+let lifecycleOperation;
+let serverTransition = false;
+let statusEpoch = 0;
+let updateRecoveryVisible = false;
+const restartExplanation =
+  "Coach will stop safely, apply this operation, then restart only if it was running. A stopped Coach stays stopped. Native sessions close; chat and actions are never replayed.";
+function showLifecycle(value) {
+  if (!value) return;
+  const complete = value.phase === "complete";
+  const failedRestart =
+    complete && value.wasRunning && !value.resumed && !value.running;
+  $("restartStatus").textContent = value.applicationUncertain
+    ? "Application outcome is unconfirmed. " + value.hint
+    : !complete
+      ? "Coach operation in progress: " +
+        value.phase +
+        ". Closing this tab does not cancel it."
+      : failedRestart
+        ? (value.applied
+            ? "Applied, but Coach is not running. "
+            : "Nothing applied; Coach is not running. ") +
+          (value.hint || "Check Worker status before restarting.")
+        : value.error && value.running && !value.resumed
+          ? "Nothing applied. Coach is still running the previous saved configuration. " +
+            (value.hint ||
+              "Safe shutdown failed; check Worker and native session status before retrying.")
+          : value.error
+            ? "Nothing applied. " +
+              (value.resumed
+                ? "The previous configuration is running again. "
+                : "") +
+              (value.hint || "Check the retained draft.")
+            : value.resumed
+              ? value.applied
+                ? "Operation complete. Coach restarted with the saved configuration."
+                : "The change was not applied. Coach is running the previous saved configuration."
+              : "Operation complete. Coach remains stopped.";
+  $("restartRetry").hidden =
+    !failedRestart || value.error !== "COACH_RESTART_FAILED";
+}
+async function lifecycleApi(path, body, alreadyConfirmed = false) {
+  if (lifecycleBusy || lifecycleUncertain) return null;
+  const generation = authGeneration;
+  lifecycleBusy = true;
+  renderUpdate();
+  try {
+    const state = await api("status", undefined, AbortSignal.timeout(10000));
+    let accepted = alreadyConfirmed;
+    if (
+      !alreadyConfirmed &&
+      (state.state !== "stopped" || state.nativeActive)
+    ) {
+      if (
+        !confirm(
+          restartExplanation +
+            (path === "preview"
+              ? " Pause, preview, and resume now?"
+              : " Apply now?"),
+        )
+      ) {
+        notice(
+          "Operation cancelled. No settings changed and Coach was not stopped.",
+        );
+        return null;
+      }
+      accepted = true;
+    }
+    const mutation = path !== "preview";
+    lifecycleOperation = mutation ? crypto.randomUUID() : undefined;
+    const result = await api(
+      path,
+      {
+        ...body,
+        confirmRestart: accepted,
+        ...(mutation
+          ? {
+              operationId: lifecycleOperation,
+              expectedRevision: config.revision,
+            }
+          : {}),
+      },
+      AbortSignal.timeout(90000),
+    );
+    showLifecycle(result.lifecycle);
+    return result;
+  } catch (error) {
+    if (generation !== authGeneration) throw error;
+    if (error.lifecycle) showLifecycle(error.lifecycle);
+    if (!error.status) {
+      lifecycleUncertain = true;
+      $("restartCheck").hidden = false;
+      notice(
+        "Connection lost. The server may still apply and restart Coach. Your draft is retained; check operation status before saving again.",
+      );
+      return null;
+    }
+    throw error;
+  } finally {
+    if (generation === authGeneration) {
+      lifecycleBusy = false;
+      renderUpdate();
+    }
+  }
+}
+action("restartCheck", async () => {
+  await status();
+});
+action("restartRetry", async () => {
+  if (lifecycleBusy) return;
+  const generation = authGeneration;
+  lifecycleBusy = true;
+  renderUpdate();
+  try {
+    await api(updateData?.recovering ? "update/resume" : "run", {});
+    await status();
+  } finally {
+    if (generation === authGeneration) {
+      lifecycleBusy = false;
+      renderUpdate();
+    }
+  }
+});
 async function api(path, body, signal) {
   const generation = authGeneration,
     requestKey = key;
@@ -144,6 +268,7 @@ async function api(path, body, signal) {
     const error = new Error(data.error + (data.hint ? " — " + data.hint : ""));
     error.status = r.status;
     error.code = data.error;
+    error.lifecycle = data.lifecycle;
     if (path === "operator/chat" && Array.isArray(data.actions))
       error.actions = data.actions;
     if (path === "operator/chat" && Array.isArray(data.turnActions))
@@ -213,7 +338,7 @@ action("save", async () => {
     );
     return;
   }
-  await api("config", {
+  const result = await lifecycleApi("config", {
     persona,
     origin: $("origin").value,
     token: $("token").value,
@@ -234,8 +359,13 @@ action("save", async () => {
       })),
     },
   });
+  if (!result) return;
   await load();
-  notice("Saved. Preview this revision before starting the worker.");
+  notice(
+    result.lifecycle?.resumed
+      ? "Saved. Coach restarted with the new revision."
+      : "Saved. Check Coach status below.",
+  );
 });
 // Models registry editor. The draft lives in memory and in hidden-not-removed
 // panels; nothing here contacts the Studio server or any provider until Save.
@@ -720,7 +850,7 @@ action("restorePersona", async () => {
   const unsaved = fields.some((f) => $(f).value !== config.persona[f]);
   if (
     !confirm(
-      `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Kata.fit and Models settings and credentials will not change. Unsaved Kata.fit and Models drafts will remain unsaved. History is kept.`,
+      `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Kata.fit and Models settings and credentials will not change. Unsaved Kata.fit and Models drafts will remain unsaved. History is kept. ${restartExplanation}`,
     )
   ) {
     notice("Restore cancelled. No settings changed.");
@@ -729,7 +859,7 @@ action("restorePersona", async () => {
   historyBusy = true;
   $("restorePersona").disabled = true;
   try {
-    await api("persona-restore", { revision });
+    if (!(await lifecycleApi("persona-restore", { revision }, true))) return;
     await load(true);
     $("personaHistory").querySelector("summary").focus({ preventScroll: true });
     notice(
@@ -773,6 +903,7 @@ function chatKeyboard(inputId, sendId) {
 chatKeyboard("question", "previewButton");
 let previewBusy = false;
 action("previewButton", async () => {
+  const generation = authGeneration;
   if (!key || previewBusy || !$("question").value.trim()) return;
   if (hasUnsavedEdits()) {
     notice(
@@ -788,12 +919,14 @@ action("previewButton", async () => {
   $("previewButton").disabled = true;
   let r;
   try {
-    r = await api("preview", { text: $("question").value });
+    r = await lifecycleApi("preview", { text: $("question").value });
   } finally {
-    previewBusy = false;
-    $("previewButton").disabled =
-      updatePending || updateData?.applying === true;
+    if (generation === authGeneration) {
+      previewBusy = false;
+      renderUpdate();
+    }
   }
+  if (!r || generation !== authGeneration) return;
   $("answer").textContent = r.text;
   $("prompt").textContent = r.prompt;
   notice("Preview complete · revision " + r.revision);
@@ -835,13 +968,27 @@ action("export", async () => {
 async function status() {
   if (!key || document.hidden) return;
   const generation = authGeneration;
+  const epoch = ++statusEpoch;
   try {
     const s = await api("status");
-    if (generation !== authGeneration) return;
+    if (generation !== authGeneration || epoch !== statusEpoch) return;
+    serverTransition = s.transition === true;
     workerState = s.state;
+    if (s.lifecycle) showLifecycle(s.lifecycle);
+    if (
+      lifecycleUncertain &&
+      s.lifecycle?.phase === "complete" &&
+      (!lifecycleOperation || s.lifecycle.id === lifecycleOperation)
+    ) {
+      lifecycleUncertain = false;
+      $("restartCheck").hidden = true;
+      notice(
+        "Operation status recovered. Your draft is retained. Check the saved revision before applying further edits.",
+      );
+      if (s.lifecycle.applied) config.revision = s.revision;
+    }
     renderHeaderStatus();
-    updateWorkerBlocked =
-      s.state !== "stopped" || s.preview === true || s.operatorChat === true;
+    updateWorkerBlocked = s.preview === true || s.operatorChat === true;
     renderUpdate();
     $("lastError").textContent = s.lastError
       ? "Last error · " +
@@ -1259,7 +1406,10 @@ function safeUpdateOperation(outcome) {
 }
 function renderHeaderStatus() {
   if (!key || $("studio").hidden) return;
-  if (updatePending || updateData?.applying === true) {
+  if (lifecycleBusy || lifecycleUncertain || serverTransition) {
+    $("state").textContent = "APPLYING";
+    $("state").dataset.tone = "busy";
+  } else if (updatePending || updateData?.applying === true) {
     $("state").textContent = "UPGRADING";
     $("state").dataset.tone = "busy";
   } else if (workerState) {
@@ -1273,7 +1423,13 @@ function renderUpdate() {
   $("restorePersona").disabled =
     historyBusy || updatePending || data?.applying === true;
   if (!data) return;
-  const locked = updatePending || data.applying;
+  const locked =
+    updatePending ||
+    data.applying ||
+    data.recovering ||
+    lifecycleBusy ||
+    lifecycleUncertain ||
+    serverTransition;
   const outcome = safeUpdateOperation(data.lastOperation);
   const failed = outcome && ["failed", "interrupted"].includes(outcome.state);
   const failedLatest =
@@ -1395,8 +1551,26 @@ function renderUpdate() {
     "connect",
     "cancel",
   ])
-    $(id).disabled = locked || (id === "restorePersona" && historyBusy);
+    $(id).disabled =
+      (locked && !(id === "cancel" && previewBusy)) ||
+      (id === "restorePersona" && historyBusy);
   editorsLocked = locked;
+  $("restartRetry").disabled = lifecycleBusy || data.applying;
+  if (
+    data.recovering &&
+    !data.applying &&
+    data.autoOutcome?.state === "resume-failed"
+  ) {
+    updateRecoveryVisible = true;
+    $("restartStatus").textContent =
+      "The source operation finished, but Coach restart is not confirmed. Retry starts only the saved configuration; it does not reinstall or replay actions. The launcher will also retry recovery.";
+    $("restartRetry").hidden = false;
+  } else if (updateRecoveryVisible && !data.recovering) {
+    updateRecoveryVisible = false;
+    $("restartRetry").hidden = true;
+    $("restartStatus").textContent =
+      "Launcher recovery completed. Check Worker status for current connectivity.";
+  }
   applyEditorLock();
   $("updateSource").hidden = !sourceSha(data.latest);
   if (sourceSha(data.latest))
@@ -1436,7 +1610,12 @@ async function refreshUpdate(check = false) {
     if (key && !document.hidden && !$("studio").hidden)
       updateTimer = setTimeout(
         () => refreshUpdate(),
-        updatePending || updateData?.applying || updateError ? 2000 : 30000,
+        updatePending ||
+          updateData?.applying ||
+          updateData?.recovering ||
+          updateError
+          ? 2000
+          : 30000,
       );
   }
 }
@@ -1465,9 +1644,18 @@ action("updateApply", async () => {
   }
   await status();
   if (generation !== authGeneration) return;
+  if (
+    workerState !== "stopped" &&
+    updateData?.manualRestartSupported !== true
+  ) {
+    notice(
+      "Launcher upgrade required: this older launcher cannot restart running Coach after a manual upgrade. Nothing was stopped or applied. Replace the stable launcher using the same Coach home. Settings and preview restarts are available without it.",
+    );
+    return;
+  }
   if (updateWorkerBlocked) {
     notice(
-      "Pause the worker and finish or cancel preview and operator chat before upgrading.",
+      "Finish or cancel preview and Operator chat before upgrading. Coach will be restarted automatically after confirmation.",
     );
     return;
   }
@@ -1546,6 +1734,16 @@ function lockSession(message) {
   native.reset();
   authGeneration++;
   key = "";
+  lifecycleBusy = false;
+  lifecycleUncertain = false;
+  lifecycleOperation = undefined;
+  serverTransition = false;
+  updateRecoveryVisible = false;
+  statusEpoch++;
+  previewBusy = false;
+  $("restartRetry").hidden = true;
+  $("restartCheck").hidden = true;
+  $("restartStatus").textContent = "";
   rememberAdmin("");
   config = undefined;
   // Typed provider keys never outlive the authenticated session.
@@ -1628,7 +1826,17 @@ async function loadOperator() {
   }
 }
 $("operatorReconcile").onclick = () => loadOperator();
-const native = nativeTerminal({ api, authorized: () => !!key });
+const native = nativeTerminal({
+  api,
+  authorized: () =>
+    !!key &&
+    !lifecycleBusy &&
+    !lifecycleUncertain &&
+    !serverTransition &&
+    !updatePending &&
+    !updateData?.applying &&
+    !updateData?.recovering,
+});
 
 // Member feed data never crosses into operator state or browser storage.
 let members = [],

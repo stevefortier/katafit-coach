@@ -15,6 +15,8 @@ export class Updates {
   latest: string | null = null;
   checkedAt = 0;
   applying = false;
+  manualRestartSupported = false;
+  recovering = false;
   cleanupWarning = false;
   autoOutcome?: {
     sha: string;
@@ -45,6 +47,8 @@ export class Updates {
       checkedAt: this.checkedAt,
       supported: !!this.applyTarget,
       applying: this.applying,
+      manualRestartSupported: this.manualRestartSupported,
+      recovering: this.recovering,
       guidance: this.guidance,
       lastOperation: this.lastOperation,
       autoOutcome: this.autoOutcome,
@@ -60,7 +64,7 @@ export class Updates {
     if (!this.applyTarget) throw new Error("UNSUPPORTED_INSTALLATION");
     return sha;
   }
-  async apply(value: unknown) {
+  async apply(value: unknown, _resume = false) {
     const sha = this.validate(value);
     this.applying = true;
     this.cleanupWarning = false;

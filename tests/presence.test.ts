@@ -7,6 +7,8 @@ import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { Worker } from "../src/worker/runner.js";
 import { Client } from "../src/katafit/client.js";
+import { Updates } from "../src/update/updates.js";
+import { AutoUpdateSetting } from "../src/update/auto.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -657,6 +659,321 @@ test("Studio on old backend marks presence unsupported but remains runnable", as
   } finally {
     await app.close();
     await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("auto quiesce rejects an unconfirmed stop and retains running intent across lost replies", async () => {
+  const f = await backend({ refuseStopped: true });
+  const dir = await mkdtemp(tmpdir() + "/auto-presence-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-provider-key",
+  });
+  const app = await admin(
+    store,
+    0,
+    undefined,
+    undefined,
+    new Updates(null, async () => {}),
+    new AutoUpdateSetting(dir),
+  );
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string) =>
+    fetch(app.origin + "/api/" + path, { method: "POST", headers, body: "{}" });
+  const status = async () =>
+    (await fetch(app.origin + "/api/status", { headers })).json();
+  try {
+    assert.equal((await post("run")).status, 200);
+    for (let i = 0; i < 100 && (await status()).state !== "idle"; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.equal((await status()).state, "idle");
+    // Ignore the first body, as if its acknowledgment were lost in transit.
+    assert.equal((await post("update/auto/quiesce")).status, 409);
+    for (let i = 0; i < 2; i++) {
+      const retry = await post("update/auto/quiesce");
+      assert.equal(retry.status, 409, "stopped is not safe to replace");
+      assert.equal((await retry.json()).error, "WORKER_STOP_UNCONFIRMED");
+      const state = await status();
+      assert.equal(state.state, "stopped");
+      assert.equal(state.presence, "unconfirmed");
+      assert.equal(state.autoQuiesced, true);
+      assert.equal(
+        state.autoQuiesceReady,
+        true,
+        "settled for owner recovery, not install approval",
+      );
+      assert.equal(
+        state.autoWasRunning,
+        true,
+        "retain pre-stop intent until owner reads it",
+      );
+    }
+    assert.equal((await post("terminal/ticket")).status, 409);
+    assert.equal((await post("update/auto/release")).status, 200);
+    assert.equal(
+      (await post("run")).status,
+      400,
+      "release cannot waive stop safety",
+    );
+    assert.equal((await post("update/auto/quiesce")).status, 409);
+    assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
+  } finally {
+    await app.close();
+    await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+for (const loseReply of [false, true])
+  test(`owner retains unsafe auto-stop recovery without staging (lost reply=${loseReply})`, async () => {
+    const { supervise } = await import("./helpers/legacy-supervisor.js");
+    const f = await backend({ refuseStopped: true });
+    const dir = await mkdtemp(tmpdir() + "/auto-owner-presence-");
+    const store = new Store(dir);
+    await store.init();
+    await store.save({
+      ...store.publicConfig(),
+      origin: f.origin,
+      token: "synthetic-token",
+      apiKey: "synthetic-provider-key",
+    });
+    let prepares = 0,
+      checks = 0;
+    const owner = await supervise(store, 0, undefined, {
+      prepare: async () => {
+        prepares++;
+        throw Error("must not stage");
+      },
+      request: async (url) => {
+        checks++;
+        return new Response(
+          JSON.stringify(
+            String(url).includes("/compare/")
+              ? { status: "ahead", ahead_by: 1 }
+              : { object: { sha: "e".repeat(40) } },
+          ),
+        );
+      },
+    });
+    owner.updates.installed = "b".repeat(40);
+    const setting = new AutoUpdateSetting(dir);
+    await setting.write(true);
+    const headers = {
+      Authorization: "Bearer " + store.secrets.admin,
+      Origin: owner.origin,
+      "Content-Type": "application/json",
+    };
+    const originalFetch = globalThis.fetch;
+    try {
+      assert.equal(
+        (
+          await fetch(owner.origin + "/api/run", {
+            method: "POST",
+            headers,
+            body: "{}",
+          })
+        ).status,
+        200,
+      );
+      let state;
+      for (let i = 0; i < 100; i++) {
+        state = await (
+          await fetch(owner.origin + "/api/status", { headers })
+        ).json();
+        if (state.state === "idle") break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      assert.equal(state.state, "idle");
+      if (loseReply)
+        globalThis.fetch = async (input, init) => {
+          const result = await originalFetch(input, init);
+          if (String(input).endsWith("/api/update/auto/quiesce"))
+            throw Error("synthetic lost stop reply");
+          return result;
+        };
+      await owner.auto.tick();
+      globalThis.fetch = originalFetch;
+      assert.equal(
+        owner.updates.snapshot().autoOutcome?.state,
+        "resume-failed",
+      );
+      const checksBefore = checks;
+      owner.updates.checkedAt = 0;
+      await owner.auto.tick();
+      assert.equal(
+        checks,
+        checksBefore,
+        "recover prior intent before source checks",
+      );
+      assert.equal(
+        owner.updates.snapshot().autoOutcome?.state,
+        "resume-failed",
+      );
+      assert.equal(prepares, 0);
+      assert.equal(await setting.failedTarget(), null);
+      assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await owner.close();
+      await f.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+for (const refuseStopped of [false, true])
+  test(`confirmed apply preserves presence fencing (stop refused=${refuseStopped})`, async () => {
+    const f = await backend({ refuseStopped });
+    const dir = await mkdtemp(tmpdir() + "/apply-presence-");
+    const store = new Store(dir);
+    await store.init();
+    await store.save({
+      ...store.publicConfig(),
+      origin: f.origin,
+      token: "synthetic-token",
+      apiKey: "synthetic-provider-key",
+    });
+    const app = await admin(store, 0);
+    const headers = {
+      Authorization: "Bearer " + store.secrets.admin,
+      Origin: app.origin,
+      "Content-Type": "application/json",
+    };
+    const post = (path: string, body: unknown = {}) =>
+      fetch(app.origin + "/api/" + path, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+    try {
+      assert.equal((await post("run")).status, 200);
+      const revision = store.publicConfig().revision;
+      const payload = {
+        ...store.publicConfig(),
+        persona: {
+          ...store.publicConfig().persona,
+          name: "Synthetic replacement",
+        },
+      };
+      assert.equal((await post("config", payload)).status, 409);
+      assert.equal(store.publicConfig().revision, revision);
+      assert.equal(
+        f.reports.filter((r) => r.state === "stopped").length,
+        0,
+        "no stop without confirmation",
+      );
+      const result = await post("config", { ...payload, confirmRestart: true });
+      if (refuseStopped) {
+        assert.equal(result.status, 400);
+        assert.equal((await result.json()).error, "WORKER_STOP_UNCONFIRMED");
+        assert.equal(store.publicConfig().revision, revision);
+        assert.equal(
+          (await post("run")).status,
+          400,
+          "Run must not bypass stop uncertainty",
+        );
+        assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
+      } else {
+        assert.equal(result.status, 200);
+        assert.equal((await result.json()).lifecycle.resumed, true);
+        assert.deepEqual(
+          f.reports.map((r) => r.state),
+          ["running", "stopped", "running"],
+        );
+        assert.notEqual(f.reports[0].instance_id, f.reports[2].instance_id);
+      }
+    } finally {
+      await app.close();
+      await f.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+test("running provider switch captures each endpoint with only its bound key", async () => {
+  const f = await backend({ queued: true });
+  const dir = await mkdtemp(tmpdir() + "/apply-binding-");
+  const received: Array<[string, string | undefined]> = [];
+  const provider = createServer((req, res) => {
+    received.push([req.url!, req.headers.authorization]);
+    res.end("synthetic");
+  });
+  await new Promise<void>((r) => provider.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(provider.address() as any).port}`;
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    provider: { baseUrl: base + "/alpha", model: "synthetic", vision: false },
+    apiKey: "synthetic-bound-alpha",
+  });
+  const app = await admin(
+    store,
+    0,
+    async (provider, _system, _text, signal) => {
+      await fetch(provider.baseUrl, {
+        headers: { Authorization: "Bearer " + provider.apiKey },
+        signal,
+      });
+      await new Promise<void>((_resolve, reject) => {
+        if (signal.aborted) reject(Error("CANCELLED"));
+        else
+          signal.addEventListener("abort", () => reject(Error("CANCELLED")), {
+            once: true,
+          });
+      });
+      return "never published";
+    },
+  );
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string, body: unknown = {}) =>
+    fetch(app.origin + "/api/" + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  try {
+    await post("run");
+    await waitFor(() => received.length === 1);
+    const saved = await post("config", {
+      ...store.publicConfig(),
+      provider: {
+        baseUrl: base + "/bravo",
+        model: "synthetic-new",
+        vision: true,
+      },
+      apiKey: "synthetic-bound-bravo",
+      confirmRestart: true,
+    });
+    assert.equal(saved.status, 200, await saved.clone().text());
+    await waitFor(() => received.length === 2);
+    assert.deepEqual(received, [
+      ["/alpha", "Bearer synthetic-bound-alpha"],
+      ["/bravo", "Bearer synthetic-bound-bravo"],
+    ]);
+    assert.equal(
+      f.calls.includes("coach_respond_request"),
+      false,
+      "interrupted old chat is never replayed or published",
+    );
+  } finally {
+    await app.close();
+    await f.close();
+    provider.closeAllConnections();
+    await new Promise<void>((r) => provider.close(() => r()));
     await rm(dir, { recursive: true, force: true });
   }
 });
