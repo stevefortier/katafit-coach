@@ -50,20 +50,42 @@
           </button>
         </nav>
         <section id="coachPanel" class="card">
-          <div
-            id="conversationTabs"
-            class="conversation-tabs"
-            aria-label="Conversations"
-          >
-            <button id="operatorTab" aria-pressed="true">Operator</button>
-          </div>
-          <div class="chat-actions">
-            <button id="membersRefresh" class="secondary">
-              Refresh members</button
-            ><button id="membersMore" class="secondary" hidden>
-              More members
+          <div class="conversation-toolbar">
+            <div
+              id="conversationTabs"
+              class="conversation-tabs"
+              aria-label="Conversations"
+            >
+              <button id="operatorTab" aria-pressed="true">Operator</button>
+            </div>
+            <button
+              id="membersRefresh"
+              class="secondary"
+              type="button"
+              aria-label="Refresh members"
+              title="Refresh members"
+            >
+              <svg
+                aria-hidden="true"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M20 7v5h-5M4 17v-5h5" />
+                <path
+                  d="M6.1 7a7 7 0 0 1 11.55-1L20 9M4 15l2.35 3A7 7 0 0 0 17.9 17"
+                />
+              </svg>
             </button>
           </div>
+          <button id="membersMore" class="secondary" hidden>
+            More members
+          </button>
           <p id="membersStatus" class="hint" role="status"></p>
           <div id="operatorView">
             <h2>Operator · Native Pi</h2>
@@ -99,7 +121,6 @@
             </button>
           </div>
           <section id="memberView" hidden>
-            <h2 id="memberTitle">Member conversation</h2>
             <p id="memberStatus" role="status"></p>
             <button id="memberMore" class="secondary" hidden>
               Load older items
