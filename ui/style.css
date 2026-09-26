@@ -7,7 +7,7 @@
   height: 540px;
   max-width: 100%;
   overflow: hidden;
-  background: #10151b;
+  background: #101010;
   padding: 8px;
   margin: 12px 0;
 }
@@ -23,11 +23,11 @@
 
 :root {
   color-scheme: dark;
-  --bg: #101715;
-  --panel: #17221e;
-  --line: #33463c;
-  --muted: #a6b7ac;
-  --accent: #c8dec0;
+  --bg: #0b0b0b;
+  --panel: #171717;
+  --line: #383838;
+  --muted: #b3b3b3;
+  --accent: #eeeeee;
 }
 * {
   box-sizing: border-box;
@@ -38,7 +38,7 @@ body {
   font:
     15px/1.6 system-ui,
     sans-serif;
-  color: #edf2e9;
+  color: #f0f0f0;
 }
 main {
   width: 100%;
@@ -69,7 +69,7 @@ header {
 .pill {
   border: 1px solid var(--line);
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   font-size: 12px;
   color: var(--muted);
 }
@@ -96,15 +96,28 @@ header {
 .settings-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 8px 0 20px;
+  gap: 0 16px;
+  margin: 0 0 20px;
+  border-bottom: 1px solid var(--line);
 }
-.settings-tabs button {
+.settings-tabs button,
+.settings-tabs button.secondary,
+.conversation-tabs button,
+.conversation-tabs button.secondary {
   min-height: 44px;
-  flex: 1 1 auto;
+  margin: 0;
+  padding: 10px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
 }
-.settings-tabs button[aria-selected="true"] {
-  box-shadow: inset 0 -3px 0 #53744b;
+.settings-tabs button[aria-selected="true"],
+.conversation-tabs button[aria-pressed="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
 }
 .settings-tabs button:focus-visible,
 #settingsPanel [role="tabpanel"]:focus-visible {
@@ -139,7 +152,7 @@ nav a {
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 20px;
   min-width: 0;
 }
@@ -147,7 +160,7 @@ label {
   min-width: 0;
   display: block;
   font-size: 12px;
-  color: #cad5cc;
+  color: #cccccc;
   margin: 18px 0 7px;
 }
 input,
@@ -160,10 +173,10 @@ select {
   min-width: 0;
   max-width: 100%;
   margin-top: 8px;
-  background: #101a15;
-  border: 1px solid #3c4d41;
-  border-radius: 7px;
-  color: #edf2e9;
+  background: #101010;
+  border: 1px solid #474747;
+  border-radius: 0;
+  color: #f0f0f0;
   padding: 11px 12px;
 }
 textarea {
@@ -193,9 +206,9 @@ select:focus {
 }
 button {
   border: 1px solid var(--accent);
-  border-radius: 7px;
+  border-radius: 0;
   background: var(--accent);
-  color: #172517;
+  color: #171717;
   padding: 11px 17px;
   font: 600 13px system-ui;
   cursor: pointer;
@@ -203,11 +216,15 @@ button {
 }
 button.secondary {
   background: transparent;
-  color: #d4dfd3;
-  border-color: #4e6353;
+  color: #dddddd;
+  border-color: #626262;
 }
-button:hover {
+button:hover:not(:disabled) {
   filter: brightness(1.12);
+}
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 button:disabled {
   opacity: 0.5;
@@ -223,7 +240,7 @@ summary {
 }
 .history-list button[aria-pressed="true"] {
   border-color: var(--accent);
-  background: #30452f;
+  background: #303030;
   outline: 1px solid currentColor;
 }
 #historySnapshot dt {
@@ -246,10 +263,10 @@ pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 14px/1.7 system-ui;
-  background: #101a15;
-  border-radius: 8px;
+  background: #101010;
+  border-radius: 0;
   padding: 20px;
-  color: #cbd9ca;
+  color: #d0d0d0;
   max-height: 420px;
   max-width: 100%;
   overflow: auto;
@@ -268,9 +285,9 @@ pre {
 #notice {
   position: sticky;
   bottom: 15px;
-  background: #233426;
+  background: #242424;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 12px 18px;
   min-height: 0;
 }
@@ -318,7 +335,7 @@ pre {
   flex: 0 0 18px;
   margin: 2px 0 0;
   padding: 0;
-  accent-color: #d4f5a0;
+  accent-color: var(--accent);
 }
 
 .diagnostics {
@@ -340,7 +357,7 @@ pre {
   overflow: auto;
 }
 .log-entry {
-  border-left: 3px solid #619888;
+  border-left: 3px solid #808080;
   padding: 12px 16px;
   margin: 12px 0;
   background: var(--bg);
@@ -363,7 +380,7 @@ pre {
   max-height: 320px;
   overflow: auto;
   padding: 12px;
-  background: #0d1513;
+  background: #101010;
   font-size: 0.85rem;
 }
 .log-error {
@@ -406,7 +423,7 @@ header {
 }
 .update-versions > div {
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0;
   padding: 16px;
   min-width: 0;
 }
@@ -421,7 +438,7 @@ header {
 .update-confirm {
   background: var(--bg);
   border: 1px solid var(--accent);
-  border-radius: 10px;
+  border-radius: 0;
   padding: 20px;
 }
 #updateSource {
@@ -442,7 +459,7 @@ header {
   background: #321c20;
   border: 1px solid #c85c65;
   border-left-width: 4px;
-  border-radius: 8px;
+  border-radius: 0;
   padding: 16px;
   font-weight: 600;
 }
@@ -458,24 +475,81 @@ header {
 [hidden] {
   display: none !important;
 }
+/* Primary route tabs connect directly to the shared content frame. */
 .studio-tabs {
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 4px;
+  flex-wrap: nowrap;
+  margin: 8px 0 0;
+  border-bottom: 1px solid var(--line);
 }
-.log-controls button,
 .studio-tabs button {
+  min-width: 0;
+  min-height: 48px;
+  flex: 0 1 160px;
+  margin: 0 0 -1px;
+  padding: 12px 10px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+  position: relative;
+  white-space: nowrap;
+}
+.studio-tabs button[aria-pressed="true"] {
+  border-color: var(--line);
+  border-bottom-color: var(--panel);
+  background: var(--panel);
+  color: var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent);
+  z-index: 1;
+}
+.studio-tabs button:hover:not(:disabled) {
+  color: #ffffff;
+  filter: none;
+}
+.studio-tabs button:focus-visible {
+  outline-offset: -5px;
+}
+#coachPanel,
+#settingsPanel,
+#diagnostics {
+  border-top: 0;
+  margin-top: 0;
+}
+#settingsPanel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-top: 0;
+  padding: 20px;
+}
+@media (max-width: 760px) {
+  #settingsPanel {
+    padding: 16px;
+  }
+  .studio-tabs button {
+    flex: 1 1 0;
+    padding-inline: 6px;
+    font-size: 12px;
+  }
+}
+.log-controls button {
   min-height: 44px;
   flex: 1 1 auto;
 }
 .conversation-tabs {
   display: flex;
-  gap: 8px;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
   overflow-x: auto;
   max-width: 100%;
   flex-wrap: nowrap;
 }
 .conversation-tabs button {
   flex: 0 0 auto;
+}
+.conversation-tabs button:focus-visible {
+  outline-offset: -3px;
 }
 #coachPanel,
 #settingsPanel {
@@ -488,7 +562,7 @@ header {
   overflow-wrap: anywhere;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 0;
   background: var(--bg);
 }
 .chat-message {
@@ -512,7 +586,7 @@ header {
 }
 .chat-user {
   margin-left: auto;
-  background: #2c3d2e;
+  background: #303030;
 }
 .chat-actions {
   display: flex;
@@ -626,10 +700,10 @@ header {
 
 /* Models registry editor. */
 .active-badge {
-  color: #edf2e9;
-  border: 1px solid #397753;
-  background: #193826;
-  border-radius: 7px;
+  color: #f0f0f0;
+  border: 1px solid var(--line);
+  background: #242424;
+  border-radius: 0;
   padding: 10px 12px;
   margin: 0 0 8px;
 }
@@ -643,7 +717,7 @@ header {
 .provider-card {
   min-width: 0;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 4px 16px 12px;
   margin: 16px 0;
 }
@@ -659,9 +733,9 @@ header {
 .saved-badge {
   margin-left: auto;
   font-size: 12px;
-  color: #9ee3ae;
-  border: 1px solid #397753;
-  border-radius: 6px;
+  color: #dddddd;
+  border: 1px solid #626262;
+  border-radius: 0;
   padding: 0 8px;
   white-space: nowrap;
 }
