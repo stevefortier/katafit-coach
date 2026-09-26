@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
-import { Client } from "../katafit/client.js";
+import {
+  Client,
+  type BackendLogger,
+  type ResponseDecoder,
+} from "../katafit/client.js";
 import { openOperatorTools } from "../katafit/operatorTools.js";
 
 class NativeClient extends Client {
@@ -11,10 +15,11 @@ class NativeClient extends Client {
     body?: unknown,
     budget?: number,
     limit?: number,
+    decode?: ResponseDecoder,
   ) {
     return super
       .withSignal(this.requestSignal)
-      .fetch(path, body, budget, limit);
+      .fetch(path, body, budget, limit, decode);
   }
   override async rpc(
     method: string,
@@ -22,9 +27,10 @@ class NativeClient extends Client {
     notification = false,
     budget?: number,
     limit?: number,
+    validate?: (value: any) => any,
   ): Promise<any> {
     if (method !== "tools/list")
-      return super.rpc(method, params, notification, budget, limit);
+      return super.rpc(method, params, notification, budget, limit, validate);
     const tools: any[] = [];
     const cursors = new Set<string>();
     const names = new Set<string>();
@@ -65,6 +71,7 @@ class NativeClient extends Client {
 }
 
 export interface NativeGatewayHooks {
+  onDiagnostic?: BackendLogger;
   /**
    * Continuity was denied, expired or became unknown. The gateway is already
    * closed; the owner must destroy the complete runtime (process, transcript
@@ -101,10 +108,15 @@ export async function openNativeGateway(
         secrets[k as keyof typeof secrets] ===
         store.secrets[k as keyof typeof secrets],
     );
-  const actions = new Actions(store);
+  const actions = new Actions(store, hooks.onDiagnostic);
   if (actions.snapshot().some((a) => ["pending", "unknown"].includes(a.status)))
     throw new Error("DELIVERY_UNVERIFIED");
-  const client = new NativeClient(config.origin, secrets.token, lifetime);
+  const client = new NativeClient(
+    config.origin,
+    secrets.token,
+    lifetime,
+    hooks.onDiagnostic,
+  );
   const session = await openOperatorTools(client, undefined, {
     secrets: Object.values(secrets),
     current,
@@ -115,6 +127,7 @@ export async function openNativeGateway(
       config.origin,
       secrets.token,
       new AbortController().signal,
+      hooks.onDiagnostic,
     ),
     continuity: true,
   });

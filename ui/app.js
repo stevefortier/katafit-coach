@@ -1174,10 +1174,23 @@ function filteredLogs() {
     (e) => $("logLevel").value === "all" || e.level === $("logLevel").value,
   );
 }
+let logNodes = new Map();
 function renderLogs() {
   const rows = filteredLogs();
-  $("logRows").replaceChildren();
+  const nextNodes = new Map();
+  const occurrences = new Map();
+  const ordered = [];
   for (const e of [...rows].reverse()) {
+    const serialized = JSON.stringify(e);
+    const occurrence = occurrences.get(serialized) ?? 0;
+    occurrences.set(serialized, occurrence + 1);
+    const nodeKey = serialized + ":" + occurrence;
+    const existing = logNodes.get(nodeKey);
+    if (existing) {
+      nextNodes.set(nodeKey, existing);
+      ordered.push(existing);
+      continue;
+    }
     const row = document.createElement("article");
     row.className = "log-entry log-" + e.level;
     const title = document.createElement("strong");
@@ -1195,6 +1208,13 @@ function renderLogs() {
       " · " +
       JSON.stringify(e.metadata);
     row.append(title, meta);
+    if (e.backendCall) {
+      const call = e.backendCall;
+      const summary = document.createElement("p");
+      summary.className = "backend-call-summary";
+      summary.textContent = `${call.method} ${call.route} · ${call.operation ?? "request"}${call.tool ? " / " + call.tool : ""} · ${e.metadata.elapsedMs ?? "?"} ms${e.metadata.statusCode ? " · HTTP " + e.metadata.statusCode : ""} · ${call.outcome}`;
+      row.insertBefore(summary, meta);
+    }
     if (e.shape) {
       const shape = document.createElement("p");
       shape.textContent = `Outbound: ${e.shape.toolChoice} · ${e.shape.toolCount} native tools (${e.shape.toolNames.join(", ")}) · ${e.shape.messageCount} messages · last ${e.shape.lastRole}/${e.shape.lastContentShape}`;
@@ -1251,11 +1271,24 @@ function renderLogs() {
       details.append(summary, reason, text);
       row.append(details);
     }
-    $("logRows").append(row);
+    nextNodes.set(nodeKey, row);
+    ordered.push(row);
   }
+  // Reuse unchanged rows (including open disclosures) rather than rebuilding
+  // 5000 articles every live poll. No display cap; exports use the same filter.
+  const container = $("logRows");
+  const keep = new Set(ordered);
+  for (const child of [...container.childNodes])
+    if (!keep.has(child)) child.remove();
+  let cursor = container.firstChild;
+  for (const row of ordered) {
+    if (row !== cursor) container.insertBefore(row, cursor);
+    else cursor = cursor.nextSibling;
+  }
+  logNodes = nextNodes;
   if (!rows.length) $("logRows").textContent = "No entries match this level.";
   $("logStatus").textContent =
-    `${rows.length} shown / ${logData.entries.length} retained (max ${logData.capacity ?? 500}) · ${logPaused ? "Paused" : "Live while visible"} · ${logData.persistence === false ? "Disk logging unavailable; memory only" : "Protected rotating files"}`;
+    `${rows.length} shown / ${logData.entries.length} retained (max ${logData.capacity ?? 5000}) · ${logPaused ? "Paused" : "Live while visible"} · ${logData.persistence === false ? "Disk logging unavailable; memory only" : "Protected rotating files"}`;
 }
 async function refreshLogs() {
   clearTimeout(logTimer);
@@ -1771,6 +1804,11 @@ function lockSession(message) {
   $("updateConfirm").hidden = true;
   clearTimeout(logTimer);
   logController?.abort();
+  logController = undefined;
+  logData = { entries: [] };
+  logNodes.clear();
+  $("logRows").replaceChildren();
+  $("logStatus").textContent = "";
   $("studio").hidden = true;
   $("login").hidden = false;
   $("lockStudio").hidden = true;

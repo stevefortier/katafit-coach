@@ -25,7 +25,7 @@ test("bounded structured history rotates, strips arbitrary data and retains last
       stage: "request-failed",
       error: new Error("MODEL_FAILED"),
     });
-    for (let i = 0; i < 3000; i++)
+    for (let i = 0; i < 60000; i++)
       log.record({
         source: "worker",
         stage: "idle",
@@ -42,7 +42,7 @@ test("bounded structured history rotates, strips arbitrary data and retains last
     const result = log.snapshot();
     assert.equal(result.entries.length, LOG_ENTRIES);
     assert.ok(!JSON.stringify(result).includes("PRIVATE"));
-    assert.deepEqual(result.entries.at(-1)?.metadata, { elapsedMs: 2999 });
+    assert.deepEqual(result.entries.at(-1)?.metadata, { elapsedMs: 59999 });
     for (const suffix of ["", ".1"]) {
       assert.ok(
         (await stat(dir + "/diagnostics.jsonl" + suffix)).size <=
@@ -55,7 +55,7 @@ test("bounded structured history rotates, strips arbitrary data and retains last
     }
     const restored = new Diagnostics(dir);
     assert.equal(restored.snapshot().entries.length, LOG_ENTRIES);
-    assert.equal(restored.snapshot().entries.at(-1)?.metadata.elapsedMs, 2999);
+    assert.equal(restored.snapshot().entries.at(-1)?.metadata.elapsedMs, 59999);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

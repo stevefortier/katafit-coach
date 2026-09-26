@@ -7,7 +7,10 @@ import { Client } from "../katafit/client.js";
 export class Actions {
   private storage: History;
   private rows: Message[];
-  constructor(private store: Store) {
+  constructor(
+    private store: Store,
+    private onDiagnostic?: import("../katafit/client.js").BackendLogger,
+  ) {
     this.storage = new History(store.dir, "operator-actions.json");
     this.rows = this.storage.load();
     for (let i = 1; i < this.rows.length; i += 2)
@@ -137,6 +140,7 @@ export class Actions {
       this.store.publicConfig().origin,
       this.store.secrets.token,
       AbortSignal.timeout(10000),
+      this.onDiagnostic,
     );
     for (const action of this.snapshot().filter(
       (a) => a.status === "pending" || a.status === "unknown",

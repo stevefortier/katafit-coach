@@ -304,6 +304,7 @@ export async function fixture(
 test("real wire claim/context/persist/followup and restart deduplicate with canonical context", async () => {
   const f = await fixture();
   const seen: string[] = [];
+  const diagnostics: import("../src/diagnostics/log.js").LogInput[] = [];
   try {
     const make = () =>
       new Worker({
@@ -314,6 +315,7 @@ test("real wire claim/context/persist/followup and restart deduplicate with cano
           seen.push(c);
           return "Rest and reassess.";
         },
+        onDiagnostic: (event) => diagnostics.push(event),
       });
     f.enqueue("Review my training");
     await make().pollOnce();
@@ -327,6 +329,17 @@ test("real wire claim/context/persist/followup and restart deduplicate with cano
     assert.ok(seen[1].includes("Authorized running goal"));
     assert.equal(JSON.parse(seen[1]).request.text, "More detail please");
     assert.equal(f.history.length, 4);
+    const backend = diagnostics.filter((e) => e.stage === "backend-call");
+    assert.deepEqual(
+      backend
+        .filter((e) => e.backendCall?.route === "mcp")
+        .map((e) => e.backendCall?.tool ?? e.backendCall?.operation),
+      f.calls,
+    );
+    assert.ok(backend.some((e) => e.backendCall?.route === "instructions"));
+    assert.ok(
+      backend.every((e) => Number.isSafeInteger(e.metadata?.elapsedMs)),
+    );
   } finally {
     await f.close();
   }

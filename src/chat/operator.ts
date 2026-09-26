@@ -59,7 +59,12 @@ export class OperatorChat {
       throw new SafeError("READ_NOT_AUTHORIZED");
     }
     const c = this.store.publicConfig();
-    const client = new Client(c.origin, card.token, AbortSignal.timeout(10000));
+    const client = new Client(
+      c.origin,
+      card.token,
+      AbortSignal.timeout(10000),
+      this.onDiagnostic,
+    );
     const session = await openOperatorTools(client, card.anchor, {
       secrets: Object.values(this.store.secrets),
       onAction: () => {},
@@ -67,7 +72,12 @@ export class OperatorChat {
         this.cards.get(id) === card &&
         this.store.publicConfig().revision === card.revision &&
         this.store.secrets.token === card.token,
-      control: new Client(c.origin, card.token, AbortSignal.timeout(15000)),
+      control: new Client(
+        c.origin,
+        card.token,
+        AbortSignal.timeout(15000),
+        this.onDiagnostic,
+      ),
     });
     try {
       const list = session.tools.find(
@@ -167,10 +177,11 @@ export class OperatorChat {
   constructor(
     private store: Store,
     private infer = complete,
+    private onDiagnostic?: (event: LogInput) => void,
   ) {
     this.history = new History(store.dir);
     this.messages = this.history.load();
-    this.actions = new Actions(store);
+    this.actions = new Actions(store, onDiagnostic);
   }
   assertSecrets(secrets = Object.values(this.store.secrets)) {
     assertNoSecrets(this.messages, secrets);
@@ -256,7 +267,12 @@ export class OperatorChat {
 
     onDiagnostic?.({ source: "studio", stage: "connecting" });
     const instructions = await fetchInstructions(
-      new Client(c.origin, this.store.secrets.token, signal),
+      new Client(
+        c.origin,
+        this.store.secrets.token,
+        signal,
+        this.onDiagnostic ?? onDiagnostic,
+      ),
     ).catch(() => {
       if (signal.aborted)
         throw new SafeError(
@@ -297,7 +313,7 @@ For the final answer, bind every factual comparison and final verdict to the exa
     let committed = false;
     try {
       session = await openOperatorTools(
-        new Client(c.origin, token, signal),
+        new Client(c.origin, token, signal, this.onDiagnostic ?? onDiagnostic),
         member_ref,
         {
           secrets,
@@ -340,7 +356,12 @@ For the final answer, bind every factual comparison and final verdict to the exa
               anchor: member_ref,
             });
           },
-          control: new Client(c.origin, token, AbortSignal.timeout(120000)),
+          control: new Client(
+            c.origin,
+            token,
+            AbortSignal.timeout(120000),
+            this.onDiagnostic ?? onDiagnostic,
+          ),
           current: () =>
             this.controller === controller &&
             this.store.secrets.token === token &&
