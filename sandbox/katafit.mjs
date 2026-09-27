@@ -12,18 +12,59 @@ export default function (pi) {
           body: JSON.stringify({ name: tool.name, args }),
           signal,
         });
-        if (!response.ok) {
-          // Fixed read-only guidance, never backend prose or model arguments.
-          // Keep uncertain-action protection for every other tool.
-          const message =
-            tool.name === "studio_operator_list_dojo_checkins"
-              ? "Check-in listing failed. This does not establish that no photos exist. Image reads require references from a successful check-in listing; activity-detail metadata is not a substitute."
-              : tool.name === "studio_operator_read_dojo_checkin_image"
-                ? "Check-in image read failed; no image was delivered. Use the matching member_ref and media_ref from a successful check-in listing. Activity-detail media references are not sufficient. The per-turn quota is four images and 16 MiB total. Do not repeat the same failed call or claim to have inspected pixels."
-                : "Kata.fit tool failed; do not replay uncertain actions.";
-          throw new Error(message);
+        // Unknown/transport failures stay fixed; never render backend prose.
+        const fallback =
+          tool.name === "studio_operator_list_dojo_checkins"
+            ? "Check-in listing failed. This does not establish that no photos exist. Image reads require references from a successful check-in listing; activity-detail metadata is not a substitute."
+            : tool.name === "studio_operator_read_dojo_checkin_image"
+              ? "Check-in image read failed; no image was delivered. Use the matching member_ref and media_ref from a successful check-in listing. Activity-detail media references are not sufficient. The per-turn quota is four images and 16 MiB total. Do not repeat the same failed call or claim to have inspected pixels."
+              : "Kata.fit tool failed; do not replay uncertain actions.";
+        if (!response.ok) throw new Error(fallback);
+        const result = await response.json();
+        if (result?.imageReadError) {
+          const error = result.imageReadError;
+          if (
+            tool.name === "studio_operator_read_dojo_checkin_image" &&
+            Object.keys(result).join() === "imageReadError" &&
+            Object.keys(error).join() === "code" &&
+            error.code === "IMAGE_READ_BUSY"
+          )
+            throw new Error(
+              "IMAGE_READ_BUSY: Another native request is still pending. This image read was not dispatched; no image capacity was consumed by this attempt and no image was delivered. Wait for the pending call to finish, inspect its receipt and remaining capacity, then retry this read sequentially if still needed and within budget. Capacity is not reported while a call is pending. Do not send parallel reads or reset a session to bypass quotas.",
+            );
+          const guidance = {
+            CHECKIN_LIST_REQUIRED:
+              "First call studio_operator_list_dojo_checkins successfully, then copy the exact matching member_ref and media_ref from one shared row. Activity-detail media references and member roster entries are not sufficient.",
+            IMAGE_ARGUMENTS_REJECTED:
+              "Correct the arguments to match the advertised schema; supply the exact listed member_ref and media_ref pair, without host-owned fields.",
+            IMAGE_BUDGET_EXHAUSTED:
+              "Image delivery budget exceeded (4 images / 16 MiB per turn; 8 MiB per image). Use already delivered images and state the uninspected coverage. Only select a different listed image if it fits the remaining capacity. Never reset or reopen a session to bypass quotas.",
+            IMAGE_TOOL_BUDGET_EXHAUSTED:
+              "Tool-call budget exhausted for this turn even if image capacity remains. Stop reads and synthesize from successful receipts; do not reset or reopen a session to bypass quotas.",
+            IMAGE_BACKEND_FAILED:
+              "Backend did not deliver an authorized image. Access or availability could not be established; this does not prove no photo exists or sharing is disabled. State the gap; do not bypass authorization.",
+            IMAGE_RESULT_REJECTED:
+              "Returned image failed integrity or format validation and was not delivered. Do not inspect rejected bytes; use other verified evidence and report the gap.",
+          };
+          if (
+            tool.name !== "studio_operator_read_dojo_checkin_image" ||
+            Object.keys(result).join() !== "imageReadError" ||
+            Object.keys(error).sort().join() !==
+              "code,remainingBytes,remainingImages" ||
+            !Object.hasOwn(guidance, error.code) ||
+            !Number.isInteger(error.remainingImages) ||
+            error.remainingImages < 0 ||
+            error.remainingImages > 4 ||
+            !Number.isInteger(error.remainingBytes) ||
+            error.remainingBytes < 0 ||
+            error.remainingBytes > 16 * 1024 * 1024
+          )
+            throw new Error(fallback);
+          throw new Error(
+            `${error.code}: ${guidance[error.code]} Remaining delivery capacity: ${error.remainingImages} images, ${error.remainingBytes} bytes. No visual evidence from this call: no image was delivered. Do not repeat the unchanged failed call or claim to have inspected its pixels.`,
+          );
         }
-        return response.json();
+        return result;
       },
     });
   pi.registerCommand("mcp", {

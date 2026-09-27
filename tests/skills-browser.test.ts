@@ -209,7 +209,7 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
     );
     await page.locator("#studio").waitFor({ state: "visible" });
     await page.locator("#skillList button").first().waitFor();
-    assert.equal(await page.locator("#skillList button").count(), 3);
+    assert.equal(await page.locator("#skillList button").count(), 4);
     assert.equal(await page.locator("#skillLabel").textContent(), "Default");
     const edited =
       '<img src=x onerror="window.skillInjected=1"> Evidence-bound review';

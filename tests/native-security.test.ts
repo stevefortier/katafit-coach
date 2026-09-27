@@ -139,11 +139,29 @@ test("every legacy adapter and generic write rejects caller authority under perm
         "dojo_id",
         "mode",
       ]) {
-        await assert.rejects(
-          gateway.handle({ kind: "tool", name, args: { [key]: "foreign" } }),
-          /ARGUMENTS_REJECTED/,
-          `${name}: ${key}`,
-        );
+        const request = gateway.handle({
+          kind: "tool",
+          name,
+          args: { [key]: "foreign" },
+        });
+        if (name === "studio_operator_read_dojo_checkin_image")
+          assert.deepEqual(
+            await request,
+            {
+              imageReadError: {
+                code: "IMAGE_ARGUMENTS_REJECTED",
+                remainingImages: 4,
+                remainingBytes: 16777216,
+              },
+            },
+            `${name}: ${key}`,
+          );
+        else
+          await assert.rejects(
+            request,
+            /ARGUMENTS_REJECTED/,
+            `${name}: ${key}`,
+          );
       }
     }
     assert.equal(

@@ -6,7 +6,10 @@ import {
   type BackendLogger,
   type ResponseDecoder,
 } from "../katafit/client.js";
-import { openOperatorTools } from "../katafit/operatorTools.js";
+import {
+  ImageReadFailure,
+  openOperatorTools,
+} from "../katafit/operatorTools.js";
 
 class NativeClient extends Client {
   requestSignal?: AbortSignal;
@@ -234,13 +237,32 @@ export async function openNativeGateway(
         assertNoSecrets(catalog, Object.values(secrets));
         return catalog;
       }
-      if (active) throw new Error("NATIVE_REQUEST_BUSY");
+      if (active) {
+        // No dispatch, no argument echo, no quota accounting. Capacity is
+        // deliberately omitted: the pending request may still consume it.
+        if (
+          request.kind === "tool" &&
+          request.name === "studio_operator_read_dojo_checkin_image" &&
+          session.tools.some((tool) => tool.name === request.name)
+        ) {
+          settle(undefined);
+          check();
+          return { imageReadError: { code: "IMAGE_READ_BUSY" } };
+        }
+        throw new Error("NATIVE_REQUEST_BUSY");
+      }
       active = true;
       client.requestSignal = requestSignal;
       try {
         return await dispatch(request, requestSignal);
       } catch (error) {
-        throw settle(error);
+        settle(error);
+        if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
+        if (error instanceof ImageReadFailure) {
+          check();
+          return { imageReadError: error.safe };
+        }
+        throw error;
       } finally {
         active = false;
         client.requestSignal = undefined;
