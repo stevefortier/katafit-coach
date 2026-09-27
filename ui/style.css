@@ -945,8 +945,9 @@ header {
 .saved-badge {
   margin-left: auto;
   font-size: 12px;
-  color: #dddddd;
-  border: 1px solid #626262;
+  color: #9ee3ae;
+  border: 1px solid #397753;
+  background: #193826;
   border-radius: 0;
   padding: 0 8px;
   white-space: nowrap;
