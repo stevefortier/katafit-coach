@@ -46,6 +46,28 @@ process.stdin.on("data", (chunk) => {
 });
 process.stdin.on("end", () => process.exit(0));
 const config = await send({ kind: "catalog" });
+for (const skill of config.skills ?? []) {
+  if (
+    !skill ||
+    typeof skill !== "object" ||
+    !/^[a-z][a-z0-9-]{0,63}$/.test(skill.id) ||
+    typeof skill.name !== "string" ||
+    typeof skill.description !== "string" ||
+    !skill.description.trim() ||
+    skill.description.length > 1024 ||
+    typeof skill.body !== "string" ||
+    !skill.body.trim() ||
+    Buffer.byteLength(skill.body) > 65536
+  )
+    process.exit(1);
+  const directory = "/home/node/.pi/agent/skills/" + skill.id;
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    directory + "/SKILL.md",
+    `---\nname: ${skill.id}\ndescription: ${JSON.stringify(skill.description)}\n---\n\n${skill.body}\n`,
+    { mode: 0o600, flag: "wx" },
+  );
+}
 const server = createServer(async (req, res) => {
   try {
     if (

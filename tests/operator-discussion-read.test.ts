@@ -32,6 +32,7 @@ test("member-derived operator context is not reused after sharing changes", asyn
           "studio_operator_send_message",
           "studio_operator_list_dojo_checkins",
           "studio_operator_read_dojo_checkin_image",
+          "local_load_coach_skill",
         ],
       );
       if (seen.length === 1) {

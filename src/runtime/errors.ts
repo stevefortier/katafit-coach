@@ -125,6 +125,21 @@ export const hints = {
   INVALID_PAGE: "Request a valid history page with a limit from 1 to 50.",
   INVALID_HISTORY:
     "Saved persona history failed validation. No history was replaced. Check protected local storage or restore a trusted backup.",
+  INVALID_SKILL:
+    "Check the enabled setting and nonempty purpose, triggers, and instructions within their size limits.",
+  INVALID_SKILL_REVISION:
+    "Select a valid positive whole-number Skills revision.",
+  SKILL_NOT_FOUND: "That Coach skill does not exist. Refresh Skills.",
+  SKILL_REVISION_NOT_FOUND:
+    "That Skills revision does not exist. Refresh revision history.",
+  SKILLS_CHANGED:
+    "Skills changed after this editor loaded. Refresh and review the saved revision before applying your retained draft.",
+  SKILLS_TOO_LARGE:
+    "The Skills snapshot exceeds the protected local storage limit. Shorten the skill fields.",
+  INVALID_SKILL_STORAGE:
+    "Saved Skills history failed validation. No history was replaced. Check protected local storage or restore a trusted backup.",
+  SKILL_DEFAULT_DOWNGRADE:
+    "Saved Skills were created by a newer default catalog. Upgrade Coach before loading this home.",
   NO_PREVIOUS_REVISION: "There is no previous saved revision to restore.",
   SECRET_IN_CONFIG:
     "A known credential was detected at a protected boundary. Remove credentials from nonsecret configuration and context.",
@@ -160,6 +175,8 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     "readLimit",
     "outputTokens",
     "outputTokenLimit",
+    "skillRevision",
+    "enabledSkills",
   ])
     if (
       typeof input[key] === "number" &&

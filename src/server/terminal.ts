@@ -65,7 +65,11 @@ export class NativeTerminal {
   }
   private authority() {
     return hash(
-      JSON.stringify([this.store.publicConfig().revision, this.store.secrets]),
+      JSON.stringify([
+        this.store.publicConfig().revision,
+        this.store.skills.runtime().revision,
+        this.store.secrets,
+      ]),
     );
   }
   ticket() {

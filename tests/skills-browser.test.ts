@@ -1,0 +1,387 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { chromium } from "playwright-core";
+import { Store } from "../src/config/store.js";
+import { admin } from "../src/server/admin.js";
+import { createServer } from "node:http";
+import { complete } from "../src/runtime/piAdapter.js";
+import { operatorSkillTool, skillCatalog } from "../src/config/skills.js";
+
+for (const operation of ["save", "restore"] as const) {
+  test(`Skills ${operation} preserves unrelated drafts`, async () => {
+    const dir = await mkdtemp(tmpdir() + "/skills-drafts-");
+    const store = new Store(dir);
+    await store.init();
+    const app = await admin(store, 0);
+    let browser;
+    try {
+      browser = await chromium.launch({
+        executablePath: process.env.CHROME_PATH || "/usr/bin/google-chrome",
+        headless: true,
+        args: ["--no-sandbox"],
+      });
+      const page = await browser.newPage();
+      await page.goto(
+        app.origin + "/settings?section=skills#" + store.secrets.admin,
+      );
+      await page.locator("#skillPurpose").fill("Unrelated activity draft");
+      await page.locator("#skillEnabled").uncheck();
+      await page.locator('[data-skill="understand-progress"]').click();
+      await page
+        .locator("#skillPurpose")
+        .fill("Progress draft to apply or discard");
+      if (operation === "restore")
+        page.once("dialog", (dialog) => dialog.accept());
+      await page
+        .locator(operation === "save" ? "#saveSkill" : "#restoreSkill")
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#skillsRevision")
+          ?.textContent?.includes("revision 2"),
+      );
+      const saved: any = store.skills.view("understand-progress");
+      assert.equal(
+        await page.locator("#skillPurpose").inputValue(),
+        saved.skill.purpose,
+      );
+      assert.equal(
+        saved.skill.purpose === "Progress draft to apply or discard",
+        operation === "save",
+      );
+      await page.locator('[data-skill="review-activity"]').click();
+      assert.equal(
+        await page.locator("#skillPurpose").inputValue(),
+        "Unrelated activity draft",
+      );
+      assert.equal(await page.locator("#skillEnabled").isChecked(), false);
+      const restarted = new Store(dir);
+      await restarted.init();
+      assert.notEqual(
+        (restarted.skills.view("review-activity") as any).skill.purpose,
+        "Unrelated activity draft",
+      );
+      assert.equal(
+        (restarted.skills.view("understand-progress") as any).skill.purpose,
+        saved.skill.purpose,
+      );
+    } finally {
+      await browser?.close();
+      await app.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("two-tab stale Skills write requires refresh, review, then deliberate save", async () => {
+  const dir = await mkdtemp(tmpdir() + "/skills-stale-browser-");
+  const store = new Store(dir);
+  await store.init();
+  const app = await admin(store, 0);
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: process.env.CHROME_PATH || "/usr/bin/google-chrome",
+      headless: true,
+      args: ["--no-sandbox"],
+    });
+    const first = await browser.newPage();
+    const second = await browser.newPage();
+    for (const page of [first, second]) {
+      await page.goto(
+        app.origin + "/settings?section=skills#" + store.secrets.admin,
+      );
+      await page.locator("#skillPurpose").waitFor({ state: "visible" });
+    }
+    await second.locator("#skillPurpose").fill("Retained stale activity draft");
+    await second.locator('[data-skill="understand-progress"]').click();
+    await second
+      .locator("#skillPurpose")
+      .fill("Retained unrelated progress draft");
+    await second.locator('[data-skill="review-activity"]').click();
+    await first.locator("#skillPurpose").fill("Saved from first tab");
+    await first.locator("#saveSkill").click();
+    await first.waitForFunction(() =>
+      document
+        .querySelector("#skillsRevision")
+        ?.textContent?.includes("revision 2"),
+    );
+    const writes: any[] = [];
+    second.on("request", (request) => {
+      if (request.method() === "POST" && request.url().includes("/api/skills/"))
+        writes.push(request.postDataJSON());
+    });
+    const rejected = second.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/skills/review-activity") &&
+        response.status() === 409,
+    );
+    await second.locator("#saveSkill").click();
+    assert.equal((await (await rejected).json()).error, "SKILLS_CHANGED");
+    assert.equal(
+      await second.locator("#skillPurpose").inputValue(),
+      "Retained stale activity draft",
+    );
+    assert.equal(writes.length, 1);
+    assert.equal((store.skills.view() as any).revision, 2);
+    const refresh = second.getByRole("button", {
+      name: "Refresh saved skills",
+    });
+    assert.equal(
+      await refresh.count(),
+      1,
+      "explicit draft-preserving refresh must be available",
+    );
+    await refresh.click();
+    await second.waitForFunction(() =>
+      document
+        .querySelector("#skillsRevision")
+        ?.textContent?.includes("revision 2"),
+    );
+    assert.equal(
+      await second.locator("#skillPurpose").inputValue(),
+      "Retained stale activity draft",
+    );
+    assert.match(
+      await second.locator("#skillSavedSnapshot").innerText(),
+      /Saved from first tab/,
+    );
+    await second.locator('[data-skill="understand-progress"]').click();
+    assert.equal(
+      await second.locator("#skillPurpose").inputValue(),
+      "Retained unrelated progress draft",
+    );
+    await second.locator('[data-skill="review-activity"]').click();
+    assert.equal(writes.length, 1, "refresh/review never retries the write");
+    assert.equal(
+      (store.skills.view("review-activity") as any).skill.purpose,
+      "Saved from first tab",
+    );
+    await second.locator("#saveSkill").click();
+    await second.waitForFunction(() =>
+      document
+        .querySelector("#skillsRevision")
+        ?.textContent?.includes("revision 3"),
+    );
+    assert.deepEqual(
+      writes.map((write) => write.expectedRevision),
+      [1, 2],
+    );
+    const restarted = new Store(dir);
+    await restarted.init();
+    assert.equal(
+      (restarted.skills.view("review-activity") as any).skill.purpose,
+      "Retained stale activity draft",
+    );
+    assert.notEqual(
+      (restarted.skills.view("understand-progress") as any).skill.purpose,
+      "Retained unrelated progress draft",
+    );
+  } finally {
+    await browser?.close();
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("served Settings Skills editor saves, restarts, restores, fences late auth, and fits desktop/mobile", async () => {
+  const dir = await mkdtemp(tmpdir() + "/skills-browser-");
+  const evidence =
+    process.env.COACH_SKILLS_EVIDENCE || "/tmp/coach-default-skills-evidence";
+  const store = new Store(dir);
+  await store.init();
+  const app = await admin(store, 0);
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: process.env.CHROME_PATH || "/usr/bin/google-chrome",
+      headless: true,
+      args: ["--no-sandbox"],
+    });
+    const page = await browser.newPage({
+      viewport: { width: 1280, height: 980 },
+    });
+    await page.goto(
+      app.origin + "/settings?section=skills#" + store.secrets.admin,
+    );
+    await page.locator("#studio").waitFor({ state: "visible" });
+    await page.locator("#skillList button").first().waitFor();
+    assert.equal(await page.locator("#skillList button").count(), 3);
+    assert.equal(await page.locator("#skillLabel").textContent(), "Default");
+    const edited =
+      '<img src=x onerror="window.skillInjected=1"> Evidence-bound review';
+    await page.locator("#skillPurpose").fill(edited);
+    await page.locator("#skillEnabled").uncheck();
+    await page.locator("#saveSkill").click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#skillsRevision")
+        ?.textContent?.includes("revision 2"),
+    );
+    assert.equal(await page.locator("#skillLabel").textContent(), "Customized");
+    assert.equal(await page.locator("#skillEnabled").isChecked(), false);
+    assert.equal(await page.locator("#skills img").count(), 0);
+    assert.equal(
+      await page.evaluate(() => (window as any).skillInjected),
+      undefined,
+    );
+
+    const restarted = new Store(dir);
+    await restarted.init();
+    const disk: any = restarted.skills.view("review-activity");
+    assert.equal(disk.revision, 2);
+    assert.equal(disk.skill.purpose, edited);
+    assert.equal(disk.skill.enabled, false);
+    assert.ok(
+      !restarted.skills
+        .runtime()
+        .skills.some((skill) => skill.id === "review-activity"),
+      "runtime consumes the restarted enabled state",
+    );
+
+    await page.locator("#skillHistory summary").click();
+    await page.getByRole("button", { name: /Revision 2 · Current/ }).click();
+    await page.locator("#skillHistoryDetail").waitFor({ state: "visible" });
+    assert.match(
+      (await page.locator("#skillHistorySnapshot").textContent()) || "",
+      /<img src=x/,
+    );
+    assert.equal(await page.locator("#skillHistorySnapshot img").count(), 0);
+    assert.match(
+      (await page.locator("#skillDefaultStatus").textContent()) || "",
+      /Default version 1/,
+    );
+
+    await mkdir(evidence, { recursive: true });
+    // Reload the saved synthetic state so the success notice does not obscure
+    // the editor in approval evidence; history is collapsed by default.
+    await page.reload();
+    await page.locator("#skillList button").first().waitFor();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: evidence + "/skills-desktop.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    await page.screenshot({
+      path: evidence + "/skills-mobile.png",
+      fullPage: true,
+    });
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator("#restoreSkill").click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#skillsRevision")
+        ?.textContent?.includes("revision 3"),
+    );
+    assert.equal(await page.locator("#skillLabel").textContent(), "Default");
+    assert.equal(await page.locator("#skillEnabled").isChecked(), true);
+
+    // Exercise the edited instruction, not merely the in-memory runtime shape:
+    // real served UI -> authenticated save -> disk restart -> actual Pi tool load.
+    const marker = "SYNTHETIC_UI_RESTART_SKILL_INSTRUCTION";
+    await page
+      .locator("#skillInstructions")
+      .fill(
+        (await page.locator("#skillInstructions").inputValue()) + "\n" + marker,
+      );
+    await page.locator("#saveSkill").click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#skillsRevision")
+        ?.textContent?.includes("revision 4"),
+    );
+    const runtimeStore = new Store(dir);
+    await runtimeStore.init();
+    const pinned = runtimeStore.skills.runtime();
+    assert.equal(pinned.revision, 4);
+    const providerRequests: any[] = [];
+    const provider = createServer(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw);
+      providerRequests.push(body);
+      const loaded = body.messages.some(
+        (message: any) =>
+          message.role === "tool" &&
+          JSON.stringify(message.content).includes(marker),
+      );
+      const delta = loaded
+        ? { content: "UI_RESTART_INSTRUCTION_RECEIVED" }
+        : {
+            tool_calls: [
+              {
+                index: 0,
+                id: "load-edited",
+                type: "function",
+                function: {
+                  name: "local_load_coach_skill",
+                  arguments: '{"id":"review-activity"}',
+                },
+              },
+            ],
+          };
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.end(
+        `data: ${JSON.stringify({ id: "ui-restart", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n` +
+          `data: ${JSON.stringify({ id: "ui-restart", choices: [{ index: 0, delta: {}, finish_reason: loaded ? "stop" : "tool_calls" }] })}\n\ndata: [DONE]\n\n`,
+      );
+    });
+    await new Promise<void>((resolve) =>
+      provider.listen(0, "127.0.0.1", resolve),
+    );
+    try {
+      const answer = await complete(
+        {
+          baseUrl: `http://127.0.0.1:${(provider.address() as any).port}/v1`,
+          model: "synthetic-ui-restart",
+          apiKey: "synthetic-ui-key",
+        },
+        `Enabled local skill metadata: ${JSON.stringify(skillCatalog(pinned))}`,
+        "Review this activity using the relevant saved workflow.",
+        AbortSignal.timeout(10000),
+        [operatorSkillTool(pinned)!],
+      );
+      assert.equal(answer, "UI_RESTART_INSTRUCTION_RECEIVED");
+      assert.equal(providerRequests.length, 2);
+      assert.ok(!JSON.stringify(providerRequests[0]).includes(marker));
+      assert.ok(JSON.stringify(providerRequests[1]).includes(marker));
+      assert.ok(
+        !JSON.stringify(runtimeStore.skills.history(1)).includes(marker),
+      );
+    } finally {
+      provider.closeAllConnections();
+      await new Promise<void>((resolve) => provider.close(() => resolve()));
+    }
+
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const started = new Promise<void>((resolve) => (entered = resolve));
+    await page.route("**/api/skills", async (route) => {
+      entered();
+      await gate;
+      await route.fulfill({ json: store.skills.view() });
+    });
+    await page.reload();
+    await started;
+    await page.locator("#lockStudio").click();
+    release();
+    await page.waitForResponse("**/api/skills");
+    assert.equal(await page.locator("#skillList button").count(), 0);
+    assert.equal(await page.locator("#studio").isVisible(), false);
+  } finally {
+    await browser?.close();
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

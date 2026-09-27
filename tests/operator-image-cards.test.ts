@@ -34,6 +34,7 @@ test("only executed, backend-validated tool images become ephemeral cards and au
           "studio_operator_send_message",
           LIST,
           IMAGE,
+          "local_load_coach_skill",
         ],
       );
       assert.match(JSON.parse(input).authority, /authorized.*turn tools/i);
