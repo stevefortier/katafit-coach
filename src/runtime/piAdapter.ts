@@ -12,6 +12,12 @@ import {
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { assertNoSecrets } from "../config/store.js";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
+import {
+  OMITTED_IMAGE_TEXT,
+  PROVIDER_IMAGE_AGGREGATE,
+  PROVIDER_IMAGE_COUNT,
+  canonicalImages,
+} from "./providerEnvelope.js";
 export interface Provider {
   authorize?: () => Promise<void>;
   onDiagnostic?: (event: LogInput) => void;
@@ -30,7 +36,7 @@ export function compactProviderImages(payload: unknown): unknown {
     return payload;
   const body = payload as Record<string, unknown>;
   if (!Array.isArray(body.messages)) return payload;
-  let remaining = 5;
+  let remaining = PROVIDER_IMAGE_COUNT;
   const messages = [...body.messages];
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -45,10 +51,7 @@ export function compactProviderImages(payload: unknown): unknown {
       const part = content[j];
       if (part?.type !== "image_url") continue;
       if (remaining-- > 0) continue;
-      content[j] = {
-        type: "text",
-        text: "[Earlier image omitted from this provider turn; read it again if needed.]",
-      };
+      content[j] = { type: "text", text: OMITTED_IMAGE_TEXT };
     }
     messages[i] = { ...message, content };
   }
@@ -60,40 +63,18 @@ export function compactProviderImages(payload: unknown): unknown {
 // prefixes and every image metadata/extra field remain in the text budget.
 export function providerTextBytes(payload: unknown): number {
   const wire = JSON.stringify(payload);
-  const body = JSON.parse(wire);
-  let imageBytes = 0;
-  let imageCount = 0;
-  let exemptBytes = 0;
-  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
-    for (const part of Array.isArray(message?.content) ? message.content : []) {
-      if (part?.type !== "image_url") continue;
-      const url = part.image_url?.url;
-      if (typeof url !== "string") throw new Error("MEDIA_REJECTED");
-      const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,/.exec(url);
-      if (!match) throw new Error("MEDIA_REJECTED");
-      const data = url.slice(match[0].length);
-      if (
-        !data.length ||
-        data.length > 11184812 ||
-        /[^A-Za-z0-9+/=]/.test(data)
-      )
-        throw new Error("MEDIA_REJECTED");
-      const decoded = Buffer.from(data, "base64");
-      imageCount++;
-      imageBytes += decoded.length;
-      if (
-        decoded.toString("base64") !== data ||
-        decoded.length > 8 * 1024 * 1024 ||
-        imageCount > 5 ||
-        imageBytes > 16 * 1024 * 1024
-      )
-        throw new Error("MEDIA_REJECTED");
-      exemptBytes += data.length;
-    }
-  }
+  const images = canonicalImages(JSON.parse(wire));
+  if (
+    images.length > PROVIDER_IMAGE_COUNT ||
+    images.reduce((n, image) => n + image.bytes, 0) > PROVIDER_IMAGE_AGGREGATE
+  )
+    throw new Error("MEDIA_REJECTED");
   if (Buffer.byteLength(wire) > 6 * 1024 * 1024)
     throw new Error("PROVIDER_PAYLOAD_TOO_LARGE");
-  return Buffer.byteLength(wire) - exemptBytes;
+  return (
+    Buffer.byteLength(wire) -
+    images.reduce((n, image) => n + image.data.length, 0)
+  );
 }
 
 // Only operational vocabulary may leave the provider envelope for protected
