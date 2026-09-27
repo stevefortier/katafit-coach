@@ -33,7 +33,11 @@ acceptance is distinct from consumption: a committed extraction receipt can have
 `publication: "pending"`. Such records remain unavailable until the producer
 consumes its original result. Failed consumption never counts as publication.
 A pending consolidation preserves the old memory until successful consumption;
-only that same publication transaction archives superseded inputs.
+only that same publication transaction archives superseded inputs. If the
+replacement was corrected or Forgotten before consumption, the old memory is
+not retired. Automatic Operator proposals that would supersede a memory retained
+by their own live session are skipped rather than invalidating that session and
+its archive. Manual correction/Forget still revokes stale sessions.
 Task schemas and the prohibition on direct mutations remain unchanged.
 
 Native Operator recall imports dependencies into the current continuity session.

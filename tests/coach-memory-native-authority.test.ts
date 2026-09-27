@@ -20,6 +20,7 @@ for (const boundary of [
   "activity_image",
   "activity_attachment",
   "archive_response",
+  "archive_request",
 ])
   test(
     `paired native imported memory revocation blocks actual ${boundary} disclosure`,
@@ -121,10 +122,13 @@ for (const boundary of [
           };
         };
         gateway = await openNativeGateway(store, undefined, {
-          ...(boundary === "archive_response"
+          ...(boundary.startsWith("archive_")
             ? {
                 onExchange: async (capture: any) => {
-                  if (capture.complete)
+                  if (
+                    (boundary === "archive_request" && !capture.complete) ||
+                    (boundary === "archive_response" && capture.complete)
+                  )
                     await memory.execute(auth, "studio_memory_forget", {
                       memory_id: remembered.id,
                     });
@@ -156,9 +160,12 @@ for (const boundary of [
             ],
           },
         });
-        if (boundary === "archive_response") {
+        if (boundary === "archive_request" || boundary === "archive_response") {
           await assert.rejects(firstDisclosure);
-          assert.equal(provider.bodies.length, 1);
+          assert.equal(
+            provider.bodies.length,
+            boundary === "archive_request" ? 0 : 1,
+          );
           assert.equal(terminated, 1);
           return;
         }

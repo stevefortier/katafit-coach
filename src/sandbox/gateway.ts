@@ -1207,6 +1207,14 @@ export async function openNativeGateway(
         : undefined;
       if (capture) await hooks.onExchange(capture);
       check();
+      // Persisting the request yields: Forget or source revocation may commit
+      // while that callback runs. Re-prove before sending recalled prose.
+      try {
+        await authorizeNative();
+        check();
+      } catch (error) {
+        throw authority(error, true);
+      }
     }
     // Transport failures are classified by cause only; never by error text.
     const transport = (error: unknown) =>
