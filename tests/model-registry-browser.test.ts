@@ -217,6 +217,20 @@ const card = (page: Page, id: string) =>
 const field = (page: Page, id: string, name: string) =>
   card(page, id).locator(`[data-field="${name}"]`).first();
 
+async function assertSavedBadge(page: Page, providerId: string) {
+  assert.equal(await page.locator(".saved-badge").count(), 1);
+  const badge = card(page, providerId).locator(".saved-badge");
+  assert.equal(await badge.innerText(), "Saved active");
+  assert.deepEqual(
+    await badge.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return [style.color, style.backgroundColor, style.borderTopColor];
+    }),
+    ["rgb(158, 227, 174)", "rgb(25, 56, 38)", "rgb(57, 119, 83)"],
+    "Saved active uses Studio's success-green palette",
+  );
+}
+
 test("Models tab edits the registry with explicit Save and real Store readback", async () => {
   const dir = await mkdtemp(tmpdir() + "/registry-browser-");
   const evidence =
@@ -314,9 +328,11 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       (await field(page, "alpha", "apiKey").getAttribute("placeholder"))!,
       /keep/i,
     );
+    await assertSavedBadge(page, "alpha");
     // Browse and draft-select without any request.
     const before = apiCalls.length;
     await card(page, "bravo").getByRole("radio").check();
+    await assertSavedBadge(page, "alpha");
     assert.match(
       await page.locator("#activeModelBadge").innerText(),
       /Alpha/,
@@ -357,6 +373,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       /Bravo/.test(document.querySelector("#activeModelBadge")!.textContent!),
     );
     assert.equal(store.modelRegistry().active.provider, "bravo");
+    await assertSavedBadge(page, "bravo");
     assert.equal(store.modelRegistry().providers[0].name, "Alpha renamed");
     assert.equal(store.secrets.apiKey, keyB);
     assert.equal(store.secrets.token, "unsaved-kata-token");
@@ -372,7 +389,9 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       await card(page, "bravo").getByRole("radio").isChecked(),
       true,
     );
+    await assertSavedBadge(page, "bravo");
     await card(page, "alpha").getByRole("radio").check();
+    await assertSavedBadge(page, "bravo");
     await page.locator("#save").click();
     await page.waitForFunction(() =>
       /Alpha renamed/.test(
