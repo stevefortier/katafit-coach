@@ -1234,3 +1234,35 @@ header {
 #performanceSelection {
   overflow-wrap: anywhere;
 }
+#nativeHistoryPanel {
+  padding: 12px;
+  border: 1px solid #444;
+  border-radius: 8px;
+  min-width: 0;
+}
+.native-history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.native-history-controls select,
+.native-history-controls input {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 160px;
+}
+#nativeHistoryLog {
+  max-height: 45vh;
+  overflow: auto;
+}
+#nativeHistoryLog pre,
+#nativeHistorySnapshot {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+#nativeHistoryToggle {
+  margin-bottom: 0;
+}

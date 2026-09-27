@@ -114,11 +114,11 @@
               <button
                 id="nativeStop"
                 class="secondary"
-                aria-label="Stop &amp; erase workspace"
+                aria-label="Stop Pi and keep conversation"
               >
-                <span class="native-label-full">Stop &amp; erase workspace</span
+                <span class="native-label-full">Stop</span
                 ><span class="native-label-compact" aria-hidden="true"
-                  >Stop &amp; erase</span
+                  >Stop</span
                 >
               </button>
               <button
@@ -160,9 +160,12 @@
                 hidden
               >
                 <p>
-                  Isolated Pi 0.86.1 · ephemeral workspace. Files and terminal
-                  context are deleted on Stop. No private Pi transcript is
-                  saved. Use /model and the Kata.fit /mcp extension command.
+                  Isolated Pi 0.86.1 · ephemeral workspace. Files and
+                  attachments are erased on Stop. Conversations persist only
+                  when Kata.fit advertises archive authorization; otherwise this
+                  session is ephemeral. History always requires current source
+                  and credential access. Use /model and the Kata.fit /mcp
+                  extension command.
                 </p>
                 <p id="operatorSnapshot"></p>
               </div>
@@ -175,7 +178,55 @@
                 >Stopped. Docker isolation is required; there is no host
                 fallback.</span
               >
+              <button
+                id="nativeHistoryToggle"
+                class="secondary"
+                aria-label="History"
+                aria-controls="nativeHistoryPanel"
+                aria-expanded="false"
+              >
+                <span class="native-label-full">History</span
+                ><span class="native-label-compact" aria-hidden="true">◴</span>
+              </button>
             </div>
+            <section
+              id="nativeHistoryPanel"
+              aria-label="Operator conversation history"
+              hidden
+            >
+              <div class="native-history-controls">
+                <label for="nativeHistorySelect">Conversation</label>
+                <select id="nativeHistorySelect">
+                  <option value="">New conversation</option>
+                </select>
+                <button id="nativeHistoryNew" class="secondary">New</button>
+                <button id="nativeHistoryDelete" class="secondary" disabled>
+                  Delete
+                </button>
+              </div>
+              <div class="native-history-controls">
+                <input
+                  id="nativeHistoryTitle"
+                  aria-label="Conversation title"
+                  maxlength="120"
+                  placeholder="Conversation title"
+                  disabled
+                />
+                <button id="nativeHistoryRename" class="secondary" disabled>
+                  Rename
+                </button>
+              </div>
+              <p id="nativeHistoryNotice" role="status" class="hint"></p>
+              <details>
+                <summary>Persona, skills and settings snapshot</summary>
+                <pre id="nativeHistorySnapshot"></pre>
+              </details>
+              <div
+                id="nativeHistoryLog"
+                role="log"
+                aria-label="Saved conversation"
+              ></div>
+            </section>
             <div class="native-workbench">
               <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
               <aside

@@ -353,6 +353,7 @@ action("unlock", async () => {
   $("lockStudio").hidden = false;
   restoreStudioRoute(true);
   void loadNativeReceipts();
+  void native.refreshHistory();
   await status();
   await refreshUpdate(true);
 });

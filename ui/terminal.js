@@ -161,6 +161,8 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     const generation = epoch;
     status("starting", "Starting isolated Pi…");
     try {
+      await history.prepareStart();
+      if (generation !== epoch || !authorized()) return;
       const ticket = await api("terminal/ticket", {});
       if (generation !== epoch || !authorized()) return;
       terminal = new window.Terminal({
@@ -312,7 +314,189 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     reset();
     observer.disconnect();
   });
-  return { reset };
+  const history = operatorHistory($, api, authorized, reset);
+  return {
+    reset: () => {
+      history.clear();
+      reset();
+    },
+    refreshHistory: history.refresh,
+  };
+}
+
+function operatorHistory($, api, authorized, resetTerminal) {
+  let generation = 0,
+    selected = new URL(location.href).searchParams.get("conversation"),
+    timer,
+    expiry;
+  const clear = () => {
+    generation++;
+    clearTimeout(timer);
+    clearTimeout(expiry);
+    $("nativeHistoryLog").replaceChildren();
+    $("nativeHistorySnapshot").textContent = "";
+    $("nativeHistoryTitle").value = "";
+    $("nativeHistoryTitle").disabled = true;
+    $("nativeHistoryRename").disabled = true;
+  };
+  const notice = (text) => {
+    $("nativeHistoryNotice").textContent = text;
+  };
+  const open = () => {
+    $("nativeHistoryPanel").hidden = false;
+    $("nativeHistoryToggle").setAttribute("aria-expanded", "true");
+  };
+  const text = (value) =>
+    String(value)
+      .replace(
+        /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|\u001b[@-_]/g,
+        "",
+      )
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) =>
+        c === "\n" || c === "\t" ? c : "",
+      );
+  async function refresh() {
+    clear();
+    if (!authorized()) return;
+    const epoch = generation;
+    try {
+      const list = await api("terminal/history");
+      if (epoch !== generation || !authorized()) return;
+      if (selected === null) selected = list.selected;
+      const select = $("nativeHistorySelect");
+      select.replaceChildren(new Option("New conversation", ""));
+      for (const row of list.sessions || [])
+        select.add(new Option(row.title, row.id));
+      select.value = selected || "";
+      $("nativeHistoryDelete").disabled = !selected;
+      if (!selected) {
+        notice("New conversation uses current persona, skills and settings.");
+        return;
+      }
+      const view = await api("terminal/history/" + selected);
+      if (epoch !== generation || !authorized()) return;
+      open();
+      notice(
+        view.status !== "authorized"
+          ? view.reason
+          : (view.reason
+              ? "Read-only: " +
+                view.reason +
+                ". Start a new conversation to continue."
+              : "Saved conversation. Start Pi to resume; no interrupted input is replayed.") +
+              " " +
+              view.attachments,
+      );
+      if (view.status !== "authorized") return;
+      $("nativeHistoryTitle").value = view.title;
+      $("nativeHistoryTitle").disabled = false;
+      $("nativeHistoryRename").disabled = false;
+      $("nativeHistorySnapshot").textContent = text(
+        JSON.stringify(view.snapshot, null, 2),
+      );
+      for (const entry of view.entries || []) {
+        if (entry.type !== "message") continue;
+        const node = document.createElement("pre");
+        const message = entry.message;
+        node.textContent = text(
+          message.role +
+            "\n" +
+            (typeof message.content === "string"
+              ? message.content
+              : message.content
+                  .map((part) =>
+                    part.type === "text"
+                      ? part.text
+                      : JSON.stringify(part, null, 2),
+                  )
+                  .join("\n")),
+        );
+        $("nativeHistoryLog").append(node);
+      }
+      expiry = setTimeout(
+        () => {
+          clear();
+          notice("History hidden: refresh current authorization.");
+        },
+        Math.min(view.expiresAfterMs || 20000, 20000),
+      );
+      timer = setTimeout(
+        refresh,
+        Math.min(view.refreshAfterMs || 10000, 10000),
+      );
+    } catch {
+      if (epoch === generation) {
+        clear();
+        notice(
+          "History unavailable. Current authorization is required; retry or start a new conversation.",
+        );
+      }
+    }
+  }
+  async function choose(id) {
+    clear();
+    resetTerminal();
+    try {
+      await api("terminal/history/select", { id });
+      selected = id || "";
+      const url = new URL(location.href);
+      if (id) url.searchParams.set("conversation", id);
+      else url.searchParams.delete("conversation");
+      window.history.replaceState(null, "", url);
+      await refresh();
+    } catch {
+      notice("Stop Pi before changing conversations.");
+    }
+  }
+  $("nativeHistoryToggle").onclick = () => {
+    open();
+    refresh();
+  };
+  $("nativeHistorySelect").onchange = () =>
+    choose($("nativeHistorySelect").value || null);
+  $("nativeHistoryNew").onclick = () => choose(null);
+  $("nativeHistoryRename").onclick = async () => {
+    try {
+      await api("terminal/history/rename", {
+        id: selected,
+        title: $("nativeHistoryTitle").value,
+      });
+      notice("Renamed.");
+    } catch {
+      clear();
+      notice("Rename unavailable; current authorization is required.");
+    }
+  };
+  $("nativeHistoryDelete").onclick = async () => {
+    if (
+      !selected ||
+      !confirm(
+        "Delete this saved conversation permanently? Backend actions are not undone.",
+      )
+    )
+      return;
+    clear();
+    try {
+      await api("terminal/history/delete", { id: selected, confirm: true });
+      selected = "";
+      await refresh();
+    } catch {
+      notice("Delete failed. Stop Pi before deleting its conversation.");
+    }
+  };
+  window.addEventListener("offline", clear);
+  window.addEventListener("pagehide", clear);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clear();
+  });
+  async function prepareStart() {
+    if (selected === null) return;
+    const list = await api("terminal/history");
+    if (!authorized()) throw new Error("Locked");
+    if ((list.selected || "") !== selected)
+      await api("terminal/history/select", { id: selected || null });
+  }
+  return { clear, refresh, prepareStart };
 }
 
 // Attachments Pi sent with send_to_operator. Metadata arrives on the terminal

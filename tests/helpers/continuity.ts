@@ -154,6 +154,7 @@ export const toolCall = (name: string, args: unknown, id = "call") =>
 export const answer = (content: string) => sse({ content }, true);
 
 export interface ContinuityOptions {
+  response?: (name: string, args: any, value: any, state: Backend) => any;
   continuity?: boolean;
   commandTtlMs?: number;
   contextTtlMs?: number;
@@ -691,7 +692,10 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         res.destroy();
         return;
       }
-      const value = tool(name, body.params.arguments);
+      const original = tool(name, body.params.arguments);
+      const value =
+        options.response?.(name, body.params.arguments, original, state) ??
+        original;
       if (
         lateSend &&
         ((name === GET &&
@@ -720,6 +724,8 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
           ? value
           : { structuredContent: value };
     }
+    if (body.method === "tools/list")
+      result = options.response?.("tools/list", {}, result, state) ?? result;
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
   });

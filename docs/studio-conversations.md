@@ -4,7 +4,7 @@ Studio has two top-level tabs: **Coach** first and **Settings** second. Settings
 
 ## Native Operator Pi: direct the Coach as its boss
 
-`/chat/operator` is exclusively the isolated native Pi terminal. Start/reconnect Pi, use its native controls, and Stop to destroy its ephemeral process, transcript and workspace. Docker isolation is required; there is no host or legacy-chat fallback. Settings preview remains the separate worker-style preview, not Operator inference.
+`/chat/operator` is exclusively the isolated native Pi terminal. Start/reconnect Pi and use its native controls. Stop destroys its ephemeral process/workspace/attachments but preserves sealed structured history when backend archive v1 is negotiated; Delete is separate. History reads require current backend proof authorization, and resume creates bounded fresh execution without replay. See [durable Operator conversations](operator-session-history.md) for read-only/locked fallback and storage limits. Docker isolation is required; there is no host or legacy-chat fallback. Settings preview remains the separate worker-style preview, not Operator inference.
 
 The primary system prompt contains all eight saved persona fields and their revision. The Coach keeps its name, voice, principles and expertise. The operator is its manager and boss, **not a trainee**; that relationship takes precedence over trainee-facing discipline, refusal rules and examples. It never grants additional backend permissions. The configured model provider receives authorized request/tool context; browsing member tabs does not add their content to Pi.
 

@@ -208,6 +208,17 @@ process.stdin.on("data", (chunk) => {
 });
 process.stdin.on("end", () => process.exit(0));
 const config = await send({ kind: "catalog" });
+// Host-sealed canonical seed only. No host mount and no sandbox-file upload.
+// The fixed tmpfs path is created before Pi starts and can never select a host path.
+if (config.history) {
+  const entries = config.history.entries;
+  if (!Array.isArray(entries) || !entries.length || entries.length > 10000 ||
+      entries[0]?.type !== "session" || entries[0]?.version !== 3)
+    process.exit(1);
+  const history = entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
+  if (Buffer.byteLength(history) > 2 * 1024 * 1024) process.exit(1);
+  writeFileSync((process.env.TMPDIR || "/tmp").replace(/\/+$/, "") + "/native-history.jsonl", history, { mode: 0o600, flag: "wx" });
+}
 for (const skill of config.skills ?? []) {
   if (
     !skill ||

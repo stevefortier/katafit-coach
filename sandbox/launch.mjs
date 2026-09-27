@@ -8,6 +8,7 @@ if (process.env.NATIVE_GATEWAY === "1") {
     await new Promise((r) => setTimeout(r, 50));
   }
   const config = JSON.parse(readFileSync("/tmp/native-config.json", "utf8"));
+  if (config.history) args.splice(0, 1, "--session", "/tmp/native-history.jsonl");
   args.push(
     "--provider",
     "katafit",
