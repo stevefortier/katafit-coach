@@ -15,8 +15,10 @@ async function call(result: unknown, name = "send_to_operator") {
   const register = runInNewContext(
     source
       .replace('import { readFileSync } from "node:fs";', "")
+      .replace(/export function /g, "function ")
       .replace("export default function", "(function") + ")",
     {
+      TextEncoder,
       readFileSync: () => JSON.stringify({ tools: [{ name }] }),
       fetch: async () => {
         requests++;

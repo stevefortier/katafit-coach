@@ -172,13 +172,18 @@ function validFrame(frame: any): boolean {
     );
   return (
     request.kind === "tool" &&
-    fields.length === 3 &&
+    (fields.length === 3 || fields.length === 4) &&
     fields.includes("name") &&
     fields.includes("args") &&
+    (fields.length === 3 || fields.includes("toolCallId")) &&
     typeof request.name === "string" &&
     request.name.length > 0 &&
     request.name.length <= 256 &&
-    record(request.args)
+    record(request.args) &&
+    (fields.length === 3 ||
+      (typeof request.toolCallId === "string" &&
+        request.toolCallId.length > 0 &&
+        request.toolCallId.length <= 256))
   );
 }
 

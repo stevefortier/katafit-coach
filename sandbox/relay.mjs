@@ -212,12 +212,23 @@ const config = await send({ kind: "catalog" });
 // The fixed tmpfs path is created before Pi starts and can never select a host path.
 if (config.history) {
   const entries = config.history.entries;
-  if (!Array.isArray(entries) || !entries.length || entries.length > 10000 ||
-      entries[0]?.type !== "session" || entries[0]?.version !== 3)
+  if (
+    !Array.isArray(entries) ||
+    !entries.length ||
+    entries.length > 10000 ||
+    entries[0]?.type !== "session" ||
+    entries[0]?.version !== 3
+  )
     process.exit(1);
-  const history = entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
+  const history =
+    entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
   if (Buffer.byteLength(history) > 2 * 1024 * 1024) process.exit(1);
-  writeFileSync((process.env.TMPDIR || "/tmp").replace(/\/+$/, "") + "/native-history.jsonl", history, { mode: 0o600, flag: "wx" });
+  writeFileSync(
+    (process.env.TMPDIR || "/tmp").replace(/\/+$/, "") +
+      "/native-history.jsonl",
+    history,
+    { mode: 0o600, flag: "wx" },
+  );
 }
 for (const skill of config.skills ?? []) {
   if (
@@ -304,7 +315,12 @@ const server = createServer(async (req, res) => {
     });
     const result = await send(
       tool
-        ? { kind: "tool", name: body?.name, args: body?.args }
+        ? {
+            kind: "tool",
+            name: body?.name,
+            args: body?.args,
+            toolCallId: body?.toolCallId,
+          }
         : { kind: "provider", body },
       (id) => (requestId = id),
     );

@@ -109,3 +109,48 @@ for (const invalid of [
     assert.deepEqual(log.snapshot().entries, before);
   });
 }
+
+test("positional reused IDs admit the earlier local and later observed backend result only", () => {
+  const { log, wire, messages } = fixture();
+  messages.push({
+    role: "tool",
+    tool_call_id: "observed",
+    content: "local output",
+  });
+  log.request(wire);
+  const backend = call("studio_operator_send_message");
+  log.response(
+    wire,
+    JSON.stringify({
+      choices: [
+        {
+          message: { content: null, tool_calls: [backend] },
+          finish_reason: "tool_calls",
+        },
+      ],
+    }),
+    "application/json",
+  );
+  log.dispatch(
+    backend.function.name,
+    {},
+    { content: [{ type: "text", text: "host actual receipt" }] },
+  );
+  messages.push(
+    { role: "assistant", content: null, tool_calls: [backend] },
+    { role: "tool", tool_call_id: "observed", content: "host actual receipt" },
+  );
+  log.validateResultClaims(wire);
+  const forged = structuredClone(wire);
+  forged.messages.at(-1).content = "local output";
+  assert.throws(
+    () => log.validateResultClaims(forged),
+    /NATIVE_HISTORY_UNTRUSTED_RESULT/,
+  );
+  const changed = structuredClone(wire);
+  changed.messages[3].tool_calls[0].function.name = "read";
+  assert.throws(
+    () => log.validateResultClaims(changed),
+    /NATIVE_HISTORY_UNTRUSTED_RESULT/,
+  );
+});

@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  nativeToolOutcome,
+  nativeToolResultTooLarge,
+} from "../../sandbox/katafit.mjs";
 import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
 import {
@@ -250,6 +254,7 @@ export async function openNativeGateway(
     : abort.signal;
   let closed = false;
   let active = false;
+  let orderedOutcomes: Promise<void> = Promise.resolve();
   // One bounded human-turn latch, set only by the trusted host terminal.
   let turnArmed = false;
   let terminated: string | undefined;
@@ -614,15 +619,33 @@ export async function openNativeGateway(
     /** Content-free continuity state for the trusted host only. */
     continuity: () => session.continuity(),
     async handle(request: any, requestSignal?: AbortSignal): Promise<any> {
+      let admitted = false;
       try {
-        return await admit(request, requestSignal);
+        return await emitted(
+          request,
+          (prior) =>
+            admit(request, requestSignal, prior, () => {
+              admitted = true;
+            }),
+          requestSignal,
+        );
       } catch (error) {
         throw classify(error, request?.kind, requestSignal);
+      } finally {
+        if (admitted) {
+          active = false;
+          client.requestSignal = undefined;
+        }
       }
     },
     close,
   };
-  async function admit(request: any, requestSignal?: AbortSignal) {
+  async function admit(
+    request: any,
+    requestSignal: AbortSignal | undefined,
+    prior: Promise<void>,
+    claim: () => void,
+  ) {
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     if (!request || typeof request !== "object" || Array.isArray(request))
@@ -641,13 +664,21 @@ export async function openNativeGateway(
       request.kind === "catalog"
         ? ["kind"]
         : request.kind === "tool"
-          ? ["kind", "name", "args"]
+          ? ["kind", "name", "args", "toolCallId"]
           : request.kind === "provider"
             ? ["kind", "body"]
             : [];
     if (
       !allowed.length ||
       Object.keys(request).some((k) => !allowed.includes(k))
+    )
+      throw new Error("NATIVE_REQUEST_REJECTED");
+    if (
+      request.kind === "tool" &&
+      request.toolCallId !== undefined &&
+      (typeof request.toolCallId !== "string" ||
+        !request.toolCallId.length ||
+        request.toolCallId.length > 256)
     )
       throw new Error("NATIVE_REQUEST_REJECTED");
     if (request.kind === "catalog") {
@@ -710,9 +741,10 @@ export async function openNativeGateway(
       throw new Error("NATIVE_REQUEST_BUSY");
     }
     active = true;
+    claim();
     client.requestSignal = requestSignal;
     try {
-      return await dispatch(request, requestSignal);
+      return await dispatch(request, requestSignal, prior);
     } catch (error) {
       settle(error);
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
@@ -725,10 +757,80 @@ export async function openNativeGateway(
         return { attachmentError: { code: error.code } };
       }
       throw error;
-    } finally {
-      active = false;
-      client.requestSignal = undefined;
     }
+  }
+  // Busy calls also pass this boundary. Serialize capture/seal writes, never
+  // execution; keep the active admission held until its emitted outcome seals.
+  async function emitted(
+    request: any,
+    operation: (prior: Promise<void>) => Promise<any>,
+    requestSignal?: AbortSignal,
+  ) {
+    let selected: object | undefined;
+    let prior = orderedOutcomes;
+    let finish: (() => void) | undefined;
+    // An ID is data from the sandbox, not authority: bind it to the actual
+    // provider-observed name and exact arguments before dispatching any tool.
+    if (
+      request?.kind === "tool" &&
+      session.archive &&
+      hooks.onExchange &&
+      !historyUnsafe &&
+      typeof request.name === "string" &&
+      request.args &&
+      typeof request.args === "object" &&
+      (request.toolCallId === undefined ||
+        typeof request.toolCallId === "string")
+    ) {
+      selected = historyLog.claim(
+        request.name,
+        request.args,
+        request.toolCallId,
+      );
+      if (selected) {
+        orderedOutcomes = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      }
+    }
+    let result: any, failure: NativeFailure | undefined;
+    try {
+      result = await operation(prior);
+    } catch (error) {
+      failure = classify(error, request?.kind, requestSignal);
+    }
+    if (
+      !failure &&
+      request?.kind === "tool" &&
+      nativeToolResultTooLarge(result)
+    )
+      failure = new NativeFailure("NATIVE_RESULT_TOO_LARGE");
+    if (
+      request?.kind === "tool" &&
+      session.archive &&
+      hooks.onExchange &&
+      !historyUnsafe
+    ) {
+      const outcome = nativeToolOutcome(request.name, result, failure?.code);
+      try {
+        const work = prior.then(async () => {
+          const recorded = await canonical(() =>
+            historyLog.dispatch(request.name, request.args, outcome, selected),
+          );
+          if (recorded && !historyMismatch)
+            await hooks.onExchange!(historyLog.snapshot());
+        });
+        await work;
+      } finally {
+        if (selected) historyLog.release(selected);
+        finish?.();
+      }
+    } else {
+      if (selected) historyLog.release(selected);
+      finish?.();
+    }
+    if (failure) throw failure;
+    return result;
   }
   // Map any failure to one fixed code. Session state dominates: a revoked or
   // expired runtime is reported as such even if the proximate error differs.
@@ -777,9 +879,16 @@ export async function openNativeGateway(
       return new NativeFailure("NATIVE_SESSION_EXPIRED", message);
     return new NativeFailure("NATIVE_AUTHORIZATION_FAILED", message);
   }
-  async function dispatch(request: any, requestSignal?: AbortSignal) {
+  async function dispatch(
+    request: any,
+    requestSignal?: AbortSignal,
+    prior?: Promise<void>,
+  ) {
     if (historyUnsafe) throw new Error("NATIVE_HISTORY_MISMATCH");
-    if (session.archive) await hooks.onBeforeDispatch?.();
+    if (session.archive) {
+      await prior;
+      await hooks.onBeforeDispatch?.();
+    }
     if (request.kind === "tool") {
       if (owner && request.name === ATTACHMENT_TOOL)
         return sendAttachment(
@@ -811,13 +920,6 @@ export async function openNativeGateway(
           image.sha256,
         );
         text.text = JSON.stringify(summary);
-      }
-      if (session.archive && hooks.onExchange) {
-        const recorded = await canonical(() =>
-          historyLog.dispatch(request.name, request.args, result),
-        );
-        if (recorded && !historyMismatch)
-          await hooks.onExchange(historyLog.snapshot());
       }
       return result;
     }

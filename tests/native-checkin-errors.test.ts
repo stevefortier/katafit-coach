@@ -15,8 +15,10 @@ async function failedTool(name: string, result?: unknown) {
   const register = runInNewContext(
     source
       .replace('import { readFileSync } from "node:fs";', "")
+      .replace(/export function /g, "function ")
       .replace("export default function", "(function") + ")",
     {
+      TextEncoder,
       readFileSync: () => JSON.stringify({ tools: [{ name }] }),
       fetch: async () => {
         requests++;

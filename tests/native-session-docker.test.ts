@@ -564,3 +564,115 @@ test(
     }
   },
 );
+
+test(
+  "real archive Pi host error and attachment outcomes reach provider then resume without replay",
+  {
+    skip: process.env.NATIVE_DOCKER_TEST !== "1",
+    timeout: 60000,
+  },
+  async () => {
+    const flag = process.env.NATIVE_DOCKER_TEST;
+    delete process.env.NATIVE_DOCKER_TEST;
+    let f: Awaited<ReturnType<typeof archiveFixture>>;
+    try {
+      f = await archiveFixture({
+        response(name, _args, value) {
+          if (name === "studio_operator_list_members")
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ code: "SYNTHETIC_READ_FAILED" }),
+                },
+              ],
+            };
+          return value;
+        },
+        provider(body) {
+          const results = body.messages.filter((m: any) => m.role === "tool");
+          const has = (id: string) =>
+            results.some((m: any) => m.tool_call_id === id);
+          if (!has("host_error"))
+            return toolCall("studio_operator_list_members", {}, "host_error");
+          assert.match(
+            JSON.stringify(results),
+            /Kata.fit tool failed; do not replay uncertain actions/,
+          );
+          if (!has("file_create"))
+            return toolCall(
+              "bash",
+              { command: "printf 'ATTACHMENT_SYNTHETIC_BYTES' > report.txt" },
+              "file_create",
+            );
+          if (!has("file_send"))
+            return toolCall(
+              "send_to_operator",
+              { workspace_path: "report.txt" },
+              "file_send",
+            );
+          assert.match(JSON.stringify(results), /operator_panel/);
+          if (!has("file_error"))
+            return toolCall(
+              "send_to_operator",
+              { workspace_path: "missing.txt" },
+              "file_error",
+            );
+          assert.match(JSON.stringify(results), /ATTACHMENT_FILE_NOT_FOUND/);
+          return answer("HOST_OUTCOMES_NATIVE_COMPLETE");
+        },
+      });
+    } finally {
+      process.env.NATIVE_DOCKER_TEST = flag;
+    }
+    const server = createServer(),
+      terminal = new DockerTerminal(f!.store, server, () => "http://127.0.0.1");
+    const wait = async (check: () => Promise<boolean>) => {
+      const deadline = Date.now() + 20000;
+      while (!(await check())) {
+        assert.ok(
+          Date.now() < deadline,
+          "host outcomes deadline: " + terminal.captured.slice(-3500),
+        );
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
+    try {
+      await terminal.begin();
+      terminal.input("Exercise host error and attachments\r");
+      const id = (await terminal.historyList()).sessions[0].id;
+      await wait(async () =>
+        JSON.stringify((await terminal.historyRead(id)).entries ?? []).includes(
+          "HOST_OUTCOMES_NATIVE_COMPLETE",
+        ),
+      );
+      const view = await terminal.historyRead(id);
+      assert.equal(view.reason, null);
+      assert.equal(
+        view.entries.filter((e: any) => e.message?.role === "toolResult")
+          .length,
+        4,
+      );
+      assert.ok(!JSON.stringify(view.entries).includes("at_"));
+      const calls = f!.named("studio_operator_list_members").length;
+      await terminal.stop();
+      await terminal.begin();
+      assert.equal(f!.named("studio_operator_list_members").length, calls);
+      const providers = f!.calls.filter(
+        (c) => c.path === "/v1/chat/completions",
+      ).length;
+      terminal.input("Continue without replaying completed calls\r");
+      await wait(
+        async () =>
+          f!.calls.filter((c) => c.path === "/v1/chat/completions").length >
+            providers && (await terminal.historyRead(id)).reason === null,
+      );
+      assert.equal(f!.named("studio_operator_list_members").length, calls);
+    } finally {
+      await terminal.close();
+      await f!.close();
+      server.close();
+    }
+  },
+);

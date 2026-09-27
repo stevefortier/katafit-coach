@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   SessionManager,
@@ -6,6 +6,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 const clean = (text: string) =>
   text.replace(/\b(?:ir|at)_[a-f0-9]{32}\b/g, "[expired attachment receipt]");
+const resultText = (content: any) =>
+  typeof content === "string"
+    ? content
+    : (content ?? [])
+        .filter((p: any) => p.type === "text")
+        .map((p: any) => p.text)
+        .join("\n");
+const textDigest = (content: any) =>
+  createHash("sha256").update(resultText(content)).digest("hex");
 const usage = {
   input: 0,
   output: 0,
@@ -148,6 +157,13 @@ export class CanonicalNativeHistory {
   entries: FileEntry[];
   private imagesOmitted = false;
   private complete = false;
+  // Ephemeral receipt tokens never enter the archive, but dispatch must match
+  // the exact observed arguments rather than conflating redacted tokens.
+  private observedArguments = new WeakMap<object, unknown>();
+  // Live comparisons precede privacy redaction. Digests never enter archives;
+  // resumed, already-redacted seed entries use their sealed canonical text.
+  private emittedText = new WeakMap<object, string>();
+  private reserved = new WeakSet<object>();
   constructor(seed?: FileEntry[]) {
     this.entries = structuredClone(
       seed ?? [SessionManager.inMemory("/workspace").getHeader()!],
@@ -205,38 +221,75 @@ export class CanonicalNativeHistory {
    * fabricated backend receipt or an unknown tool call into provider traffic. */
   validateResultClaims(wire: any) {
     const messages = this.messages();
-    const calls = messages
-      .filter((m) => m.role === "assistant")
-      .flatMap((m) => m.content.filter((p: any) => p.type === "toolCall"));
-    const results = messages.filter((m) => m.role === "toolResult");
+    const calls: any[] = [],
+      pending: any[] = [];
+    const receipts = new Map<any, any>();
+    for (const message of messages) {
+      if (message.role === "assistant") {
+        const selected = message.content.filter(
+          (p: any) => p.type === "toolCall",
+        );
+        calls.push(...selected);
+        pending.push(...selected);
+      }
+      if (message.role === "toolResult") {
+        const index = pending.findIndex((c) => c.id === message.toolCallId);
+        if (index >= 0) receipts.set(pending.splice(index, 1)[0], message);
+      }
+    }
     const candidate = captureNativeExchange(wire, "", "", true)!;
-    for (const entry of candidate.entries as any[]) {
-      const message = entry.message;
-      if (message?.role !== "toolResult") continue;
-      const matching = calls
-        .slice()
-        .reverse()
-        .find((c) => c.id === message.toolCallId);
+    const incoming = (candidate.entries as any[])
+      .filter((e) => e.type === "message")
+      .map((e) => e.message);
+    const rawResults = wire.messages.filter((m: any) => m.role === "tool");
+    const positioned = new Map<string, any>();
+    let prefix = true,
+      resultIndex = 0;
+    for (let i = 0; i < incoming.length; i++) {
+      const message = incoming[i];
+      prefix &&=
+        i < messages.length &&
+        isDeepStrictEqual(
+          this.comparable(messages[i]),
+          this.comparable(message),
+        );
+      if (message.role === "assistant" && prefix) {
+        for (const c of messages[i].content.filter(
+          (p: any) => p.type === "toolCall",
+        ))
+          positioned.set(c.id, c);
+      }
+      if (message.role !== "toolResult") continue;
+      const raw = rawResults[resultIndex++];
+      const sameId = calls.filter((c) => c.id === message.toolCallId);
+      // Full unchanged prefixes disambiguate reused IDs. After compaction an
+      // ambiguous ID is refused, never guessed from sandbox-provided names.
+      const matching =
+        positioned.get(message.toolCallId) ??
+        (sameId.length === 1 ? sameId[0] : undefined);
+      positioned.delete(message.toolCallId);
       if (
-        matching &&
-        localTools.has(matching.name) &&
-        (message.toolName === "archived_tool" ||
-          message.toolName === matching.name)
+        !matching ||
+        (message.toolName !== "archived_tool" &&
+          message.toolName !== matching.name)
       )
-        continue;
+        throw new Error("NATIVE_HISTORY_UNTRUSTED_RESULT");
+      if (localTools.has(matching.name)) continue;
+      const recorded = receipts.get(matching);
       if (
-        !results.some(
-          (r) =>
-            !localTools.has(r.toolName) &&
-            r.toolCallId === message.toolCallId &&
-            (message.toolName === "archived_tool" ||
-              message.toolName === r.toolName) &&
-            isDeepStrictEqual(this.comparable(r), this.comparable(message)),
-        )
+        !recorded ||
+        (this.emittedText.has(recorded) &&
+          this.emittedText.get(recorded) !== textDigest(raw.content)) ||
+        !isDeepStrictEqual(
+          this.comparable(recorded),
+          this.comparable(message),
+        ) ||
+        (Object.hasOwn(raw, "isError") && raw.isError !== recorded.isError)
       )
         throw new Error("NATIVE_HISTORY_UNTRUSTED_RESULT");
     }
   }
+
   request(wire: any) {
     const candidate = captureNativeExchange(wire, "", "", true)!;
     const incoming = candidate.entries
@@ -339,7 +392,7 @@ export class CanonicalNativeHistory {
         arguments: JSON.parse(clean(call.function.arguments)),
       });
     }
-    if (parts.length)
+    if (parts.length) {
       this.append({
         role: "assistant",
         content: parts,
@@ -351,10 +404,20 @@ export class CanonicalNativeHistory {
           finish === "stop" ? "stop" : calls.length ? "toolUse" : "error",
         timestamp: Date.now(),
       });
+      const selected = this.messages()
+        .at(-1)
+        .content.filter((p: any) => p.type === "toolCall");
+      selected.forEach((part: any, index: number) =>
+        this.observedArguments.set(
+          part,
+          JSON.parse(calls[index].function.arguments),
+        ),
+      );
+    }
     this.complete = finish === "stop";
     return this.snapshot();
   }
-  dispatch(name: string, args: unknown, result: any) {
+  private pendingCalls() {
     const messages = this.messages();
     const pending: any[] = [];
     for (const message of messages) {
@@ -367,29 +430,74 @@ export class CanonicalNativeHistory {
         if (index >= 0) pending.splice(index, 1);
       }
     }
-    const call = pending.find(
-      (p) => p.name === name && isDeepStrictEqual(p.arguments, args),
+    return pending;
+  }
+  /** Bind a host execution to one provider-observed call before any side effect. */
+  claim(name: string, args: unknown, id?: string) {
+    const pending = this.pendingCalls();
+    const matches = pending.filter(
+      (p) =>
+        p.name === name &&
+        (id === undefined || p.id === id) &&
+        isDeepStrictEqual(
+          this.observedArguments.has(p)
+            ? this.observedArguments.get(p)
+            : p.arguments,
+          args,
+        ),
     );
+    if (matches.length > 1 || (id !== undefined && matches.length !== 1))
+      throw new Error("NATIVE_HISTORY_MISMATCH");
+    const call = matches[0];
+    if (!call) return undefined; // Host-only reconciliation grants no slot.
+    if (this.reserved.has(call)) throw new Error("NATIVE_HISTORY_MISMATCH");
+    // A later host call cannot overtake a selected earlier host call. Local Pi
+    // builtins are not dispatched to this host and cannot block the sequence.
+    if (
+      pending
+        .slice(0, pending.indexOf(call))
+        .some((p) => !localTools.has(p.name) && !this.reserved.has(p))
+    )
+      throw new Error("NATIVE_HISTORY_MISMATCH");
+    this.reserved.add(call);
+    return call;
+  }
+  release(call: object) {
+    this.reserved.delete(call);
+  }
+  dispatch(name: string, args: unknown, result: any, selected?: any) {
+    const call = selected ?? this.claim(name, args);
     // Direct host dispatch may reconcile/test execution independently of a
     // provider selection. It grants no transcript slot: a later sandbox claim
     // containing an unobserved assistant/tool message is still rejected.
     if (!call) return false;
     if (
-      !Array.isArray(result?.content) ||
-      result.content.some((p: any) => p.type !== "text")
+      selected &&
+      (!this.reserved.has(call) || !this.pendingCalls().includes(call))
     )
       throw new Error("NATIVE_HISTORY_MISMATCH");
+    this.observedArguments.delete(call);
+    if (
+      !Array.isArray(result?.content) ||
+      result.content.some((p: any) => !["text", "image"].includes(p.type))
+    )
+      throw new Error("NATIVE_HISTORY_MISMATCH");
+    this.imagesOmitted ||= result.content.some((p: any) => p.type === "image");
     this.append({
       role: "toolResult",
       toolCallId: call.id,
       toolName: name,
-      content: result.content.map((p: any) => ({
-        type: "text",
-        text: clean(p.text),
-      })),
+      content: result.content
+        .filter((p: any) => p.type === "text")
+        .map((p: any) => ({
+          type: "text",
+          text: clean(p.text),
+        })),
       isError: result.isError === true,
       timestamp: Date.now(),
     });
+    this.emittedText.set(this.messages().at(-1), textDigest(result.content));
+    this.release(call);
     return true;
   }
 }

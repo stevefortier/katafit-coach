@@ -48,3 +48,48 @@ NATIVE_DOCKER_TEST=1 NATIVE_TEST_IMAGE=sha256:<immutable-image-id> npx tsx --tes
 The same opt-in test supports `PAIRED_CONTINUITY_ORIGIN` (loopback only) and `PAIRED_CONTINUITY_TOKEN` from a disposable real backend fixture. In paired mode it reads real authorized member evidence, delivers one intentional message, expires both predecessor deadlines, reopens native history after owner restart without provider replay, checks the follow-up's retained context and exactly-one canonical send, then revokes membership and verifies withheld history. The provider itself is synthetic; this is not live-model semantic evaluation or production qualification.
 
 Raw dirty-tree Docker qualification is distinct from clean exact-head artifact/updater qualification. Release still requires independent source review, matching immutable native artifact and package/update acceptance; do not relabel a task image or stop an active customer's Pi to obtain evidence.
+
+
+## Host outcomes and the live tracking limit
+
+All host-admitted tool outcomes (including schema/unknown-tool failures, backend
+errors, attachment sends and busy refusals) use the executable contract shipped
+with the Pi extension. Capture finishes before the owning admission releases;
+parallel busy captures are serialized. Only outstanding provider-observed slots
+can receive outcomes. Fixed failures are transcript evidence of what was emitted,
+not backend source proofs or invented delivery receipts. Explicit contradictory
+error flags are refused; Pi's omitted error flag is not treated as success.
+The pinned Pi tool-call ID travels through the private relay and is matched
+against the exact observed name and arguments before execution. Concurrent
+outcomes seal in provider-selection order, not completion order; an ambiguous
+ID/argument pairing cannot authorize a side effect. Direct host reconciliation
+does not create a provider result slot.
+Successful validated image tools retain their text outcome only, mark images
+omitted, and keep the existing image-bearing archive read-only/no-seed policy.
+Raw receipt-valued call arguments are matched exactly in a bounded ephemeral
+index associated with journal entries; archive text still redacts those tokens.
+A different receipt token cannot consume the observed call's outcome slot.
+Live outcome text is also digest-matched before redaction, so altering a returned
+receipt token cannot hide behind the archive placeholder. These runtime-only
+digests are not persisted; resumed seed text is checked against its sealed form.
+The host applies the 16 MiB return-frame bound before capture, reserving space
+for the largest valid frame ID, so runtime withholding cannot replace an archived
+success with an unobserved fixed error. The relay has no smaller response cap.
+Unobserved relay-local request/transport failures are **not** minted into host
+receipts: if they reappear as host-tool results they remain a hard refusal.
+
+**C1 — bounded live sessions, not unlimited compacted continuation:** the host's
+structured observation journal retains its 2 MiB limit even after a compaction
+freezes durable history. Compaction does not reclaim this host budget. Reaching
+it hard-refuses further provider/tool work (`NATIVE_HISTORY_LIMIT`, possibly
+shown through the generic native failure text); the last sealed authorized
+prefix remains read-only. Stop, then explicitly choose New for further work.
+Do not resend an interrupted mutation or attachment on that basis: verify
+canonical action state first; local attachment/workspace bytes are not restored.
+Deleting another conversation frees inventory/disk capacity, **not** this live
+journal budget. This is an explicit product limit, not a resolved unlimited-live
+tracking feature. No bound is removed or replaced with unbounded memory.
+
+Reused call IDs are resolved by an unchanged host-observed positional prefix.
+After compaction, ambiguous reused IDs are refused rather than guessed from
+sandbox names or text; unique observed IDs still use exact host outcomes.

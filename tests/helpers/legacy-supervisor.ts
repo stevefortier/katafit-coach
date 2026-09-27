@@ -13,7 +13,7 @@ async function legacyRoot(home: string) {
     await access(join(root, "package.json"));
   } catch {
     await mkdir(root, { recursive: true });
-    for (const name of ["src", "dist", "ui"])
+    for (const name of ["src", "dist", "ui", "sandbox"])
       await cp(resolve(name), join(root, name), { recursive: true });
     await symlink(resolve("node_modules"), join(root, "node_modules"));
     await writeFile(
