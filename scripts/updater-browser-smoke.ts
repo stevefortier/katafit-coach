@@ -316,7 +316,7 @@ try {
       /was deferred/,
     );
   }
-  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.locator("#logRefresh").waitFor({ state: "visible" });
   const downloaded = page.waitForEvent("download");
   await page.locator("#logDownload").click();

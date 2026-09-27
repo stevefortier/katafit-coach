@@ -50,7 +50,7 @@
             aria-controls="diagnostics"
             aria-pressed="false"
           >
-            Diagnostics
+            Activity
           </button>
           <button
             id="settingsTab"
@@ -709,12 +709,12 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
           tabindex="0"
           hidden
         >
-          <h2>Diagnostics</h2>
+          <h2>Activity</h2>
           <p id="lastError" role="status">No retained error.</p>
           <div
             class="settings-tabs"
             role="tablist"
-            aria-label="Diagnostics sections"
+            aria-label="Activity sections"
           >
             <button
               id="diagnostics-performance-tab"
@@ -797,7 +797,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             aria-labelledby="diagnostics-logs-tab"
             tabindex="0"
           >
-            <h3>Raw diagnostic logs</h3>
+            <h3>Activity logs</h3>
             <p id="performanceSelection" role="status"></p>
             <button id="performanceClear" class="secondary" hidden>
               Clear call selection
@@ -820,9 +820,9 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               <button id="logDownload" class="secondary">Download JSON</button>
             </div>
             <p id="logStatus" role="status">
-              Logs load only while Diagnostics is active and the tab is visible.
+              Logs load only while Activity is active and the tab is visible.
             </p>
-            <div id="logRows" aria-label="Diagnostic entries"></div>
+            <div id="logRows" aria-label="Activity entries"></div>
           </div>
         </section>
       </div>

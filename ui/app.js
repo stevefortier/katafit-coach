@@ -1624,10 +1624,10 @@ const performanceRate = BackendPerformance.rate;
 function logReadStatus() {
   if (!performanceData)
     return logLoading
-      ? "Loading diagnostics snapshot…"
+      ? "Loading activity snapshot…"
       : logReadError
-        ? "Unable to load diagnostics snapshot. Use Refresh to retry."
-        : "Diagnostics snapshot not loaded. Use Refresh to load.";
+        ? "Unable to load activity snapshot. Use Refresh to retry."
+        : "Activity snapshot not loaded. Use Refresh to load.";
   return logLoading
     ? "Last loaded snapshot · Refreshing…"
     : logReadError
