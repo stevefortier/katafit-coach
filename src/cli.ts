@@ -76,7 +76,11 @@ async function main() {
     const close = async () => {
       if (closing) return;
       closing = true;
-      await app?.close();
+      const closed = await app?.close();
+      if (closed === false) {
+        closing = false;
+        return;
+      }
       await unlink(join(dir, "service.json")).catch(() => {});
       if (process.connected) process.disconnect();
     };
@@ -92,7 +96,7 @@ async function main() {
         },
       );
       if (closing) {
-        await app.close();
+        if ((await app.close()) === false) closing = false;
         return;
       }
       await store.atomic("service", {
@@ -183,9 +187,18 @@ async function main() {
   }
   throw new Error("UNKNOWN_COMMAND");
 }
-main().catch(() => {
+main().catch((error) => {
+  const reason = error instanceof Error ? error.message : "";
   console.error(
-    "Coach command failed. Check service status, protected installation directory and port availability. Use help for commands.",
+    reason === "UPDATE_CLEANUP_PENDING"
+      ? "Coach command failed: UPDATE_CLEANUP_PENDING. An owned native readiness probe could not be safely removed; retry startup after checking Docker availability. Do not delete the protected cleanup receipt or broad-prune containers."
+      : [
+            "NATIVE_PROBE_LOCK_INVALID",
+            "NATIVE_PROBE_LOCK_TIMEOUT",
+            "NATIVE_PROBE_LOCK_UNAVAILABLE",
+          ].includes(reason)
+        ? `Coach command failed: ${reason}. Check the protected home and the trusted /usr/bin/flock installation.`
+        : "Coach command failed. Check service status, protected installation directory and port availability. Use help for commands.",
   );
   process.exitCode = 1;
 });

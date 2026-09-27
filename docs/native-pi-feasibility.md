@@ -48,4 +48,15 @@ COACH_PACKAGED_ROOT=/absolute/install/node_modules/@katafit/coach \
 
 Local evidence is outside the repository in `/home/kai/operator-native-pi-evidence/`, including red/green logs and native desktop/mobile screenshots. Final execution totals and packaged results are recorded in the PR/evidence report rather than inferred from an earlier foundation run.
 
-Remaining review gates: independent security review, crash/reboot orphan reconciliation across control-plane process death, adversarial multi-tenant qualification, persistent workspace design, image distribution/update orchestration and separately authorized hosted acceptance. A process crash can leave a bounded orphan container for operator cleanup; no persistent workspace or crash-recovery certification is claimed. The existing compatibility chat API/history remains for storage compatibility, but its old composer is removed from Operator; it cannot run concurrently with the native terminal. No saved config/history migration is performed.
+Remaining review gates: independent security review, real-daemon host-crash
+qualification, adversarial same-authority/multi-tenant qualification, persistent
+workspace design, image distribution/update orchestration and separately
+authorized hosted acceptance. Protocol-2 preflight now writes exact ownership
+before create and safely retries verified-ID cleanup across launcher process
+restart; mismatched or unavailable state blocks instead of removing an unrelated
+container. This is not a claim about a hostile peer that can mutate both Docker
+and the protected home. No persistent workspace or broad crash-recovery
+certification is claimed. The existing compatibility chat API/history remains
+for storage compatibility, but its old composer is removed from Operator; it
+cannot run concurrently with the native terminal. No saved config/history
+migration is performed.

@@ -163,12 +163,12 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     Origin: info.origin,
     "Content-Type": "application/json",
   };
-  const api = (path, body) =>
+  const api = (path, body, timeout = 5000) =>
     fetch(info.origin + "/api/" + path, {
       method: body === undefined ? "GET" : "POST",
       headers: auth,
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(timeout),
     });
   const wait = async (predicate) => {
     let lastState;
@@ -206,7 +206,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     await writeFile(selection, JSON.stringify({ sha, offset }));
     assert.equal((await (await api("update/check", {})).json()).latest, sha);
     assert.equal(
-      (await api("update/apply", { sha, confirm: true })).status,
+      (await api("update/apply", { sha, confirm: true }, 180000)).status,
       202,
     );
   };

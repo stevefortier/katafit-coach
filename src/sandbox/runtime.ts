@@ -12,6 +12,131 @@ import type { Duplex } from "node:stream";
 import { sandboxArgs } from "./policy.js";
 
 const exec = promisify(execFile);
+const containerId = /^[a-f0-9]{64}$/;
+export interface NativeProbeOwnership {
+  protocol: 1;
+  name: string;
+  token: string;
+  revision: string;
+  fingerprint: string;
+  image: string;
+  labels: Record<string, string>;
+  containerId: string | null;
+}
+export interface NativeProbeEngine {
+  inspect(reference: string): Promise<any | undefined>;
+  remove(id: string): Promise<void>;
+}
+
+function dockerProbeEngine(
+  run: (
+    file: string,
+    args: string[],
+    options: any,
+  ) => Promise<{ stdout: string }>,
+  socketPath: string,
+): NativeProbeEngine {
+  let version: Promise<string> | undefined;
+  const apiVersion = () =>
+    (version ??= run(
+      "docker",
+      [
+        "--host=unix://" + socketPath,
+        "version",
+        "--format",
+        "{{.Server.APIVersion}}",
+      ],
+      { timeout: 10000, maxBuffer: 4096 },
+    ).then(({ stdout }) => {
+      const match = /^1\.(\d+)$/.exec(stdout.trim());
+      if (!match || Number(match[1]) < 41)
+        throw new Error("DOCKER_API_UNSUPPORTED");
+      return "/v1." + Math.min(52, Number(match[1]));
+    }));
+  return {
+    async inspect(reference) {
+      const prefix = await apiVersion();
+      return new Promise<any | undefined>((resolve, reject) => {
+        const req = request({
+          socketPath,
+          method: "GET",
+          path: `${prefix}/containers/${encodeURIComponent(reference)}/json`,
+        });
+        const timer = setTimeout(
+          () => req.destroy(new Error("DOCKER_TIMEOUT")),
+          5000,
+        );
+        req.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        req.once("response", (res) => {
+          const chunks: Buffer[] = [];
+          let size = 0;
+          res.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > 65536) req.destroy(new Error("DOCKER_RESPONSE_LIMIT"));
+            else chunks.push(chunk);
+          });
+          res.once("end", () => {
+            clearTimeout(timer);
+            if (res.statusCode === 404) return resolve(undefined);
+            if (res.statusCode !== 200)
+              return reject(new Error("DOCKER_REQUEST_REJECTED"));
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+            } catch (error) {
+              reject(error);
+            }
+          });
+        });
+        req.end();
+      });
+    },
+    async remove(id) {
+      await run(
+        "docker",
+        ["--host=unix://" + socketPath, "rm", "--force", id],
+        { timeout: 15000, maxBuffer: 65536 },
+      );
+    },
+  };
+}
+
+/** Remove only a container that exactly matches a durable probe receipt. */
+export async function cleanupNativeProbe(
+  ownership: NativeProbeOwnership,
+  engine: NativeProbeEngine = dockerProbeEngine(exec, "/var/run/docker.sock"),
+) {
+  let found: any;
+  try {
+    found = await engine.inspect(ownership.name);
+  } catch {
+    throw new Error("NATIVE_CLEANUP_PENDING");
+  }
+  if (found === undefined) return;
+  const labels = found?.Config?.Labels;
+  const exactLabels = Object.entries(ownership.labels).every(
+    ([key, value]) => labels?.[key] === value,
+  );
+  if (
+    !containerId.test(found?.Id) ||
+    found.Name !== "/" + ownership.name ||
+    found.Image !== ownership.image ||
+    found.Config?.Image !== ownership.image ||
+    !exactLabels ||
+    (ownership.containerId !== null && found.Id !== ownership.containerId)
+  )
+    throw new Error("NATIVE_CLEANUP_PENDING");
+  try {
+    await engine.remove(found.Id);
+  } catch {
+    try {
+      if ((await engine.inspect(found.Id)) === undefined) return;
+    } catch {}
+    throw new Error("NATIVE_CLEANUP_PENDING");
+  }
+}
 const record = (value: any) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 function validFrame(frame: any): boolean {
@@ -49,7 +174,7 @@ function validFrame(frame: any): boolean {
 
 /** Control-plane only. Docker's socket is never mounted inside the runtime. */
 export class NativeRuntime {
-  readonly name = "katafit-pi-" + randomUUID();
+  readonly name: string;
   private socket?: Duplex;
   private created = false;
   onOutput: (chunk: string) => void = () => {};
@@ -60,12 +185,17 @@ export class NativeRuntime {
   get cleanupPending() {
     return this.closing;
   }
+  get containerId() {
+    return this.ownership?.containerId ?? undefined;
+  }
   private readonly run: (
     file: string,
     args: string[],
     options: any,
   ) => Promise<{ stdout: string }>;
   private readonly socketPath: string;
+  private readonly ownership?: NativeProbeOwnership;
+  private readonly probeEngine?: NativeProbeEngine;
   constructor(
     readonly image: string,
     engine: {
@@ -75,10 +205,19 @@ export class NativeRuntime {
         args: string[],
         options: any,
       ) => Promise<{ stdout: string }>;
+      ownership?: NativeProbeOwnership;
+      probeEngine?: NativeProbeEngine;
     } = {},
   ) {
     this.run = engine.exec ?? exec;
     this.socketPath = engine.socketPath ?? "/var/run/docker.sock";
+    this.ownership = engine.ownership;
+    this.name = engine.ownership?.name ?? "katafit-pi-" + randomUUID();
+    this.probeEngine =
+      engine.probeEngine ??
+      (engine.ownership
+        ? dockerProbeEngine(this.run, this.socketPath)
+        : undefined);
   }
   private gateway?: NativeGateway;
   private relay?: ChildProcessWithoutNullStreams;
@@ -86,7 +225,7 @@ export class NativeRuntime {
   async start(gateway?: NativeGateway) {
     if (this.closing) throw new Error("RUNTIME_CLEANUP_PENDING");
     this.gateway = gateway;
-    const args = sandboxArgs(this.name, this.image);
+    const args = sandboxArgs(this.name, this.image, this.ownership?.labels);
     args.splice(1, 0, "--tty", ...(gateway ? ["--env=NATIVE_GATEWAY=1"] : []));
     // Negotiate the daemon version, capped at the API this client implements.
     const { stdout } = await this.run(
@@ -105,10 +244,17 @@ export class NativeRuntime {
     this.version = "/v1." + Math.min(52, Number(version[1]));
     this.created = true; // Name is owned before an ambiguous create dispatch.
     try {
-      await this.run("docker", ["--host=unix://" + this.socketPath, ...args], {
-        timeout: 15000,
-        maxBuffer: 65536,
-      });
+      const created = await this.run(
+        "docker",
+        ["--host=unix://" + this.socketPath, ...args],
+        {
+          timeout: 15000,
+          maxBuffer: 65536,
+        },
+      );
+      const id = created.stdout.trim();
+      if (this.ownership && containerId.test(id))
+        this.ownership.containerId = id;
     } catch (error) {
       await this.stop();
       throw error;
@@ -293,6 +439,12 @@ export class NativeRuntime {
     this.relay?.kill();
     if (!this.created) return Promise.resolve();
     return (this.stopping = (async () => {
+      if (this.ownership) {
+        await cleanupNativeProbe(this.ownership, this.probeEngine!);
+        this.created = false;
+        this.onExit();
+        return;
+      }
       try {
         await this.run(
           "docker",

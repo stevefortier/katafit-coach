@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { Worker } from "../src/worker/runner.js";
@@ -749,7 +751,7 @@ test("auto quiesce rejects an unconfirmed stop and retains running intent across
 });
 
 for (const loseReply of [false, true])
-  test(`owner retains unsafe auto-stop recovery without staging (lost reply=${loseReply})`, async () => {
+  test(`owner retains unsafe auto-stop recovery after preparation (lost reply=${loseReply})`, async () => {
     const { supervise } = await import("./helpers/legacy-supervisor.js");
     const f = await backend({ refuseStopped: true });
     const dir = await mkdtemp(tmpdir() + "/auto-owner-presence-");
@@ -764,9 +766,25 @@ for (const loseReply of [false, true])
     let prepares = 0,
       checks = 0;
     const owner = await supervise(store, 0, undefined, {
-      prepare: async () => {
+      prepare: async (target) => {
         prepares++;
-        throw Error("must not stage");
+        const candidate = join(dir, "versions", target);
+        await mkdir(join(candidate, "dist/config"), { recursive: true });
+        await mkdir(join(candidate, "dist/server"), { recursive: true });
+        await writeFile(join(candidate, "package.json"), '{"type":"module"}');
+        await writeFile(
+          join(candidate, "dist/build.json"),
+          JSON.stringify({ revision: target, protocol: 1 }),
+        );
+        await writeFile(
+          join(candidate, "dist/config/store.js"),
+          `export {Store} from ${JSON.stringify(pathToFileURL(resolve("dist/config/store.js")).href)};`,
+        );
+        await writeFile(
+          join(candidate, "dist/server/admin.js"),
+          `export {admin, updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)};`,
+        );
+        return candidate;
       },
       request: async (url) => {
         checks++;
@@ -833,7 +851,7 @@ for (const loseReply of [false, true])
         owner.updates.snapshot().autoOutcome?.state,
         "resume-failed",
       );
-      assert.equal(prepares, 0);
+      assert.equal(prepares, 1);
       assert.equal(await setting.failedTarget(), null);
       assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
     } finally {

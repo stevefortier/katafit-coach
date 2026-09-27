@@ -1,8 +1,17 @@
 import { fork, type ChildProcess } from "node:child_process";
-import { nativePreflight } from "../sandbox/artifact.js";
+import {
+  artifactRequired,
+  drainNativePreflightCleanup,
+  nativePreflight,
+} from "../sandbox/artifact.js";
 import { Store } from "../config/store.js";
 import { Updates, validSha } from "./updates.js";
-import { AutoUpdater, AutoUpdateSetting, isMainDescendant } from "./auto.js";
+import {
+  AutoUpdater,
+  AutoUpdateDeferred,
+  AutoUpdateSetting,
+  isMainDescendant,
+} from "./auto.js";
 import { UpdateJournal, atomicWrite } from "./journal.js";
 import {
   stage,
@@ -22,13 +31,19 @@ import {
   access,
 } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 interface Boundary {
   housekeeping?: () => Promise<void>;
   prepare?: (sha: string, signal: AbortSignal) => Promise<string>;
+  preflight?: (
+    root: string,
+    home: string,
+    signal: AbortSignal,
+  ) => Promise<string | undefined>;
+  autoRetryMs?: number;
   request?: typeof fetch;
 }
 export async function supervise(
@@ -98,10 +113,18 @@ export async function supervise(
     path: string,
     revision: string | null,
     wantedPort: number,
+    preparedImage?: string,
   ) {
     if (revision && (await metadata(path)).revision !== revision)
       throw new Error("INVALID_ACTIVE");
-    if (revision) await nativePreflight(path, home);
+    if (revision) {
+      const image = await (
+        boundary.preflight ??
+        ((r, h, signal) => nativePreflight(r, h, { signal }))
+      )(path, home, controller.signal);
+      if (preparedImage !== undefined && image !== preparedImage)
+        throw new Error(artifactRequired);
+    }
     const nonce = randomUUID();
     const target = fork(
       join(root, "dist/update/runtime.js"),
@@ -123,14 +146,59 @@ export async function supervise(
         reply(await updates.check());
         return;
       }
-      if (message.method === "apply") {
+      if (message.method === "prepare") {
         if (manualPending || ambiguousQuiesce)
+          return reply(undefined, "UPDATE_IN_PROGRESS");
+        const sha = message.sha;
+        try {
+          updates.validate(sha);
+          manualPending = true;
+          const promise = updates.prepare(sha);
+          manualWork = promise;
+          await promise;
+          reply(updates.snapshot());
+          send({ type: "state", data: updates.snapshot() });
+        } catch (error) {
+          manualPending = false;
+          reply(
+            undefined,
+            error instanceof Error
+              ? error.message
+              : "UPDATE_PREPARATION_FAILED",
+          );
+        }
+        return;
+      }
+      if (message.method === "cancelPreparation") {
+        const sha = message.sha;
+        await releaseReservation(sha, "manual").catch(() => {});
+        manualPending = false;
+        reply(updates.snapshot());
+        return;
+      }
+      if (message.method === "apply" || message.method === "legacyApply") {
+        const legacy = message.method === "legacyApply";
+        if ((legacy ? manualPending : !manualPending) || ambiguousQuiesce)
           return reply(undefined, "UPDATE_IN_PROGRESS");
         try {
           const resume = message.sha?.resume === true;
           const sha = resume ? message.sha.sha : message.sha;
-          updates.validate(sha);
-          manualPending = true;
+          if (legacy) {
+            if (resume) throw new Error("LAUNCHER_UPGRADE_REQUIRED");
+            updates.validate(sha);
+            manualPending = true;
+            const preparation = updates.prepare(sha);
+            manualWork = preparation;
+            try {
+              await preparation;
+            } catch (error) {
+              await updates
+                .recordPreparationFailure(sha, error)
+                .catch(() => {});
+              throw error;
+            }
+          }
+          updates.validatePrepared(sha);
           if (resume) {
             await atomicWrite(home, "update-resume.json", {
               sha,
@@ -141,7 +209,7 @@ export async function supervise(
             recoverySha = sha;
             updates.recovering = true;
           }
-          const promise = updates.apply(sha);
+          const promise = updates.apply(sha, false, true);
           void promise.catch(() => {});
           manualWork = promise
             .catch(() => {})
@@ -164,10 +232,17 @@ export async function supervise(
           await updates.accepted;
           reply(updates.snapshot());
           send({ type: "state", data: updates.snapshot() });
-        } catch {
+        } catch (error) {
+          const sha =
+            message.sha?.resume === true ? message.sha.sha : message.sha;
+          await releaseReservation(sha, "manual").catch(() => {});
           manualPending = false;
-          reply(undefined, "TARGET_REJECTED");
+          reply(
+            undefined,
+            error instanceof Error ? error.message : "TARGET_REJECTED",
+          );
         }
+        return;
       }
       if (message.method === "shutdown") onShutdown?.();
     });
@@ -228,18 +303,95 @@ export async function supervise(
       throw e;
     }
   }
-  const apply = async (sha: string) => {
-    operation = (async () => {
-      const candidate = await (
-        boundary.prepare ?? ((s, signal) => stage(home, s, {}, signal))
-      )(sha, controller.signal);
-      const probeHome = join(home, "update-probe");
-      const previous = active ? join(home, "versions", active.revision) : root;
-      const previousRevision = active?.revision ?? installed;
+  type Preparation = {
+    sha: string;
+    candidate: string;
+    image?: string;
+    owner: "manual" | "auto";
+  };
+  type CandidateCleanup = {
+    sha: string;
+    candidate: string;
+    retryError?: unknown;
+  };
+  let reservation: Preparation | undefined;
+  let prepareWork: Promise<void> | undefined;
+  const pendingCandidateCleanup = new Map<string, CandidateCleanup>();
+  const cleanupCandidate = async (
+    candidate: string,
+    sha: string,
+    retryError?: unknown,
+  ) => {
+    const expected = resolve(home, "versions", sha);
+    if (resolve(candidate) !== expected || active?.revision === sha) {
+      updates.cleanupWarning = true;
+      return;
+    }
+    try {
+      await rm(candidate, { recursive: true, force: true });
+      const pending = pendingCandidateCleanup.get(sha);
+      if (pending?.candidate === candidate) pendingCandidateCleanup.delete(sha);
+    } catch (error) {
+      updates.cleanupWarning = true;
+      const previous = pendingCandidateCleanup.get(sha);
+      pendingCandidateCleanup.set(sha, {
+        sha,
+        candidate,
+        retryError: retryError ?? previous?.retryError,
+      });
+      throw error;
+    }
+  };
+  const drainCandidateCleanup = async (sha: string) => {
+    const pending = pendingCandidateCleanup.get(sha);
+    if (!pending) return;
+    try {
+      await cleanupCandidate(
+        pending.candidate,
+        pending.sha,
+        pending.retryError,
+      );
+    } catch (error) {
+      throw pending.retryError ?? error;
+    }
+  };
+  const releaseReservation = async (
+    sha: string,
+    owner?: Preparation["owner"],
+  ) => {
+    const prepared = reservation;
+    if (
+      !prepared ||
+      prepared.sha !== sha ||
+      (owner && prepared.owner !== owner)
+    )
+      return;
+    reservation = undefined;
+    await cleanupCandidate(prepared.candidate, prepared.sha).catch(() => {
+      updates.cleanupWarning = true;
+    });
+  };
+  const prepareReservation = async (
+    sha: string,
+    owner: Preparation["owner"],
+  ) => {
+    if (reservation?.sha === sha && reservation.owner === owner) return;
+    if (reservation || prepareWork || operation)
+      throw new Error("UPDATE_IN_PROGRESS");
+    await drainCandidateCleanup(sha);
+    let candidate: string | undefined;
+    const probeHome = join(home, "update-probe");
+    const work = (async () => {
       try {
+        candidate = await (
+          boundary.prepare ?? ((s, signal) => stage(home, s, {}, signal))
+        )(sha, controller.signal);
         if ((await metadata(candidate)).revision !== sha)
           throw new Error("SOURCE_MISMATCH");
-        const image = await nativePreflight(candidate, home);
+        const image = await (
+          boundary.preflight ??
+          ((r, h, signal) => nativePreflight(r, h, { signal }))
+        )(candidate, home, controller.signal);
         await rm(probeHome, { recursive: true, force: true });
         await mkdir(probeHome, { mode: 0o700 });
         await command(
@@ -249,14 +401,60 @@ export async function supervise(
           probeHome,
           controller.signal,
         );
-        if (closing) throw new Error("CLOSING");
+        if (closing || controller.signal.aborted)
+          throw new Error("BUILD_CANCELLED");
+        reservation = { sha, candidate, image, owner };
+      } catch (error) {
+        if (candidate)
+          await cleanupCandidate(candidate, sha, error).catch(() => {});
+        throw error;
+      } finally {
+        await rm(probeHome, { recursive: true, force: true }).catch(() => {
+          updates.cleanupWarning = true;
+        });
+      }
+    })();
+    prepareWork = work;
+    try {
+      await work;
+    } finally {
+      if (prepareWork === work) prepareWork = undefined;
+    }
+  };
+  const prepareAuto = async (sha: string) => {
+    updates.preparing = true;
+    try {
+      await prepareReservation(sha, "auto");
+    } finally {
+      updates.preparing = false;
+    }
+  };
+  const apply = async (sha: string) => {
+    const prepared = reservation;
+    if (!prepared || prepared.sha !== sha) throw new Error("TARGET_REJECTED");
+    reservation = undefined;
+    operation = (async () => {
+      const { candidate, image } = prepared;
+      const previous = active ? join(home, "versions", active.revision) : root;
+      const previousRevision = active?.revision ?? installed;
+      try {
+        if ((await metadata(candidate)).revision !== sha)
+          throw new Error("SOURCE_MISMATCH");
+        if (updates.lastOperation) {
+          updates.lastOperation.phase = "activating";
+          await journal.write(updates.lastOperation);
+        }
         // Protocol 1 forbids migrations. Snapshot existing JSON records as an
-        // extra startup-failure guard; candidate is first probed on empty home.
+        // extra startup-failure guard; candidate was first probed on empty home.
         const backup = new Map<string, Buffer>();
         for (const name of await readdir(home))
           if (
             name.endsWith(".json") &&
-            !["auto-update.json", "auto-failed.json"].includes(name)
+            ![
+              "auto-update.json",
+              "auto-failed.json",
+              "native-probe-cleanup.json",
+            ].includes(name)
           )
             backup.set(
               name,
@@ -264,23 +462,15 @@ export async function supervise(
             );
         const oldPort = Number(new URL(origin).port);
         const keep = new Set([sha, active?.revision]);
-        if (
-          autoAttempt === sha &&
-          (closing || !(await autoSetting.read()).enabled)
-        )
-          throw new Error("AUTO_UPDATE_DISABLED");
         await stop();
         try {
-          await launch(candidate, sha, oldPort);
+          await launch(candidate, sha, oldPort, image);
           const pointer = join(home, "active-" + randomUUID() + ".tmp");
           try {
             await writeFile(
               pointer,
               JSON.stringify({ revision: sha, ...(image ? { image } : {}) }),
-              {
-                mode: 0o600,
-                flag: "wx",
-              },
+              { mode: 0o600, flag: "wx" },
             );
             await rename(pointer, join(home, "active.json"));
             active = { revision: sha };
@@ -308,14 +498,12 @@ export async function supervise(
         } catch {
           updates.cleanupWarning = true;
         }
-      } catch (e) {
+      } catch (error) {
         if (active?.revision !== sha)
-          await rm(candidate, { recursive: true, force: true });
-        throw e;
-      } finally {
-        await rm(probeHome, { recursive: true, force: true }).catch(() => {
-          updates.cleanupWarning = true;
-        });
+          await cleanupCandidate(candidate, sha).catch(() => {
+            updates.cleanupWarning = true;
+          });
+        throw error;
       }
     })();
     try {
@@ -335,6 +523,8 @@ export async function supervise(
     supported ? apply : null,
     boundary.request,
     (operation) => journal.write(operation),
+    (sha) => prepareReservation(sha, "manual"),
+    (sha) => releaseReservation(sha, "manual"),
   );
   const journal = new UpdateJournal(home);
   updates.lastOperation = await journal.recover(installed);
@@ -363,11 +553,21 @@ export async function supervise(
   } catch (error: any) {
     if (error.code !== "ENOENT") throw error;
   }
-  await launch(
-    active ? join(home, "versions", active.revision) : root,
-    installed,
-    port,
-  );
+  try {
+    await launch(
+      active ? join(home, "versions", active.revision) : root,
+      installed,
+      port,
+    );
+  } catch (error) {
+    controller.abort();
+    try {
+      await drainNativePreflightCleanup(home);
+    } catch {
+      throw new Error("UPDATE_CLEANUP_PENDING");
+    }
+    throw error;
+  }
   async function post(path: string) {
     const response = await fetch(origin + path, {
       method: "POST",
@@ -492,9 +692,55 @@ export async function supervise(
     },
     apply: async (sha) => {
       if (closing || !supported) return;
+      autoAttempt = sha;
+      try {
+        await prepareAuto(sha);
+      } catch (error) {
+        autoAttempt = undefined;
+        if (closing || controller.signal.aborted)
+          throw new AutoUpdateDeferred(sha, boundary.autoRetryMs);
+        if (
+          error instanceof Error &&
+          error.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
+        ) {
+          updates.autoOutcome = {
+            sha,
+            state: "deferred",
+            reason: "ARTIFACT_NOT_READY",
+          };
+          throw new AutoUpdateDeferred(sha, boundary.autoRetryMs);
+        }
+        await updates.recordPreparationFailure(sha, error).catch(() => {});
+        throw error;
+      }
+      let enabled: boolean;
+      try {
+        enabled = (await autoSetting.read()).enabled;
+      } catch (error) {
+        await releaseReservation(sha, "auto");
+        autoAttempt = undefined;
+        throw error;
+      }
+      if (
+        closing ||
+        !enabled ||
+        updates.installed === sha ||
+        updates.latest !== sha
+      ) {
+        await releaseReservation(sha, "auto");
+        autoAttempt = undefined;
+        updates.autoOutcome = {
+          sha,
+          state: "deferred",
+          reason: "AUTO_UPDATE_DISABLED",
+        };
+        return;
+      }
       // A local transport failure before acceptance is not a bad source SHA.
       const paused = await postRetry("/api/update/auto/quiesce");
       if (!paused.ok) {
+        await releaseReservation(sha, "auto");
+        autoAttempt = undefined;
         if (
           paused.status === 503 ||
           paused.data?.error === "WORKER_STOP_UNCONFIRMED"
@@ -525,13 +771,17 @@ export async function supervise(
       let failure: unknown;
       let attempted = false;
       try {
-        autoAttempt = sha;
         if (!closing && (await autoSetting.read()).enabled) {
           attempted = true;
-          await updates.apply(sha);
+          await updates.apply(sha, false, true);
+        } else {
+          await releaseReservation(sha, "auto");
         }
       } catch (error) {
         failure = error;
+        await releaseReservation(sha, "auto").catch(() => {
+          updates.cleanupWarning = true;
+        });
       } finally {
         autoAttempt = undefined;
       }
@@ -613,7 +863,7 @@ export async function supervise(
     },
   });
   const tickAuto = async () => {
-    if (manualPending || updates.applying) return;
+    if (manualPending || updates.applying || updates.preparing) return;
     if (ambiguousQuiesce) {
       await recoverAmbiguousQuiesce();
       return; // Restore the previous worker first; check source on a later tick.
@@ -635,9 +885,11 @@ export async function supervise(
           schedule(
             ambiguousQuiesce
               ? 10000
-              : updates.latest === null && updates.checkedAt
-                ? 900000
-                : 90000,
+              : auto.retryDelay() !== undefined
+                ? Math.max(1000, auto.retryDelay()!)
+                : updates.latest === null && updates.checkedAt
+                  ? 900000
+                  : 90000,
           );
       })();
       autoTimerWork = work;
@@ -675,8 +927,29 @@ export async function supervise(
       await autoTimerWork?.catch(() => {});
       await auto.settle();
       await manualWork?.catch(() => {});
+      await prepareWork?.catch(() => {});
       await operation?.catch(() => {});
+      if (reservation)
+        await releaseReservation(reservation.sha).catch(() => {});
+      let cleanupError: unknown;
+      for (const sha of [...pendingCandidateCleanup.keys()])
+        await drainCandidateCleanup(sha).catch((error) => {
+          cleanupError ??= error;
+          updates.cleanupWarning = true;
+        });
+      await drainNativePreflightCleanup(home).catch((error) => {
+        cleanupError ??= error;
+        updates.cleanupWarning = true;
+      });
+      if (cleanupError) {
+        updates.guidance =
+          "Shutdown is waiting for owned update cleanup. Retry shutdown; do not remove the protected home or broad-prune native resources.";
+        closing = false;
+        send({ type: "state", data: updates.snapshot() });
+        return false;
+      }
       await stop();
+      return true;
     },
   };
 }

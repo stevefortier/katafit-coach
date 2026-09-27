@@ -16,6 +16,9 @@ import { Worker } from "../worker/runner.js";
 import { Client } from "../katafit/client.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 import { archiveTaskInvalidation } from "../worker/taskInvalidationArchive.js";
+// The stable runtime imports this value from the selected application module.
+// Absence means a legacy one-step admin; never infer capability from source text.
+export const updatePreparationProtocol = 1;
 export async function admin(
   store: Store,
   port = 4317,
@@ -600,7 +603,7 @@ export async function admin(
           return send(409, { error: "LAUNCHER_UPGRADE_REQUIRED" });
         if (!auto || !updates.snapshot().supported)
           return send(409, { error: "UNSUPPORTED_INSTALLATION" });
-        if (updates.applying && body?.enabled !== false)
+        if ((updates.applying || updates.preparing) && body?.enabled !== false)
           return send(409, { error: "UPDATE_IN_PROGRESS" });
         if (
           !body ||
@@ -735,22 +738,72 @@ export async function admin(
           return send(400, { error: e.message });
         }
         const wasRunning = !!worker && worker.state !== "stopped";
+        if (wasRunning && updates.snapshot().preparationSupported !== true)
+          return send(409, {
+            error: "LAUNCHER_UPGRADE_REQUIRED",
+            hint: "This launcher cannot prepare and validate the candidate before stopping Coach. Nothing was stopped or applied. Replace the stable launcher with a reviewed current build using the same Coach home.",
+          });
+        let prepared = false;
+        if (updates.snapshot().preparationSupported) {
+          try {
+            await updates.prepare(body.sha);
+            prepared = true;
+            updates.validatePrepared(body.sha);
+          } catch (error: any) {
+            await updates.cancelPreparation(body.sha).catch(() => {});
+            return send(
+              error?.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
+                ? 409
+                : 503,
+              {
+                error:
+                  error?.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
+                    ? error.message
+                    : "UPDATE_PREPARATION_FAILED",
+                hint: "Candidate preparation failed while Coach remained available. Provision the exact trusted native artifact or inspect source/build prerequisites, then retry.",
+              },
+            );
+          }
+        }
+        const cancelPrepared = async () => {
+          if (prepared)
+            await updates.cancelPreparation(body.sha).catch(() => {});
+          prepared = false;
+        };
+        // Preparation can be slow. Recheck every mutable admission condition
+        // before fencing claims or stopping a running worker.
+        if (autoQuiesced || busy || preview || updates.recovering) {
+          await cancelPrepared();
+          return send(409, {
+            error: "OPERATION_IN_PROGRESS",
+            hint: "Finish or cancel the other operation, then retry the upgrade.",
+          });
+        }
         // Reject before native teardown or irreversible Worker.stop().
         if (
           worker &&
           (!worker.safeToReplace || (!wasRunning && !worker.stopConfirmed))
-        )
+        ) {
+          await cancelPrepared();
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
-        if (wasRunning && !updates.snapshot().manualRestartSupported)
+        }
+        if (wasRunning && !updates.snapshot().manualRestartSupported) {
+          await cancelPrepared();
           return send(409, {
             error: "LAUNCHER_UPGRADE_REQUIRED",
             hint: "This older launcher cannot preserve running Coach across a manual update. Nothing was stopped or applied. Replace the stable launcher with a reviewed current build using the same Coach home; settings and preview restarts do not need this upgrade.",
           });
+        }
         // Fence native start/active/cleanup before any teardown or worker gate.
-        if (!terminal.idle) return send(409, { error: "AUTO_UPDATE_BUSY" });
-        // Fence claims synchronously so publication cannot start after admission.
-        if (wasRunning && !worker!.quiesceForUpdate())
+        if (!terminal.idle) {
+          await cancelPrepared();
           return send(409, { error: "AUTO_UPDATE_BUSY" });
+        }
+        // Fence claims synchronously so publication cannot start after admission.
+        if (wasRunning && !worker!.quiesceForUpdate()) {
+          await cancelPrepared();
+          return send(409, { error: "AUTO_UPDATE_BUSY" });
+        }
         busy = true;
         try {
           await terminal.stop();
@@ -758,8 +811,10 @@ export async function admin(
           if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
             throw new SafeError("WORKER_STOP_UNCONFIRMED");
           void updates.apply(body.sha, wasRunning).catch(() => {});
+          prepared = false;
           await updates.accepted;
         } catch (error) {
+          await cancelPrepared();
           if (
             wasRunning &&
             !updates.applying &&

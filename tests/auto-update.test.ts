@@ -9,6 +9,7 @@ import { Updates } from "../src/update/updates.js";
 import { createServer } from "node:http";
 import {
   AutoUpdateSetting,
+  AutoUpdateDeferred,
   AutoUpdater,
   isMainDescendant,
 } from "../src/update/auto.js";
@@ -54,6 +55,87 @@ test("old launcher exposes auto-update as unavailable even when manual updates w
     assert.equal((await response.json()).error, "LAUNCHER_UPGRADE_REQUIRED");
   } finally {
     await app.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("new admin requires explicit preparation capability before stopping a running worker", async () => {
+  const home = await mkdtemp(join(tmpdir(), "coach-previous-owner-gate-"));
+  const backend = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    const message = JSON.parse(body);
+    if (message.method === "notifications/initialized")
+      return void response.writeHead(202).end();
+    const result =
+      message.method === "initialize"
+        ? { protocolVersion: "2025-03-26" }
+        : message.method === "tools/list"
+          ? { tools: [] }
+          : { structuredContent: { requests: [] } };
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  await new Promise<void>((resolve) => backend.listen(0, "127.0.0.1", resolve));
+  const store = new Store(home);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: `http://127.0.0.1:${(backend.address() as any).port}`,
+    token: "synthetic-previous-owner-token",
+    apiKey: "synthetic-previous-owner-provider",
+  });
+  let applications = 0;
+  const updates = new Updates("a".repeat(40), async () => {
+    applications++;
+  });
+  updates.latest = "b".repeat(40);
+  updates.checkedAt = Date.now();
+  // This is the immediately previous owner snapshot: restart support exists,
+  // but the preparation capability and prepare RPC do not.
+  updates.manualRestartSupported = true;
+  const app = await admin(store, 0, undefined, undefined, updates);
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  try {
+    assert.equal(
+      (
+        await fetch(app.origin + "/api/run", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const state = await (
+        await fetch(app.origin + "/api/status", { headers })
+      ).json();
+      if (state.state === "idle") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const response = await fetch(app.origin + "/api/update/apply", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sha: updates.latest, confirm: true }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error, "LAUNCHER_UPGRADE_REQUIRED");
+    assert.equal(applications, 0);
+    assert.notEqual(
+      (await (await fetch(app.origin + "/api/status", { headers })).json())
+        .state,
+      "stopped",
+      "capability rejection happens before worker stop",
+    );
+  } finally {
+    await app.close();
+    backend.closeAllConnections();
+    await new Promise<void>((resolve) => backend.close(() => resolve()));
     await rm(home, { recursive: true, force: true });
   }
 });
@@ -186,6 +268,95 @@ test("auto scheduler is consent gated and does not retry a failed target after r
   }
 });
 
+test("artifact readiness deferral throttles the same SHA without suppressing it", async () => {
+  const home = await mkdtemp(join(tmpdir(), "coach-auto-readiness-throttle-"));
+  const setting = new AutoUpdateSetting(home);
+  const latest = "a".repeat(40);
+  let now = 1000;
+  let attempts = 0;
+  try {
+    await setting.write(true);
+    const scheduler = new AutoUpdater(
+      setting,
+      {
+        check: async () => ({ installed: "b".repeat(40), latest }),
+        isDescendant: async () => true,
+        apply: async (sha) => {
+          attempts++;
+          throw new AutoUpdateDeferred(sha, 5000);
+        },
+      },
+      { now: () => now },
+    );
+    await scheduler.tick();
+    assert.equal(attempts, 1);
+    assert.equal(scheduler.retryDelay(), 5000);
+    now += 4999;
+    await scheduler.tick();
+    assert.equal(attempts, 1);
+    now++;
+    await scheduler.tick();
+    assert.equal(attempts, 2);
+    assert.equal(await setting.failedTarget(), null);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("artifact retry state clears after success, manual installation, and disable", async () => {
+  const home = await mkdtemp(join(tmpdir(), "coach-auto-readiness-reset-"));
+  const setting = new AutoUpdateSetting(home);
+  const latest = "a".repeat(40);
+  let now = 1000;
+  let installed = "b".repeat(40);
+  let outcome: "defer" | "success" = "defer";
+  try {
+    await setting.write(true);
+    const scheduler = new AutoUpdater(
+      setting,
+      {
+        check: async () => ({ installed, latest }),
+        isDescendant: async () => true,
+        apply: async (sha) => {
+          if (outcome === "defer") throw new AutoUpdateDeferred(sha, 5000);
+        },
+      },
+      { now: () => now },
+    );
+
+    await scheduler.tick();
+    now += 5000;
+    outcome = "success";
+    await scheduler.tick();
+    assert.equal(scheduler.retryDelay(), undefined, "success restores cadence");
+
+    outcome = "defer";
+    installed = "b".repeat(40);
+    await scheduler.tick();
+    assert.equal(scheduler.retryDelay(), 5000);
+    installed = latest;
+    await scheduler.tick();
+    assert.equal(
+      scheduler.retryDelay(),
+      undefined,
+      "manual installation clears a deferred target",
+    );
+
+    installed = "b".repeat(40);
+    await scheduler.tick();
+    assert.equal(scheduler.retryDelay(), 5000);
+    await setting.write(false);
+    await scheduler.tick();
+    assert.equal(
+      scheduler.retryDelay(),
+      undefined,
+      "disabling automatic updates restores normal cadence",
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("fixed compare endpoint accepts only ahead and bounds untrusted responses", async () => {
   const old = "a".repeat(40),
     current = "b".repeat(40);
@@ -217,6 +388,28 @@ test("fixed compare endpoint accepts only ahead and bounds untrusted responses",
     ),
     false,
   );
+});
+
+test("prepared activation does not turn a long build into stale-check failure", async () => {
+  const latest = "a".repeat(40);
+  let activated = false;
+  let updates!: Updates;
+  updates = new Updates(
+    "b".repeat(40),
+    async () => {
+      activated = true;
+    },
+    fetch,
+    undefined,
+    async () => {
+      updates.checkedAt = Date.now() - 10 * 60 * 1000;
+    },
+  );
+  updates.latest = latest;
+  updates.checkedAt = Date.now();
+  await updates.apply(latest);
+  assert.equal(activated, true);
+  assert.equal(updates.installed, latest);
 });
 
 test("auto quiesce refuses active work and fences new worker claims", async () => {
@@ -281,6 +474,328 @@ test("managed supervisor checks only after persisted consent and suppresses fail
   }
 });
 
+test("stable preparation reserves manual admission and rechecks consent before quiesce", async () => {
+  const { supervise } = await import("./helpers/legacy-supervisor.js");
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const home = await mkdtemp(join(tmpdir(), "coach-auto-reservation-"));
+  const store = new Store(home);
+  await store.init();
+  const latest = "a".repeat(40);
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => (entered = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const candidate = join(home, "versions", latest);
+  const owner = await supervise(store, 0, undefined, {
+    prepare: async (target) => {
+      entered();
+      await gate;
+      await mkdir(join(candidate, "dist/config"), { recursive: true });
+      await mkdir(join(candidate, "dist/server"), { recursive: true });
+      await writeFile(join(candidate, "package.json"), '{"type":"module"}');
+      await writeFile(
+        join(candidate, "dist/build.json"),
+        JSON.stringify({ revision: target, protocol: 1 }),
+      );
+      await writeFile(
+        join(candidate, "dist/config/store.js"),
+        `export {Store} from ${JSON.stringify(pathToFileURL(resolve("dist/config/store.js")).href)};`,
+      );
+      await writeFile(
+        join(candidate, "dist/server/admin.js"),
+        `export {admin, updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)};`,
+      );
+      return candidate;
+    },
+    request: async (url) =>
+      new Response(
+        JSON.stringify(
+          String(url).includes("/compare/")
+            ? { status: "ahead", ahead_by: 1 }
+            : { object: { sha: latest } },
+        ),
+      ),
+  });
+  try {
+    owner.updates.installed = "b".repeat(40);
+    await new AutoUpdateSetting(home).write(true);
+    const pid = owner.pid;
+    const headers = {
+      Authorization: "Bearer " + store.secrets.admin,
+      Origin: owner.origin,
+      "Content-Type": "application/json",
+    };
+    const ticking = owner.auto.tick();
+    await started;
+    let exposed: any;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      exposed = await (
+        await fetch(owner.origin + "/api/update", { headers })
+      ).json();
+      if (exposed.preparing) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(exposed.preparationSupported, true);
+    assert.equal(exposed.preparing, true);
+    const manual = await fetch(owner.origin + "/api/update/apply", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sha: latest, confirm: true }),
+    });
+    assert.equal(manual.status, 400);
+    assert.equal((await manual.json()).error, "UPDATE_IN_PROGRESS");
+    assert.equal(
+      (
+        await fetch(owner.origin + "/api/update/auto", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ enabled: false }),
+        })
+      ).status,
+      200,
+    );
+    release();
+    await ticking;
+    assert.equal(owner.pid, pid);
+    assert.equal(owner.updates.installed, "b".repeat(40));
+    assert.deepEqual(owner.updates.autoOutcome, {
+      sha: latest,
+      state: "deferred",
+      reason: "AUTO_UPDATE_DISABLED",
+    });
+    await assert.rejects(readFile(join(candidate, "dist/build.json")), {
+      code: "ENOENT",
+    });
+    assert.equal(await new AutoUpdateSetting(home).failedTarget(), null);
+  } finally {
+    release();
+    await owner.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("missing native artifact defers same-SHA auto apply before a running worker is stopped", async () => {
+  const { supervise } = await import("./helpers/legacy-supervisor.js");
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const home = await mkdtemp(join(tmpdir(), "coach-auto-native-ready-"));
+  const store = new Store(home);
+  await store.init();
+  const latest = "a".repeat(40);
+  const fingerprint = "b".repeat(64);
+  const image = "sha256:" + "d".repeat(64);
+  const architecture = process.arch === "arm64" ? "arm64" : "amd64";
+  const inspect = async () => ({
+    stdout: JSON.stringify([
+      {
+        Id: image,
+        Os: "linux",
+        Architecture: architecture,
+        Config: {
+          Labels: {
+            "fit.kata.native.revision": latest,
+            "fit.kata.native.fingerprint": fingerprint,
+          },
+        },
+      },
+    ]),
+  });
+  const runtime = () => {
+    const value = {
+      onOutput: (_chunk: string) => {},
+      async start(session: any) {
+        const catalog = await session.handle({ kind: "catalog" });
+        value.onOutput(catalog.model);
+      },
+      async attach() {},
+      async inspect() {
+        return {
+          Image: image,
+          HostConfig: { NetworkMode: "none", ReadonlyRootfs: true },
+          Config: { User: "1000:1000" },
+          Mounts: [],
+        };
+      },
+      async stop() {},
+    };
+    return value;
+  };
+  const prepare = async (target: string) => {
+    const candidate = join(home, "versions", target);
+    await mkdir(join(candidate, "dist/config"), { recursive: true });
+    await mkdir(join(candidate, "dist/server"), { recursive: true });
+    await writeFile(join(candidate, "package.json"), '{"type":"module"}');
+    await writeFile(
+      join(candidate, "dist/build.json"),
+      JSON.stringify({ revision: target, protocol: 2, fingerprint }),
+    );
+    await writeFile(
+      join(candidate, "dist/config/store.js"),
+      `export {Store} from ${JSON.stringify(pathToFileURL(resolve("dist/config/store.js")).href)};`,
+    );
+    await writeFile(
+      join(candidate, "dist/server/admin.js"),
+      `export {admin, updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)};`,
+    );
+    return candidate;
+  };
+  const owner = await supervise(store, 0, undefined, {
+    prepare,
+    preflight: async (root, targetHome, signal) => {
+      const { nativePreflight } = await import("../src/sandbox/artifact.js");
+      return nativePreflight(root, targetHome, { inspect, runtime, signal });
+    },
+    autoRetryMs: 1,
+    request: async (url) =>
+      new Response(
+        JSON.stringify(
+          String(url).includes("/compare/")
+            ? { status: "ahead", ahead_by: 1 }
+            : { object: { sha: latest } },
+        ),
+      ),
+  });
+  const backend = createServer(async (req, res) => {
+    let raw = "";
+    for await (const part of req) raw += part;
+    const message = JSON.parse(raw);
+    if (message.method === "notifications/initialized") {
+      res.writeHead(202).end();
+      return;
+    }
+    const result =
+      message.method === "initialize"
+        ? { protocolVersion: "2025-03-26" }
+        : message.method === "tools/list"
+          ? { tools: [] }
+          : { structuredContent: { requests: [] } };
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  await new Promise<void>((resolve) => backend.listen(0, "127.0.0.1", resolve));
+  const originalFetch = globalThis.fetch;
+  let resumeCalls = 0;
+  try {
+    owner.updates.installed = "c".repeat(40);
+    await new AutoUpdateSetting(home).write(true);
+    const headers = {
+      Authorization: "Bearer " + store.secrets.admin,
+      Origin: owner.origin,
+      "Content-Type": "application/json",
+    };
+    const config = store.publicConfig();
+    config.origin = `http://127.0.0.1:${(backend.address() as any).port}`;
+    assert.equal(
+      (
+        await fetch(owner.origin + "/api/config", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            ...config,
+            token: "synthetic-worker-token",
+            apiKey: "synthetic-model-key",
+          }),
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await fetch(owner.origin + "/api/run", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const status = await (
+        await fetch(owner.origin + "/api/status", { headers })
+      ).json();
+      if (status.state === "idle") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const pid = owner.pid;
+    const pointer = await readFile(join(home, "active.json"), "utf8").catch(
+      (error: any) => error.code,
+    );
+    globalThis.fetch = async (input, init) => {
+      if (String(input).endsWith("/api/run")) resumeCalls++;
+      return originalFetch(input, init);
+    };
+    await owner.auto.tick();
+    assert.equal(
+      resumeCalls,
+      0,
+      "readiness deferral never restarts the worker",
+    );
+    assert.equal(owner.pid, pid);
+    assert.equal(
+      await readFile(join(home, "active.json"), "utf8").catch(
+        (error: any) => error.code,
+      ),
+      pointer,
+    );
+    assert.notEqual(
+      (
+        await (
+          await originalFetch(owner.origin + "/api/status", { headers })
+        ).json()
+      ).state,
+      "stopped",
+    );
+    assert.equal(await new AutoUpdateSetting(home).failedTarget(), null);
+    assert.deepEqual(owner.updates.snapshot().autoOutcome, {
+      sha: latest,
+      state: "deferred",
+      reason: "ARTIFACT_NOT_READY",
+    });
+    await assert.rejects(
+      readFile(join(home, "versions", latest, "dist/build.json")),
+      { code: "ENOENT" },
+    );
+    const external = join(home, "external-candidate");
+    await mkdir(join(external, "dist"), { recursive: true });
+    await writeFile(
+      join(external, "dist/build.json"),
+      JSON.stringify({ revision: latest, protocol: 2, fingerprint }),
+    );
+    const { nativePreflight, provisionArtifact } = await import(
+      "../src/sandbox/artifact.js"
+    );
+    await provisionArtifact(home, external, image, {
+      inspect,
+      probe: (root, targetHome) =>
+        nativePreflight(root, targetHome, { inspect, runtime }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1050));
+    owner.updates.checkedAt = 0;
+    await owner.auto.tick();
+    assert.equal(
+      resumeCalls,
+      1,
+      "worker resumes only after prepared activation",
+    );
+    assert.notEqual(owner.pid, pid);
+    assert.equal(owner.updates.snapshot().installed, latest);
+    assert.equal(await new AutoUpdateSetting(home).failedTarget(), null);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(home, "active.json"), "utf8")),
+      { revision: latest, image },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    backend.closeAllConnections();
+    await new Promise<void>((resolve) => backend.close(() => resolve()));
+    await owner.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("auto tick replaces a real managed child on the same port and retains stopped intent", async () => {
   const { supervise } = await import("./helpers/legacy-supervisor.js");
   const { mkdir, writeFile } = await import("node:fs/promises");
@@ -311,7 +826,7 @@ test("auto tick replaces a real managed child on the same port and retains stopp
     );
     await writeFile(
       join(root, "dist/server/admin.js"),
-      `import {admin as base} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export async function admin(...args){${[bad, badAfterRunning].includes(target) ? `if(args[0].dir===${JSON.stringify(home)}) throw Error('candidate startup failed');` : ""}return base(...args);}`,
+      `import {admin as base} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export {updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export async function admin(...args){${[bad, badAfterRunning].includes(target) ? `if(args[0].dir===${JSON.stringify(home)}) throw Error('candidate startup failed');` : ""}return base(...args);}`,
     );
     return root;
   };

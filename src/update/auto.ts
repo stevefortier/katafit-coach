@@ -145,9 +145,19 @@ export async function isMainDescendant(
   }
 }
 
+export class AutoUpdateDeferred extends Error {
+  constructor(
+    readonly sha: string,
+    readonly retryAfterMs = 60000,
+  ) {
+    super("AUTO_UPDATE_DEFERRED");
+  }
+}
+
 /** Stable-owner scheduler; tick never overlaps and a failed SHA is never retried. */
 export class AutoUpdater {
   private pending?: Promise<void>;
+  private retry?: { sha: string; at: number };
   constructor(
     readonly setting: AutoUpdateSetting,
     readonly hooks: {
@@ -156,6 +166,7 @@ export class AutoUpdater {
       apply: (sha: string) => Promise<void>;
       suppressed?: (sha: string) => void;
     },
+    readonly clock: { now: () => number } = { now: Date.now },
   ) {}
   tick(): Promise<void> {
     if (this.pending) return this.pending;
@@ -167,22 +178,51 @@ export class AutoUpdater {
   async settle() {
     await this.pending?.catch(() => {});
   }
+  retryDelay(): number | undefined {
+    if (!this.retry) return undefined;
+    return Math.max(0, this.retry.at - this.clock.now());
+  }
   private async run() {
-    if (!(await this.setting.read()).enabled) return;
+    if (!(await this.setting.read()).enabled) {
+      this.retry = undefined;
+      return;
+    }
     const { installed, latest } = await this.hooks.check();
     // A later manual (or other) success supersedes an earlier failed attempt.
     if (validSha(installed)) await this.setting.clearFailed(installed);
-    if (!validSha(installed) || !validSha(latest) || installed === latest)
+    if (!validSha(installed) || !validSha(latest)) {
+      this.retry = undefined;
       return;
+    }
+    if (this.retry?.sha !== latest) this.retry = undefined;
+    if (installed === latest) {
+      this.retry = undefined;
+      return;
+    }
+    if (this.retry && this.retry.at > this.clock.now()) return;
+    this.retry = undefined;
     if (latest === (await this.setting.failedTarget())) {
       this.hooks.suppressed?.(latest);
       return;
     }
     if (!(await this.hooks.isDescendant(installed, latest))) return;
-    if (!(await this.setting.read()).enabled) return;
+    if (!(await this.setting.read()).enabled) {
+      this.retry = undefined;
+      return;
+    }
     try {
       await this.hooks.apply(latest);
+      this.retry = undefined;
     } catch (error) {
+      if (error instanceof AutoUpdateDeferred && error.sha === latest) {
+        this.retry = {
+          sha: latest,
+          at:
+            this.clock.now() +
+            Math.max(1000, Math.min(900000, error.retryAfterMs)),
+        };
+        return;
+      }
       await this.setting.markFailed(latest);
       throw error;
     }

@@ -134,9 +134,14 @@ merely to match this example.
 4. Read back active runtime SHA, binding image ID and authenticated stopped-worker
    health. The new owner preflights native applications before launch and before
    stopping a healthy predecessor, then commits application/image together only
-   after health. A source candidate with missing/mismatched artifacts fails with
-   **external artifact or native bootstrap required**, without replacing the old
-   child. Re-provision out-of-band and explicitly retry; the updater never builds
+   after health. For source updates it stages exact metadata, resolves the
+   protected fingerprint receipt and runs the real synthetic relay/TUI preflight
+   while the old worker still runs; it does not mutate the active pointer during
+   preparation. A candidate with missing/mismatched/untrusted artifacts reports
+   **external artifact or native bootstrap required**, removes its staged copy,
+   and leaves the old worker/child/pointer untouched. Re-provision out-of-band;
+   an opt-in automatic update retries the same SHA after a bounded cooldown,
+   while manual updates require another confirmation. The updater never builds
    or pulls images. Reconnect is not a success receipt.
 5. If cutover fails, stop the new owner, confirm removal of its owned probes/Pi,
    restore the previous pointer/home backup and old service/package/outer-image
@@ -146,10 +151,35 @@ merely to match this example.
    the existing unchanged JSON schema. Resume a worker only when authorized.
 
 Failed normal removal remains owned and retryable; replacement admission is
-blocked until cleanup succeeds. **Abrupt owner/host death can still orphan a Pi
-container**; reboot-safe reconciliation is not certified by this release. Before
-cutover/recovery inspect exact owned container names and remove only resources
-whose ownership is established. Never use broad Docker prune as cleanup.
+blocked until cleanup succeeds. Before every protocol-2 probe, the launcher
+atomically writes and fsyncs a private `native-probe-cleanup.json` receipt in the
+protected Coach home. The receipt binds a random exact container name and owner
+token, source revision, fingerprint, immutable image ID, required container
+labels, and the container ID once Docker returns it. Creation happens only after
+that write. A launcher restart inspects the exact recorded name, accepts absence,
+or removes only the inspected ID after name/image/labels and any recorded ID all
+match. A crash before create and an ambiguous remove reply are therefore safe to
+retry. Invalid receipts, an unavailable daemon, and name/label/ID ambiguity remain
+blocking and preserve the receipt; an unrelated container is never removed.
+
+Recovery is normally to restore Docker/socket availability and restart the same
+reviewed launcher under the same service identity and protected home so it can
+retry exact reconciliation. Preserve and back up the receipt with the rest of
+the home. Do not delete or edit it merely to make startup pass. If manual repair
+is unavoidable, first establish from the protected receipt and Docker inspection
+that the exact ID and all ownership labels match, or that the recorded container
+is absent; a collision or corrupt receipt requires reviewed offline recovery.
+Never use a name alone, image labels alone, or broad Docker prune as authority.
+This protects launcher-owned probes across process restart; it does not make a
+hostile peer with write access to both the Coach home and Docker socket safe.
 
 Local synthetic preflight proves native artifact/topology readiness, not hosted
 WS reachability, live model quality, customer authority or a production rollout.
+Repository CI builds only an ephemeral runner-local image for tests. Its
+`NATIVE_TEST_IMAGE` handoff and package-smoke provisioning target disposable
+homes; they do not publish or transfer an artifact, touch a deployment home, or
+operate a production daemon. There is intentionally no registry watcher,
+privileged provisioner or automatic Docker pull/build path. Any release
+automation must run in the already-authorized external control plane, verify the
+approved archive/image, load it for the correct platform, and invoke the explicit
+`provisionArtifact` transaction above.

@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  drainNativePreflightCleanup,
   nativeImage,
   nativePreflight,
   provisionArtifact,
@@ -141,6 +142,214 @@ test("native receipt is reused for another revision with the same fingerprint", 
       /EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED/,
     );
   } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("native preflight retains failed cleanup ownership and retries before reuse", async () => {
+  const home = await mkdtemp(join(tmpdir(), "artifact-cleanup-"));
+  const root = join(home, "app");
+  let failedStops = 0;
+  try {
+    await mkdir(join(root, "dist"), { recursive: true });
+    await mkdir(join(home, "native-artifacts"));
+    await writeFile(
+      join(root, "dist/build.json"),
+      JSON.stringify({ revision, protocol: 2, fingerprint }),
+    );
+    await writeFile(
+      join(home, "native-artifacts", revision + ".json"),
+      JSON.stringify({ revision, fingerprint, image, platform: "linux/amd64" }),
+    );
+    const inspect = async () => ({
+      stdout: JSON.stringify([
+        {
+          Id: image,
+          Os: "linux",
+          Architecture: "amd64",
+          Config: {
+            Labels: {
+              "fit.kata.native.revision": revision,
+              "fit.kata.native.fingerprint": fingerprint,
+            },
+          },
+        },
+      ]),
+    });
+    const runtime = (failCleanup: boolean) => {
+      const value = {
+        onOutput: (_chunk: string) => {},
+        async start(session: any) {
+          value.onOutput((await session.handle({ kind: "catalog" })).model);
+        },
+        async attach() {},
+        async inspect() {
+          return {
+            Image: image,
+            HostConfig: { NetworkMode: "none", ReadonlyRootfs: true },
+            Config: { User: "1000:1000" },
+            Mounts: [],
+          };
+        },
+        async stop() {
+          if (failCleanup && failedStops++ === 0)
+            throw new Error("synthetic cleanup failure");
+        },
+      };
+      return value;
+    };
+    const failed = runtime(true);
+    await assert.rejects(
+      nativePreflight(root, home, { inspect, runtime: () => failed }),
+      /EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED/,
+    );
+    assert.equal(failedStops, 1);
+    assert.equal(
+      await nativePreflight(root, home, {
+        inspect,
+        runtime: () => runtime(false),
+      }),
+      image,
+    );
+    assert.equal(failedStops, 2, "next preflight first retries owned cleanup");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("graceful cleanup drain retries every retained native runtime", async () => {
+  const home = await mkdtemp(join(tmpdir(), "artifact-drain-"));
+  const root = join(home, "app");
+  let stops = 0;
+  try {
+    await mkdir(join(root, "dist"), { recursive: true });
+    await mkdir(join(home, "native-artifacts"));
+    await writeFile(
+      join(root, "dist/build.json"),
+      JSON.stringify({ revision, protocol: 2, fingerprint }),
+    );
+    await writeFile(
+      join(home, "native-artifacts", revision + ".json"),
+      JSON.stringify({ revision, fingerprint, image, platform: "linux/amd64" }),
+    );
+    const inspect = async () => ({
+      stdout: JSON.stringify([
+        {
+          Id: image,
+          Os: "linux",
+          Architecture: "amd64",
+          Config: {
+            Labels: {
+              "fit.kata.native.revision": revision,
+              "fit.kata.native.fingerprint": fingerprint,
+            },
+          },
+        },
+      ]),
+    });
+    const runtime = {
+      onOutput: (_chunk: string) => {},
+      async start(session: any) {
+        runtime.onOutput((await session.handle({ kind: "catalog" })).model);
+      },
+      async attach() {},
+      async inspect() {
+        return {
+          Image: image,
+          HostConfig: { NetworkMode: "none", ReadonlyRootfs: true },
+          Config: { User: "1000:1000" },
+          Mounts: [],
+        };
+      },
+      async stop() {
+        if (++stops === 1) throw new Error("synthetic cleanup failure");
+      },
+    };
+    await assert.rejects(
+      nativePreflight(root, home, { inspect, runtime: () => runtime }),
+      /EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED/,
+    );
+    await drainNativePreflightCleanup(home);
+    assert.equal(stops, 2);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("native preflight serializes a protected home", async () => {
+  const home = await mkdtemp(join(tmpdir(), "artifact-serial-"));
+  const root = join(home, "app");
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => (entered = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let starts = 0;
+  let active = 0;
+  let maximum = 0;
+  try {
+    await mkdir(join(root, "dist"), { recursive: true });
+    await mkdir(join(home, "native-artifacts"));
+    await writeFile(
+      join(root, "dist/build.json"),
+      JSON.stringify({ revision, protocol: 2, fingerprint }),
+    );
+    await writeFile(
+      join(home, "native-artifacts", revision + ".json"),
+      JSON.stringify({ revision, fingerprint, image, platform: "linux/amd64" }),
+    );
+    const inspect = async () => ({
+      stdout: JSON.stringify([
+        {
+          Id: image,
+          Os: "linux",
+          Architecture: "amd64",
+          Config: {
+            Labels: {
+              "fit.kata.native.revision": revision,
+              "fit.kata.native.fingerprint": fingerprint,
+            },
+          },
+        },
+      ]),
+    });
+    const runtime = () => {
+      const value = {
+        onOutput: (_chunk: string) => {},
+        async start(session: any) {
+          starts++;
+          active++;
+          maximum = Math.max(maximum, active);
+          if (starts === 1) {
+            entered();
+            await gate;
+          }
+          value.onOutput((await session.handle({ kind: "catalog" })).model);
+        },
+        async attach() {},
+        async inspect() {
+          return {
+            Image: image,
+            HostConfig: { NetworkMode: "none", ReadonlyRootfs: true },
+            Config: { User: "1000:1000" },
+            Mounts: [],
+          };
+        },
+        async stop() {
+          active--;
+        },
+      };
+      return value;
+    };
+    const first = nativePreflight(root, home, { inspect, runtime });
+    await started;
+    const second = nativePreflight(root, home, { inspect, runtime });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(starts, 1, "second preflight waits for home ownership");
+    release();
+    assert.deepEqual(await Promise.all([first, second]), [image, image]);
+    assert.equal(maximum, 1);
+  } finally {
+    release();
     await rm(home, { recursive: true, force: true });
   }
 });

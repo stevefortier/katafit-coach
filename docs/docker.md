@@ -67,5 +67,10 @@ cleanup is deliberately outside source-updater housekeeping.
 Source staging still needs GitHub/npm access, at least 1.5 GiB free space and
 build memory. The trusted staging subprocess is not a malicious-source sandbox.
 Only execute reviewed source. Normal failed Pi removal retains its owner for
-retry and blocks replacement; abrupt process/host death orphan reconciliation
-is not yet certified. Never use broad prune commands to recover owned probes.
+retry and blocks replacement. Protocol-2 preflight additionally persists exact
+probe ownership before create and reconciles it after launcher restart by
+verified name/token labels, immutable image and container ID. Missing or
+ambiguous Docker state stays blocked; unrelated resources are not removal
+candidates. Preserve the protected receipt and restore the reviewed launcher and
+socket rather than using broad prune commands. Hostile same-authority peers and
+platform-level Docker crash guarantees remain outside this qualification.

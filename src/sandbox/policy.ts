@@ -1,10 +1,18 @@
 /** No host paths, host environment or externally routable interface enter Pi. */
-export function sandboxArgs(name: string, image: string): string[] {
+export function sandboxArgs(
+  name: string,
+  image: string,
+  labels: Record<string, string> = {},
+): string[] {
+  const ownership = Object.entries(labels)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([key, value]) => ["--label", `${key}=${value}`]);
   return [
     "create",
     "--pull=never",
     "--name",
     name,
+    ...ownership,
     "--interactive",
     "--init",
     "--network=none",
