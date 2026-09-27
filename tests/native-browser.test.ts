@@ -1,4 +1,5 @@
 import test from "node:test";
+import { waitForPiReady } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { chromium } from "playwright-core";
 import { pathToFileURL } from "node:url";
@@ -25,6 +26,14 @@ test(
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
     });
+    // Observe actual Pi output, not the host's earlier transport-ready frame.
+    let output = "";
+    page.on("websocket", (socket) => {
+      socket.on("framereceived", ({ payload }) => {
+        const message = JSON.parse(String(payload));
+        if (message.type === "output") output += message.data;
+      });
+    });
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     try {
@@ -32,14 +41,7 @@ test(
       await page.locator("#adminKey").fill(f.store.secrets.admin);
       await page.locator("#unlock").click();
       await page.locator("#nativeStart").click({ timeout: 5000 });
-      await page.waitForFunction(
-        () =>
-          document
-            .querySelector("#nativeTerminal")
-            ?.textContent?.includes("ripgrep not found"),
-        {},
-        { timeout: 20000 },
-      );
+      await waitForPiReady(() => output, 20000);
       assert.equal(
         await page
           .locator(".xterm-rows")
@@ -63,6 +65,10 @@ test(
             ),
         {},
         { timeout: 20000 },
+      );
+      assert.doesNotMatch(
+        output,
+        /(?:fd|ripgrep|rg) not found|skipping download/i,
       );
       assert.ok(
         f.calls.some(
@@ -98,6 +104,10 @@ test(
         document
           .querySelector("#nativeStatus")
           ?.textContent?.includes("Stopped"),
+      );
+      assert.doesNotMatch(
+        output,
+        /(?:fd|ripgrep|rg) not found|skipping download/i,
       );
       assert.ok(
         f.calls.some(

@@ -1,4 +1,5 @@
 import test from "node:test";
+import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import {
   continuityFixture,
@@ -72,7 +73,7 @@ async function harness(fixtureOptions: ContinuityOptions) {
       },
     });
     await runtime.attach();
-    await waitFor(() => output.includes("ripgrep not found"));
+    await waitFor(() => output.includes(PI_READY));
     await new Promise((r) => setTimeout(r, 100));
   } catch (error) {
     await runtime.stop().catch(() => {});

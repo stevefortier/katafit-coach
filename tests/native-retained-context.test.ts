@@ -1,4 +1,5 @@
 import test from "node:test";
+import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { fixture } from "./helpers/native.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
@@ -125,7 +126,7 @@ async function harness(mode: "revocation" | "expiry" | "writes" | "uncertain") {
     });
     await runtime.attach();
     await waitFor(
-      () => output.includes("ripgrep not found"),
+      () => output.includes(PI_READY),
       () => output.slice(-6000),
     );
     await new Promise((r) => setTimeout(r, 100));
