@@ -100,6 +100,7 @@ npm run test:package
 npm run test:updates-package # actual packed CLI upgrade/rollback; synthetic trusted Git
 npm run test:updates-browser # source UI + synthetic GitHub; desktop/mobile evidence
 npm run test:coach-browser # operator/member tabs; synthetic local inference/read fixtures
+npx tsx scripts/preview-browser-smoke.ts # preview beside running/stopped Coach and native sessions
 npm run test:browser   # requires /usr/bin/google-chrome, or CHROME_PATH
 ```
 

@@ -43,6 +43,9 @@ jobs:
       - name: Verify update status and owner-schedule browser fixtures
         run: npx tsx scripts/update-status-browser-smoke.ts
         if: matrix.node == 22
+      - name: Verify non-disruptive preview beside live Coach
+        run: npx tsx scripts/preview-browser-smoke.ts
+        if: matrix.node == 22
       - run: npm audit --omit=dev --audit-level=high
       - name: Build private non-root Docker image
         if: matrix.node == 22
