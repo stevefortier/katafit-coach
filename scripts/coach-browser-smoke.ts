@@ -133,6 +133,11 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1280, height: 1000 },
   });
+  const memberCalls: string[] = [];
+  page.on("request", (request) => {
+    if (/\/api\/members(?:\/|\?|$)/.test(request.url()))
+      memberCalls.push(request.url());
+  });
   await page.goto(app.origin + "/#" + store.secrets.admin);
   await page.locator("#studio").waitFor({ state: "visible" });
   assert.equal(
@@ -149,7 +154,7 @@ try {
   assert.equal(await page.locator("#settingsPanel").isVisible(), false);
   await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#katafit").isVisible(), true);
-  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.waitForTimeout(200);
   let logs = 0;
   page.on("request", (r) => {
@@ -230,295 +235,40 @@ try {
   await page.screenshot({ path: evidence + "/coach-mobile.png" });
   // Native tool execution, cancellation and ticket revocation are exercised
   // by native-browser/native-terminal tests against actual Docker Pi.
-  // Synthetic member transport fixtures exercise the real UI without customer data.
-  const member = (
-    member_ref: string,
-    display_name: string,
-    access = "granted",
-  ) => ({ member_ref, display_name, access });
-  await page.route("**/api/members?*", (route) => {
-    const more = new URL(route.request().url()).searchParams.has("cursor");
-    return route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        members: more
-          ? [member("c", "Synthetic Casey")]
-          : [
-              member("a", "Synthetic Alex"),
-              member("b", "Synthetic Blair"),
-              member("locked", "Synthetic Locked", "not_granted"),
-            ],
-        has_more: !more,
-        next_cursor: more ? null : "roster-next",
-      }),
-    });
-  });
-  let memberDenied = false,
-    memberEmpty = false,
-    slowMember = false,
-    delayedMember: any;
-  await page.route("**/api/members/feed?*", (route) => {
-    const url = new URL(route.request().url());
-    const ref = url.searchParams.get("member_ref");
-    const main = url.searchParams.get("view") === "main_conversation";
-    if (slowMember && ref === "a") {
-      delayedMember = route;
-      return;
-    }
-    const more = new URL(route.request().url()).searchParams.has("cursor");
-    return route.fulfill({
-      status: memberDenied ? 403 : 200,
-      contentType: "application/json",
-      body: JSON.stringify(
-        memberDenied
-          ? { error: "PRIVATE_DENIAL" }
-          : {
-              member_ref: ref,
-              items: (memberEmpty
-                ? []
-                : main
-                  ? ["direct-user", "direct-coach"]
-                  : more
-                    ? ["older"]
-                    : [
-                        "message",
-                        "activity_event",
-                        "insight",
-                        "proposal_summary",
-                      ]
-              ).map((type, i) => ({
-                id: type,
-                type: type === "older" || main ? "message" : type,
-                role: type === "direct-user" ? "user" : "coach",
-                text: ref + " synthetic " + type,
-                created_at: "2026-09-22T12:00:00Z",
-                status: "completed",
-              })),
-              has_more: !memberEmpty && !main && !more,
-              next_cursor: memberEmpty || main || more ? null : "feed-next",
-            },
-      ),
-    });
-  });
-  await page.locator("#lockStudio").click();
-  await page.locator("#adminKey").fill(store.secrets.admin);
-  await page.locator("#unlock").click();
-  await page.locator("#coachPanel").waitFor({ state: "visible" });
-  assert.equal(
-    await page.locator("#membersRefresh").count(),
-    1,
-    "read-only roster refresh exists",
-  );
-  await page.locator("#membersMore").click();
-  await page
-    .getByRole("button", { name: "Synthetic Casey", exact: true })
-    .waitFor();
-  assert.equal(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-    true,
-    "member strip scrolls without page overflow",
-  );
-  await page
-    .getByRole("button", { name: "Synthetic Alex", exact: true })
-    .click();
-  await page.waitForFunction(
-    () => document.querySelectorAll(".member-item").length === 4,
-  );
   assert.equal(
     await page
-      .locator("#memberMainTab, #memberAllTab, #memberHint, #memberActivities")
+      .locator("#operatorTab, #conversationTabs, #membersRefresh, #memberView")
       .count(),
     0,
   );
-  assert.doesNotMatch(
-    await page.locator("#coachPanel").innerText(),
-    /read.only|Browse shared activities/i,
-  );
   assert.equal(
-    await page
-      .locator("#operatorTab")
-      .evaluate((e) => e.classList.contains("secondary")),
-    true,
-    "inactive Operator tab is not highlighted",
+    await page.locator("#coachTab").innerText(),
+    store.publicConfig().persona.name,
   );
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Synthetic Alex", exact: true })
-      .evaluate((e) => e.classList.contains("secondary")),
-    false,
-  );
-  await page.locator("#memberMore").click();
-  await page.waitForFunction(
-    () => document.querySelectorAll(".member-item").length === 5,
-  );
-  await page.waitForTimeout(15500);
-  assert.equal(
-    await page.locator(".member-item").count(),
-    5,
-    "authorization polling preserves loaded older pages when snapshot is unchanged",
-  );
-  await page.locator("#memberView").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: evidence + "/member-feed-mobile.png" });
-  slowMember = true;
-  await page.locator("#memberRefresh").click();
-  await page.waitForTimeout(100);
-  assert.ok(delayedMember);
-  await page
-    .getByRole("button", { name: "Synthetic Blair", exact: true })
-    .click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#memberItems")
-      ?.textContent?.includes("b synthetic"),
-  );
-  await delayedMember.fulfill({
-    contentType: "application/json",
-    body: JSON.stringify({
-      member_ref: "a",
-      items: [
-        {
-          id: "late",
-          type: "message",
-          text: "STALE MEMBER SENTINEL",
-          created_at: "",
-        },
-      ],
-      has_more: false,
-    }),
-  });
-  await page.waitForTimeout(100);
-  assert.equal(
-    (await page.locator("#memberItems").innerText()).includes(
-      "STALE MEMBER SENTINEL",
-    ),
-    false,
-  );
-  assert.equal(
-    await page.locator("#memberItems button").count(),
-    0,
-    "feed has no executable actions",
-  );
-  assert.equal(await page.locator("#nativeStart").isVisible(), false);
-  await page
-    .getByRole("button", { name: "Synthetic Blair", exact: true })
-    .click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#memberItems")
-      ?.textContent?.includes("b synthetic"),
-  );
-  assert.equal(
-    (await page.locator("#memberItems").innerText()).includes("a synthetic"),
-    false,
-  );
-  memberEmpty = true;
-  await page.locator("#memberRefresh").click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#memberStatus")
-      ?.textContent?.startsWith("No retained"),
-  );
-  assert.equal(
-    await page.locator("#memberStatus").innerText(),
-    "No retained Coach feed items are available.",
-  );
-  for (const [name, width, height] of [
-    ["desktop", 1280, 1000],
-    ["mobile", 390, 844],
-  ] as const) {
-    await page.setViewportSize({ width, height });
-    await page.locator("#memberView").scrollIntoViewIfNeeded();
-    assert.equal(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= innerWidth,
-      ),
-      true,
-      "membership empty state fits " + name,
-    );
-    await page.screenshot({
-      path: evidence + "/membership-empty-" + name + ".png",
-      fullPage: true,
-    });
-  }
-  memberEmpty = false;
-  memberDenied = true;
-  await page.locator("#memberRefresh").click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#memberStatus")
-      ?.textContent?.includes("unavailable"),
-  );
-  assert.equal(
-    await page.locator(".member-item").count(),
-    0,
-    "revocation erases old content",
-  );
-  await page
-    .getByRole("button", { name: "Synthetic Locked", exact: true })
-    .click();
-  assert.equal(
-    await page.locator("#memberStatus").innerText(),
-    "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh members. Category sharing controls activity records, not Coach messages.",
-  );
-  await page.screenshot({
-    path: evidence + "/chief-sharing-unavailable.png",
-    fullPage: true,
-  });
-  await page.locator("#operatorTab").click();
+  await page.goto(app.origin + "/chat/member/synthetic-person");
+  await page.waitForURL("**/chat/operator");
   assert.equal(await page.locator("#nativeStart").isVisible(), true);
-  assert.equal(await page.locator("#operatorMessages").count(), 0);
-  assert.equal(
-    (await page.locator("#nativeTerminal").innerText()).includes(
-      "synthetic proposal_summary",
-    ),
-    false,
+  assert.deepEqual(
+    memberCalls,
+    [],
+    "legacy links and operator UI never request member data",
   );
+  await page.locator("#nativeHistoryToggle").click();
+  assert.equal(await page.locator("#nativeHistoryPanel").isVisible(), true);
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Synthetic authority reload");
+  assert.notEqual(
+    await page.locator("#coachTab").innerText(),
+    "Synthetic authority reload",
+  );
   await page.locator("#save").click();
-  await page.waitForFunction(() =>
-    document.querySelector("#notice")?.textContent?.startsWith("Saved."),
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#coachTab")?.textContent ===
+      "Synthetic authority reload",
   );
-  assert.equal(
-    await page.locator(".member-tab").count(),
-    0,
-    "configuration replacement clears old roster authority",
-  );
-  await page.unroute("**/api/members?*");
-  await page.route("**/api/members?*", (route) =>
-    route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ members: [], has_more: false, next_cursor: null }),
-    }),
-  );
-  await page.locator("#coachTab").click();
-  await page.locator("#membersRefresh").click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#membersStatus")
-      ?.textContent?.startsWith("No member"),
-  );
-  assert.match(
-    await page.locator("#membersStatus").innerText(),
-    /dojo membership and credential access/,
-  );
-  await page.unroute("**/api/members?*");
-  await page.route("**/api/members?*", (route) =>
-    route.fulfill({ status: 403, contentType: "application/json", body: "{}" }),
-  );
-  await page.locator("#membersRefresh").click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector("#membersStatus")
-      ?.textContent?.startsWith("Member conversations unavailable"),
-  );
-  assert.match(
-    await page.locator("#membersStatus").innerText(),
-    /dojo membership, chief authority and credential access/,
-  );
+  assert.deepEqual(memberCalls, []);
   await page.locator("#settingsTab").click();
   // Representative evidence uses the same real Pi transport; adversarial text
   // above remains tested, but does not stand in for the readable UI receipt.
@@ -550,7 +300,7 @@ try {
   assert.equal((await page.content()).includes(inactiveKey), false);
   assert.equal(store.secrets.apiKey, "synthetic-private-key");
   console.log(
-    "Coach browser PASS: navigation, hidden logs, native terminal entry while worker runs, explicit Settings edit, mobile geometry, synthetic member feed isolation and revoke. Actual Docker Pi covered separately by native-browser tests.",
+    "Coach browser PASS: navigation, hidden logs, native terminal entry while worker runs, Settings edits, mobile geometry, operator-only UI and no member reads. Actual Docker Pi covered separately by native-browser tests.",
   );
 } finally {
   await browser?.close();

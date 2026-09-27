@@ -1,8 +1,3 @@
-#membersStatus:empty,
-#memberStatus:empty {
-  display: none;
-}
-
 .native-toolbar {
   display: flex;
   align-items: center;
@@ -325,9 +320,7 @@ header {
   border-bottom: 1px solid var(--line);
 }
 .settings-tabs button,
-.settings-tabs button.secondary,
-.conversation-tabs button,
-.conversation-tabs button.secondary {
+.settings-tabs button.secondary {
   min-height: 44px;
   margin: 0;
   padding: 10px 4px;
@@ -337,8 +330,7 @@ header {
   color: var(--muted);
   font-weight: 500;
 }
-.settings-tabs button[aria-selected="true"],
-.conversation-tabs button[aria-pressed="true"] {
+.settings-tabs button[aria-selected="true"] {
   color: var(--accent);
   border-bottom-color: var(--accent);
   font-weight: 600;
@@ -883,6 +875,8 @@ header {
 }
 .studio-tabs button {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   min-height: 48px;
   flex: 0 1 160px;
   margin: 0 0 -1px;
@@ -909,6 +903,9 @@ header {
 .studio-tabs button:focus-visible {
   outline-offset: -5px;
 }
+.studio-tabs #settingsTab {
+  margin-left: auto;
+}
 #coachPanel,
 #settingsPanel,
 #diagnostics {
@@ -926,7 +923,7 @@ header {
     padding: 16px;
   }
   .studio-tabs button {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     padding-inline: 6px;
     font-size: 12px;
   }
@@ -935,177 +932,10 @@ header {
   min-height: 44px;
   flex: 1 1 auto;
 }
-.conversation-toolbar {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 16px;
-  min-width: 0;
-}
-.conversation-toolbar #membersRefresh {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 44px;
-  width: 44px;
-  height: 44px;
-  margin: 0;
-  padding: 0;
-  border-color: transparent;
-}
-.conversation-toolbar #membersRefresh:focus-visible {
-  outline-offset: -3px;
-}
-.conversation-tabs {
-  display: flex;
-  flex: 1 1 0;
-  min-width: 0;
-  gap: 16px;
-  overflow-x: auto;
-  max-width: 100%;
-  flex-wrap: nowrap;
-}
-.conversation-tabs button {
-  flex: 0 0 auto;
-}
-.conversation-tabs button:focus-visible {
-  outline-offset: -3px;
-}
 #coachPanel,
 #settingsPanel {
   min-width: 0;
 }
-.chat-messages {
-  min-width: 0;
-  height: clamp(220px, 36vh, 460px);
-  overflow-y: auto;
-  overflow-wrap: anywhere;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  background: var(--bg);
-}
-.chat-message {
-  padding: 12px 16px;
-  border-radius: 12px;
-  margin: 10px 0;
-  max-width: 85%;
-  width: fit-content;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  background: var(--panel);
-}
-.chat-message strong {
-  font-size: 11px;
-  color: var(--accent);
-}
-.chat-message p {
-  white-space: pre-wrap;
-  margin: 6px 0 0;
-  color: inherit;
-}
-.chat-user {
-  margin-left: auto;
-  background: #303030;
-}
-.chat-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-.chat-pending {
-  display: flex;
-  gap: 5px;
-  padding: 16px;
-}
-.chat-pending span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: thinking 1s infinite alternate;
-}
-.chat-pending span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-.chat-pending span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-@keyframes thinking {
-  to {
-    opacity: 0.25;
-    transform: translateY(-3px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-pending span {
-    animation: none;
-  }
-}
-@media (max-width: 480px) {
-  #coachPanel {
-    padding: 14px;
-  }
-  .chat-message {
-    max-width: 95%;
-  }
-}
-
-.member-thread {
-  border-left: 2px solid var(--line);
-  padding: 4px 10px;
-  margin: 12px 0;
-}
-.member-thread h3 {
-  font-size: 12px;
-  color: var(--muted);
-}
-.member-event {
-  border: 1px solid var(--line);
-  background: transparent;
-}
-.activity-card {
-  margin: 10px 0;
-  padding: 10px;
-  overflow-wrap: anywhere;
-}
-.activity-card summary {
-  cursor: pointer;
-}
-.activity-card article {
-  padding: 10px 0;
-  border-bottom: 1px solid var(--line);
-}
-.activity-card dl {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 4px 12px;
-  margin: 8px 0;
-}
-.activity-card dt {
-  color: var(--muted);
-}
-.activity-card dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.activity-card img {
-  display: block;
-  max-width: 100%;
-  max-height: 420px;
-  object-fit: contain;
-  margin: 12px 0;
-}
-.member-item small {
-  display: block;
-  color: var(--muted);
-  margin-top: 4px;
-  font-size: 11px;
-}
-
 /* Models registry editor. */
 .active-badge {
   color: #f0f0f0;
@@ -1265,4 +1095,36 @@ header {
 #performanceWindow,
 #performanceSelection {
   overflow-wrap: anywhere;
+}
+#nativeHistoryPanel {
+  padding: 12px;
+  border: 1px solid #444;
+  border-radius: 8px;
+  min-width: 0;
+}
+.native-history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.native-history-controls select,
+.native-history-controls input {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 160px;
+}
+#nativeHistoryLog {
+  max-height: 45vh;
+  overflow: auto;
+}
+#nativeHistoryLog pre,
+#nativeHistorySnapshot {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+#nativeHistoryToggle {
+  margin-bottom: 0;
 }

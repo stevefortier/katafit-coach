@@ -50,7 +50,7 @@
             aria-controls="diagnostics"
             aria-pressed="false"
           >
-            Diagnostics
+            Activity
           </button>
           <button
             id="settingsTab"
@@ -62,43 +62,6 @@
           </button>
         </nav>
         <section id="coachPanel" class="card">
-          <div class="conversation-toolbar">
-            <div
-              id="conversationTabs"
-              class="conversation-tabs"
-              aria-label="Conversations"
-            >
-              <button id="operatorTab" aria-pressed="true">Operator</button>
-            </div>
-            <button
-              id="membersRefresh"
-              class="secondary"
-              type="button"
-              aria-label="Refresh members"
-              title="Refresh members"
-            >
-              <svg
-                aria-hidden="true"
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M20 7v5h-5M4 17v-5h5" />
-                <path
-                  d="M6.1 7a7 7 0 0 1 11.55-1L20 9M4 15l2.35 3A7 7 0 0 0 17.9 17"
-                />
-              </svg>
-            </button>
-          </div>
-          <button id="membersMore" class="secondary" hidden>
-            More members
-          </button>
-          <p id="membersStatus" class="hint" role="status"></p>
           <div id="operatorView">
             <div
               class="native-toolbar"
@@ -114,11 +77,11 @@
               <button
                 id="nativeStop"
                 class="secondary"
-                aria-label="Stop &amp; erase workspace"
+                aria-label="Stop Pi and keep conversation"
               >
-                <span class="native-label-full">Stop &amp; erase workspace</span
+                <span class="native-label-full">Stop</span
                 ><span class="native-label-compact" aria-hidden="true"
-                  >Stop &amp; erase</span
+                  >Stop</span
                 >
               </button>
               <button
@@ -160,9 +123,12 @@
                 hidden
               >
                 <p>
-                  Isolated Pi 0.86.1 · ephemeral workspace. Files and terminal
-                  context are deleted on Stop. No private Pi transcript is
-                  saved. Use /model and the Kata.fit /mcp extension command.
+                  Isolated Pi 0.86.1 · ephemeral workspace. Files and
+                  attachments are erased on Stop. Conversations persist only
+                  when Kata.fit advertises archive authorization; otherwise this
+                  session is ephemeral. History always requires current source
+                  and credential access. Use /model and the Kata.fit /mcp
+                  extension command.
                 </p>
                 <p id="operatorSnapshot"></p>
               </div>
@@ -175,7 +141,55 @@
                 >Stopped. Docker isolation is required; there is no host
                 fallback.</span
               >
+              <button
+                id="nativeHistoryToggle"
+                class="secondary"
+                aria-label="History"
+                aria-controls="nativeHistoryPanel"
+                aria-expanded="false"
+              >
+                <span class="native-label-full">History</span
+                ><span class="native-label-compact" aria-hidden="true">◴</span>
+              </button>
             </div>
+            <section
+              id="nativeHistoryPanel"
+              aria-label="Operator conversation history"
+              hidden
+            >
+              <div class="native-history-controls">
+                <label for="nativeHistorySelect">Conversation</label>
+                <select id="nativeHistorySelect">
+                  <option value="">New conversation</option>
+                </select>
+                <button id="nativeHistoryNew" class="secondary">New</button>
+                <button id="nativeHistoryDelete" class="secondary" disabled>
+                  Delete
+                </button>
+              </div>
+              <div class="native-history-controls">
+                <input
+                  id="nativeHistoryTitle"
+                  aria-label="Conversation title"
+                  maxlength="120"
+                  placeholder="Conversation title"
+                  disabled
+                />
+                <button id="nativeHistoryRename" class="secondary" disabled>
+                  Rename
+                </button>
+              </div>
+              <p id="nativeHistoryNotice" role="status" class="hint"></p>
+              <details>
+                <summary>Persona, skills and settings snapshot</summary>
+                <pre id="nativeHistorySnapshot"></pre>
+              </details>
+              <div
+                id="nativeHistoryLog"
+                role="log"
+                aria-label="Saved conversation"
+              ></div>
+            </section>
             <div class="native-workbench">
               <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
               <aside
@@ -233,20 +247,6 @@
               Check delivery status
             </button>
           </div>
-          <section id="memberView" hidden>
-            <p id="memberStatus" role="status"></p>
-            <button id="memberMore" class="secondary" hidden>
-              Load older items
-            </button>
-            <div
-              id="memberItems"
-              class="chat-messages"
-              aria-label="Member history"
-            ></div>
-            <div class="chat-actions">
-              <button id="memberRefresh" class="secondary">Refresh feed</button>
-            </div>
-          </section>
         </section>
         <section id="settingsPanel" hidden>
           <div
@@ -844,12 +844,12 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
           tabindex="0"
           hidden
         >
-          <h2>Diagnostics</h2>
+          <h2>Activity</h2>
           <p id="lastError" role="status">No retained error.</p>
           <div
             class="settings-tabs"
             role="tablist"
-            aria-label="Diagnostics sections"
+            aria-label="Activity sections"
           >
             <button
               id="diagnostics-performance-tab"
@@ -932,7 +932,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             aria-labelledby="diagnostics-logs-tab"
             tabindex="0"
           >
-            <h3>Raw diagnostic logs</h3>
+            <h3>Activity logs</h3>
             <p id="performanceSelection" role="status"></p>
             <button id="performanceClear" class="secondary" hidden>
               Clear call selection
@@ -955,9 +955,9 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               <button id="logDownload" class="secondary">Download JSON</button>
             </div>
             <p id="logStatus" role="status">
-              Logs load only while Diagnostics is active and the tab is visible.
+              Logs load only while Activity is active and the tab is visible.
             </p>
-            <div id="logRows" aria-label="Diagnostic entries"></div>
+            <div id="logRows" aria-label="Activity entries"></div>
           </div>
         </section>
       </div>

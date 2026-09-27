@@ -23,131 +23,197 @@ const relayGuidance = {
   NATIVE_RESULT_TOO_LARGE:
     "The tool result was over the native return budget and was withheld. If this was an action, its outcome is unknown; do not replay it.",
 };
+/** Executable shipped result contract, shared by host capture and Pi. */
+export function nativeToolResultTooLarge(result) {
+  // Reserve the largest permitted runtime frame ID; relay has no smaller
+  // tool response cap. The host uses this before recording the emitted text.
+  return (
+    new TextEncoder().encode(
+      JSON.stringify({ id: Number.MAX_SAFE_INTEGER, result }) + "\n",
+    ).length >
+    16 * 1024 * 1024
+  );
+}
+export function nativeToolOutcome(name, result, code) {
+  if (code === undefined && nativeToolResultTooLarge(result))
+    code = "NATIVE_RESULT_TOO_LARGE";
+  try {
+    // Unknown/transport failures stay fixed; never render backend prose.
+    const fallback =
+      name === "studio_operator_list_dojo_checkins"
+        ? "Check-in listing failed. This does not establish that no photos exist. Image reads require references from a successful check-in listing; activity-detail metadata is not a substitute."
+        : name === "studio_operator_read_dojo_checkin_image"
+          ? "Check-in image read failed; no image was delivered. Use the matching member_ref and media_ref from a successful check-in listing. Activity-detail media references are not sufficient. The per-turn quota is four images and 16 MiB total. Do not repeat the same failed call or claim to have inspected pixels."
+          : name === "studio_operator_read_activity_image"
+            ? "Activity image read failed; no image was delivered. Use the matching member_ref/activity_ref from a successful activity listing and media_ref from its media_files detail. Do not substitute a check-in reference, repeat the unchanged failed read, or claim to have inspected pixels."
+            : name === "studio_operator_read_activity"
+              ? "Activity detail read failed. The requested section was not verified; this does not establish whether photos exist. Do not replay the unchanged failed read or infer inaccessible evidence."
+              : name === "send_to_operator"
+                ? "Sending to the operator failed. Nothing was added to the operator panel; do not claim the operator received or saw it."
+                : "Kata.fit tool failed; do not replay uncertain actions.";
+    if (code !== undefined) {
+      throw new Error(
+        typeof code === "string" && Object.hasOwn(relayGuidance, code)
+          ? `${code}: ${relayGuidance[code]}`
+          : fallback,
+      );
+    }
+    if (name === "studio_operator_read_activity" && result?.operatorReadError) {
+      const error = result.operatorReadError;
+      const guidance = {
+        OPERATOR_NOT_AUTHORIZED:
+          "The backend denied this activity detail read. Check that member_ref and activity_ref match a successful authorized activity listing or source-linked feed read; an old or mismatched reference may be invalid. This does not prove there are no photos or that sharing is disabled. Do not guess references, expand scope, or repeat the unchanged failed read.",
+        READ_LIMIT:
+          "The backend refused this read at a bounded read limit. Use only successful receipts from the current turn and state the unverified section; do not repeat the unchanged failed read or bypass session limits.",
+        HISTORY_CHANGED:
+          "The activity history changed since the reference was issued. Do not infer the old section or replay this stale read; request an authorized current listing in a later human turn if still needed.",
+      };
+      if (
+        Object.keys(result).join() !== "operatorReadError" ||
+        !error ||
+        typeof error !== "object" ||
+        Object.keys(error).join() !== "code" ||
+        typeof error.code !== "string" ||
+        !Object.hasOwn(guidance, error.code)
+      )
+        throw new Error(fallback);
+      throw new Error(`${error.code}: ${guidance[error.code]}`);
+    }
+    if (name === "send_to_operator" && result?.attachmentError) {
+      const error = result.attachmentError;
+      const guidance = {
+        ATTACHMENT_ARGUMENTS_REJECTED:
+          "Arguments did not match the schema. Supply exactly one of image_receipt or workspace_path, plus optional filename and caption, and nothing else.",
+        ATTACHMENT_RECEIPT_UNKNOWN:
+          "That image_receipt is not known to this session. Copy the exact image_receipt from a successful image read in this session; receipts cannot be invented or reused across sessions.",
+        ATTACHMENT_PATH_REJECTED:
+          "workspace_path must be a relative path (or /workspace/...) to a regular file inside /workspace, without '.' or '..' components, control characters, or symbolic links; at most 8 components.",
+        ATTACHMENT_FILE_NOT_FOUND:
+          "No regular file exists at that path inside /workspace. Create or locate the file under /workspace first.",
+        ATTACHMENT_FILE_UNAVAILABLE:
+          "The file could not be read safely: it may be a symlink, directory, device, pipe, or was changed during reading. Only regular files inside /workspace can be sent.",
+        ATTACHMENT_FILE_EMPTY:
+          "The file is empty. Write its content first, then send it.",
+        ATTACHMENT_TOO_LARGE:
+          "The file exceeds the 8 MiB per-attachment limit. Send a smaller or compressed file.",
+        ATTACHMENT_BUDGET_EXHAUSTED:
+          "The operator panel is full for this session (16 attachments / 32 MiB). Tell the operator what could not be attached; do not reset the session to bypass limits.",
+        ATTACHMENT_REJECTED:
+          "The content, filename or caption was refused because it would disclose a configured credential. Do not attempt to send secrets.",
+        ATTACHMENT_UNAVAILABLE:
+          "The operator panel is not available for this session. Continue without attaching and tell the operator the attachment could not be delivered.",
+      };
+      if (
+        Object.keys(result).join() === "attachmentError" &&
+        error &&
+        typeof error === "object" &&
+        Object.keys(error).join() === "code" &&
+        error.code === "ATTACHMENT_BUSY"
+      )
+        throw new Error(
+          "ATTACHMENT_BUSY: Another native request is still pending. This send was not dispatched and nothing was added to the operator panel. Wait for the pending call to finish, then retry this send sequentially if still needed.",
+        );
+      if (
+        Object.keys(result).join() !== "attachmentError" ||
+        !error ||
+        typeof error !== "object" ||
+        Object.keys(error).join() !== "code" ||
+        typeof error.code !== "string" ||
+        !Object.hasOwn(guidance, error.code)
+      )
+        throw new Error(fallback);
+      throw new Error(
+        `${error.code}: ${guidance[error.code]} Nothing was added to the operator panel by this call; do not claim the operator received it. Do not repeat the unchanged failed call.`,
+      );
+    }
+    if (result?.imageReadError) {
+      const error = result.imageReadError;
+      if (
+        [
+          "studio_operator_read_dojo_checkin_image",
+          "studio_operator_read_activity_image",
+        ].includes(name) &&
+        Object.keys(result).join() === "imageReadError" &&
+        Object.keys(error).join() === "code" &&
+        error.code === "IMAGE_READ_BUSY"
+      )
+        throw new Error(
+          "IMAGE_READ_BUSY: Another native request is still pending. This image read was not dispatched; no image capacity was consumed by this attempt and no image was delivered. Wait for the pending call to finish, inspect its receipt and remaining capacity, then retry this read sequentially if still needed and within budget. Capacity is not reported while a call is pending. Do not send parallel reads or reset a session to bypass quotas.",
+        );
+      const guidance = {
+        CHECKIN_LIST_REQUIRED:
+          "First call studio_operator_list_dojo_checkins successfully, then copy the exact matching member_ref and media_ref from one shared row. Activity-detail media references and member roster entries are not sufficient.",
+        ACTIVITY_PROOF_REQUIRED:
+          "First list activities for the member and read media_files for the exact completed media activity; use only its matching member_ref, activity_ref and media_ref. Check-in references are not interchangeable.",
+        IMAGE_ARGUMENTS_REJECTED:
+          name === "studio_operator_read_activity_image"
+            ? "Correct the arguments to match the advertised schema; supply the exact listed member_ref, activity_ref and media_ref, without host-owned fields."
+            : "Correct the arguments to match the advertised schema; supply the exact listed member_ref and media_ref pair, without host-owned fields.",
+        IMAGE_BUDGET_EXHAUSTED:
+          "Image delivery budget exceeded (4 images / 16 MiB per turn; 8 MiB per image). Use already delivered images and state the uninspected coverage. Only select a different listed image if it fits the remaining capacity. Never reset or reopen a session to bypass quotas.",
+        IMAGE_TOOL_BUDGET_EXHAUSTED:
+          "Tool-call budget exhausted for this turn even if image capacity remains. Stop reads and synthesize from successful receipts; do not reset or reopen a session to bypass quotas.",
+        IMAGE_BACKEND_FAILED:
+          "Backend did not deliver an authorized image. Access or availability could not be established; this does not prove no photo exists or sharing is disabled. State the gap; do not bypass authorization.",
+        IMAGE_RESULT_REJECTED:
+          "Returned image failed integrity or format validation and was not delivered. Do not inspect rejected bytes; use other verified evidence and report the gap.",
+      };
+      if (
+        ![
+          "studio_operator_read_dojo_checkin_image",
+          "studio_operator_read_activity_image",
+        ].includes(name) ||
+        Object.keys(result).join() !== "imageReadError" ||
+        Object.keys(error).sort().join() !==
+          "code,remainingBytes,remainingImages" ||
+        !Object.hasOwn(guidance, error.code) ||
+        (error.code === "CHECKIN_LIST_REQUIRED" &&
+          name !== "studio_operator_read_dojo_checkin_image") ||
+        (error.code === "ACTIVITY_PROOF_REQUIRED" &&
+          name !== "studio_operator_read_activity_image") ||
+        !Number.isInteger(error.remainingImages) ||
+        error.remainingImages < 0 ||
+        error.remainingImages > 4 ||
+        !Number.isInteger(error.remainingBytes) ||
+        error.remainingBytes < 0 ||
+        error.remainingBytes > 16 * 1024 * 1024
+      )
+        throw new Error(fallback);
+      throw new Error(
+        `${error.code}: ${guidance[error.code]} Remaining delivery capacity: ${error.remainingImages} images, ${error.remainingBytes} bytes. No visual evidence from this call: no image was delivered. Do not repeat the unchanged failed call or claim to have inspected its pixels.`,
+      );
+    }
+    return result;
+  } catch (error) {
+    return { content: [{ type: "text", text: error.message }], isError: true };
+  }
+}
+
 export default function (pi) {
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   for (const tool of config.tools)
     pi.registerTool({
       ...tool,
       label: tool.name,
-      async execute(_id, args, signal) {
+      async execute(toolCallId, args, signal) {
         const response = await fetch(`http://127.0.0.1:${port}/tool`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: tool.name, args }),
+          body: JSON.stringify({ name: tool.name, args, toolCallId }),
           signal,
         });
-        // Unknown/transport failures stay fixed; never render backend prose.
-        const fallback =
-          tool.name === "studio_operator_list_dojo_checkins"
-            ? "Check-in listing failed. This does not establish that no photos exist. Image reads require references from a successful check-in listing; activity-detail metadata is not a substitute."
-            : tool.name === "studio_operator_read_dojo_checkin_image"
-              ? "Check-in image read failed; no image was delivered. Use the matching member_ref and media_ref from a successful check-in listing. Activity-detail media references are not sufficient. The per-turn quota is four images and 16 MiB total. Do not repeat the same failed call or claim to have inspected pixels."
-              : tool.name === "send_to_operator"
-                ? "Sending to the operator failed. Nothing was added to the operator panel; do not claim the operator received or saw it."
-                : "Kata.fit tool failed; do not replay uncertain actions.";
+        let code;
+        let result;
         if (!response.ok) {
-          let code;
           try {
             code = (await response.json())?.error?.code;
           } catch {}
-          throw new Error(
-            typeof code === "string" && Object.hasOwn(relayGuidance, code)
-              ? `${code}: ${relayGuidance[code]}`
-              : fallback,
-          );
-        }
-        const result = await response.json();
-        if (tool.name === "send_to_operator" && result?.attachmentError) {
-          const error = result.attachmentError;
-          const guidance = {
-            ATTACHMENT_ARGUMENTS_REJECTED:
-              "Arguments did not match the schema. Supply exactly one of image_receipt or workspace_path, plus optional filename and caption, and nothing else.",
-            ATTACHMENT_RECEIPT_UNKNOWN:
-              "That image_receipt is not known to this session. Copy the exact image_receipt from a successful check-in image read in this session; receipts cannot be invented or reused across sessions.",
-            ATTACHMENT_PATH_REJECTED:
-              "workspace_path must be a relative path (or /workspace/...) to a regular file inside /workspace, without '.' or '..' components, control characters, or symbolic links; at most 8 components.",
-            ATTACHMENT_FILE_NOT_FOUND:
-              "No regular file exists at that path inside /workspace. Create or locate the file under /workspace first.",
-            ATTACHMENT_FILE_UNAVAILABLE:
-              "The file could not be read safely: it may be a symlink, directory, device, pipe, or was changed during reading. Only regular files inside /workspace can be sent.",
-            ATTACHMENT_FILE_EMPTY:
-              "The file is empty. Write its content first, then send it.",
-            ATTACHMENT_TOO_LARGE:
-              "The file exceeds the 8 MiB per-attachment limit. Send a smaller or compressed file.",
-            ATTACHMENT_BUDGET_EXHAUSTED:
-              "The operator panel is full for this session (16 attachments / 32 MiB). Tell the operator what could not be attached; do not reset the session to bypass limits.",
-            ATTACHMENT_REJECTED:
-              "The content, filename or caption was refused because it would disclose a configured credential. Do not attempt to send secrets.",
-            ATTACHMENT_UNAVAILABLE:
-              "The operator panel is not available for this session. Continue without attaching and tell the operator the attachment could not be delivered.",
-          };
-          if (
-            Object.keys(result).join() === "attachmentError" &&
-            error &&
-            typeof error === "object" &&
-            Object.keys(error).join() === "code" &&
-            error.code === "ATTACHMENT_BUSY"
-          )
-            throw new Error(
-              "ATTACHMENT_BUSY: Another native request is still pending. This send was not dispatched and nothing was added to the operator panel. Wait for the pending call to finish, then retry this send sequentially if still needed.",
-            );
-          if (
-            Object.keys(result).join() !== "attachmentError" ||
-            !error ||
-            typeof error !== "object" ||
-            Object.keys(error).join() !== "code" ||
-            typeof error.code !== "string" ||
-            !Object.hasOwn(guidance, error.code)
-          )
-            throw new Error(fallback);
-          throw new Error(
-            `${error.code}: ${guidance[error.code]} Nothing was added to the operator panel by this call; do not claim the operator received it. Do not repeat the unchanged failed call.`,
-          );
-        }
-        if (result?.imageReadError) {
-          const error = result.imageReadError;
-          if (
-            tool.name === "studio_operator_read_dojo_checkin_image" &&
-            Object.keys(result).join() === "imageReadError" &&
-            Object.keys(error).join() === "code" &&
-            error.code === "IMAGE_READ_BUSY"
-          )
-            throw new Error(
-              "IMAGE_READ_BUSY: Another native request is still pending. This image read was not dispatched; no image capacity was consumed by this attempt and no image was delivered. Wait for the pending call to finish, inspect its receipt and remaining capacity, then retry this read sequentially if still needed and within budget. Capacity is not reported while a call is pending. Do not send parallel reads or reset a session to bypass quotas.",
-            );
-          const guidance = {
-            CHECKIN_LIST_REQUIRED:
-              "First call studio_operator_list_dojo_checkins successfully, then copy the exact matching member_ref and media_ref from one shared row. Activity-detail media references and member roster entries are not sufficient.",
-            IMAGE_ARGUMENTS_REJECTED:
-              "Correct the arguments to match the advertised schema; supply the exact listed member_ref and media_ref pair, without host-owned fields.",
-            IMAGE_BUDGET_EXHAUSTED:
-              "Image delivery budget exceeded (4 images / 16 MiB per turn; 8 MiB per image). Use already delivered images and state the uninspected coverage. Only select a different listed image if it fits the remaining capacity. Never reset or reopen a session to bypass quotas.",
-            IMAGE_TOOL_BUDGET_EXHAUSTED:
-              "Tool-call budget exhausted for this turn even if image capacity remains. Stop reads and synthesize from successful receipts; do not reset or reopen a session to bypass quotas.",
-            IMAGE_BACKEND_FAILED:
-              "Backend did not deliver an authorized image. Access or availability could not be established; this does not prove no photo exists or sharing is disabled. State the gap; do not bypass authorization.",
-            IMAGE_RESULT_REJECTED:
-              "Returned image failed integrity or format validation and was not delivered. Do not inspect rejected bytes; use other verified evidence and report the gap.",
-          };
-          if (
-            tool.name !== "studio_operator_read_dojo_checkin_image" ||
-            Object.keys(result).join() !== "imageReadError" ||
-            Object.keys(error).sort().join() !==
-              "code,remainingBytes,remainingImages" ||
-            !Object.hasOwn(guidance, error.code) ||
-            !Number.isInteger(error.remainingImages) ||
-            error.remainingImages < 0 ||
-            error.remainingImages > 4 ||
-            !Number.isInteger(error.remainingBytes) ||
-            error.remainingBytes < 0 ||
-            error.remainingBytes > 16 * 1024 * 1024
-          )
-            throw new Error(fallback);
-          throw new Error(
-            `${error.code}: ${guidance[error.code]} Remaining delivery capacity: ${error.remainingImages} images, ${error.remainingBytes} bytes. No visual evidence from this call: no image was delivered. Do not repeat the unchanged failed call or claim to have inspected its pixels.`,
-          );
-        }
-        return result;
+          code ??= "NATIVE_TOOL_FAILED";
+        } else result = await response.json();
+        const outcome = nativeToolOutcome(tool.name, result, code);
+        if (outcome !== result && outcome.isError)
+          throw new Error(outcome.content[0].text);
+        return outcome;
       },
     });
   pi.registerCommand("mcp", {

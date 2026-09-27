@@ -188,9 +188,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.evaluate(() => {
       location.hash = "logsView";
     });
-    await page
-      .getByRole("region", { name: "Diagnostics", exact: true })
-      .waitFor();
+    await page.getByRole("region", { name: "Activity", exact: true }).waitFor();
     await page.goBack();
     await page
       .getByRole("tabpanel", { name: "Updates", exact: true })
@@ -239,9 +237,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       route.fulfill({ json: { entries: [] } }),
     );
     const loaded = page.waitForResponse("**/api/logs");
-    await page
-      .getByRole("button", { name: "Diagnostics", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Activity", exact: true }).click();
     await loaded;
     await page.locator("#settingsTab").click();
     await page.getByRole("tab", { name: "Persona", exact: true }).click();

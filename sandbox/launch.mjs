@@ -1,13 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 const args = ["--no-session", "--offline"];
+const temporary = (process.env.TMPDIR || "/tmp").replace(/\/+$/, "");
 if (process.env.NATIVE_GATEWAY === "1") {
   const deadline = Date.now() + 15000;
-  while (!existsSync("/tmp/native-config.json")) {
+  while (!existsSync(temporary + "/native-config.json")) {
     if (Date.now() > deadline) process.exit(1);
     await new Promise((r) => setTimeout(r, 50));
   }
-  const config = JSON.parse(readFileSync("/tmp/native-config.json", "utf8"));
+  const config = JSON.parse(
+    readFileSync(temporary + "/native-config.json", "utf8"),
+  );
+  if (config.history)
+    args.splice(0, 1, "--session", temporary + "/native-history.jsonl");
   args.push(
     "--provider",
     "katafit",

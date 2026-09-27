@@ -15,8 +15,10 @@ async function failedTool(name: string, result?: unknown) {
   const register = runInNewContext(
     source
       .replace('import { readFileSync } from "node:fs";', "")
+      .replace(/export function /g, "function ")
       .replace("export default function", "(function") + ")",
     {
+      TextEncoder,
       readFileSync: () => JSON.stringify({ tools: [{ name }] }),
       fetch: async () => {
         requests++;
@@ -137,5 +139,35 @@ test("native extension renders only bounded host image error codes with actionab
       },
     }),
     "Kata.fit tool failed; do not replay uncertain actions.",
+  );
+});
+
+test("generic activity image denials give bounded source guidance without replay", async () => {
+  const tool = "studio_operator_read_activity_image";
+  assert.match(
+    await failedTool(tool),
+    /Activity image read failed.*media_files/,
+  );
+  for (const [code, pattern] of [
+    ["ACTIVITY_PROOF_REQUIRED", /First list activities.*media_files/],
+    ["IMAGE_BACKEND_FAILED", /Backend did not deliver an authorized image/],
+    ["IMAGE_RESULT_REJECTED", /failed integrity or format validation/],
+  ] as const) {
+    const message = await failedTool(tool, {
+      imageReadError: { code, remainingImages: 3, remainingBytes: 1024 },
+    });
+    assert.match(message, pattern);
+    assert.match(message, /no image was delivered/);
+    assert.doesNotMatch(message, /uncertain actions/);
+  }
+  assert.match(
+    await failedTool(tool, { imageReadError: { code: "IMAGE_READ_BUSY" } }),
+    /not dispatched/,
+  );
+  assert.match(
+    await failedTool(tool, {
+      imageReadError: { code: "private-backend-text" },
+    }),
+    /Activity image read failed/,
   );
 });

@@ -37,11 +37,19 @@ export class Actions {
             "message_id",
             "member_ref",
             "tool_name",
+            "turn_generation",
           ].includes(k),
       ) ||
       !["pending", "unknown", "not_found", "delivered", "completed"].includes(
         v.status,
       )
+    )
+      throw new Error("UNSAFE_STORAGE");
+    if (
+      v.turn_generation !== undefined &&
+      (!Number.isInteger(v.turn_generation) ||
+        v.turn_generation < 0 ||
+        v.turn_generation > 63)
     )
       throw new Error("UNSAFE_STORAGE");
     for (const key of ["session_id", "idempotency_key"])
@@ -134,7 +142,7 @@ export class Actions {
     assertNoSecrets(actions, Object.values(this.store.secrets));
     return actions;
   }
-  async reconcile() {
+  async reconcile(sessionId?: string) {
     const record = this.recorder();
     const client = new Client(
       this.store.publicConfig().origin,
@@ -143,7 +151,9 @@ export class Actions {
       this.onDiagnostic,
     );
     for (const action of this.snapshot().filter(
-      (a) => a.status === "pending" || a.status === "unknown",
+      (a) =>
+        (!sessionId || a.session_id === sessionId) &&
+        (a.status === "pending" || a.status === "unknown"),
     )) {
       try {
         // Close serializes with any in-flight delivery before readback.
