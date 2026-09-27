@@ -38,7 +38,7 @@ Legacy saves without `models` remain supported: the top-level `provider` and opt
 
 IDs match `^[a-z0-9][a-z0-9_-]{0,63}$`; provider IDs are unique and model IDs are unique within a provider. Limits: 16 providers, 32 models per provider, 64 models total, 100-character display names, 200-character exact model IDs, 2048-character registry base URLs, and 4096-character new registry keys. Every provider must contain at least one model. Failures use fixed codes, including `INVALID_REGISTRY`, `REGISTRY_LIMIT`, `ACTIVE_MODEL_REQUIRED`, `CREDENTIAL_REQUIRED`, `INVALID_SECRET` and `CONFIG_TOO_LARGE`, never submitted values.
 
-All current/inactive/new credentials are checked against current and retained configuration/persona history. The HTTP save also scans persisted Operator chat and action receipts before writing. Preview and runtime output screening include inactive credentials. Credentials must never be pasted into display names, model IDs, persona, chat or action text.
+All current/inactive/new credentials are checked against current and retained configuration/persona history. The HTTP save also scans action receipts before writing. Retired Operator chat archives are not loaded, served or modified and cannot block configuration recovery. Preview and runtime output screening include inactive credentials. Credentials must never be pasted into display names, model IDs, persona, chat or action text.
 
 ## Migration, persistence and recovery
 

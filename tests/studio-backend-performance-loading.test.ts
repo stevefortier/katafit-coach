@@ -68,6 +68,7 @@ test("Diagnostics tabs default to Logs and retain one pending snapshot across ke
     ["ArrowLeft", "logs"],
   ]) {
     await page.keyboard.press(key);
+    await page.waitForURL((url) => url.search === "?section=" + section);
     assert.equal(new URL(page.url()).search, "?section=" + section);
     assert.equal(
       await page

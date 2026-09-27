@@ -1,6 +1,16 @@
 # Architecture and security
 
-> Historical v1 architecture. For the current negotiated read-tool/image loop and budgets, see [request-scoped data access](request-data-access.md).
+## Current native Operator
+
+`/chat/operator` serves only native Pi in the isolated Docker sandbox. The authenticated terminal owns one-use tickets, runtime teardown and configuration authority. `NativeRuntime` connects Pi's terminal and extension over bounded docker-exec relay stdio; `NativeGateway` keeps provider/backend credentials on the host and reauthorizes tool/provider traffic. No host fallback or legacy Operator inference API exists.
+
+The catalog carries `compileOperator(savedConfig)`. The launcher passes it as Pi's **primary** `--system-prompt`, not an addendum to Pi's coding-assistant identity. It preserves all eight saved persona fields and states that the operator is the Coach's manager and boss; the manager relationship overrides trainee discipline, not backend permissions. Configuration replacement closes the old runtime and a new runtime starts with the new revision, without old transcripts or workspace contents.
+
+The shared backend tool adapters, action journal, evidence validation, source authorization and continuity controls remain authoritative. Unknown writes are never replayed. The worker/preview embedded Pi adapter remains separate; its retired Operator-only final-review continuation is removed. Saved legacy chat files are untouched and are not loaded or served. Build cleans generated `dist` before compilation so retired JS cannot survive into packages. See [native continuity](native-continuity.md), [Operator contract](operator-unified-contract.md) and [Studio conversations](studio-conversations.md).
+
+## Historical v1 architecture
+
+> The remainder documents historical v1. For the current negotiated worker read-tool/image loop and budgets, see [request-scoped data access](request-data-access.md).
 
 ```
 Loopback browser studio -> authenticated Node admin -> private configuration

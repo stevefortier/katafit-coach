@@ -47,7 +47,6 @@ test("member chat opens at newest, loads older at top, and follows only while pi
       viewport: { width: 900, height: 700 },
     });
     let latest = 30;
-    let operatorLatest = 18;
     const cursors: string[] = [];
     let releaseOlder: (() => void) | undefined;
     let olderStarted: () => void;
@@ -71,13 +70,7 @@ test("member chat opens at newest, loads older at top, and follows only while pi
           persona: {},
         };
       if (url.pathname === "/api/status") body = { state: "stopped" };
-      if (url.pathname === "/api/operator/chat")
-        body = {
-          messages: Array.from({ length: operatorLatest }, (_, i) => ({
-            role: i % 2 ? "assistant" : "user",
-            text: `Operator ${i} ${"content ".repeat(20)}`,
-          })),
-        };
+      if (url.pathname === "/api/terminal/receipts") body = { actions: [] };
       if (url.pathname === "/api/members")
         body = {
           members: [

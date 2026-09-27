@@ -43,9 +43,7 @@ export class History {
   private path: string;
   constructor(
     private dir: string,
-    private filename:
-      | "operator-chat.json"
-      | "operator-actions.json" = "operator-chat.json",
+    private filename: "operator-actions.json",
   ) {
     this.path = resolve(dir, filename);
   }

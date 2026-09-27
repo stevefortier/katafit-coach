@@ -17,7 +17,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "tsc && node scripts/build-metadata.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc && node scripts/build-metadata.mjs",
     "test": "npm run build && tsx --test --test-concurrency=1 --test-force-exit tests/*.test.ts",
     "prepack": "npm run build",
     "test:browser": "tsx scripts/browser-smoke.ts",

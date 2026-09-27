@@ -2,8 +2,6 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 import { Actions } from "../chat/actions.js";
 import { NativeTerminal } from "./terminal.js";
-import { OperatorChat } from "../chat/operator.js";
-import type { OperatorAction } from "../katafit/operatorTools.js";
 import { StudioReads } from "../katafit/studio.js";
 import { Updates } from "../update/updates.js";
 import { AutoUpdateSetting } from "../update/auto.js";
@@ -29,7 +27,6 @@ export async function admin(
   const onBackendDiagnostic = (
     event: import("../diagnostics/log.js").LogInput,
   ) => logs.record(event);
-  const chat = new OperatorChat(store, infer, onBackendDiagnostic);
   logs.record({ source: "studio", stage: "studio-started" });
   const initialSkills = store.skills.runtime();
   logs.record({
@@ -211,7 +208,6 @@ export async function admin(
     const started = Date.now();
     let acceptedId: string | undefined;
     let fingerprint = "";
-    let operatorTurnActions: Map<string, OperatorAction> | undefined;
     const send = (status: number, data: unknown) => {
       if (acceptedId) {
         completed.set(acceptedId, { fingerprint, status, data });
@@ -300,7 +296,6 @@ export async function admin(
           closing ||
           busy ||
           configurationUncertain ||
-          chat.active ||
           updates.applying ||
           updates.recovering ||
           autoQuiesced
@@ -422,24 +417,6 @@ export async function admin(
           memberReads.delete(controller);
         }
       }
-      if (req.method === "GET" && path.startsWith("/api/operator/image?")) {
-        const url = new URL(path, origin);
-        if (
-          [...url.searchParams.keys()].join() !== "id" ||
-          !/^[0-9a-f-]{36}$/.test(url.searchParams.get("id") ?? "")
-        )
-          throw new SafeError("ARGUMENTS_REJECTED");
-        const image = await chat.image(url.searchParams.get("id")!);
-        res.setHeader("Content-Type", image.mime_type);
-        res.setHeader("Content-Length", image.bytes.length);
-        res.end(image.bytes);
-        return;
-      }
-      if (req.method === "GET" && path === "/api/operator/chat")
-        return send(
-          200,
-          terminal.active ? chat.snapshot() : await chat.reconcile(),
-        );
       if (req.method === "GET" && path === "/api/update")
         return send(200, await updateSnapshot());
       if (req.method === "GET" && path === "/api/config")
@@ -500,7 +477,6 @@ export async function admin(
           state: worker?.state ?? "stopped",
           presence: worker?.presence ?? "unconfirmed",
           preview: !!preview,
-          operatorChat: chat.active,
           nativeActive: terminal.active,
           lastError: logs.lastError,
           revision: store.publicConfig().revision,
@@ -642,7 +618,6 @@ export async function admin(
           updates.recovering ||
           busy ||
           preview ||
-          chat.active ||
           !terminal.idle ||
           (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
         )
@@ -675,89 +650,6 @@ export async function admin(
         });
       if (busy && path !== "/api/cancel")
         return send(409, { error: "OPERATION_IN_PROGRESS" });
-      if (path === "/api/operator/cancel") {
-        await chat.cancel();
-        return send(200, { ok: true, ...chat.snapshot() });
-      }
-      if (path === "/api/operator/clear") {
-        await chat.clear();
-        return send(200, { ok: true, ...chat.snapshot() });
-      }
-      if (
-        chat.active &&
-        [
-          "/api/operator/chat",
-          "/api/config",
-          "/api/rollback",
-          "/api/persona-restore",
-          ...(skillMutation ? [path] : []),
-          "/api/preview",
-          "/api/update/check",
-          "/api/update/apply",
-        ].includes(path)
-      )
-        return send(409, { error: "OPERATOR_CHAT_IN_PROGRESS" });
-      if (path === "/api/operator/chat") {
-        if (terminal.active)
-          return send(409, { error: "OPERATION_IN_PROGRESS" });
-        if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
-        if (
-          !body ||
-          Array.isArray(body) ||
-          !Object.hasOwn(body, "text") ||
-          Object.keys(body).some((k) => k !== "text")
-        )
-          throw new SafeError("INVALID_PREVIEW");
-        operatorTurnActions = new Map();
-        const cancel = () => chat.cancel();
-        res.once("close", cancel);
-        // Negotiated JSON streaming: whitespace keeps idle proxies alive while
-        // retaining one terminal JSON object. HTTP 200 means accepted; callers
-        // must inspect the terminal error field, not just the HTTP status.
-        let heartbeat: NodeJS.Timeout | undefined;
-        if (req.headers.accept === "application/vnd.katafit.operator+json") {
-          res.writeHead(200, {
-            "Content-Type": "application/vnd.katafit.operator+json",
-            "X-Accel-Buffering": "no",
-          });
-          res.write("\n");
-          heartbeat = setInterval(() => {
-            if (!res.destroyed && !res.writableEnded) res.write("\n");
-          }, 10000);
-          heartbeat.unref();
-        }
-        try {
-          return send(
-            200,
-            await chat.turn(
-              body.text,
-              (event) =>
-                logs.record({
-                  source: event.source,
-                  stage: event.stage,
-                  level: event.level,
-                  metadata: {
-                    ...event.metadata,
-                    elapsedMs: Date.now() - started,
-                  },
-                  shape: event.shape,
-                  receipt: event.receipt,
-                  // Operator evidence remains ephemeral: never persist model/tool
-                  // prose, arguments, member references, previews or rejection text.
-                  ref,
-                }),
-              (action) =>
-                operatorTurnActions!.set(
-                  JSON.stringify([action.session_id, action.idempotency_key]),
-                  { ...action },
-                ),
-            ),
-          );
-        } finally {
-          clearInterval(heartbeat);
-          res.removeListener("close", cancel);
-        }
-      }
       if (path === "/api/update/check") {
         await updates.check();
         return send(200, await updateSnapshot());
@@ -814,7 +706,6 @@ export async function admin(
       }
       if (path === "/api/shutdown" && onShutdown) {
         await terminal.stop();
-        await chat.cancel();
         preview?.abort();
         send(200, { ok: true });
         setImmediate(onShutdown);
@@ -864,8 +755,9 @@ export async function admin(
               });
             } else if (path === "/api/config") {
               // Every incoming credential, including inactive and new registry
-              // providers, must be absent from persisted chat and receipts.
-              chat.assertPersisted([
+              // providers, must be absent from retained action receipts.
+              // Retired chat archives are never loaded, served or rewritten.
+              const secrets = [
                 ...Object.values(store.secrets),
                 ...[
                   body?.apiKey,
@@ -874,7 +766,8 @@ export async function admin(
                     ? body.models.providers.map((p: any) => p?.apiKey)
                     : []),
                 ].filter((v): v is string => typeof v === "string"),
-              ]);
+              ];
+              new Actions(store, onBackendDiagnostic).assertSecrets(secrets);
               await store.save(body);
             } else if (path === "/api/persona-restore") {
               if (
@@ -885,7 +778,6 @@ export async function admin(
                 throw new Error("INVALID_REVISION");
               await store.restorePersona(body.revision);
             } else await store.rollback();
-            await chat.cancel();
           });
           return send(
             200,
@@ -1022,38 +914,11 @@ export async function admin(
         metadata: { elapsedMs: Date.now() - started },
         error: failure,
       });
-      let operatorOutcome: Record<string, unknown> = {};
-      if (req.url?.startsWith("/api/operator/")) {
-        operatorOutcome = {
-          hint:
-            (failure.code === "CONTRACT_UNSUPPORTED"
-              ? "This backend does not support operator commands. "
-              : "") +
-            "Operator turn did not complete. Review action receipts before any retry; delivered messages are not undone by Cancel or Clear.",
-          receiptsUnavailable: true,
-        };
-        try {
-          const actions = chat.snapshot().actions;
-          const turnActions = operatorTurnActions
-            ? [...operatorTurnActions.values()]
-            : undefined;
-          operatorOutcome = {
-            ...operatorOutcome,
-            actions,
-            turnActions,
-            hint: (turnActions ?? actions).length
-              ? failure.hint + " Review action receipts before retry."
-              : failure.hint,
-            receiptsUnavailable: false,
-          };
-        } catch {}
-      }
       send(400, {
         error: failure.code,
         hint: failure.hint,
         metadata: failure.metadata,
         lifecycle,
-        ...operatorOutcome,
       });
     }
   });
@@ -1065,7 +930,6 @@ export async function admin(
       !closing &&
       !busy &&
       !configurationUncertain &&
-      !chat.active &&
       !updates.applying &&
       !updates.recovering &&
       !autoQuiesced,
@@ -1084,7 +948,6 @@ export async function admin(
       await lifecycleDone;
       await terminal.close();
       for (const controller of memberReads) controller.abort();
-      await chat.cancel();
       preview?.abort();
       await worker?.stop();
       server.closeAllConnections();

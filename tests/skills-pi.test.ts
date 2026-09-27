@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { complete } from "../src/runtime/piAdapter.js";
+import { Client } from "../src/katafit/client.js";
+import { discoverReads } from "../src/katafit/readTools.js";
+import { readFixture, fence } from "./data-fixtures.js";
 import {
-  operatorSkillTool,
-  skillCatalog,
+  formatSkillBodies,
+  skillsForRequest,
   stockSkills,
-  type SkillRuntime,
 } from "../src/config/skills.js";
 
 function event(delta: any, finish: string | null = null) {
@@ -18,111 +19,119 @@ function event(delta: any, finish: string | null = null) {
   })}\n\n`;
 }
 
-test("actual Pi selects one relevant local skill, receives its body, then follows an authorized tool workflow", async () => {
+test("actual worker Pi receives the relevant progress skill and uses only request-scoped backend reads", async () => {
   const bodies: any[] = [];
+  const backend = await readFixture({
+    structuredContent: {
+      activities: [{ type: "run", marker: "SYNTHETIC_PROGRESS_EVIDENCE" }],
+      has_more: false,
+    },
+  });
   const provider = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw);
     bodies.push(body);
-    const transcript = JSON.stringify(body.messages);
-    const loaded = transcript.includes(
-      "Loaded local Coach skill Understand a member's progress",
+    const received = body.messages.some(
+      (message: any) =>
+        message.role === "tool" &&
+        JSON.stringify(message.content).includes("SYNTHETIC_PROGRESS_EVIDENCE"),
     );
-    const roster = transcript.includes("Synthetic Alice");
-    let delta: any, finish: string;
-    if (!loaded) {
-      delta = {
-        tool_calls: [
-          {
-            index: 0,
-            id: "load-progress",
-            type: "function",
-            function: {
-              name: "local_load_coach_skill",
-              arguments: '{"id":"understand-progress"}',
+    const delta = received
+      ? { content: "Authorized progress evidence received." }
+      : {
+          tool_calls: [
+            {
+              index: 0,
+              id: "read-progress",
+              type: "function",
+              function: { name: "coach_list_activities", arguments: "{}" },
             },
-          },
-        ],
-      };
-      finish = "tool_calls";
-    } else if (!roster) {
-      assert.ok(transcript.includes("Compare like with like"));
-      delta = {
-        tool_calls: [
-          {
-            index: 0,
-            id: "read-roster",
-            type: "function",
-            function: {
-              name: "studio_operator_list_members",
-              arguments: "{}",
-            },
-          },
-        ],
-      };
-      finish = "tool_calls";
-    } else {
-      assert.ok(transcript.includes("Compare like with like"));
-      delta = {
-        role: "assistant",
-        content:
-          "Skill received before the authorized roster read; Synthetic Alice is in scope.",
-      };
-      finish = "stop";
-    }
+          ],
+        };
     res.writeHead(200, { "Content-Type": "text/event-stream" });
-    res.end(event(delta) + event({}, finish) + "data: [DONE]\n\n");
+    res.end(
+      event(delta) +
+        event({}, received ? "stop" : "tool_calls") +
+        "data: [DONE]\n\n",
+    );
   });
-  await new Promise<void>((resolve) =>
-    provider.listen(0, "127.0.0.1", resolve),
-  );
-  const runtime: SkillRuntime = {
-    revision: 7,
-    skills: stockSkills.map((skill) => structuredClone(skill)),
-  };
-  let reads = 0;
-  const roster: AgentTool = {
-    name: "studio_operator_list_members",
-    label: "List members",
-    description: "Synthetic authorized roster fixture",
-    parameters: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    } as any,
-    async execute() {
-      reads++;
-      return {
-        content: [{ type: "text" as const, text: "Synthetic Alice" }],
-        details: {},
-      };
-    },
-  };
+  let reads: Awaited<ReturnType<typeof discoverReads>> | undefined;
   try {
+    await new Promise<void>((resolve) =>
+      provider.listen(0, "127.0.0.1", resolve),
+    );
+    const signal = AbortSignal.timeout(10000);
+    reads = await discoverReads(
+      new Client(backend.origin, "synthetic-worker-token", signal),
+      fence,
+      {
+        vision: false,
+        secrets: ["synthetic-worker-token"],
+      },
+    );
+    const request = "Understand my progress.";
+    const selected = skillsForRequest(
+      { revision: 7, skills: structuredClone([...stockSkills]) },
+      request,
+    );
+    assert.deepEqual(
+      selected.map((skill) => skill.id),
+      ["understand-progress"],
+    );
     const result = await complete(
       {
         baseUrl: `http://127.0.0.1:${(provider.address() as any).port}/v1`,
         model: "synthetic-skill-model",
-        apiKey: "synthetic-provider-credential",
+        apiKey: "synthetic-model-key",
       },
-      `Enabled skill metadata only: ${JSON.stringify(skillCatalog(runtime))}`,
-      "Understand Alice's progress.",
-      AbortSignal.timeout(10000),
-      [operatorSkillTool(runtime)!, roster],
+      "Synthetic Coach" + formatSkillBodies(selected, "worker"),
+      request,
+      signal,
+      reads.tools,
     );
-    assert.match(result, /Skill received/);
-    assert.equal(reads, 1);
-    assert.equal(bodies.length, 3);
-    assert.ok(!JSON.stringify(bodies[0]).includes("Compare like with like"));
-    assert.ok(
-      bodies[0].tools.some(
-        (tool: any) =>
-          tool.function.name === "local_load_coach_skill" &&
-          tool.function.parameters.properties.id.enum.length === 3,
-      ),
+    assert.equal(result, "Authorized progress evidence received.");
+    assert.equal(bodies.length, 2);
+    for (const body of bodies) {
+      const system = body.messages
+        .filter((message: any) => message.role === "system")
+        .map((message: any) => message.content)
+        .join("\n");
+      assert.match(system, /scope: worker/);
+      assert.match(system, /Compare like with like/);
+      assert.doesNotMatch(
+        system,
+        /<coach_skill id="(?:review-activity|change-plan)"/,
+      );
+      assert.deepEqual(
+        body.tools.map((tool: any) => tool.function.name).sort(),
+        reads.tools.map((tool) => tool.name).sort(),
+      );
+      assert.ok(
+        body.tools.every((tool: any) =>
+          tool.function.name.startsWith("coach_"),
+        ),
+      );
+      assert.ok(
+        body.tools.every(
+          (tool: any) =>
+            !Object.hasOwn(tool.function.parameters.properties, "request_id"),
+        ),
+      );
+    }
+    const calls = backend.calls.filter(
+      (call) => call.params?.name === "coach_list_activities",
+    );
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].params.arguments, fence);
+    assert.equal(
+      backend.calls.filter((call) => call.params?.name === "coach_respond")
+        .length,
+      0,
     );
   } finally {
+    reads?.dispose();
+    await backend.close();
     provider.closeAllConnections();
     await new Promise<void>((resolve) => provider.close(() => resolve()));
   }

@@ -232,56 +232,49 @@ test("registry saves share preview, worker and operator guards without mutation"
   }
 });
 
-for (const where of ["chat", "actions"] as const)
-  test(`new inactive keys are scanned against persisted operator ${where} before save`, async () => {
-    const h = await harness(undefined, (dir) => {
-      if (where === "chat")
-        new History(dir).save([
-          { role: "user", text: "remember " + keyC },
-          { role: "assistant", text: "noted" },
-        ]);
-      else
-        new History(dir, "operator-actions.json").save([
-          { role: "user", text: "0".repeat(64) },
-          {
-            role: "assistant",
-            text: JSON.stringify({
-              session_id: "session-" + keyC,
-              idempotency_key: "synthetic-idempotency",
-              status: "delivered",
-            }),
-          },
-        ]);
-    });
-    try {
-      assert.equal((await h.save(h.registry())).status, 200);
-      const before = await readFile(h.dir + "/secrets.json", "utf8");
-      const revision = h.store.publicConfig().revision;
-      const change = h.registry();
-      change.providers[1].apiKey = keyC; // inactive provider only
-      const response = await h.save(change);
-      assert.equal(response.status, 400);
-      const text = await response.text();
-      assert.equal(JSON.parse(text).error, "SECRET_IN_CONFIG");
-      assert.equal(text.includes(keyC), false);
-      assert.equal(h.store.publicConfig().revision, revision);
-      assert.equal(await readFile(h.dir + "/secrets.json", "utf8"), before);
-      // A brand-new provider's key is scanned as well.
-      const added = h.registry();
-      added.providers.push({
-        id: "charlie",
-        name: "Charlie",
-        baseUrl: h.providerOrigin + "/charlie/v1",
-        apiKey: keyC,
-        models: [{ id: "c1", name: "C", model: "c-1", vision: false }],
-      });
-      assert.equal((await h.save(added)).status, 400);
-      assert.equal(h.store.publicConfig().revision, revision);
-      assert.deepEqual(h.providerRequests, []);
-    } finally {
-      await h.close();
-    }
+test("new inactive keys are scanned against persisted operator actions before save", async () => {
+  const h = await harness(undefined, (dir) => {
+    new History(dir, "operator-actions.json").save([
+      { role: "user", text: "0".repeat(64) },
+      {
+        role: "assistant",
+        text: JSON.stringify({
+          session_id: "session-" + keyC,
+          idempotency_key: "synthetic-idempotency",
+          status: "delivered",
+        }),
+      },
+    ]);
   });
+  try {
+    assert.equal((await h.save(h.registry())).status, 200);
+    const before = await readFile(h.dir + "/secrets.json", "utf8");
+    const revision = h.store.publicConfig().revision;
+    const change = h.registry();
+    change.providers[1].apiKey = keyC; // inactive provider only
+    const response = await h.save(change);
+    assert.equal(response.status, 400);
+    const text = await response.text();
+    assert.equal(JSON.parse(text).error, "SECRET_IN_CONFIG");
+    assert.equal(text.includes(keyC), false);
+    assert.equal(h.store.publicConfig().revision, revision);
+    assert.equal(await readFile(h.dir + "/secrets.json", "utf8"), before);
+    // A brand-new provider's key is scanned as well.
+    const added = h.registry();
+    added.providers.push({
+      id: "charlie",
+      name: "Charlie",
+      baseUrl: h.providerOrigin + "/charlie/v1",
+      apiKey: keyC,
+      models: [{ id: "c1", name: "C", model: "c-1", vision: false }],
+    });
+    assert.equal((await h.save(added)).status, 400);
+    assert.equal(h.store.publicConfig().revision, revision);
+    assert.deepEqual(h.providerRequests, []);
+  } finally {
+    await h.close();
+  }
+});
 
 test("confirmed config change restarts a running Coach once with fresh provider credentials", async () => {
   const seen: any[] = [];

@@ -77,11 +77,8 @@ test("Settings preview composer retains Enter, Shift+Enter and IME behavior", as
           ],
           has_more: false,
         };
-      if (path === "/api/operator/chat") body = { messages: [] };
-      if (
-        route.request().method() === "POST" &&
-        ["/api/operator/chat", "/api/preview"].includes(path)
-      ) {
+      if (path === "/api/terminal/receipts") body = { actions: [] };
+      if (route.request().method() === "POST" && path === "/api/preview") {
         const { text } = route.request().postDataJSON();
         sent.push({ path, text });
         body = {

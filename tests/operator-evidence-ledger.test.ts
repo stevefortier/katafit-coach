@@ -2,10 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { OperatorReadReceipt } from "../src/chat/operatorEvidence.js";
 import { Client } from "../src/katafit/client.js";
-import {
-  openOperatorTools,
-  modelOperatorTools,
-} from "../src/katafit/operatorTools.js";
+import { openOperatorTools } from "../src/katafit/operatorTools.js";
 import { operatorBackend } from "./operator-tools.test.js";
 import { fixture } from "./operator-checkins.test.js";
 
@@ -83,10 +80,10 @@ test("operatorTools emits structured success and denial receipts while preservin
   }
 });
 
-test("image delivery receipt distinguishes model vision from a text-only Studio card", async () => {
+test("image transport receipt records validated bytes, not an unproven model observation", async () => {
   const backend = await fixture();
   try {
-    for (const vision of [false, true]) {
+    {
       const receipts: OperatorReadReceipt[] = [];
       const session = await openOperatorTools(
         new Client(
@@ -105,19 +102,17 @@ test("image delivery receipt distinguishes model vision from a text-only Studio 
         },
       );
       await session.tools.find((t) => t.name === checkins)!.execute("list", {});
-      const tool = modelOperatorTools(session.tools, vision).find(
-        (t) => t.name === image,
-      )!;
+      const tool = session.tools.find((t) => t.name === image)!;
       const result = await tool.execute("image", {
         member_ref: "member-photo",
         media_ref: "media-photo",
       });
       assert.equal(
         result.content.some((p) => p.type === "image"),
-        vision,
+        true,
       );
       assert.equal(
-        receipts.filter((r) => r.tool === image && r.image_to_model === vision)
+        receipts.filter((r) => r.tool === image && r.image_to_model === false)
           .length,
         1,
       );

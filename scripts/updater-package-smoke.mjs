@@ -69,10 +69,8 @@ try {
   ])
     await cp(resolve(name), join(source, name), { recursive: true });
   await mkdir(join(source, "scripts"));
-  await cp(
-    resolve("scripts/build-metadata.mjs"),
-    join(source, "scripts/build-metadata.mjs"),
-  );
+  for (const name of ["build-metadata.mjs", "clean-dist.mjs"])
+    await cp(resolve("scripts", name), join(source, "scripts", name));
   // This daemon-independent lifecycle matrix deliberately exercises legacy
   // protocol-1 rollback compatibility. Native artifacts have a separate Docker
   // qualification; never relabel real released native source as protocol 1.

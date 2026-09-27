@@ -468,8 +468,9 @@ try {
   });
   await page.locator("#operatorTab").click();
   assert.equal(await page.locator("#nativeStart").isVisible(), true);
+  assert.equal(await page.locator("#operatorMessages").count(), 0);
   assert.equal(
-    (await page.locator("#operatorMessages").innerText()).includes(
+    (await page.locator("#nativeTerminal").innerText()).includes(
       "synthetic proposal_summary",
     ),
     false,
@@ -536,7 +537,6 @@ try {
   await page.setViewportSize({ width: 1280, height: 1100 });
   await page.evaluate(() => {
     window.scrollTo(0, 0);
-    document.querySelector("#operatorMessages")?.scrollTo(0, 0);
   });
   await page.screenshot({
     path: evidence + "/coach-desktop.png",

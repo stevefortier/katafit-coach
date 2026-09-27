@@ -223,9 +223,6 @@ async function api(path, body, signal) {
       headers: {
         Authorization: "Bearer " + requestKey,
         "Content-Type": "application/json",
-        ...(path === "operator/chat" && body !== undefined
-          ? { Accept: "application/vnd.katafit.operator+json" }
-          : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal,
@@ -259,7 +256,7 @@ async function api(path, body, signal) {
   }
   if (generation !== authGeneration || requestKey !== key)
     throw staleAuthentication();
-  if (!r.ok || (path === "operator/chat" && typeof data?.error === "string")) {
+  if (!r.ok) {
     if (r.status === 401) {
       lockSession(
         "Studio authorization expired. Unlock again with the current admin key.",
@@ -274,10 +271,6 @@ async function api(path, body, signal) {
     error.status = r.status;
     error.code = data.error;
     error.lifecycle = data.lifecycle;
-    if (path === "operator/chat" && Array.isArray(data.actions))
-      error.actions = data.actions;
-    if (path === "operator/chat" && Array.isArray(data.turnActions))
-      error.turnActions = data.turnActions;
     throw error;
   }
   return data;
@@ -323,7 +316,7 @@ action("unlock", async () => {
   $("studio").hidden = false;
   $("lockStudio").hidden = false;
   restoreStudioRoute(true);
-  void loadOperator();
+  void loadNativeReceipts();
   await status();
   await refreshUpdate(true);
 });
@@ -1232,7 +1225,7 @@ async function status() {
       if (s.lifecycle.applied) config.revision = s.revision;
     }
     renderHeaderStatus();
-    updateWorkerBlocked = s.preview === true || s.operatorChat === true;
+    updateWorkerBlocked = s.preview === true;
     renderUpdate();
     $("lastError").textContent = s.lastError
       ? "Last error · " +
@@ -1944,7 +1937,7 @@ function renderUpdate() {
   };
   const deferReasons = {
     AUTO_UPDATE_BUSY:
-      "Automatic attempt deferred: worker, preview, Operator or native terminal activity is still busy. It will check again after activity finishes.",
+      "Automatic attempt deferred: worker, preview or native terminal activity is still busy. It will check again after activity finishes.",
     WORKER_STOP_UNCONFIRMED:
       "Automatic attempt deferred: worker stop could not be confirmed. Check Worker status.",
     LOCAL_UNAVAILABLE:
@@ -2126,7 +2119,7 @@ action("updateApply", async () => {
   }
   if (updateWorkerBlocked) {
     notice(
-      "Finish or cancel preview and Operator chat before upgrading. Coach will be restarted automatically after confirmation.",
+      "Finish or cancel preview and stop native Pi before upgrading. Coach will be restarted automatically after confirmation.",
     );
     return;
   }
@@ -2235,12 +2228,9 @@ function lockSession(message) {
   $("skillHistorySnapshot").replaceChildren();
   $("skillHistoryDetail").hidden = true;
   resetMembers();
-  ++operatorEpoch;
-  operatorMessages = [];
   renderOperatorActions();
 
   $("operatorStatus").textContent = "";
-  renderOperator();
   clearTimeout(updateTimer);
   updateController?.abort();
   updateController = undefined;
@@ -2281,10 +2271,6 @@ action("lockStudio", async () =>
   ),
 );
 
-// Legacy history is read-only; no old Operator inference/composer remains.
-let operatorMessages = [],
-  operatorEpoch = 0,
-  operatorScrollMax = 0;
 function operatorSnapshotLabel() {
   if (config)
     $("operatorSnapshot").textContent =
@@ -2294,35 +2280,21 @@ function operatorSnapshotLabel() {
       config.revision +
       ". Native /model changes only this ephemeral session.";
 }
-function renderOperator() {
-  const list = $("operatorMessages");
-  list.replaceChildren();
-  for (const message of operatorMessages) {
-    const article = document.createElement("article");
-    article.className = "chat-message";
-    article.textContent = message.role + ": " + message.text;
-    list.append(article);
-  }
-  operatorScrollMax = list.scrollHeight - list.clientHeight;
-  operatorSnapshotLabel();
-}
-async function loadOperator() {
-  const epoch = operatorEpoch,
-    generation = authGeneration;
+async function loadNativeReceipts() {
+  const generation = authGeneration;
   try {
-    const data = await api("operator/chat");
-    if (epoch !== operatorEpoch || generation !== authGeneration) return;
     const receipts = await api("terminal/receipts");
-    if (epoch !== operatorEpoch || generation !== authGeneration) return;
-    operatorMessages = data.messages || [];
+    if (generation !== authGeneration) return;
     renderOperatorActions(receipts.actions);
-    renderOperator();
+    operatorSnapshotLabel();
+    $("operatorStatus").textContent = "";
   } catch (error) {
     if (!error.stale)
-      $("operatorStatus").textContent = "Saved history unavailable.";
+      $("operatorStatus").textContent =
+        "Action receipts unavailable. Do not retry uncertain writes.";
   }
 }
-$("operatorReconcile").onclick = () => loadOperator();
+$("operatorReconcile").onclick = () => loadNativeReceipts();
 const native = nativeTerminal({
   api,
   authorized: () =>
@@ -2626,18 +2598,13 @@ $("memberItems").addEventListener("scroll", () => {
 });
 // Reflow changes message wrapping without a feed render. Follow a pane that
 // was pinned before resize, while leaving a scrolled-up reader undisturbed.
-for (const [id, previousMax] of [
-  ["operatorMessages", () => operatorScrollMax],
-  ["memberItems", () => memberScrollMax],
-]) {
-  const list = $(id);
+{
+  const list = $("memberItems");
   new ResizeObserver(() => {
     if (!list.getClientRects().length) return;
-    const pinned = previousMax() - list.scrollTop <= 40;
+    const pinned = memberScrollMax - list.scrollTop <= 40;
     if (pinned) list.scrollTop = list.scrollHeight;
-    if (id === "operatorMessages")
-      operatorScrollMax = list.scrollHeight - list.clientHeight;
-    else memberScrollMax = list.scrollHeight - list.clientHeight;
+    memberScrollMax = list.scrollHeight - list.clientHeight;
   }).observe(list);
 }
 // Every expansion owns its requests and URLs; no raw source IDs become URLs.

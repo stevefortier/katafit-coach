@@ -272,7 +272,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           "/api/config": config,
           "/api/status": { state, lastError: null },
           "/api/update": { supported: false, applying: false },
-          "/api/operator/chat": { messages: [] },
+          "/api/terminal/receipts": { actions: [] },
           "/api/members": {
             members: [
               {
