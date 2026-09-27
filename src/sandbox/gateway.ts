@@ -295,7 +295,7 @@ export async function openNativeGateway(
     const classified = await classifyAttachment(bytes, filename);
     check();
     // Acceptance is itself a fresh backend authorization of retained context.
-    await session.authorize();
+    await authorizeNative();
     check();
     if (signal.aborted) throw new Error("NATIVE_CANCELLED");
     const { item, duplicate } = attachments.add({
@@ -372,6 +372,18 @@ export async function openNativeGateway(
       return new Error("ATTACHMENT_AUTHORIZATION_UNAVAILABLE");
     terminate("ATTACHMENT_AUTHORIZATION_DENIED");
     return new Error("ATTACHMENT_REVOKED");
+  };
+  // An authority failure observed during Pi traffic must erase existing
+  // attachments too, not wait for the operator's next GET. Legacy sessions do
+  // not expose continuity.revoked, so use the same fail-closed classification
+  // at every authorization boundary when this gateway owns attachments.
+  const authorizeNative = async () => {
+    try {
+      await session.authorize();
+    } catch (error) {
+      if (owner) throw disclosureFailure(error);
+      throw error;
+    }
   };
   /**
    * Every explicit disclosure of retained evidence (bytes or a metadata
@@ -605,7 +617,7 @@ export async function openNativeGateway(
       await session.advance();
     }
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
-    await session.authorize();
+    await authorizeNative();
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const response = await fetch(
@@ -638,7 +650,7 @@ export async function openNativeGateway(
           throw new Error("NATIVE_RESPONSE_TOO_LARGE");
         chunks.push(c);
       }
-    await session.authorize();
+    await authorizeNative();
     check();
     const body = Buffer.concat(chunks).toString("utf8");
     assertNoSecrets(body, Object.values(secrets));
