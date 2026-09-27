@@ -100,6 +100,144 @@
 #nativeTerminal .xterm {
   height: 100%;
 }
+.native-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+  gap: 12px;
+  align-items: start;
+  margin: 12px 0;
+}
+.native-workbench #nativeTerminal {
+  margin: 0;
+}
+#nativeAttachments {
+  min-width: 0;
+  max-height: 540px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  background: #101010;
+  padding: 10px;
+}
+#nativeAttachments h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+#nativeAttachmentCount {
+  color: var(--muted);
+  font-weight: 400;
+}
+#nativeAttachmentsEmpty {
+  margin: 0;
+}
+#nativeAttachmentList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.attachment-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 8px;
+  min-width: 0;
+}
+.attachment-card .attachment-preview {
+  display: block;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 0;
+  border: 1px solid #2a2a2a;
+  background: #0b0b0b;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+}
+.attachment-card .attachment-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.attachment-card .attachment-name {
+  font-weight: 600;
+  font-size: 13px;
+  word-break: break-all;
+}
+.attachment-card .attachment-meta,
+.attachment-card .attachment-caption,
+.attachment-card .attachment-state {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 2px 0;
+  white-space: pre-wrap;
+}
+.attachment-card .attachment-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.attachment-card .attachment-actions button,
+a.button {
+  padding: 7px 12px;
+  margin: 4px 0 0;
+}
+a.button {
+  display: inline-block;
+  border: 1px solid #626262;
+  color: #dddddd;
+  font: 600 13px system-ui;
+  text-decoration: none;
+  cursor: pointer;
+}
+a.button[aria-disabled="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+#attachmentDialog {
+  max-width: min(96vw, 1100px);
+  max-height: 94vh;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: #101010;
+  color: #f0f0f0;
+}
+#attachmentDialog::backdrop {
+  background: rgb(0 0 0 / 80%);
+}
+.attachment-dialog-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.attachment-dialog-bar strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-all;
+}
+.attachment-dialog-bar button {
+  padding: 7px 12px;
+  margin: 0;
+}
+#attachmentDialogImage {
+  display: block;
+  width: min(92vw, 1080px);
+  max-width: 100%;
+  height: auto;
+  max-height: calc(94vh - 110px);
+  margin: auto;
+  object-fit: contain;
+  background: #0b0b0b;
+}
+@media (max-width: 900px) {
+  .native-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #nativeAttachments {
+    max-height: none;
+  }
+}
 @media (max-width: 600px) {
   #nativeTerminal {
     height: 460px;

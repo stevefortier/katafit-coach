@@ -197,7 +197,7 @@ test(
           bufferedAmount = 0;
           sent: string[] = [];
           onmessage?: (e: any) => void;
-          onclose?: () => void;
+          onclose?: (e: { code: number }) => void;
           onerror?: () => void;
           constructor() {
             w.sockets.push(this);
@@ -207,7 +207,7 @@ test(
           }
           close() {
             this.readyState = 3;
-            this.onclose?.();
+            this.onclose?.({ code: 1000 });
           }
         };
       });
@@ -374,7 +374,9 @@ test(
       await emit({ type: "ready" });
       await emit({ type: "output", data: "x".repeat(256 * 1024 + 1) });
       await state("overflow", /overflow.*never replayed/);
-      await page.evaluate(() => (window as any).sockets.at(-1).onclose());
+      await page.evaluate(() =>
+        (window as any).sockets.at(-1).onclose({ code: 1000 }),
+      );
       await state("overflow", /overflow.*never replayed/);
       for (const fail of [false, true]) {
         stopFail = fail;

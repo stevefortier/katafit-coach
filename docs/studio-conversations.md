@@ -10,6 +10,10 @@ The primary system prompt contains all eight saved persona fields and their revi
 
 The backend supplies the scoped catalog and owns all membership, sharing, target and mutation authority. Native Pi chooses and calls the advertised tools; the host supplies session and action identity. See [native continuity](native-continuity.md) for retained-context reauthorization and generation fencing. A configuration save/restore/rollback closes native sessions; a new runtime receives the new revision rather than retaining the previous persona or transcript.
 
+### Attachments from Pi
+
+Pi can use `send_to_operator` to send a check-in photo it read in this session (by `image_receipt`) or a regular file from `/workspace`. The item appears in the **Attachments from Pi** panel beside the terminal. Images can be previewed, enlarged and downloaded; other files are download cards. Bytes stay in host memory and are served only to the admin key through an endpoint scoped to the current session. Stop, revocation or a configuration change erases them. A Pi receipt means "accepted to the panel", not "seen by the operator". See [Operator attachments](operator-attachments.md).
+
 ### Receipts, Stop and retired history
 
 Receipts remain separate from transcripts. The UI reads `/api/terminal/receipts`; completed/delivered and pending/unknown outcomes remain distinct. Stop cannot retract a committed write. Neither reconnect nor config changes replay input or uncertain actions. A receipt refresh is not permission to retry, and generic unknown writes without an explicit backend readback contract remain unknown.

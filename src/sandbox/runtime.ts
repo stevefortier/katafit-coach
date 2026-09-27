@@ -15,6 +15,11 @@ import { randomUUID } from "node:crypto";
 import { request } from "node:http";
 import type { Duplex } from "node:stream";
 import { sandboxArgs } from "./policy.js";
+import {
+  AttachmentFailure,
+  WORKSPACE_READ_CODES,
+  workspaceReadScript,
+} from "./attachments.js";
 
 const exec = promisify(execFile);
 const containerId = /^[a-f0-9]{64}$/;
@@ -451,6 +456,86 @@ export class NativeRuntime {
     )
       throw new Error("TERMINAL_BACKPRESSURE");
     this.socket.write(data);
+  }
+  /**
+   * Host-initiated, bounded read of one regular file below this runtime's own
+   * /workspace. The script is host-supplied; the walk never follows links.
+   */
+  async readWorkspaceFile(
+    parts: string[],
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<Buffer> {
+    if (this.closing || !this.created)
+      throw new AttachmentFailure("ATTACHMENT_UNAVAILABLE");
+    if (
+      !Array.isArray(parts) ||
+      parts.length < 1 ||
+      parts.length > 8 ||
+      parts.some(
+        (part) =>
+          typeof part !== "string" ||
+          !part ||
+          part === "." ||
+          part === ".." ||
+          /[/\u0000]/.test(part) ||
+          Buffer.byteLength(part) > 128,
+      ) ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 16 * 1024 * 1024
+    )
+      throw new AttachmentFailure("ATTACHMENT_PATH_REJECTED");
+    let stdout: unknown;
+    try {
+      ({ stdout } = await this.run(
+        "docker",
+        [
+          "--host=unix://" + this.socketPath,
+          "exec",
+          "--user",
+          "1000:1000",
+          "--workdir",
+          "/",
+          "--env",
+          "NODE_OPTIONS=",
+          this.name,
+          // Absolute path: no PATH lookup for the host-initiated reader.
+          "/usr/local/bin/node",
+          "-e",
+          workspaceReadScript(),
+          JSON.stringify(parts),
+          String(limit),
+        ],
+        {
+          encoding: "buffer",
+          maxBuffer: limit + 1,
+          timeout: 15000,
+          killSignal: "SIGKILL",
+          signal,
+        },
+      ));
+    } catch (error: any) {
+      if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
+        throw new AttachmentFailure("ATTACHMENT_TOO_LARGE");
+      const code =
+        error?.code === 3 && error.stderr !== undefined
+          ? Buffer.from(error.stderr).toString("utf8").trim()
+          : "";
+      throw new AttachmentFailure(
+        WORKSPACE_READ_CODES.includes(code)
+          ? code
+          : "ATTACHMENT_FILE_UNAVAILABLE",
+      );
+    }
+    if (this.closing) throw new AttachmentFailure("ATTACHMENT_UNAVAILABLE");
+    const bytes = Buffer.isBuffer(stdout)
+      ? stdout
+      : Buffer.from(String(stdout ?? ""));
+    if (bytes.length > limit)
+      throw new AttachmentFailure("ATTACHMENT_TOO_LARGE");
+    if (!bytes.length) throw new AttachmentFailure("ATTACHMENT_FILE_EMPTY");
+    return bytes;
   }
   async resize(cols: number, rows: number) {
     if (![cols, rows].every((n) => Number.isInteger(n) && n >= 2 && n <= 500))

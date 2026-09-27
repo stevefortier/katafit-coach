@@ -42,7 +42,9 @@ export default function (pi) {
             ? "Check-in listing failed. This does not establish that no photos exist. Image reads require references from a successful check-in listing; activity-detail metadata is not a substitute."
             : tool.name === "studio_operator_read_dojo_checkin_image"
               ? "Check-in image read failed; no image was delivered. Use the matching member_ref and media_ref from a successful check-in listing. Activity-detail media references are not sufficient. The per-turn quota is four images and 16 MiB total. Do not repeat the same failed call or claim to have inspected pixels."
-              : "Kata.fit tool failed; do not replay uncertain actions.";
+              : tool.name === "send_to_operator"
+                ? "Sending to the operator failed. Nothing was added to the operator panel; do not claim the operator received or saw it."
+                : "Kata.fit tool failed; do not replay uncertain actions.";
         if (!response.ok) {
           let code;
           try {
@@ -55,6 +57,53 @@ export default function (pi) {
           );
         }
         const result = await response.json();
+        if (tool.name === "send_to_operator" && result?.attachmentError) {
+          const error = result.attachmentError;
+          const guidance = {
+            ATTACHMENT_ARGUMENTS_REJECTED:
+              "Arguments did not match the schema. Supply exactly one of image_receipt or workspace_path, plus optional filename and caption, and nothing else.",
+            ATTACHMENT_RECEIPT_UNKNOWN:
+              "That image_receipt is not known to this session. Copy the exact image_receipt from a successful check-in image read in this session; receipts cannot be invented or reused across sessions.",
+            ATTACHMENT_PATH_REJECTED:
+              "workspace_path must be a relative path (or /workspace/...) to a regular file inside /workspace, without '.' or '..' components, control characters, or symbolic links; at most 8 components.",
+            ATTACHMENT_FILE_NOT_FOUND:
+              "No regular file exists at that path inside /workspace. Create or locate the file under /workspace first.",
+            ATTACHMENT_FILE_UNAVAILABLE:
+              "The file could not be read safely: it may be a symlink, directory, device, pipe, or was changed during reading. Only regular files inside /workspace can be sent.",
+            ATTACHMENT_FILE_EMPTY:
+              "The file is empty. Write its content first, then send it.",
+            ATTACHMENT_TOO_LARGE:
+              "The file exceeds the 8 MiB per-attachment limit. Send a smaller or compressed file.",
+            ATTACHMENT_BUDGET_EXHAUSTED:
+              "The operator panel is full for this session (16 attachments / 32 MiB). Tell the operator what could not be attached; do not reset the session to bypass limits.",
+            ATTACHMENT_REJECTED:
+              "The content, filename or caption was refused because it would disclose a configured credential. Do not attempt to send secrets.",
+            ATTACHMENT_UNAVAILABLE:
+              "The operator panel is not available for this session. Continue without attaching and tell the operator the attachment could not be delivered.",
+          };
+          if (
+            Object.keys(result).join() === "attachmentError" &&
+            error &&
+            typeof error === "object" &&
+            Object.keys(error).join() === "code" &&
+            error.code === "ATTACHMENT_BUSY"
+          )
+            throw new Error(
+              "ATTACHMENT_BUSY: Another native request is still pending. This send was not dispatched and nothing was added to the operator panel. Wait for the pending call to finish, then retry this send sequentially if still needed.",
+            );
+          if (
+            Object.keys(result).join() !== "attachmentError" ||
+            !error ||
+            typeof error !== "object" ||
+            Object.keys(error).join() !== "code" ||
+            typeof error.code !== "string" ||
+            !Object.hasOwn(guidance, error.code)
+          )
+            throw new Error(fallback);
+          throw new Error(
+            `${error.code}: ${guidance[error.code]} Nothing was added to the operator panel by this call; do not claim the operator received it. Do not repeat the unchanged failed call.`,
+          );
+        }
         if (result?.imageReadError) {
           const error = result.imageReadError;
           if (

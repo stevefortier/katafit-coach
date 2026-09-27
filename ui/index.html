@@ -176,7 +176,52 @@
                 fallback.</span
               >
             </div>
-            <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
+            <div class="native-workbench">
+              <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
+              <aside
+                id="nativeAttachments"
+                aria-labelledby="nativeAttachmentsTitle"
+              >
+                <h3 id="nativeAttachmentsTitle">
+                  Attachments from Pi
+                  <span id="nativeAttachmentCount"></span>
+                </h3>
+                <p id="nativeAttachmentsEmpty" class="hint">
+                  Images and files Pi sends with send_to_operator appear here.
+                  They are erased on Stop.
+                </p>
+                <p
+                  id="nativeAttachmentsNotice"
+                  class="hint"
+                  role="status"
+                  hidden
+                ></p>
+                <ul
+                  id="nativeAttachmentList"
+                  aria-live="polite"
+                  aria-relevant="additions"
+                ></ul>
+              </aside>
+            </div>
+            <dialog
+              id="attachmentDialog"
+              aria-labelledby="attachmentDialogTitle"
+            >
+              <div class="attachment-dialog-bar">
+                <strong id="attachmentDialogTitle"></strong>
+                <a id="attachmentDialogDownload" class="button secondary"
+                  >Download</a
+                ><button
+                  id="attachmentDialogClose"
+                  type="button"
+                  class="secondary"
+                >
+                  Close
+                </button>
+              </div>
+              <img id="attachmentDialogImage" alt="" />
+              <p id="attachmentDialogCaption" class="hint"></p>
+            </dialog>
             <p id="operatorStatus" role="status"></p>
             <div id="operatorActions" role="status" aria-live="polite"></div>
             <button

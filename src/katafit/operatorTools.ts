@@ -1280,7 +1280,8 @@ export async function openOperatorTools(
           12 * 1024 * 1024,
         );
         check();
-        if (current?.isError) throw new Error("MCP_TOOL_FAILED");
+        // Same MCP_TOOL_FAILED message; keeps the bounded backend code.
+        if (current?.isError) throw toolFailure(current);
         if (!current?.structuredContent || !Array.isArray(current.content))
           throw new Error("RESULT_REJECTED");
       }
