@@ -3,6 +3,7 @@ import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
 import {
   Client,
+  ToolFailure,
   type BackendLogger,
   type ResponseDecoder,
 } from "../katafit/client.js";
@@ -108,8 +109,6 @@ export interface NativeGatewayHooks {
     publish(item: AttachmentItem): boolean;
     connected?(): boolean;
   };
-  /** Maximum age of a backend authorization before retained bytes are served. */
-  attachmentFreshnessMs?: number;
 }
 
 /** A runtime-owned capability, not an HTTP proxy. No caller-selected destinations. */
@@ -143,14 +142,16 @@ export async function openNativeGateway(
         store.secrets[k as keyof typeof secrets],
     );
   const owner = hooks.attachments;
-  const freshness = hooks.attachmentFreshnessMs ?? 30000;
   const receipts = new ImageReceipts();
   const attachments = new OperatorAttachments();
   let lastImage:
     | { bytes: Buffer; mime_type: string; sha256: string }
     | undefined;
-  let authorizedAt = -Infinity;
+  // Host-initiated disclosure authorizations: never cached, only coalesced
+  // onto one that started after the waiting disclosure was admitted.
   let hostWork: Promise<void> | undefined;
+  let hostSeq = 0;
+  let hostWorkSeq = 0;
   const actions = new Actions(store, hooks.onDiagnostic);
   if (actions.snapshot().some((a) => ["pending", "unknown"].includes(a.status)))
     throw new Error("DELIVERY_UNVERIFIED");
@@ -183,12 +184,6 @@ export async function openNativeGateway(
         : undefined;
     },
   });
-  // Every successful backend re-authorization of retained evidence renews the
-  // attachment serving fence, whichever path performed it.
-  const authorize = async () => {
-    await session.authorize();
-    authorizedAt = Date.now();
-  };
   const check = () => {
     if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
   };
@@ -300,7 +295,7 @@ export async function openNativeGateway(
     const classified = await classifyAttachment(bytes, filename);
     check();
     // Acceptance is itself a fresh backend authorization of retained context.
-    await authorize();
+    await session.authorize();
     check();
     if (signal.aborted) throw new Error("NATIVE_CANCELLED");
     const { item, duplicate } = attachments.add({
@@ -311,6 +306,27 @@ export async function openNativeGateway(
       mime_type: classified.mime_type,
       preview: classified.preview,
     });
+    const receipt = (connected: boolean) =>
+      JSON.stringify({
+        status: "accepted_to_operator_panel",
+        attachment_id: item.id,
+        filename: item.filename,
+        mime_type: item.mime_type,
+        byte_count: item.byte_count,
+        preview: item.preview,
+        duplicate,
+        operator_viewed: "not_confirmed",
+        panel_connected: connected,
+        remaining: attachments.remaining(),
+        note: "Accepted into the operator's attachments panel on this page. This does not confirm the operator opened or saw it; do not claim they viewed it.",
+      });
+    // Final screen before anything becomes visible: a refusal leaves no item.
+    try {
+      assertNoSecrets([receipt(true), receipt(false)], values);
+    } catch {
+      if (!duplicate) attachments.remove(item.id);
+      reject("ATTACHMENT_REJECTED");
+    }
     let connected = false;
     try {
       connected = duplicate
@@ -319,68 +335,108 @@ export async function openNativeGateway(
     } catch {
       connected = false;
     }
-    const text = JSON.stringify({
-      status: "accepted_to_operator_panel",
-      attachment_id: item.id,
-      filename: item.filename,
-      mime_type: item.mime_type,
-      byte_count: item.byte_count,
-      preview: item.preview,
-      duplicate,
-      operator_viewed: "not_confirmed",
-      panel_connected: connected,
-      remaining: attachments.remaining(),
-      note: "Accepted into the operator's attachments panel on this page. This does not confirm the operator opened or saw it; do not claim they viewed it.",
-    });
-    assertNoSecrets(text, values);
+    const text = receipt(connected);
     return { content: [{ type: "text" as const, text }], details: {} };
   };
-  /**
-   * Retained evidence (receipts and workspace-derived files) is served only
-   * behind a recent backend authorization. A stale fence is refreshed only
-   * when no relay request is in flight; relay requests wait for the refresh.
-   */
-  const authorizeRetained = async () => {
+  const retainedLive = () => {
     check();
     const retained = session.continuity();
     if (retained?.revoked) {
       terminate(retained.revoked);
-      throw new Error("NATIVE_SESSION_REVOKED");
+      throw new Error("ATTACHMENT_REVOKED");
     }
     if (retained && Date.parse(retained.context_expires_at) <= Date.now()) {
       terminate("CONTEXT_EXPIRED");
-      throw new Error("NATIVE_SESSION_REVOKED");
+      throw new Error("ATTACHMENT_REVOKED");
     }
-    if (Date.now() - authorizedAt < freshness) return;
-    if (hostWork) {
-      await hostWork.catch(() => {});
-      check();
-      if (Date.now() - authorizedAt < freshness) return;
+  };
+  // Recoverable outcomes keep the runtime; anything else is a definite or
+  // unclassifiable authority failure and fails closed (legacy included).
+  const disclosureFailure = (error: unknown) => {
+    settle(error);
+    if (terminated || closed || !current())
+      return new Error("ATTACHMENT_REVOKED");
+    const message = (error as Error)?.message;
+    if (message === "CONTINUITY_TURN_REQUIRED")
+      return new Error("ATTACHMENT_TURN_REQUIRED");
+    if (message === "CONTINUITY_TRANSITION_PENDING")
+      return new Error("ATTACHMENT_AUTHORIZATION_BUSY");
+    if (
+      [
+        "OPERATOR_UNAVAILABLE",
+        "CONNECTIVITY_ERROR",
+        "BACKEND_TIMEOUT",
+      ].includes(message) ||
+      (error instanceof ToolFailure && error.code === "OPERATOR_UNAVAILABLE")
+    )
+      return new Error("ATTACHMENT_AUTHORIZATION_UNAVAILABLE");
+    terminate("ATTACHMENT_AUTHORIZATION_DENIED");
+    return new Error("ATTACHMENT_REVOKED");
+  };
+  /**
+   * Every explicit disclosure of retained evidence (bytes or a metadata
+   * snapshot) needs a backend authorization that STARTED after the disclosure
+   * was admitted; there is no cached allow. It runs as host work that relay
+   * requests wait for, and is refused (retryably) while a relay request is in
+   * flight. It never replays reads through Pi's budgeted tools.
+   */
+  const authorizeDisclosure = async () => {
+    retainedLive();
+    const admitted = hostSeq;
+    for (;;) {
+      if (hostWork) {
+        const work = hostWork;
+        if (hostWorkSeq > admitted) {
+          await work;
+          retainedLive();
+          return;
+        }
+        await work.catch(() => {});
+        retainedLive();
+        continue;
+      }
+      if (active) throw new Error("ATTACHMENT_AUTHORIZATION_BUSY");
+      const work = session.authorize().catch((error) => {
+        throw disclosureFailure(error);
+      });
+      hostWork = work;
+      hostWorkSeq = ++hostSeq;
+      try {
+        await work;
+      } finally {
+        if (hostWork === work) hostWork = undefined;
+      }
+      retainedLive();
+      return;
     }
-    if (active || hostWork) throw new Error("ATTACHMENT_AUTHORIZATION_BUSY");
-    const work = (hostWork = authorize());
-    try {
-      await work;
-    } catch (error) {
-      settle(error);
-      check();
-      throw new Error("ATTACHMENT_AUTHORIZATION_FAILED");
-    } finally {
-      if (hostWork === work) hostWork = undefined;
-    }
-    check();
   };
   return {
     /** Trusted host only: content-free metadata of accepted attachments. */
     attachments: () => (closed ? [] : attachments.list()),
-    /** Trusted host only: fenced bytes for one accepted attachment. */
+    /**
+     * Trusted host only: freshly authorized bytes for one accepted attachment,
+     * copied so a concurrent teardown's zero-fill cannot alter a response.
+     */
     async readAttachment(id: string) {
       check();
       if (!attachments.get(id)) throw new Error("ATTACHMENT_NOT_FOUND");
-      await authorizeRetained();
+      await authorizeDisclosure();
       const entry = attachments.get(id);
       if (!entry) throw new Error("ATTACHMENT_NOT_FOUND");
-      return entry;
+      return { item: entry.item, bytes: Buffer.from(entry.bytes) };
+    },
+    /**
+     * Trusted host only: metadata for a (re)connecting panel. Listing retained
+     * items is itself a disclosure and is freshly authorized; an empty list
+     * carries only the absolute context expiry.
+     */
+    async snapshot() {
+      check();
+      if (attachments.list().length) await authorizeDisclosure();
+      return {
+        items: closed ? [] : attachments.list(),
+        context_expires_at: session.continuity()?.context_expires_at ?? null,
+      };
     },
     /**
      * Trusted host only: authenticated browser terminal input. Enter arms at
@@ -549,7 +605,7 @@ export async function openNativeGateway(
       await session.advance();
     }
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
-    await authorize();
+    await session.authorize();
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const response = await fetch(
@@ -582,7 +638,7 @@ export async function openNativeGateway(
           throw new Error("NATIVE_RESPONSE_TOO_LARGE");
         chunks.push(c);
       }
-    await authorize();
+    await session.authorize();
     check();
     const body = Buffer.concat(chunks).toString("utf8");
     assertNoSecrets(body, Object.values(secrets));
@@ -600,6 +656,10 @@ export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
   Partial<
     Pick<
       OpenedGateway,
-      "noteHumanInput" | "continuity" | "attachments" | "readAttachment"
+      | "noteHumanInput"
+      | "continuity"
+      | "attachments"
+      | "readAttachment"
+      | "snapshot"
     >
   >;

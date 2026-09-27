@@ -31,7 +31,7 @@ jobs:
           printf 'NATIVE_TEST_IMAGE=%s\n' "$(node -p 'require("fs").readFileSync(process.env.RUNNER_TEMP+"/native-image-id","utf8").trim()')" >> "$GITHUB_ENV"
       - run: npm run test:package
       - name: Verify real immutable native pair and isolated runtime
-        run: SKILLS_NATIVE_TEST_IMAGE="$NATIVE_TEST_IMAGE" NATIVE_DOCKER_TEST=1 npx tsx --test --test-concurrency=1 tests/native-deployment.test.ts tests/native-runtime.test.ts tests/native-startup-tools.test.ts tests/native-pi-path.test.ts tests/native-terminal.test.ts tests/native-continuity-pi.test.ts tests/skills-native.test.ts tests/native-image-workflow.test.ts
+        run: SKILLS_NATIVE_TEST_IMAGE="$NATIVE_TEST_IMAGE" NATIVE_DOCKER_TEST=1 npx tsx --test --test-concurrency=1 tests/native-deployment.test.ts tests/native-runtime.test.ts tests/native-startup-tools.test.ts tests/native-pi-path.test.ts tests/native-terminal.test.ts tests/native-continuity-pi.test.ts tests/skills-native.test.ts tests/native-image-workflow.test.ts tests/native-attachments-runtime.test.ts tests/native-attachments-pi.test.ts
       - name: Verify packed source upgrade, rollback and restart
         run: node scripts/updater-package-smoke.mjs
       - run: npm run test:browser

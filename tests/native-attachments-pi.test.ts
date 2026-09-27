@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, readFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
+import { chromePath } from "./helpers/chrome.js";
 import {
   continuityFixture,
   CHECKINS,
@@ -128,7 +129,7 @@ test(
     });
     const app = await admin(f.store, 0);
     const browser = await chromium.launch({
-      executablePath: "/opt/google/chrome/chrome",
+      executablePath: chromePath(),
       headless: true,
       args: ["--no-sandbox"],
     });

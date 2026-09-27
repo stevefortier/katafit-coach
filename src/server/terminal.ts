@@ -9,9 +9,12 @@ import { AttachmentFailure } from "../sandbox/attachments.js";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 /** Installation-admin terminal only; not a managed multi-tenant service. */
+// Relative, so the browser needs no trusted wall clock; null for legacy.
+const expiresIn = (at?: string | null) =>
+  at ? Math.max(0, Date.parse(at) - Date.now()) : null;
 export class NativeTerminal {
-  /** Maximum age of a backend authorization before retained bytes are served. */
-  static attachmentFreshnessMs = 30000;
+  /** Liveness frames let an offline browser notice a silently dead link. */
+  static heartbeatMs = 10000;
   private tickets = new Map<string, { expires: number; authority: string }>();
   private sockets = new Set<WebSocket>();
   private ws?: WebSocket;
@@ -142,18 +145,22 @@ export class NativeTerminal {
           authority = ticket.authority;
           clearTimeout(timer);
           clearTimeout(this.detach);
-          this.ws?.close(1000, "Reattached elsewhere");
+          if (this.ws) {
+            // The replaced tab can no longer be reached by a later Stop.
+            this.send(this.ws, { type: "attachments-cleared" });
+            this.ws.close(1000, "Reattached elsewhere");
+          }
           this.ws = ws;
+          const beat = setInterval(() => {
+            if (this.ws === ws) this.send(ws, { type: "heartbeat" });
+          }, NativeTerminal.heartbeatMs);
+          beat.unref();
+          ws.once("close", () => clearInterval(beat));
           this.send(ws, { type: "output", data: this.output });
           await this.start();
-          if (this.ws === ws) {
+          if (this.ws === ws && this.session) {
             this.send(ws, { type: "ready" });
-            // One content-free snapshot per admission; the browser dedups by id.
-            this.send(ws, {
-              type: "attachments",
-              session: this.session,
-              items: this.gateway?.attachments?.() ?? [],
-            });
+            void this.replay(ws, this.session);
           }
           return;
         }
@@ -194,7 +201,6 @@ export class NativeTerminal {
       let owned: NativeRuntime | undefined;
       const gateway = await openNativeGateway(this.store, controller.signal, {
         onDiagnostic: this.onDiagnostic,
-        attachmentFreshnessMs: NativeTerminal.attachmentFreshnessMs,
         attachments: {
           // Only this generation's own container; never a sandbox-named path.
           read: (parts, limit, signal) => {
@@ -211,7 +217,14 @@ export class NativeTerminal {
               return false;
             const ws = this.ws;
             if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-            this.send(ws, { type: "attachment", session, item });
+            this.send(ws, {
+              type: "attachment",
+              session,
+              item,
+              context_expires_in_ms: expiresIn(
+                this.gateway?.continuity?.()?.context_expires_at,
+              ),
+            });
             return ws.readyState === WebSocket.OPEN;
           },
           connected: () =>
@@ -273,6 +286,64 @@ export class NativeTerminal {
     })().finally(() => {
       this.starting = undefined;
     }));
+  }
+  /**
+   * One metadata snapshot per admission, only after a fresh backend
+   * authorization. Recoverable refusals are reported content-free and retried
+   * while this exact socket and session remain current.
+   */
+  private async replay(ws: WebSocket, session: string) {
+    let delay = 2000;
+    let reported = "";
+    while (this.ws === ws && this.session === session) {
+      const gateway = this.gateway;
+      if (!gateway?.snapshot) return;
+      if (this.sessionAuthority !== this.authority()) {
+        void this.stop().catch(() => {});
+        return;
+      }
+      try {
+        const snapshot = await gateway.snapshot();
+        if (this.ws !== ws || this.session !== session) return;
+        this.send(ws, {
+          type: "attachments",
+          session,
+          items: snapshot.items,
+          context_expires_in_ms: expiresIn(snapshot.context_expires_at),
+        });
+        return;
+      } catch (error) {
+        const reason = (
+          {
+            ATTACHMENT_AUTHORIZATION_BUSY: "busy",
+            ATTACHMENT_AUTHORIZATION_UNAVAILABLE: "unavailable",
+            ATTACHMENT_TURN_REQUIRED: "turn_required",
+          } as Record<string, string>
+        )[(error as Error)?.message];
+        if (this.ws !== ws || this.session !== session) return;
+        if (!reason) {
+          // Authority loss: the gateway terminated (owner stops) or config
+          // changed; nothing is replayed.
+          if (this.sessionAuthority !== this.authority())
+            void this.stop().catch(() => {});
+          return;
+        }
+        if (reason !== reported)
+          this.send(ws, {
+            type: "attachments-pending",
+            session,
+            reason,
+            context_expires_in_ms: expiresIn(
+              gateway.continuity?.()?.context_expires_at,
+            ),
+          });
+        reported = reason;
+        await new Promise((r) =>
+          setTimeout(r, reason === "busy" ? 1000 : delay).unref(),
+        );
+        if (reason !== "busy") delay = Math.min(delay * 2, 10000);
+      }
+    }
   }
   /** Test seam: the Docker-backed runtime for one generation. */
   protected createRuntime(image: string) {

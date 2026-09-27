@@ -277,6 +277,16 @@ export class OperatorAttachments {
       ? { item: structuredClone(entry.item), bytes: entry.bytes }
       : undefined;
   }
+  /** Withdraw a never-published item (for example a failed final screen). */
+  remove(id: string) {
+    const entry = this.#items.get(id);
+    if (!entry) return;
+    entry.bytes.fill(0);
+    this.#items.delete(id);
+    for (const [key, value] of this.#keys)
+      if (value === id) this.#keys.delete(key);
+    this.#bytes -= entry.item.byte_count;
+  }
   remaining() {
     return {
       attachments: Math.max(0, this.limits.maxCount - this.#items.size),

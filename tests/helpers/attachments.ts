@@ -2,7 +2,9 @@ import { WebSocket } from "ws";
 import { admin } from "../../src/server/admin.js";
 import { NativeTerminal } from "../../src/server/terminal.js";
 import { AttachmentFailure } from "../../src/sandbox/attachments.js";
-import { continuityFixture } from "./continuity.js";
+import assert from "node:assert/strict";
+import { openNativeGateway } from "../../src/sandbox/gateway.js";
+import { continuityFixture, CHECKINS, IMAGE } from "./continuity.js";
 
 // Real admin server, ticketed WebSocket, gateway and synthetic continuity
 // backend; only the Docker runtime is replaced by an in-memory stand-in whose
@@ -20,7 +22,9 @@ export async function attachmentHarness(
     resolveImage: proto.resolveImage,
   };
   proto.resolveImage = async () => "sha256:" + "b".repeat(64);
-  proto.createRuntime = () => {
+  const terminals = new Set<any>();
+  proto.createRuntime = function (this: any) {
+    terminals.add(this);
     const runtime: any = {
       cleanupPending: false,
       onOutput: () => {},
@@ -60,7 +64,7 @@ export async function attachmentHarness(
     "Content-Type": "application/json",
   };
   const sockets: WebSocket[] = [];
-  const connect = async () => {
+  const connect = async (waitForSnapshot = true) => {
     const ticket = (await (
       await fetch(app.origin + "/api/terminal/ticket", {
         method: "POST",
@@ -88,7 +92,11 @@ export async function attachmentHarness(
         await new Promise((r) => setTimeout(r, 10));
       }
     };
-    await until(() => frames.some((m) => m.type === "attachments"), "snapshot");
+    if (waitForSnapshot)
+      await until(
+        () => frames.some((m) => m.type === "attachments"),
+        "snapshot",
+      );
     return { ws, frames, until, closed: () => closeCode };
   };
   const get = (path: string, auth = true) =>
@@ -106,6 +114,10 @@ export async function attachmentHarness(
     app: app!,
     files,
     runtimes,
+    /** Abruptly drops the server side of the admitted socket (browser sees 1006). */
+    dropSocket: () => {
+      for (const terminal of terminals) terminal.ws?.terminate();
+    },
     connect,
     get,
     send,
@@ -114,7 +126,70 @@ export async function attachmentHarness(
       for (const ws of sockets) ws.terminate();
       await app!.close();
       Object.assign(proto, original);
-      (NativeTerminal as any).attachmentFreshnessMs = 30000;
+      await f.close();
+    },
+  };
+}
+
+// Gateway with a host attachment owner over the synthetic continuity backend.
+export async function gatewayHarness(
+  options: Parameters<typeof continuityFixture>[0] = {},
+  hooks: Record<string, any> = {},
+  beforeOpen?: (f: Awaited<ReturnType<typeof continuityFixture>>) => unknown,
+) {
+  const f = await continuityFixture({ images: true, ...options });
+  const files = new Map<string, Buffer | Error>();
+  const reads: string[][] = [];
+  const published: any[] = [];
+  const terminated: string[] = [];
+  let gateway: Awaited<ReturnType<typeof openNativeGateway>>;
+  try {
+    await beforeOpen?.(f);
+    gateway = await openNativeGateway(f.store, undefined, {
+      onTerminate: (reason) => terminated.push(reason),
+      attachments: {
+        read: async (parts: string[], limit: number) => {
+          reads.push(parts);
+          const value = files.get(parts.join("/"));
+          if (value instanceof Error) throw value;
+          if (!value) throw new AttachmentFailure("ATTACHMENT_FILE_NOT_FOUND");
+          assert.equal(limit, 8 * 1024 * 1024);
+          return value;
+        },
+        publish: (item: any) => {
+          published.push(item);
+          return true;
+        },
+      },
+      ...hooks,
+    });
+  } catch (error) {
+    await f.close();
+    throw error;
+  }
+  const tool = (name: string, args: any) =>
+    gateway.handle({ kind: "tool", name, args });
+  const text = (result: any) => JSON.parse(result.content[0].text);
+  const receipt = async () => {
+    await tool(CHECKINS, {});
+    const image = await tool(IMAGE, {
+      member_ref: "fixture-member",
+      media_ref: "media-1",
+    });
+    return text(image).image_receipt as string;
+  };
+  return {
+    f,
+    gateway: gateway!,
+    files,
+    reads,
+    published,
+    terminated,
+    tool,
+    text,
+    receipt,
+    close: async () => {
+      await gateway!.close().catch(() => {});
       await f.close();
     },
   };

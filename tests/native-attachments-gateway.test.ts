@@ -9,70 +9,10 @@ import {
 } from "./helpers/continuity.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { AttachmentFailure } from "../src/sandbox/attachments.js";
+import { gatewayHarness as open } from "./helpers/attachments.js";
 
 const SEND = "send_to_operator";
 const ROSTER = "studio_operator_list_members";
-
-async function open(
-  options: Parameters<typeof continuityFixture>[0] = {},
-  hooks: Record<string, any> = {},
-) {
-  const f = await continuityFixture({ images: true, ...options });
-  const files = new Map<string, Buffer | Error>();
-  const reads: string[][] = [];
-  const published: any[] = [];
-  const terminated: string[] = [];
-  let gateway: Awaited<ReturnType<typeof openNativeGateway>>;
-  try {
-    gateway = await openNativeGateway(f.store, undefined, {
-      onTerminate: (reason) => terminated.push(reason),
-      attachments: {
-        read: async (parts: string[], limit: number) => {
-          reads.push(parts);
-          const value = files.get(parts.join("/"));
-          if (value instanceof Error) throw value;
-          if (!value) throw new AttachmentFailure("ATTACHMENT_FILE_NOT_FOUND");
-          assert.equal(limit, 8 * 1024 * 1024);
-          return value;
-        },
-        publish: (item: any) => {
-          published.push(item);
-          return true;
-        },
-      },
-      ...hooks,
-    });
-  } catch (error) {
-    await f.close();
-    throw error;
-  }
-  const tool = (name: string, args: any) =>
-    gateway.handle({ kind: "tool", name, args });
-  const text = (result: any) => JSON.parse(result.content[0].text);
-  const receipt = async () => {
-    await tool(CHECKINS, {});
-    const image = await tool(IMAGE, {
-      member_ref: "fixture-member",
-      media_ref: "media-1",
-    });
-    return text(image).image_receipt as string;
-  };
-  return {
-    f,
-    gateway: gateway!,
-    files,
-    reads,
-    published,
-    terminated,
-    tool,
-    text,
-    receipt,
-    close: async () => {
-      await gateway!.close().catch(() => {});
-      await f.close();
-    },
-  };
-}
 
 test("catalog advertises send_to_operator only with a host attachment owner; image reads mint opaque receipts", async () => {
   const plain = await continuityFixture({ images: true });
@@ -317,10 +257,7 @@ test("parallel send is not dispatched while another native request is pending", 
 
 test("serving retained evidence requires fresh backend authorization; busy is retryable, revocation destroys", async () => {
   let hold: Promise<void> | undefined;
-  const g = await open(
-    { authorizeGate: () => hold },
-    { attachmentFreshnessMs: 0 },
-  );
+  const g = await open({ authorizeGate: () => hold });
   try {
     const id = await g.receipt();
     await g.tool(SEND, { image_receipt: id });
@@ -330,7 +267,7 @@ test("serving retained evidence requires fresh backend authorization; busy is re
     assert.equal(
       g.f.named("studio_operator_authorize_context").length,
       before + 1,
-      "stale fence re-authorizes before bytes are served",
+      "every delivery re-authorizes before bytes are served",
     );
     // Host refresh is serialized with relay requests: a tool call issued
     // while it is pending waits instead of racing a turn transition.
@@ -409,7 +346,7 @@ test("configuration change and close revoke every attachment immediately", async
 });
 
 test("legacy retained-read sessions refresh through the existing image recheck before serving", async () => {
-  const g = await open({ continuity: false }, { attachmentFreshnessMs: 0 });
+  const g = await open({ continuity: false });
   try {
     const id = await g.receipt();
     await g.tool(SEND, { image_receipt: id });

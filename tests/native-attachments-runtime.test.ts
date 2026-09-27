@@ -47,7 +47,8 @@ test("workspace reads are host-initiated docker exec of the host script in this 
     "NODE_OPTIONS=",
   ]);
   assert.equal(args[exec + 7], runtime.name);
-  assert.equal(args[exec + 8], "node");
+  // Absolute interpreter: no PATH lookup inside a Pi-writable environment.
+  assert.equal(args[exec + 8], "/usr/local/bin/node");
   assert.equal(args[exec + 9], "-e");
   assert.match(args[exec + 10], /O_NOFOLLOW/);
   assert.deepEqual(args.slice(exec + 11), ['["out","a.txt"]', "10"]);
@@ -203,6 +204,116 @@ test(
       assert.ok(reads >= 10, "race exercised: " + reads);
       assert.equal(seen.has("OUTSIDE"), false, [...seen].join());
       assert.ok(seen.has("INSIDE"), [...seen].join());
+    } finally {
+      await runtime.stop();
+    }
+  },
+);
+
+test(
+  "real sandbox read refuses deep intermediate symlinks, cannot be pointed outside by hardlinks, and bounds a growing file",
+  { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 120000 },
+  async () => {
+    const image = process.env.NATIVE_TEST_IMAGE ?? "katafit-pi:0.86.1";
+    const runtime = new NativeRuntime(image);
+    const sh = (script: string) =>
+      run("docker", ["exec", runtime.name, "sh", "-c", script], {
+        timeout: 20000,
+      });
+    const limit = 8 * 1024 * 1024;
+    try {
+      await runtime.start();
+      await runtime.attach();
+      const { stdout } = await sh(
+        [
+          "set -e",
+          "mkdir -p /tmp/outside /workspace/a/real/c /workspace/p/q/r/s/t/u/v",
+          "printf OUTSIDE > /tmp/outside/f.txt",
+          "printf DEEP > /workspace/a/real/c/f.txt",
+          "printf EIGHT > /workspace/p/q/r/s/t/u/v/f.txt",
+          "printf regular > /workspace/r.txt",
+          // In-workspace intermediate symlinks at several depths.
+          "ln -s /workspace/a/real /workspace/a/b",
+          "ln -s real/c /workspace/a/cl",
+          "ln -s /tmp/outside /workspace/a/real/c/out",
+          "ln -s ../../.. /workspace/p/q/r/s/up",
+          // Hardlinks: cross-device (outside /workspace) must be impossible.
+          "if ln /tmp/outside/f.txt /workspace/hard-out.txt 2>/dev/null; then echo LINKED-TMP; else echo EXDEV-TMP; fi",
+          "if ln /opt/coach/package.json /workspace/hard-pkg.json 2>/dev/null; then echo LINKED-OPT; else echo EXDEV-OPT; fi",
+          "ln /workspace/r.txt /workspace/hard-in.txt",
+        ].join("; "),
+      );
+      assert.match(stdout.toString(), /EXDEV-TMP/);
+      assert.match(stdout.toString(), /EXDEV-OPT/);
+      const read = (parts: string[]) => runtime.readWorkspaceFile(parts, limit);
+      assert.equal(
+        (await read(["a", "real", "c", "f.txt"])).toString(),
+        "DEEP",
+      );
+      assert.equal(
+        (await read(["p", "q", "r", "s", "t", "u", "v", "f.txt"])).toString(),
+        "EIGHT",
+      );
+      assert.equal((await read(["hard-in.txt"])).toString(), "regular");
+      for (const [parts, code] of [
+        [["a", "b", "c", "f.txt"], "ATTACHMENT_FILE_UNAVAILABLE"],
+        [["a", "cl", "f.txt"], "ATTACHMENT_FILE_UNAVAILABLE"],
+        [["a", "real", "c", "out", "f.txt"], "ATTACHMENT_FILE_UNAVAILABLE"],
+        [["p", "q", "r", "s", "up", "r.txt"], "ATTACHMENT_FILE_UNAVAILABLE"],
+        [["hard-out.txt"], "ATTACHMENT_FILE_NOT_FOUND"],
+        [["hard-pkg.json"], "ATTACHMENT_FILE_NOT_FOUND"],
+        [
+          ["p", "q", "r", "s", "t", "u", "v", "w", "f.txt"],
+          "ATTACHMENT_PATH_REJECTED",
+        ],
+      ] as const)
+        assert.equal(
+          await failure(read([...parts])),
+          code,
+          JSON.stringify(parts),
+        );
+
+      // A concurrent appender grows a file past the limit while it is read:
+      // every read is bounded in bytes and time and never exceeds the limit.
+      await sh("head -c 1024 /dev/zero > /workspace/grow.bin");
+      const appender = run(
+        "docker",
+        [
+          "exec",
+          runtime.name,
+          "sh",
+          "-c",
+          "i=0; while [ $i -lt 200 ]; do head -c 65536 /dev/zero >> /workspace/grow.bin; i=$((i+1)); done",
+        ],
+        { timeout: 60000 },
+      );
+      const outcomes = new Set<string>();
+      const started = Date.now();
+      let done = false;
+      void appender.finally(() => (done = true)).catch(() => {});
+      while (!done || outcomes.size === 0) {
+        const t = Date.now();
+        try {
+          const bytes = await read(["grow.bin"]);
+          assert.ok(bytes.length <= limit);
+          outcomes.add("ok");
+        } catch (error) {
+          assert.ok(error instanceof AttachmentFailure, String(error));
+          outcomes.add(error.code);
+        }
+        assert.ok(Date.now() - t < 15000, "read time-bounded");
+        assert.ok(Date.now() - started < 90000, "growth test bounded");
+      }
+      await appender;
+      assert.equal(
+        await failure(read(["grow.bin"])),
+        "ATTACHMENT_TOO_LARGE",
+        "final 13 MB file",
+      );
+      assert.ok(
+        [...outcomes].every((o) => o === "ok" || o === "ATTACHMENT_TOO_LARGE"),
+        [...outcomes].join(),
+      );
     } finally {
       await runtime.stop();
     }

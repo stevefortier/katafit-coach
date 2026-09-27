@@ -340,10 +340,17 @@ export async function admin(
           const code = error?.message;
           if (code === "ATTACHMENT_NOT_FOUND")
             return send(404, { error: "NOT_FOUND" });
+          // Recoverable: Pi busy, backend outage, or a human turn is needed.
           if (code === "ATTACHMENT_AUTHORIZATION_BUSY") {
             res.setHeader("Retry-After", "2");
             return send(503, { error: code });
           }
+          if (code === "ATTACHMENT_AUTHORIZATION_UNAVAILABLE") {
+            res.setHeader("Retry-After", "5");
+            return send(503, { error: code });
+          }
+          if (code === "ATTACHMENT_TURN_REQUIRED")
+            return send(409, { error: code });
           if (code === "ATTACHMENT_UNAVAILABLE")
             return send(409, { error: "OPERATION_IN_PROGRESS" });
           return send(410, { error: "ATTACHMENT_REVOKED" });

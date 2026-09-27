@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, mkdir } from "node:fs/promises";
 import { chromium } from "playwright-core";
+import { chromePath } from "./helpers/chrome.js";
 import sharp from "sharp";
 import { attachmentHarness } from "./helpers/attachments.js";
 
@@ -15,7 +16,7 @@ const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 test("Operator attachment panel previews, enlarges and downloads beside the terminal on desktop and mobile; reconnect dedups; Stop clears", async () => {
   const h = await attachmentHarness();
   const browser = await chromium.launch({
-    executablePath: "/opt/google/chrome/chrome",
+    executablePath: chromePath(),
     headless: true,
     args: ["--no-sandbox"],
   });
@@ -55,8 +56,14 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const fetched: string[] = [];
-    page.on("request", (r) => {
-      if (r.url().includes("/api/terminal/attachments/")) fetched.push(r.url());
+    const statuses: number[] = [];
+    page.on("response", (r) => {
+      if (r.url().includes("/api/terminal/attachments/")) {
+        statuses.push(r.status());
+        // A 503 while Pi's tool call is still in flight is retried.
+        if (r.status() !== 503 && !fetched.includes(r.url()))
+          fetched.push(r.url());
+      }
     });
     await page.goto(h.app.origin + "/chat/operator");
     await page.locator("#adminKey").fill(h.f.store.secrets.admin);
@@ -266,7 +273,7 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
 test("a server-side session end (another tab or configuration change) clears the panel", async () => {
   const h = await attachmentHarness();
   const browser = await chromium.launch({
-    executablePath: "/opt/google/chrome/chrome",
+    executablePath: chromePath(),
     headless: true,
     args: ["--no-sandbox"],
   });

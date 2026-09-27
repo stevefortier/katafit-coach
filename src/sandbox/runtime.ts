@@ -464,7 +464,8 @@ export class NativeRuntime {
           "--env",
           "NODE_OPTIONS=",
           this.name,
-          "node",
+          // Absolute path: no PATH lookup for the host-initiated reader.
+          "/usr/local/bin/node",
           "-e",
           workspaceReadScript(),
           JSON.stringify(parts),
