@@ -23,6 +23,12 @@ import { backendWireBudget } from "../katafit/wireBudget.js";
 import { serializeContext } from "../katafit/context.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 import { photoReviewGuidance } from "./photoReviewGuidance.js";
+import {
+  formatSkillBodies,
+  skillForTask,
+  skillsForRequest,
+  type SkillRuntime,
+} from "../config/skills.js";
 export async function bounded<T>(
   action: () => Promise<T>,
   signal: AbortSignal,
@@ -59,6 +65,8 @@ export interface WorkerOptions {
   presenceMs?: number;
   modelMs?: number;
   isolationMs?: number;
+  /** Immutable snapshot captured when this Worker instance is constructed. */
+  skills?: SkillRuntime;
 }
 type PendingTask = { task: any; digest: string; ref: string };
 type Incident = PendingTask & { reason: string; nextCheck: number };
@@ -322,7 +330,15 @@ export class Worker {
         !reads.tools.some((t) => t.name === "coach_read_media")
       )
         throw new Error("CONTEXT_REJECTED");
-      stage("inference");
+      const selectedSkills = this.options.skills
+        ? skillsForRequest(this.options.skills, current.message)
+        : [];
+      stage("inference", {
+        ...(this.options.skills
+          ? { skillRevision: this.options.skills.revision }
+          : {}),
+        enabledSkills: selectedSkills.length,
+      });
       inferenceStarted = true;
       const text = await bounded(
         () =>
@@ -335,7 +351,9 @@ export class Worker {
             effectivePrompt(this.options.system, instructions, [
               this.options.token,
               ...(this.options.secrets ?? []),
-            ]) + photoReviewGuidance(current.message, current.created_at),
+            ]) +
+              formatSkillBodies(selectedSkills, "worker") +
+              photoReviewGuidance(current.message, current.created_at),
             reads.tools,
             ref,
             { deadlineAt, readBudget: reads.readBudget },
@@ -557,8 +575,23 @@ export class Worker {
       taskModelSignal = signal;
       const deadlineAt = Date.now() + ms;
       phase = "provider";
+      const selectedSkills = this.options.skills
+        ? skillForTask(this.options.skills, task.kind)
+        : [];
+      this.diagnostic({
+        source: "worker",
+        stage: "inference",
+        ref,
+        metadata: {
+          ...(this.options.skills
+            ? { skillRevision: this.options.skills.revision }
+            : {}),
+          enabledSkills: selectedSkills.length,
+        },
+      });
       const system =
         effectivePrompt(this.options.system, context.instructions, secrets) +
+        formatSkillBodies(selectedSkills, "worker") +
         "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON as an object, with no prose or Markdown code fences, matching this local result schema: " +
         JSON.stringify(taskSchema(task.kind)) +
         (task.kind === "activity_reaction"

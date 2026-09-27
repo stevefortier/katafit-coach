@@ -187,6 +187,17 @@
             </button>
             <button
               type="button"
+              id="settings-skills-tab"
+              role="tab"
+              aria-controls="skills"
+              aria-selected="false"
+              tabindex="-1"
+              class="secondary"
+            >
+              Skills
+            </button>
+            <button
+              type="button"
               id="settings-updates-tab"
               role="tab"
               aria-controls="updates"
@@ -354,6 +365,96 @@
                   Models settings and credentials stay unchanged. Unsaved
                   Kata.fit and Models drafts remain in the editor.
                 </p>
+              </section>
+            </details>
+          </section>
+          <section
+            class="card"
+            id="skills"
+            role="tabpanel"
+            aria-labelledby="settings-skills-tab"
+            tabindex="0"
+            hidden
+          >
+            <h2>Skills</h2>
+            <p class="hint">
+              Skills are optional workflows. Purpose and triggers guide Operator
+              matching; background typed tasks use the default skill mapping,
+              and member requests use fixed keyword relevance rules. Editable
+              trigger text does not control background routing or guarantee
+              selection. Skills are guidance, not permission: backend
+              authorization, audience and tool schemas remain authoritative.
+              Keep reusable guidance only; never paste member/customer evidence
+              or credentials into a skill.
+            </p>
+            <p id="skillsRevision" class="hint" role="status"></p>
+            <button id="refreshSkills" type="button" class="secondary">
+              Refresh saved skills
+            </button>
+            <p class="hint">
+              If another tab changed Skills, refresh to keep your drafts and
+              review the latest saved values below. Nothing is retried
+              automatically; review before choosing Save skill again.
+            </p>
+            <div
+              id="skillList"
+              class="skill-list"
+              aria-label="Coach skills"
+            ></div>
+            <section id="skillEditor" hidden aria-label="Selected Coach skill">
+              <div class="skill-heading">
+                <h3 id="skillTitle"></h3>
+                <span id="skillLabel" class="pill"></span>
+              </div>
+              <label class="toggle-label"
+                ><input id="skillEnabled" type="checkbox" /> Enabled</label
+              >
+              <label
+                >Purpose<textarea
+                  id="skillPurpose"
+                  rows="3"
+                  maxlength="2000"
+                ></textarea></label
+              ><label
+                >Triggers<textarea
+                  id="skillTriggers"
+                  rows="4"
+                  maxlength="4000"
+                ></textarea></label
+              ><label
+                >Instructions<textarea
+                  id="skillInstructions"
+                  rows="14"
+                  maxlength="16000"
+                ></textarea>
+              </label>
+              <div class="actions">
+                <button id="saveSkill" type="button">Save skill</button>
+                <button id="restoreSkill" type="button" class="secondary">
+                  Restore default
+                </button>
+              </div>
+              <details id="skillSavedReview">
+                <summary>Review latest saved skill (not your draft)</summary>
+                <dl id="skillSavedSnapshot" class="skill-snapshot"></dl>
+              </details>
+              <details id="skillDefaultReview">
+                <summary>Review current default</summary>
+                <p id="skillDefaultStatus" class="hint"></p>
+                <dl id="skillDefaultSnapshot" class="skill-snapshot"></dl>
+              </details>
+            </section>
+            <details id="skillHistory">
+              <summary>Skills revision history</summary>
+              <p class="hint">
+                Every save appends an immutable full snapshot. History is
+                read-only; Restore default appends a new revision.
+              </p>
+              <p id="skillHistoryStatus" role="status"></p>
+              <div id="skillHistoryList" class="history-list"></div>
+              <section id="skillHistoryDetail" hidden>
+                <h3 id="skillHistoryTitle"></h3>
+                <dl id="skillHistorySnapshot" class="skill-snapshot"></dl>
               </section>
             </details>
           </section>

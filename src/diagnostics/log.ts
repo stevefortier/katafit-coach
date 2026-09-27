@@ -22,6 +22,8 @@ import {
 export const stages = [
   "backend-call",
   "studio-started",
+  "skills-loaded",
+  "skills-revision-saved",
   "operation-failed",
   "connecting",
   "claimed",
@@ -115,7 +117,8 @@ export const LOG_ENTRIES = 5000;
 export const LOG_FILE_BYTES = 4 * 1024 * 1024;
 const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
-const toolNamePattern = /^(?:coach_|studio_operator_)[a-z_]{1,48}$/;
+const toolNamePattern =
+  /^(?:(?:coach_|studio_operator_)[a-z_]{1,48}|local_load_coach_skill)$/;
 // Screen the entire text before taking a prefix; repeat at the persistence
 // boundary and on restart, where even previously saved JSON is untrusted.
 export function screenedModelText(
@@ -303,7 +306,9 @@ function safeProviderShape(value: unknown): value is ProviderShape {
     s.toolNames.every(
       (name: unknown) =>
         typeof name === "string" &&
-        /^(?:coach_|studio_operator_)[a-z_]{1,48}$/.test(name),
+        /^(?:(?:coach_|studio_operator_)[a-z_]{1,48}|local_load_coach_skill)$/.test(
+          name,
+        ),
     ) &&
     Number.isInteger(s.messageCount) &&
     (s.messageCount as number) > 0 &&

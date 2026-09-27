@@ -87,6 +87,7 @@ export async function openNativeGateway(
   hooks: NativeGatewayHooks = {},
 ) {
   const config = store.publicConfig();
+  const skills = store.skills.runtime();
   const secrets = { ...store.secrets };
   const abort = new AbortController();
   const lifetime = signal
@@ -101,6 +102,7 @@ export async function openNativeGateway(
     !closed &&
     !lifetime.aborted &&
     config.revision === store.publicConfig().revision &&
+    skills.revision === store.skills.runtime().revision &&
     // Every credential slot, including ones added or removed since capture.
     Object.keys(store.secrets).length === Object.keys(secrets).length &&
     Object.keys(secrets).every(
@@ -213,6 +215,14 @@ export async function openNativeGateway(
           model: config.provider.model,
           vision: config.provider.vision === true,
           prompt: compileOperator(config, Object.values(secrets)),
+          skills: skills.skills.map(
+            ({ id, name, purpose, triggers, instructions }) => ({
+              id,
+              name,
+              description: (purpose + " Triggers: " + triggers).slice(0, 1000),
+              body: `# ${name}\n\nPurpose: ${purpose}\n\nTriggers: ${triggers}\n\n${instructions}\n\nThis native Pi session is Operator scope. Apply only the Operator branch. Never claim or respond to background worker jobs.`,
+            }),
+          ),
           tools: session.tools.map((t) => ({
             name: t.name,
             description: t.description,

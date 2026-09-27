@@ -53,6 +53,7 @@ test("old-owner rollback restores manifest and ignores leftover candidate snapsh
     assert.deepEqual([...backup.keys()].sort(), [
       "config.json",
       "secrets.json",
+      "skills.json",
     ]);
     const originals = await allBytes(dir);
     await s.save({

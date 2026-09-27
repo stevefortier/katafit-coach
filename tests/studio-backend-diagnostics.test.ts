@@ -55,7 +55,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
       /5000 shown \/ 5000 retained \(max 5000\)/,
     );
     await page.locator("#logLevel").selectOption("verbose");
-    assert.equal(await page.locator("#logRows article").count(), 4998);
+    assert.equal(await page.locator("#logRows article").count(), 4997);
     assert.match(
       await page.locator("#logRows article").first().innerText(),
       /coach_list_requests.*123 ms.*HTTP 200/,
@@ -83,7 +83,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     const copied = JSON.parse(
       await page.evaluate(() => navigator.clipboard.readText()),
     );
-    assert.equal(copied.entries.length, 4998);
+    assert.equal(copied.entries.length, 4997);
     assert.equal(copied.entries[0].metadata.elapsedMs, 123);
     assert.equal(copied.entries[0].backendCall.tool, "coach_list_requests");
     const downloadPromise = page.waitForEvent("download");

@@ -126,7 +126,12 @@ function showLifecycle(value) {
   $("restartRetry").hidden =
     !failedRestart || value.error !== "COACH_RESTART_FAILED";
 }
-async function lifecycleApi(path, body, alreadyConfirmed = false) {
+async function lifecycleApi(
+  path,
+  body,
+  alreadyConfirmed = false,
+  expectedRevision = config.revision,
+) {
   if (lifecycleBusy || lifecycleUncertain) return null;
   const generation = authGeneration;
   lifecycleBusy = true;
@@ -163,7 +168,7 @@ async function lifecycleApi(path, body, alreadyConfirmed = false) {
         ...(mutation
           ? {
               operationId: lifecycleOperation,
-              expectedRevision: config.revision,
+              expectedRevision,
             }
           : {}),
       },
@@ -712,7 +717,7 @@ function renderProviders(focus) {
 let editorsLocked = false;
 function applyEditorLock() {
   for (const input of document.querySelectorAll(
-    "#katafit input, #models input, #models select, #models button, #persona input, #persona textarea, #persona select",
+    "#katafit input, #models input, #models select, #models button, #persona input, #persona textarea, #persona select, #skills input, #skills textarea, #skills button",
   ))
     input.disabled = editorsLocked || input.dataset.fixed === "disabled";
 }
@@ -748,6 +753,244 @@ action("resetPersona", async () => {
   notice(
     "Restored stock persona in the editor. Save a new revision to apply it.",
   );
+});
+let skillsData,
+  skillDrafts = new Map(),
+  selectedSkill,
+  skillsEpoch = 0,
+  skillHistoryEpoch = 0;
+const skillFields = ["purpose", "triggers", "instructions"];
+function captureSkillDraft() {
+  if (!selectedSkill || !skillsData) return;
+  skillDrafts.set(selectedSkill, {
+    enabled: $("skillEnabled").checked,
+    purpose: $("skillPurpose").value,
+    triggers: $("skillTriggers").value,
+    instructions: $("skillInstructions").value,
+  });
+}
+function skillDirty() {
+  captureSkillDraft();
+  if (!skillsData) return false;
+  return skillsData.skills.some((saved) => {
+    const draft = skillDrafts.get(saved.id);
+    return (
+      draft &&
+      (draft.enabled !== saved.enabled ||
+        skillFields.some((field) => draft[field] !== saved[field]))
+    );
+  });
+}
+function renderSkillDefault(skill) {
+  $("skillDefaultSnapshot").replaceChildren();
+  for (const field of ["enabled", ...skillFields]) {
+    const term = document.createElement("dt");
+    const value = document.createElement("dd");
+    term.textContent = field;
+    value.textContent = String(skill.default[field]);
+    $("skillDefaultSnapshot").append(term, value);
+  }
+  $("skillDefaultStatus").textContent = skill.defaultUpdateAvailable
+    ? `An updated default (version ${skill.defaultVersion}) is available for review. Your customized text is preserved until you restore it.`
+    : `Default version ${skill.defaultVersion}. Restoring appends a new Skills revision.`;
+}
+function selectSkill(id, focus = false, capture = true) {
+  if (capture) captureSkillDraft();
+  const skill = skillsData?.skills.find((entry) => entry.id === id);
+  if (!skill) return;
+  selectedSkill = id;
+  const draft = skillDrafts.get(id) ?? {
+    enabled: skill.enabled,
+    purpose: skill.purpose,
+    triggers: skill.triggers,
+    instructions: skill.instructions,
+  };
+  skillDrafts.set(id, draft);
+  $("skillEditor").hidden = false;
+  $("skillTitle").textContent = skill.name;
+  $("skillLabel").textContent =
+    skill.status === "customized" ? "Customized" : "Default";
+  $("skillLabel").dataset.tone =
+    skill.status === "customized" ? "caution" : "ready";
+  $("skillEnabled").checked = draft.enabled;
+  for (const field of skillFields)
+    $("skill" + field[0].toUpperCase() + field.slice(1)).value = draft[field];
+  for (const button of $("skillList").querySelectorAll("button"))
+    button.setAttribute("aria-pressed", String(button.dataset.skill === id));
+  renderSkillDefault(skill);
+  $("skillSavedSnapshot").replaceChildren();
+  for (const field of ["enabled", ...skillFields]) {
+    const term = document.createElement("dt");
+    const value = document.createElement("dd");
+    term.textContent = field;
+    value.textContent = String(skill[field]);
+    $("skillSavedSnapshot").append(term, value);
+  }
+  applyEditorLock();
+  if (focus) $("skillTitle").scrollIntoView({ block: "start" });
+}
+function renderSkills() {
+  $("skillList").replaceChildren();
+  if (!skillsData?.skills?.length) {
+    $("skillsRevision").textContent = "No Coach skills are available.";
+    $("skillEditor").hidden = true;
+    return;
+  }
+  $("skillsRevision").textContent =
+    `Saved Skills revision ${skillsData.revision}. ` +
+    `${skillsData.skills.filter((skill) => skill.enabled).length} of ${skillsData.skills.length} enabled.`;
+  for (const skill of skillsData.skills) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary skill-picker";
+    button.dataset.skill = skill.id;
+    button.setAttribute("aria-pressed", String(skill.id === selectedSkill));
+    button.textContent =
+      `${skill.name} · ${skill.status === "customized" ? "Customized" : "Default"}` +
+      (skill.enabled ? "" : " · Disabled");
+    button.onclick = () => selectSkill(skill.id, true);
+    $("skillList").append(button);
+  }
+  selectSkill(
+    skillsData.skills.some((skill) => skill.id === selectedSkill)
+      ? selectedSkill
+      : skillsData.skills[0].id,
+    false,
+    false,
+  );
+}
+async function loadSkills(preserveDrafts = false) {
+  if (!key) return;
+  const generation = authGeneration,
+    epoch = ++skillsEpoch;
+  const data = await api("skills");
+  if (generation !== authGeneration || epoch !== skillsEpoch) return;
+  skillsData = data;
+  if (!preserveDrafts) skillDrafts = new Map();
+  renderSkills();
+  if ($("skillHistory").open) void loadSkillHistory();
+}
+action("refreshSkills", async () => {
+  if (!skillsData || updatePending) return;
+  const generation = authGeneration;
+  captureSkillDraft();
+  await loadSkills(true);
+  if (generation !== authGeneration) return;
+  $("skillSavedReview").open = true;
+  notice(
+    "Latest saved Skills loaded. Your drafts are retained. Review the saved values before choosing Save skill; no write was retried.",
+  );
+});
+action("saveSkill", async () => {
+  if (!selectedSkill || !skillsData || updatePending) return;
+  captureSkillDraft();
+  const id = selectedSkill;
+  const draft = skillDrafts.get(id);
+  const result = await lifecycleApi(
+    "skills/" + id,
+    draft,
+    false,
+    skillsData.revision,
+  );
+  if (!result) return;
+  skillDrafts.delete(id);
+  await loadSkills(true);
+  notice(
+    result.lifecycle?.resumed
+      ? "Skill saved. Coach restarted with the new Skills revision."
+      : "Skill saved as a new immutable revision.",
+  );
+});
+action("restoreSkill", async () => {
+  if (!selectedSkill || !skillsData || updatePending) return;
+  const id = selectedSkill;
+  const skill = skillsData.skills.find((entry) => entry.id === id);
+  if (
+    !confirm(
+      `Restore the current default for ${skill.name} as a new Skills revision? Your current draft for this skill will be replaced. ${restartExplanation}`,
+    )
+  ) {
+    notice("Restore cancelled. No skill changed.");
+    return;
+  }
+  const result = await lifecycleApi(
+    `skills/${selectedSkill}/restore-default`,
+    {},
+    true,
+    skillsData.revision,
+  );
+  if (!result) return;
+  skillDrafts.delete(id);
+  await loadSkills(true);
+  notice("Default restored as a new immutable Skills revision.");
+});
+function skillHistoryVisible() {
+  return (
+    key &&
+    !$("studio").hidden &&
+    !$("settingsPanel").hidden &&
+    !$("skills").hidden &&
+    $("skillHistory").open
+  );
+}
+async function loadSkillHistory() {
+  if (!skillHistoryVisible()) return;
+  const generation = authGeneration,
+    epoch = ++skillHistoryEpoch;
+  $("skillHistoryStatus").textContent = "Loading Skills revisions…";
+  $("skillHistoryList").replaceChildren();
+  $("skillHistoryDetail").hidden = true;
+  try {
+    const data = await api("skills/history");
+    if (generation !== authGeneration || epoch !== skillHistoryEpoch) return;
+    $("skillHistoryStatus").textContent =
+      `${data.total} saved Skills revisions.`;
+    for (const entry of data.items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary";
+      button.textContent = historyLabel(entry);
+      button.onclick = () => selectSkillHistory(entry.revision);
+      $("skillHistoryList").append(button);
+    }
+  } catch (error) {
+    if (!error.stale && epoch === skillHistoryEpoch)
+      $("skillHistoryStatus").textContent =
+        "Could not load Skills history: " + error.message;
+  }
+}
+async function selectSkillHistory(revision) {
+  const generation = authGeneration,
+    epoch = ++skillHistoryEpoch;
+  try {
+    const entry = await api("skills/history/" + revision);
+    if (generation !== authGeneration || epoch !== skillHistoryEpoch) return;
+    $("skillHistoryTitle").textContent = historyLabel(entry) + " — read-only";
+    $("skillHistorySnapshot").replaceChildren();
+    for (const skill of entry.skills) {
+      const term = document.createElement("dt");
+      const value = document.createElement("dd");
+      term.textContent = skill.name;
+      value.textContent =
+        `${skill.enabled ? "Enabled" : "Disabled"} · ${skill.status === "customized" ? "Customized" : "Default"}\n` +
+        `Purpose: ${skill.purpose}\nTriggers: ${skill.triggers}\nInstructions:\n${skill.instructions}`;
+      $("skillHistorySnapshot").append(term, value);
+    }
+    $("skillHistoryDetail").hidden = false;
+  } catch (error) {
+    if (!error.stale && epoch === skillHistoryEpoch)
+      $("skillHistoryStatus").textContent =
+        "Could not read Skills revision: " + error.message;
+  }
+}
+$("skillHistory").addEventListener("toggle", () => {
+  if (skillHistoryVisible()) void loadSkillHistory();
+  else {
+    ++skillHistoryEpoch;
+    $("skillHistoryList").replaceChildren();
+    $("skillHistorySnapshot").replaceChildren();
+    $("skillHistoryDetail").hidden = true;
+  }
 });
 let historyEpoch = 0,
   historyBefore = null,
@@ -878,7 +1121,8 @@ function hasUnsavedEdits() {
     fields.some((f) => $(f).value !== config.persona[f]) ||
     $("origin").value !== config.origin ||
     !!$("token").value ||
-    modelsDirty()
+    modelsDirty() ||
+    skillDirty()
   );
 }
 // Bind only conversational inputs, never persona/configuration editors.
@@ -1042,6 +1286,7 @@ const settingsSections = [
   "models",
   "persona",
   "preview",
+  "skills",
   "updates",
   "worker",
 ];
@@ -1064,7 +1309,12 @@ function selectSettingsSection(section, navigate = true) {
     tab.classList.toggle("secondary", !selected);
   }
   if (navigate) navigateStudio(settingsPath());
+  if (settingsSection === "skills" && key && !skillsData)
+    void loadSkills().catch((error) => {
+      if (!error.stale) $("skillsRevision").textContent = error.message;
+    });
   if (historyVisible()) void loadPersonaHistory();
+  if (skillHistoryVisible()) void loadSkillHistory();
   logVisibility();
 }
 for (const [index, section] of settingsSections.entries()) {
@@ -1595,6 +1845,8 @@ function renderUpdate() {
     "previewButton",
     "connect",
     "cancel",
+    "saveSkill",
+    "restoreSkill",
   ])
     $(id).disabled =
       (locked && !(id === "cancel" && previewBusy)) ||
@@ -1797,6 +2049,17 @@ function lockSession(message) {
   renderModelStatus();
   historyBusy = false;
   clearPersonaHistory();
+  skillsData = undefined;
+  skillDrafts = new Map();
+  selectedSkill = undefined;
+  ++skillsEpoch;
+  ++skillHistoryEpoch;
+  $("skillList").replaceChildren();
+  $("skillEditor").hidden = true;
+  $("skillsRevision").textContent = "";
+  $("skillHistoryList").replaceChildren();
+  $("skillHistorySnapshot").replaceChildren();
+  $("skillHistoryDetail").hidden = true;
   resetMembers();
   ++operatorEpoch;
   operatorMessages = [];

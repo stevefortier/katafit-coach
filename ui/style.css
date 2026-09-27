@@ -124,6 +124,59 @@ header {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+.skill-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0 24px;
+}
+.skill-list .skill-picker {
+  min-height: 58px;
+  margin: 0;
+  text-align: left;
+}
+.skill-list .skill-picker[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.skill-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.skill-heading h3 {
+  margin: 0;
+}
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+.toggle-label input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  flex: none;
+}
+.skill-snapshot dd {
+  margin: 0 0 14px;
+  white-space: pre-wrap;
+}
+.skill-snapshot dt {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+@media (max-width: 680px) {
+  .skill-list {
+    grid-template-columns: 1fr;
+  }
+  .skill-heading {
+    align-items: flex-start;
+  }
+}
 #settingsPanel [id] {
   scroll-margin-top: 80px;
 }
