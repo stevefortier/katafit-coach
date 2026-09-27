@@ -359,15 +359,19 @@ export async function recallMemory(
     },
     budget,
   );
-  keys(value, [
-    "protocol",
-    "capture_id",
-    "memory_epoch",
-    "items",
-    "coverage",
-    "has_more",
-    "next_cursor",
-  ]);
+  keys(
+    value,
+    [
+      "protocol",
+      "capture_id",
+      "memory_epoch",
+      "items",
+      "coverage",
+      "has_more",
+      "next_cursor",
+    ],
+    ["protocol", "capture_id", "memory_epoch", "items", "coverage"],
+  );
   if (
     value.protocol !== MEMORY_PROTOCOL ||
     value.capture_id !== capture.capture_id
