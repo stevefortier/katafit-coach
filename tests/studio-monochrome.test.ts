@@ -313,15 +313,11 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         "the selected member tab replaces the redundant member heading",
       );
       const refresh = page.getByRole("button", {
-        name: "Refresh members",
+        name: "Refresh Roster",
         exact: true,
       });
-      assert.equal(
-        (await refresh.innerText()).trim(),
-        "",
-        "refresh uses an icon, not visible text",
-      );
-      assert.equal(await refresh.locator('svg[aria-hidden="true"]').count(), 1);
+      assert.equal((await refresh.innerText()).trim(), "Refresh Roster");
+      assert.equal(await refresh.locator("svg").count(), 0);
       const toolbarGeometry = await page.evaluate(() => {
         const tabs = document
           .getElementById("conversationTabs")!
