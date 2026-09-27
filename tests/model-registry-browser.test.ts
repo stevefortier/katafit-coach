@@ -4,8 +4,209 @@ import { createServer } from "node:http";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { chromium, type Page } from "playwright-core";
+import sharp from "sharp";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
+
+test("Models hierarchy groups connections and named model cards at desktop and mobile widths", async () => {
+  const dir = await mkdtemp(tmpdir() + "/registry-hierarchy-");
+  const store = new Store(dir);
+  await store.init();
+  const longId = "synthetic-provider/" + "long-model-identifier-".repeat(8);
+  await store.save({
+    origin: store.publicConfig().origin,
+    persona: store.publicConfig().persona,
+    models: {
+      active: { provider: "alpha", model: "a1" },
+      providers: ["alpha", "bravo"].map((id) => ({
+        id,
+        name: `Synthetic ${id} provider`,
+        baseUrl: `https://${id}.invalid/v1`,
+        models: [
+          {
+            id: id === "alpha" ? "a1" : "b1",
+            name: "Everyday reasoning",
+            model: "synthetic-reasoning",
+            vision: false,
+          },
+          {
+            id: "long",
+            name: "Long identifier vision model",
+            model: longId,
+            vision: true,
+          },
+        ],
+      })),
+    },
+  });
+  const app = await admin(store, 0, async () => "must not run");
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: process.env.CHROME_PATH || "/usr/bin/google-chrome",
+      headless: true,
+      args: ["--no-sandbox"],
+    });
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(
+      app.origin + "/settings?section=models#" + store.secrets.admin,
+    );
+    await page.locator("#studio").waitFor({ state: "visible" });
+    assert.equal(
+      await page.locator(".provider-header").count(),
+      2,
+      "explicit provider headers",
+    );
+    for (const provider of await page.locator(".provider-card").all()) {
+      assert.equal(
+        await provider
+          .getByRole("heading", { name: "Connection", exact: true })
+          .count(),
+        1,
+      );
+      assert.equal(
+        await provider
+          .getByRole("heading", { name: "Models", exact: true })
+          .count(),
+        1,
+      );
+      assert.equal(await provider.locator(".model-title").count(), 2);
+      assert.equal(
+        await provider
+          .locator('.provider-actions [data-action="removeProvider"]')
+          .count(),
+        1,
+      );
+      assert.equal(
+        await provider
+          .locator('.models-group [data-action="addModel"]')
+          .count(),
+        1,
+      );
+      assert.equal(
+        await provider
+          .locator('.models-group [data-action="removeProvider"]')
+          .count(),
+        0,
+      );
+    }
+    const first = card(page, "alpha").locator(".model-row").first();
+    assert.equal(
+      await first.locator(".model-title").innerText(),
+      "Everyday reasoning",
+    );
+    assert.equal(
+      await first.locator(".model-header .saved-badge").innerText(),
+      "Saved active",
+    );
+    const name = first.locator('[data-field="name"]');
+    await name.fill('<img src=x onerror="alert(1)">');
+    assert.equal(
+      await first.locator(".model-title").innerText(),
+      '<img src=x onerror="alert(1)">',
+    );
+    assert.equal(await first.locator(".model-title img").count(), 0);
+    await name.fill("   ");
+    assert.equal(
+      await first.locator(".model-title").innerText(),
+      "synthetic-reasoning",
+    );
+    await first.locator('[data-field="model"]').fill("edited-id");
+    assert.equal(await first.locator(".model-title").innerText(), "edited-id");
+    await first.locator('[data-field="model"]').fill("");
+    assert.equal(await first.locator(".model-title").innerText(), "New model");
+    await page.reload();
+    await page.locator("#studio").waitFor({ state: "visible" });
+    await card(page, "alpha")
+      .locator('[data-model="long"] [data-field="name"]')
+      .fill("");
+    assert.equal(
+      await card(page, "alpha")
+        .locator('[data-model="long"] .model-title')
+        .innerText(),
+      longId,
+    );
+    for (const width of [1440, 390, 320]) {
+      await card(page, "alpha")
+        .locator('[data-model="long"] [data-field="name"]')
+        .fill("");
+      await page.setViewportSize({
+        width,
+        height: width === 1440 ? 1000 : 844,
+      });
+      await page.evaluate(() => scrollTo(0, 0));
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        true,
+        `${width}px document containment`,
+      );
+      const geometry = await page
+        .locator(
+          ".provider-card, .model-row, .model-title, .provider-card input:visible, .provider-card button:visible",
+        )
+        .evaluateAll((els) =>
+          els.map((el) => {
+            const rect = el.getBoundingClientRect();
+            return { x: rect.x, right: rect.right, width: rect.width };
+          }),
+        );
+      assert.ok(
+        geometry.every(
+          (rect) => rect.x >= 0 && rect.right <= width && rect.width > 0,
+        ),
+        `${width}px control containment`,
+      );
+      const surfaces = await first.evaluate((el) => ({
+        model: getComputedStyle(el).backgroundColor,
+        provider: getComputedStyle(el.closest(".provider-card")!)
+          .backgroundColor,
+        border: getComputedStyle(el).borderTopWidth,
+      }));
+      assert.notEqual(surfaces.model, surfaces.provider);
+      assert.equal(surfaces.border, "1px");
+      if (process.env.COACH_EVIDENCE_DIR) {
+        await card(page, "alpha")
+          .locator('[data-model="long"] [data-field="name"]')
+          .fill("Vision model");
+        await page.evaluate(() => {
+          (document.activeElement as HTMLElement)?.blur();
+          scrollTo(0, 0);
+        });
+        await mkdir(process.env.COACH_EVIDENCE_DIR, { recursive: true });
+        await page.screenshot({
+          path: `${process.env.COACH_EVIDENCE_DIR}/synthetic-model-hierarchy-${width}.png`,
+          fullPage: true,
+        });
+        await page.screenshot({
+          path: `${process.env.COACH_EVIDENCE_DIR}/synthetic-model-hierarchy-${width}-viewport.png`,
+        });
+        const providerBox = await card(page, "alpha").boundingBox();
+        assert.ok(providerBox);
+        await sharp(
+          `${process.env.COACH_EVIDENCE_DIR}/synthetic-model-hierarchy-${width}.png`,
+        )
+          .extract({
+            left: Math.ceil(providerBox.x),
+            top: Math.ceil(providerBox.y),
+            width: Math.floor(providerBox.width),
+            height: Math.floor(providerBox.height),
+          })
+          .toFile(
+            `${process.env.COACH_EVIDENCE_DIR}/synthetic-model-hierarchy-${width}-provider.png`,
+          );
+      }
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 const keyA = "synthetic-browser-registry-alpha";
 const keyB = "synthetic-browser-registry-bravo";

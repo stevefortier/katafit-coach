@@ -540,12 +540,25 @@ function renderProviders(focus) {
   if (!modelsDraft) return;
   const saved = config ? savedModels() : null;
   for (const p of modelsDraft.providers) {
-    const card = document.createElement("fieldset");
+    const card = document.createElement("section");
     card.className = "provider-card";
     card.dataset.provider = p.id;
-    const legend = document.createElement("legend");
+    const header = document.createElement("div");
+    header.className = "provider-header";
+    const legend = document.createElement("h3");
+    legend.id = `provider-title-${p.id}`;
     legend.textContent = p.name || "New provider";
-    card.append(legend);
+    card.setAttribute("aria-labelledby", legend.id);
+    const providerLabel = document.createElement("p");
+    providerLabel.className = "registry-label";
+    providerLabel.textContent = "Provider";
+    header.append(providerLabel, legend);
+    const connection = document.createElement("div");
+    connection.className = "connection-group";
+    const connectionTitle = document.createElement("h4");
+    connectionTitle.textContent = "Connection";
+    connection.append(connectionTitle);
+    card.append(header, connection);
     const top = document.createElement("div");
     top.className = "split";
     const name = editorInput(
@@ -596,13 +609,27 @@ function renderProviders(focus) {
     const status = document.createElement("p");
     status.className = "hint key-status";
     status.setAttribute("aria-live", "polite");
-    card.append(top, key.wrapper, clear.wrapper, status);
+    connection.append(top, key.wrapper, clear.wrapper, status);
+    const modelsGroup = document.createElement("div");
+    modelsGroup.className = "models-group";
+    const modelsTitle = document.createElement("h4");
+    modelsTitle.textContent = "Models";
+    modelsGroup.append(modelsTitle);
     const rows = document.createElement("div");
     rows.className = "model-list";
     for (const m of p.models) {
       const row = document.createElement("div");
       row.className = "model-row";
       row.dataset.model = m.id;
+      const modelHeader = document.createElement("div");
+      modelHeader.className = "model-header";
+      const title = document.createElement("h5");
+      title.className = "model-title";
+      const updateTitle = () => {
+        title.textContent = m.name.trim() || m.model.trim() || "New model";
+      };
+      updateTitle();
+      modelHeader.append(title);
       const pick = editorInput(
         "Active after Save",
         modelsDraft.active.provider === p.id &&
@@ -619,7 +646,7 @@ function renderProviders(focus) {
         const badge = document.createElement("span");
         badge.className = "saved-badge";
         badge.textContent = "Saved active";
-        pick.wrapper.append(badge);
+        modelHeader.append(badge);
       }
       const fieldsRow = document.createElement("div");
       fieldsRow.className = "split";
@@ -627,7 +654,10 @@ function renderProviders(focus) {
         "Display name (optional)",
         m.name,
         { type: "text", maxLength: 100 },
-        (input) => (m.name = input.value),
+        (input) => {
+          m.name = input.value;
+          updateTitle();
+        },
       );
       label.input.dataset.field = "name";
       const id = editorInput(
@@ -638,7 +668,10 @@ function renderProviders(focus) {
           maxLength: 200,
           placeholder: "exact provider model ID",
         },
-        (input) => (m.model = input.value),
+        (input) => {
+          m.model = input.value;
+          updateTitle();
+        },
       );
       id.input.dataset.field = "model";
       fieldsRow.append(label.wrapper, id.wrapper);
@@ -650,6 +683,7 @@ function renderProviders(focus) {
       );
       vision.input.dataset.field = "vision";
       row.append(
+        modelHeader,
         pick.wrapper,
         fieldsRow,
         vision.wrapper,
@@ -666,8 +700,9 @@ function renderProviders(focus) {
       rows.append(row);
     }
     const tools = document.createElement("div");
-    tools.className = "log-controls";
-    tools.append(
+    tools.className = "provider-actions";
+    modelsGroup.append(
+      rows,
       editorButton(
         "Add model",
         "addModel",
@@ -682,6 +717,8 @@ function renderProviders(focus) {
         },
         p.models.length >= 32,
       ),
+    );
+    tools.append(
       editorButton(
         "Remove provider",
         "removeProvider",
@@ -693,7 +730,7 @@ function renderProviders(focus) {
         modelsDraft.providers.length < 2,
       ),
     );
-    card.append(rows, tools);
+    card.append(modelsGroup, tools);
     list.append(card);
   }
   $("addProvider").dataset.fixed =
