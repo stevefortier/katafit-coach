@@ -1,12 +1,36 @@
 import { readFileSync } from "node:fs";
+// Import-free and process-optional on purpose: the extension also runs in a
+// bare vm context in tests. Container defaults: /tmp and port 4318.
+const env = globalThis.process?.env ?? {};
+const port = /^[1-9][0-9]{3,4}$/.test(env.KATAFIT_RELAY_PORT ?? "")
+  ? Number(env.KATAFIT_RELAY_PORT)
+  : 4318;
+const configPath =
+  (env.TMPDIR || "/tmp").replace(/\/+$/, "") + "/native-config.json";
+// Relay failure codes the host allowlists with tool-specific recovery; all
+// other failures keep the fixed per-tool fallback below.
+const relayGuidance = {
+  NATIVE_REQUEST_BUSY:
+    "Another native request is still pending. This call was not dispatched and consumed nothing. Wait for the pending call to finish, then call again sequentially; do not send parallel calls.",
+  NATIVE_TEXT_TOO_LARGE:
+    "The tool arguments are over the native 1 MiB budget. This call was not dispatched; send smaller arguments.",
+  NATIVE_REQUEST_REJECTED:
+    "The tool request was rejected and not dispatched. Correct the arguments to match the advertised schema.",
+  NATIVE_SESSION_EXPIRED:
+    "This native Coach session has ended. The outcome of any in-flight action is unknown; check canonical Kata.fit state from a new native session before acting.",
+  NATIVE_SESSION_REVOKED:
+    "This native Coach session is no longer authorized and is closing. The outcome of any in-flight action is unknown; check canonical Kata.fit state from a new native session before acting.",
+  NATIVE_RESULT_TOO_LARGE:
+    "The tool result was over the native return budget and was withheld. If this was an action, its outcome is unknown; do not replay it.",
+};
 export default function (pi) {
-  const config = JSON.parse(readFileSync("/tmp/native-config.json", "utf8"));
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
   for (const tool of config.tools)
     pi.registerTool({
       ...tool,
       label: tool.name,
       async execute(_id, args, signal) {
-        const response = await fetch("http://127.0.0.1:4318/tool", {
+        const response = await fetch(`http://127.0.0.1:${port}/tool`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ name: tool.name, args }),
@@ -19,7 +43,17 @@ export default function (pi) {
             : tool.name === "studio_operator_read_dojo_checkin_image"
               ? "Check-in image read failed; no image was delivered. Use the matching member_ref and media_ref from a successful check-in listing. Activity-detail media references are not sufficient. The per-turn quota is four images and 16 MiB total. Do not repeat the same failed call or claim to have inspected pixels."
               : "Kata.fit tool failed; do not replay uncertain actions.";
-        if (!response.ok) throw new Error(fallback);
+        if (!response.ok) {
+          let code;
+          try {
+            code = (await response.json())?.error?.code;
+          } catch {}
+          throw new Error(
+            typeof code === "string" && Object.hasOwn(relayGuidance, code)
+              ? `${code}: ${relayGuidance[code]}`
+              : fallback,
+          );
+        }
         const result = await response.json();
         if (result?.imageReadError) {
           const error = result.imageReadError;

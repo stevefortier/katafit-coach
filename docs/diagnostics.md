@@ -27,6 +27,29 @@ Important codes:
 
 Pre-publication failures send the safe code and fixed hint to fenced `coach_fail_request`. Failure readback must match request ID, lease generation, failed status and exact failure code. An unavailable/mismatched readback is a warning, not a claim that failure was saved. The backend exposes `failure_code`; display of that code in the Kata.fit app is a separate app concern.
 
+### Native Operator transport
+
+The sandbox relay accepts at most 32 MiB of raw provider history per request (Pi resends earlier photos every turn) and 1 MiB per tool call. The raw cap leaves parsing/framing headroom inside the 512 MiB sandbox; larger histories fail with an actionable error before parsing. It forwards accepted raw history losslessly: it never inspects, drops or compacts images. Stdio frames are capped at 32 MiB + 64 KiB toward the host and 16 MiB toward the relay, so an original 8 MiB image result returns intact.
+
+The host is authoritative and applies the worker's envelope rules (`src/runtime/providerEnvelope.ts`) to the **original** envelope before discarding anything:
+
+1. The raw history is bounded before any image is decoded.
+2. Every canonical `messages[].content[]` image part is validated: PNG/JPEG/WebP/GIF data URL, canonical base64, at most 8 MiB, and a header and dimensions matching the declared format. This is bounded header validation matching the native source reader. It is not a full decode, so it does not prove codec integrity or reject ancillary or trailing data inside a valid container.
+3. Every raw non-image byte counts against the 1 MiB text budget. This includes schemas and metadata on older photos that compaction will drop. Only validated base64 image data is exempt.
+4. Only then are older validated photos compacted to the newest five totalling 16 MiB. A dropped part, data and metadata, is replaced by a fixed omission notice.
+5. The final envelope is measured again, with notices counted as text, and capped at 24 MiB.
+
+Failures reach Pi as fixed `NATIVE_*` codes (`src/sandbox/failures.ts`), each with a fixed actionable message. They are sent with `x-should-retry: false` and never include upstream bodies, URLs, stacks or arguments. Provider failures add only the numeric upstream status. Distinct codes cover:
+
+- text, image, wire and result size;
+- busy, not dispatched;
+- session expired or revoked;
+- an expired turn command (`NATIVE_TURN_REQUIRED`: send a new message; nothing is replayed);
+- provider auth, rate limit, quota, timeout, unavailable, payload, context and request rejections;
+- network failures, output screening, tool failure, and an unclassified `NATIVE_GATEWAY_FAILED`.
+
+An oversized result is withheld as `NATIVE_RESULT_TOO_LARGE`; it no longer tears down the runtime. For oversize text/history/provider-context failures, `/compact` may itself need the same oversized provider request and is not promised as a fix. A new Pi session with a focused question is the reliable recovery.
+
 ## Studio log viewer
 
 Unlock Studio with its existing admin key, then open the top-level **Diagnostics** tab. Refresh works while paused. Live polling runs every two seconds only while Diagnostics and the document are visible; leaving, locking or hiding the view cancels its in-flight read. The level dropdown starts at **Info** and includes an explicit **Verbose** option. Select **Verbose** for successful backend-call timings, **Warnings** for failed calls, or **All levels** for the combined timeline. Filters match the selected level exactly. Copy JSON or download JSON for the selected view. Exports contain the displayed filtered entries, including private rejected output when present; the current retained count and maximum are shown. Up to **5,000 entries** are retained and available in the viewer. There is no destructive web Clear action.
