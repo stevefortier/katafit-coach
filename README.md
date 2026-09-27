@@ -45,6 +45,14 @@ Read-only member tabs show both member messages and Coach replies as chronologic
 
 To make instructions lasting, edit the Settings persona directly, pause the worker and explicitly save. Ordinary Operator chat never silently changes global behavior. See [conversation isolation, sharing and rollout](docs/studio-conversations.md).
 
+### Skills
+
+**Settings → Skills** offers three enabled starter workflows: activity review, member progress, and plan changes. Purpose and triggers are metadata that guide Operator matching; they do not guarantee semantic auto-selection. Background typed tasks use the default skill mapping, while member requests use fixed keyword relevance rules. Editing trigger text does not change background routing. Enabled state and the selected skill's saved instructions still apply. Skills are guidance, not permission: backend authorization, audience boundaries and offered tool schemas remain authoritative.
+
+Save or Restore default applies only the selected skill; drafts for other skills stay in this browser tab. If another tab saves first, the server rejects your stale write. Choose **Refresh saved skills** to load the new revision without discarding drafts, compare **Review latest saved skill (not your draft)**, then deliberately choose **Save skill** if you still want to apply your draft. Refresh never retries a write. Drafts are not durable across page reloads or locking Studio.
+
+Keep only reusable guidance in Skills, never member evidence or credentials. Saves and restores append immutable revisions. Credential changes are checked against current and historical skill text; restoring clean defaults does not erase a credential from history.
+
 ### Persona revision history
 
 Open **Settings → Persona → Persona revision history** to browse saved snapshots. Every successful save creates a revision, even if only Kata.fit or Models settings changed or the persona fields stayed the same. Select a revision to read all eight persona fields without changing the editor; use **Older revisions** and **Latest revisions** to navigate the paginated list.

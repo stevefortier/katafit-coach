@@ -70,13 +70,14 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     const tabs = page.getByRole("tab");
-    assert.equal(await tabs.count(), 6);
+    assert.equal(await tabs.count(), 7);
     assert.equal(await page.locator("#diagnosticsTab").count(), 1);
     assert.equal(await page.getByRole("tabpanel").count(), 1);
     await page.locator("#token").fill("unsaved-secret");
     for (const name of [
       "Persona",
       "Preview",
+      "Skills",
       "Updates",
       "Worker",
       "Models",
@@ -258,6 +259,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       "Models",
       "Persona",
       "Preview",
+      "Skills",
       "Updates",
       "Worker",
     ]) {

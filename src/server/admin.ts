@@ -28,6 +28,15 @@ export async function admin(
     event: import("../diagnostics/log.js").LogInput,
   ) => logs.record(event);
   logs.record({ source: "studio", stage: "studio-started" });
+  const initialSkills = store.skills.runtime();
+  logs.record({
+    source: "studio",
+    stage: "skills-loaded",
+    metadata: {
+      skillRevision: initialSkills.revision,
+      enabledSkills: initialSkills.skills.length,
+    },
+  });
   let worker: Worker | undefined;
   let preview: AbortController | undefined;
   let busy = false;
@@ -73,12 +82,14 @@ export async function admin(
       // Capture the active endpoint and its key together.
       const c = store.publicConfig();
       const apiKey = store.secrets.apiKey;
+      const skills = store.skills.runtime();
       worker = new Worker({
         origin: c.origin,
         token: store.secrets.token,
         system: compile(c, Object.values(store.secrets)),
         secrets: Object.values(store.secrets),
         vision: c.provider.vision === true,
+        skills,
         onDiagnostic: (event) => logs.record(event),
         complete: (context, signal, system, tools, ref, budget) =>
           infer(
@@ -146,6 +157,8 @@ export async function admin(
           if (
             JSON.stringify(disk.publicConfig()) !==
               JSON.stringify(store.publicConfig()) ||
+            JSON.stringify(disk.skills.view()) !==
+              JSON.stringify(store.skills.view()) ||
             disk.secrets.apiKey !== store.secrets.apiKey ||
             disk.secrets.token !== store.secrets.token
           )
@@ -413,6 +426,16 @@ export async function admin(
           hasToken: !!store.secrets.token,
           hasApiKey: !!store.secrets.apiKey,
         });
+      if (req.method === "GET" && path === "/api/skills")
+        return send(200, store.skills.view());
+      if (req.method === "GET" && path === "/api/skills/history")
+        return send(200, store.skills.historyList());
+      if (req.method === "GET" && path.startsWith("/api/skills/history/")) {
+        const id = path.slice("/api/skills/history/".length);
+        if (!/^[1-9][0-9]*$/.test(id))
+          throw new Error("INVALID_SKILL_REVISION");
+        return send(200, store.skills.history(Number(id)));
+      }
       if (
         req.method === "GET" &&
         (path === "/api/persona-history" ||
@@ -457,6 +480,7 @@ export async function admin(
           nativeActive: terminal.active,
           lastError: logs.lastError,
           revision: store.publicConfig().revision,
+          skillsRevision: store.skills.runtime().revision,
           lifecycle,
           transition: busy,
           autoQuiesced,
@@ -477,11 +501,14 @@ export async function admin(
       if (!input || typeof input !== "object" || Array.isArray(input))
         return send(400, { error: "ARGUMENTS_REJECTED" });
       const { confirmRestart, operationId, expectedRevision, ...body } = input;
-      const configuration = [
-        "/api/config",
-        "/api/rollback",
-        "/api/persona-restore",
-      ].includes(path);
+      const skillMutation =
+        /^\/api\/skills\/([a-z][a-z0-9-]{0,63})(\/restore-default)?$/.exec(
+          path,
+        );
+      const configuration =
+        ["/api/config", "/api/rollback", "/api/persona-restore"].includes(
+          path,
+        ) || !!skillMutation;
       if (
         (operationId !== undefined || expectedRevision !== undefined) &&
         !configuration
@@ -510,12 +537,22 @@ export async function admin(
       if (
         configuration &&
         expectedRevision !== undefined &&
-        expectedRevision !== store.publicConfig().revision
+        expectedRevision !==
+          (skillMutation
+            ? store.skills.runtime().revision
+            : store.publicConfig().revision)
       )
         return send(409, {
-          error: "CONFIGURATION_CHANGED",
-          hint: "The saved revision changed. Check the saved configuration before applying your retained draft.",
+          error: skillMutation ? "SKILLS_CHANGED" : "CONFIGURATION_CHANGED",
+          hint: skillMutation
+            ? "Skills changed after this editor loaded. Refresh and review the saved revision before applying your retained draft."
+            : "The saved revision changed. Check the saved configuration before applying your retained draft.",
         });
+      if (
+        skillMutation &&
+        (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)
+      )
+        return send(400, { error: "INVALID_SKILL_REVISION" });
       if (
         confirmRestart !== undefined &&
         (typeof confirmRestart !== "boolean" ||
@@ -685,7 +722,8 @@ export async function admin(
         if (
           ["/api/config", "/api/rollback", "/api/persona-restore"].includes(
             path,
-          )
+          ) ||
+          skillMutation
         ) {
           if (
             ((worker && worker.state !== "stopped") || terminal.active) &&
@@ -696,7 +734,26 @@ export async function admin(
               hint: "Confirm to stop Coach, apply this change and restart it if it was running. Native sessions close; chat and actions are never replayed.",
             });
           await transition(path, { confirmRestart, operationId }, async () => {
-            if (path === "/api/config") {
+            if (skillMutation) {
+              const id = skillMutation[1];
+              const restored = !!skillMutation[2];
+              if (
+                restored &&
+                (!body || Array.isArray(body) || Object.keys(body).length !== 0)
+              )
+                throw new Error("INVALID_SKILL");
+              const result = restored
+                ? await store.skills.restoreDefault(id, expectedRevision)
+                : await store.skills.save(id, body, expectedRevision);
+              logs.record({
+                source: "studio",
+                stage: "skills-revision-saved",
+                metadata: {
+                  skillRevision: result.revision,
+                  enabledSkills: store.skills.runtime().skills.length,
+                },
+              });
+            } else if (path === "/api/config") {
               // Every incoming credential, including inactive and new registry
               // providers, must be absent from retained action receipts.
               // Retired chat archives are never loaded, served or rewritten.
@@ -722,7 +779,12 @@ export async function admin(
               await store.restorePersona(body.revision);
             } else await store.rollback();
           });
-          return send(200, { ok: true, lifecycle });
+          return send(
+            200,
+            skillMutation
+              ? { ...store.skills.view(skillMutation[1]), lifecycle }
+              : { ok: true, lifecycle },
+          );
         }
         if (path === "/api/connect") {
           if (!store.secrets.token) throw new Error("TOKEN_REQUIRED");
