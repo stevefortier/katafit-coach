@@ -24,6 +24,11 @@ function formatTimestamp(value, fallback = "Time unavailable") {
     ? localTimestamp.format(date)
     : fallback;
 }
+function detailText(tag, value) {
+  const element = document.createElement(tag);
+  element.textContent = String(value ?? "");
+  return element;
+}
 function renderOperatorActions(actions = []) {
   const labels = {
     delivered: "Delivered",
@@ -264,26 +269,7 @@ async function api(path, body, signal) {
       redirect: "error",
       cache: "no-store",
     });
-    if (/^members\/activity\?/.test(path)) {
-      const reader = r.body.getReader(),
-        chunks = [];
-      let bytes = 0;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          bytes += value.byteLength;
-          if (bytes > 256 * 1024) {
-            await reader.cancel();
-            throw new Error("Detail response too large");
-          }
-          chunks.push(value);
-        }
-      } finally {
-        reader.releaseLock();
-      }
-      data = JSON.parse(await new Blob(chunks).text());
-    } else data = await r.json();
+    data = await r.json();
   } catch (error) {
     if (generation !== authGeneration || requestKey !== key)
       throw staleAuthentication();
@@ -315,8 +301,8 @@ async function load(preserveDrafts = false) {
   const generation = authGeneration;
   const data = await api("config");
   if (generation !== authGeneration) throw staleAuthentication();
-  if (config) resetMembers();
   config = data;
+  renderCoachName();
   for (const f of fields) $(f).value = config.persona[f];
   if (!preserveDrafts || !modelsDraft) {
     $("origin").value = config.origin;
@@ -1513,6 +1499,15 @@ for (const [index, section] of diagnosticsSections.entries()) {
     });
   };
 }
+function renderCoachName() {
+  const name =
+    key && typeof config?.persona?.name === "string"
+      ? config.persona.name.trim()
+      : "";
+  const label = name || "Coach";
+  $("coachTab").textContent = label;
+  $("coachTab").title = label;
+}
 function studioRoute() {
   if (location.pathname === "/diagnostics")
     return {
@@ -1527,15 +1522,10 @@ function studioRoute() {
       ? { tab: "diagnostics", legacy: true }
       : { tab: "settings", section };
   }
-  if (location.pathname.startsWith("/chat/member/")) {
-    try {
-      return {
-        tab: "coach",
-        member: decodeURIComponent(location.pathname.slice(13)),
-      };
-    } catch {}
-  }
-  return { tab: "coach" };
+  return {
+    tab: "coach",
+    legacy: location.pathname.startsWith("/chat/member/"),
+  };
 }
 function navigateStudio(path) {
   if (location.pathname + location.search + location.hash !== path)
@@ -1543,7 +1533,12 @@ function navigateStudio(path) {
 }
 function restoreStudioRoute(restartDiagnostics = false) {
   const route = studioRoute();
-  if (route.legacy) history.replaceState(null, "", "/diagnostics");
+  if (route.legacy)
+    history.replaceState(
+      null,
+      "",
+      route.tab === "coach" ? "/chat/operator" : "/diagnostics",
+    );
   if (route.tab === "settings") selectSettingsSection(route.section, false);
   if (route.tab === "diagnostics")
     selectDiagnosticsSection(route.section, false);
@@ -1553,12 +1548,6 @@ function restoreStudioRoute(restartDiagnostics = false) {
     $("diagnostics").hidden
   )
     selectStudioTab(route.tab, false);
-  if (route.tab === "coach") {
-    const member = route.member
-      ? members.find((m) => m.member_ref === route.member)
-      : null;
-    selectConversation(member || null, false);
-  }
 }
 window.addEventListener("popstate", () => {
   if (key) restoreStudioRoute();
@@ -1587,14 +1576,10 @@ function selectStudioTab(tab, navigate = true) {
   }
   logVisibility();
   if (coach) operatorSnapshotLabel();
-  memberVisibility();
-  if (coach && key && !members.length) void loadMembers();
   if (navigate)
     navigateStudio(
       coach
-        ? selectedMember
-          ? "/chat/member/" + encodeURIComponent(selectedMember.member_ref)
-          : "/chat/operator"
+        ? "/chat/operator"
         : tab === "diagnostics"
           ? "/diagnostics?section=" + diagnosticsSection
           : settingsPath(),
@@ -2499,7 +2484,7 @@ function lockSession(message, severity) {
   $("skillHistoryList").replaceChildren();
   $("skillHistorySnapshot").replaceChildren();
   $("skillHistoryDetail").hidden = true;
-  resetMembers();
+  renderCoachName();
   renderOperatorActions();
 
   $("operatorStatus").textContent = "";
@@ -2587,665 +2572,4 @@ const native = nativeTerminal({
     !updatePending &&
     !updateData?.applying &&
     !updateData?.recovering,
-});
-
-// Member feed data never crosses into operator state or browser storage.
-let members = [],
-  membersCursor = null,
-  membersEpoch = 0;
-let selectedMember = null,
-  memberItems = [],
-  memberCursor = null,
-  memberLoading = false,
-  memberEpoch = 0,
-  memberTimer;
-let memberScrollMax = 0;
-const memberActive = () =>
-  key && !document.hidden && !$("coachPanel").hidden && selectedMember;
-function resetMembers() {
-  ++membersEpoch;
-  members = [];
-  membersCursor = null;
-  selectConversation(null, false);
-  renderMembers();
-  $("membersStatus").textContent = "";
-}
-function renderMembers() {
-  for (const tab of $("conversationTabs").querySelectorAll(".member-tab"))
-    tab.remove();
-  for (const member of members) {
-    const button = document.createElement("button");
-    button.className = "member-tab";
-    button.classList.toggle(
-      "secondary",
-      selectedMember?.member_ref !== member.member_ref,
-    );
-    button.textContent = member.display_name;
-    button.setAttribute(
-      "aria-pressed",
-      String(selectedMember?.member_ref === member.member_ref),
-    );
-    button.onclick = () => selectConversation(member);
-    $("conversationTabs").append(button);
-  }
-  $("operatorTab").setAttribute("aria-pressed", String(!selectedMember));
-  $("operatorTab").classList.toggle("secondary", !!selectedMember);
-  $("membersMore").hidden = !membersCursor;
-}
-async function loadMembers(more = false, routePages = 0) {
-  if (!key || document.hidden || $("coachPanel").hidden) return;
-  const epoch = ++membersEpoch,
-    generation = authGeneration;
-  $("membersStatus").textContent = "Loading available conversations…";
-  $("membersMore").disabled = true;
-  try {
-    const data = await api(
-      "members?" +
-        new URLSearchParams(
-          more && membersCursor ? { cursor: membersCursor } : {},
-        ),
-    );
-    if (epoch !== membersEpoch || generation !== authGeneration) return;
-    members = [
-      ...new Map(
-        [...(more ? members : []), ...data.members].map((m) => [
-          m.member_ref,
-          m,
-        ]),
-      ).values(),
-    ];
-    membersCursor = data.has_more ? data.next_cursor : null;
-    if (selectedMember) {
-      const current = members.find(
-        (m) => m.member_ref === selectedMember.member_ref,
-      );
-      if (!current || current.access !== "granted")
-        selectConversation(current || null, false);
-    }
-    renderMembers();
-    const routedMember = studioRoute().member;
-    if (routedMember && !$("coachPanel").hidden) restoreStudioRoute();
-    $("membersStatus").textContent = members.length
-      ? ""
-      : "No member conversations available for this credential. Check dojo membership and credential access in Kata.fit, then refresh.";
-    if (routedMember && !members.some((m) => m.member_ref === routedMember)) {
-      if (membersCursor && routePages < 10)
-        void loadMembers(true, routePages + 1);
-      else
-        $("membersStatus").textContent =
-          "Conversation unavailable for this credential. Check member access or refresh the roster.";
-    }
-  } catch (error) {
-    if (epoch !== membersEpoch || generation !== authGeneration) return;
-    members = [];
-    membersCursor = null;
-    selectConversation(null, false);
-    renderMembers();
-    $("membersStatus").textContent =
-      "Member conversations unavailable. Check your connection in Settings and dojo membership, chief authority and credential access in Kata.fit, or update an older backend, then Refresh Roster.";
-  } finally {
-    if (epoch === membersEpoch && generation === authGeneration)
-      $("membersMore").disabled = false;
-  }
-}
-function selectConversation(member, navigate = true) {
-  clearActivities();
-  ++memberEpoch;
-  clearTimeout(memberTimer);
-  selectedMember = member;
-  memberItems = [];
-  memberCursor = null;
-  memberLoading = false;
-  $("memberItems").replaceChildren();
-  $("memberMore").hidden = true;
-  $("operatorView").hidden = !!member;
-  $("memberView").hidden = !member;
-  $("memberStatus").textContent = "";
-  renderMembers();
-  if (navigate && $("settingsPanel").hidden)
-    navigateStudio(
-      member
-        ? "/chat/member/" + encodeURIComponent(member.member_ref)
-        : "/chat/operator",
-    );
-  if (!member) return;
-  $("memberView").setAttribute("aria-label", member.display_name);
-  $("memberRefresh").disabled = member.access !== "granted";
-  if (member.access !== "granted")
-    $("memberStatus").textContent =
-      "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh Roster. Category sharing controls activity records, not Coach messages.";
-  else void loadMemberFeed();
-}
-function renderMemberFeed() {
-  const list = $("memberItems");
-  const pinned = list.scrollHeight - list.clientHeight - list.scrollTop <= 40;
-  disposeDetails($("memberItems"));
-  $("memberItems").replaceChildren();
-  const kinds = {
-    message: "Message",
-    activity_event: "Activity",
-    insight: "Insight",
-    proposal_summary: "Proposal summary",
-  };
-  // The backend pages newest-first; the conversation reads oldest-first.
-  // Never turn a standalone insight into a reply to an invented question.
-  const ordered = [...memberItems].sort(
-    (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at),
-  );
-  let previousActivity, thread;
-  for (const item of ordered) {
-    if (item.activity_ref && item.activity_ref !== previousActivity) {
-      thread = document.createElement("section");
-      thread.className = "member-thread";
-      thread.append(
-        detailText("h3", "Activity conversation"),
-        activityCard({
-          activity_ref: item.activity_ref,
-          name: "Expand shared activity",
-        }),
-      );
-      $("memberItems").append(thread);
-    } else if (!item.activity_ref) thread = null;
-    previousActivity = item.activity_ref;
-    const row = document.createElement("article");
-    const message = item.type === "message";
-    row.className =
-      "member-item chat-message" +
-      (message && item.role === "user"
-        ? " chat-user"
-        : message && item.role === "coach"
-          ? " chat-assistant"
-          : " member-event");
-    const label = document.createElement("strong");
-    label.textContent =
-      (message && item.role === "user"
-        ? selectedMember.display_name
-        : message && item.role === "coach"
-          ? "Coach"
-          : kinds[item.type] || "Feed item") +
-      (item.status ? " · " + item.status : "");
-    const time = document.createElement("small");
-    time.textContent = formatTimestamp(item.created_at);
-    const text = document.createElement("p");
-    text.textContent =
-      item.text ||
-      (item.attachments_omitted
-        ? "Attachment content omitted."
-        : "No text content.");
-    row.append(label, time, text);
-    if (item.attachments_omitted && item.text) {
-      const omitted = document.createElement("p");
-      omitted.textContent = "Attachment content omitted.";
-      row.append(omitted);
-    }
-    (thread || $("memberItems")).append(row);
-  }
-  $("memberMore").hidden = !memberCursor;
-  if (pinned) list.scrollTop = list.scrollHeight;
-  memberScrollMax = list.scrollHeight - list.clientHeight;
-}
-async function loadMemberFeed(more = false, validate = false) {
-  if (!memberActive() || selectedMember.access !== "granted" || memberLoading)
-    return;
-  clearTimeout(memberTimer);
-  memberLoading = true;
-  const epoch = ++memberEpoch,
-    generation = authGeneration,
-    ref = selectedMember.member_ref,
-    requestedCursor = more ? memberCursor : null;
-  const list = $("memberItems");
-  const oldHeight = list.scrollHeight;
-  const oldTop = list.scrollTop;
-  const pinned = oldHeight - list.clientHeight - oldTop <= 40;
-  $("memberStatus").textContent = memberItems.length ? "" : "Loading feed…";
-  $("memberMore").disabled = true;
-  try {
-    const params = new URLSearchParams({ member_ref: ref });
-    if (requestedCursor) params.set("cursor", requestedCursor);
-    const data = await api("members/feed?" + params);
-    if (
-      epoch !== memberEpoch ||
-      generation !== authGeneration ||
-      !memberActive()
-    )
-      return;
-    if (data.member_ref !== ref) throw new Error("Mismatched member");
-    // Conversation membership survives raw-category revocation. Rechecking a
-    // feed must not leave previously expanded raw data independently retained.
-    clearActivities();
-    const unchanged =
-      validate &&
-      !more &&
-      data.items.every((item) =>
-        memberItems.some(
-          (existing) => JSON.stringify(existing) === JSON.stringify(item),
-        ),
-      );
-    if (more || !validate || !memberItems.length)
-      memberCursor = data.has_more ? data.next_cursor : null;
-    if (unchanged) {
-      // Revoked raw details were cleared above; stable chat rows need no DOM work.
-      $("memberMore").hidden = !memberCursor;
-      $("memberStatus").textContent = "";
-      return;
-    }
-    memberItems = [
-      ...new Map(
-        [...(more || validate ? memberItems : []), ...data.items].map(
-          (item) => [item.id, item],
-        ),
-      ).values(),
-    ];
-    renderMemberFeed();
-    if (more) list.scrollTop = oldTop + list.scrollHeight - oldHeight;
-    else if (!pinned) list.scrollTop = oldTop;
-    else list.scrollTop = list.scrollHeight;
-    $("memberStatus").textContent = memberItems.length
-      ? ""
-      : "No retained Coach feed items are available.";
-  } catch (error) {
-    if (epoch !== memberEpoch || generation !== authGeneration) return;
-    clearActivities();
-    memberItems = [];
-    memberCursor = null;
-    memberLoading = false;
-    renderMemberFeed();
-    $("memberStatus").textContent = error.message?.includes(
-      "UPDATE_IN_PROGRESS",
-    )
-      ? "Studio is updating. Member feeds are temporarily unavailable; retry shortly."
-      : error.message?.includes("BACKEND_TIMEOUT")
-        ? "Kata.fit feed timed out. Retry shortly; this does not mean sharing changed."
-        : error.message?.includes("MCP_TOOL_FAILED")
-          ? "Kata.fit could not build this feed. Retry or check the connection; this does not prove sharing changed."
-          : "Feed unavailable. Retry or refresh members; if access changed, check sharing in Kata.fit.";
-  } finally {
-    if (epoch === memberEpoch && generation === authGeneration) {
-      memberLoading = false;
-      $("memberMore").disabled = false;
-      if (memberActive())
-        memberTimer = setTimeout(() => loadMemberFeed(false, true), 15000);
-      if (
-        memberActive() &&
-        memberCursor &&
-        list.scrollHeight <= list.clientHeight
-      )
-        queueMicrotask(() => loadMemberFeed(true));
-    }
-  }
-}
-$("memberItems").addEventListener("scroll", () => {
-  if (memberCursor && !memberLoading && $("memberItems").scrollTop <= 80)
-    void loadMemberFeed(true);
-});
-// Reflow changes message wrapping without a feed render. Follow a pane that
-// was pinned before resize, while leaving a scrolled-up reader undisturbed.
-{
-  const list = $("memberItems");
-  new ResizeObserver(() => {
-    if (!list.getClientRects().length) return;
-    const pinned = memberScrollMax - list.scrollTop <= 40;
-    if (pinned) list.scrollTop = list.scrollHeight;
-    memberScrollMax = list.scrollHeight - list.clientHeight;
-  }).observe(list);
-}
-// Every expansion owns its requests and URLs; no raw source IDs become URLs.
-const detailResources = new Set();
-function disposeDetails(root) {
-  for (const resource of [...detailResources]) {
-    if (!root || root === resource.node || root.contains(resource.node)) {
-      resource.controller.abort();
-      for (const url of resource.urls) URL.revokeObjectURL(url);
-      detailResources.delete(resource);
-    }
-  }
-}
-function clearActivities() {
-  disposeDetails();
-  // Closing alone fires toggle asynchronously; clear their raw DOM immediately.
-  for (const node of $("memberItems").querySelectorAll(
-    "details.activity-card",
-  )) {
-    node.open = false;
-    node.querySelector(":scope > div")?.replaceChildren();
-  }
-}
-function detailScope(node) {
-  const controller = new AbortController();
-  const generation = authGeneration,
-    ref = selectedMember?.member_ref;
-  const resource = { node, controller, urls: [] };
-  detailResources.add(resource);
-  resource.current = () =>
-    !controller.signal.aborted &&
-    generation === authGeneration &&
-    memberActive() &&
-    selectedMember?.member_ref === ref &&
-    node.isConnected;
-  resource.ref = ref;
-  resource.signal = AbortSignal.any([
-    controller.signal,
-    AbortSignal.timeout(20000),
-  ]);
-  return resource;
-}
-function detailText(tag, text) {
-  const node = document.createElement(tag);
-  node.textContent = String(text);
-  return node;
-}
-function lazyDetails(label, load) {
-  const node = document.createElement("details");
-  node.className = "activity-card";
-  node.append(detailText("summary", label));
-  const body = document.createElement("div");
-  node.append(body);
-  node.addEventListener("toggle", () => {
-    disposeDetails(node);
-    body.replaceChildren();
-    if (node.open) void load(body);
-  });
-  return node;
-}
-function detailError(body, retry) {
-  body.replaceChildren(
-    detailText(
-      "p",
-      "Details unavailable. Sharing may have changed, or this backend may not support this view. Refresh or retry.",
-    ),
-  );
-  const button = detailText("button", "Retry");
-  button.type = "button";
-  button.onclick = () => {
-    button.disabled = true;
-    void retry();
-  };
-  body.append(button);
-}
-function renderDetailFields(body, row, fields) {
-  const list = document.createElement("dl");
-  for (const [key, label] of fields) {
-    const value = row[key];
-    if (!["string", "number", "boolean"].includes(typeof value)) continue;
-    list.append(
-      detailText("dt", label),
-      detailText(
-        "dd",
-        key.endsWith("_at") || key.endsWith("_date")
-          ? formatTimestamp(value)
-          : value,
-      ),
-    );
-  }
-  body.append(list);
-}
-async function loadDetailPage(body, activity, section, exercise, cursor) {
-  if (!cursor) {
-    disposeDetails(body);
-    body.replaceChildren();
-  }
-  const scope = detailScope(body);
-  const loading = detailText("p", "Loading details…");
-  loading.setAttribute("role", "status");
-  body.append(loading);
-  try {
-    const params = new URLSearchParams({
-      member_ref: scope.ref,
-      activity_ref: activity.activity_ref,
-      section,
-    });
-    if (exercise) params.set("exercise_instance_id", exercise);
-    if (cursor) params.set("cursor", cursor);
-    const data = await api(
-      "members/activity?" + params,
-      undefined,
-      scope.signal,
-    );
-    if (!scope.current()) return;
-    if (
-      data.member_ref !== scope.ref ||
-      data.activity?.activity_ref !== activity.activity_ref ||
-      data.section !== section ||
-      !Array.isArray(data.items) ||
-      data.items.length > 100
-    )
-      throw new Error("Invalid detail response");
-    loading.remove();
-    if (section === "overview") {
-      const next = {
-        workout: "workout_exercises",
-        meal: "meal_foods",
-        metric: "measurements",
-        survey: "survey_questions",
-        status_change: "status",
-        media: "media_files",
-      }[data.activity.type];
-      if (next) return await loadDetailPage(body, data.activity, next);
-    }
-    if (!data.items.length)
-      body.append(detailText("p", "No recorded details in this section."));
-    for (const row of data.items) {
-      if (section === "workout_exercises") {
-        body.append(
-          lazyDetails(row.name || "Exercise", (child) =>
-            loadDetailPage(child, activity, "workout_sets", row._id),
-          ),
-        );
-      } else if (section === "media_files") {
-        if (typeof row.media_ref === "string")
-          await loadMemberImage(body, row.media_ref, scope);
-        else
-          body.append(
-            detailText(
-              "p",
-              "Photo unavailable under current sharing or credential access.",
-            ),
-          );
-      } else {
-        const card = document.createElement("article");
-        if (section === "workout_sets") {
-          card.append(
-            detailText(
-              "strong",
-              `${row.reps ?? row.repetitions ?? "—"} reps · ${row.weight ?? "—"} ${row.weight_unit || "(unit not recorded)"}`,
-            ),
-          );
-          renderDetailFields(card, row, [
-            ["complete", "Completed"],
-            ["distance", "Distance"],
-            ["distance_unit", "Distance unit"],
-            ["duration", "Duration"],
-            ["duration_unit", "Duration unit"],
-            ["calories", "Calories"],
-          ]);
-        } else if (section === "meal_foods") {
-          card.append(
-            detailText(
-              "strong",
-              `${row.name || "Food / ingredient"} · ${row.quantity ?? "—"} ${row.unit || "(unit not recorded)"}`,
-            ),
-          );
-          renderDetailFields(card, row, [
-            ["serving_size", "Serving size"],
-            ["calories", "Calories (stored)"],
-            ["protein", "Protein (stored)"],
-            ["carbs", "Carbohydrates (stored)"],
-            ["fat", "Fat (stored)"],
-            ["water_ml", "Water (ml)"],
-            ["nutrition_source", "Nutrition source"],
-          ]);
-          if (row.snapshot) {
-            card.append(
-              detailText(
-                "p",
-                "Logged nutrition snapshot (not recalculated totals)",
-              ),
-            );
-            renderDetailFields(card, row.snapshot, [
-              ["calories", "Calories"],
-              ["protein", "Protein"],
-              ["carbs", "Carbohydrates"],
-              ["fat", "Fat"],
-              ["fiber", "Fiber"],
-              ["sodium", "Sodium"],
-              ["serving_size", "Serving size"],
-              ["serving_unit", "Serving unit"],
-            ]);
-          }
-        } else {
-          renderDetailFields(card, row, [
-            ["name", "Name"],
-            ["type", "Type"],
-            ["status", "Status"],
-            ["type_id", "Measurement"],
-            ["value", "Value"],
-            ["unit", "Unit"],
-            ["text", "Question"],
-            ["answer", "Answer"],
-            ["reason", "Reason"],
-            ["effective_at", "Effective at"],
-            ["start_date", "Starts"],
-            ["end_date", "Ends"],
-            ["created_at", "Created"],
-            ["completed_at", "Completed"],
-            ["due_at", "Due"],
-            ["measured_at", "Measured"],
-          ]);
-        }
-        body.append(card);
-      }
-    }
-    if (data.has_more && data.next_cursor) {
-      const more = detailText("button", "Load more details");
-      more.type = "button";
-      more.onclick = () => {
-        more.remove();
-        void loadDetailPage(
-          body,
-          activity,
-          section,
-          exercise,
-          data.next_cursor,
-        );
-      };
-      body.append(more);
-    }
-  } catch {
-    if (scope.current()) {
-      disposeDetails(body);
-      detailError(body, () =>
-        loadDetailPage(body, activity, section, exercise),
-      );
-    }
-  }
-}
-async function loadMemberImage(body, media_ref, scope) {
-  const generation = authGeneration,
-    requestKey = key;
-  const response = await fetch(
-    "/api/members/media?" +
-      new URLSearchParams({ member_ref: scope.ref, media_ref }),
-    {
-      headers: { Authorization: "Bearer " + requestKey },
-      signal: scope.signal,
-      redirect: "error",
-      cache: "no-store",
-    },
-  );
-  if (!scope.current()) {
-    await response.body?.cancel();
-    return;
-  }
-  if (
-    response.status === 401 &&
-    generation === authGeneration &&
-    requestKey === key
-  ) {
-    lockSession(
-      "Studio authorization expired. Unlock again with the current admin key.",
-      "error",
-    );
-    return;
-  }
-  const type = response.headers.get("content-type")?.split(";")[0];
-  if (
-    !response.ok ||
-    !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(type)
-  ) {
-    await response.body?.cancel();
-    throw new Error("Image unavailable");
-  }
-  const reader = response.body.getReader(),
-    chunks = [];
-  let length = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      length += value.byteLength;
-      if (length > 8 * 1024 * 1024) {
-        await reader.cancel();
-        throw new Error("Image too large");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  if (!scope.current()) return;
-  const url = URL.createObjectURL(new Blob(chunks, { type }));
-  scope.urls.push(url);
-  const image = document.createElement("img");
-  image.alt = "Shared activity photo";
-  image.src = url;
-  image.onerror = () => {
-    if (scope.current()) {
-      image.replaceWith(
-        detailText(
-          "p",
-          "Photo could not be decoded. Collapse and reopen to retry.",
-        ),
-      );
-      URL.revokeObjectURL(url);
-    }
-  };
-  body.append(image);
-}
-function activityCard(activity) {
-  const sections = {
-    workout: "workout_exercises",
-    meal: "meal_foods",
-    metric: "measurements",
-    survey: "survey_questions",
-    status_change: "status",
-    media: "media_files",
-  };
-  return lazyDetails(
-    activity.name || `${activity.type || "Shared"} activity details`,
-    (body) =>
-      loadDetailPage(body, activity, sections[activity.type] || "overview"),
-  );
-}
-function memberVisibility() {
-  clearActivities();
-  ++memberEpoch;
-  clearTimeout(memberTimer);
-  // Erase hidden customer content; never retain a stale authority snapshot.
-  memberItems = [];
-  memberCursor = null;
-  memberLoading = false;
-  $("memberItems").replaceChildren();
-  $("memberMore").hidden = true;
-  if (memberActive()) void loadMemberFeed();
-}
-$("operatorTab").onclick = () => selectConversation(null);
-$("membersRefresh").onclick = () => loadMembers();
-$("membersMore").onclick = () => loadMembers(true);
-$("memberRefresh").onclick = () => loadMemberFeed();
-$("memberMore").onclick = () => loadMemberFeed(true);
-document.addEventListener("visibilitychange", memberVisibility);
-window.addEventListener("pagehide", () => {
-  clearActivities();
-  ++memberEpoch;
-  clearTimeout(memberTimer);
 });

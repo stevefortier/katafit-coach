@@ -59,11 +59,6 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
         state: "succeeded",
         at: Date.parse(instants[2]),
       };
-      const member = {
-        member_ref: "synthetic",
-        display_name: "Synthetic Member",
-        access: "granted",
-      };
       const history = [instants[0], null, "invalid"].map((savedAt, i) => ({
         revision: 3 - i,
         savedAt,
@@ -106,59 +101,21 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
                 }
               : path === "/api/logs"
                 ? { entries, capacity: 5000 }
-                : path === "/api/members"
-                  ? { members: [member], has_more: false }
-                  : path === "/api/persona-history"
-                    ? { items: history, total: history.length }
-                    : path === "/api/persona-history/3"
-                      ? history[0]
-                      : ["/api/update", "/api/update/check"].includes(path)
-                        ? {
-                            supported: true,
-                            installed: operation.sha,
-                            latest: operation.sha,
-                            checkedAt: operation.at,
-                            lastOperation: operation,
-                          }
-                        : path === "/api/members/feed"
-                          ? {
-                              member_ref: member.member_ref,
-                              items: instants.map((created_at, i) => ({
-                                id: String(i),
-                                type: "message",
-                                role: "coach",
-                                text: "Synthetic message",
-                                created_at,
-                                activity_ref: "activity",
-                              })),
-                              has_more: false,
-                            }
-                          : path === "/api/members/activity"
-                            ? {
-                                member_ref: member.member_ref,
-                                activity: {
-                                  activity_ref: "activity",
-                                  type: "status_change",
-                                },
-                                section: new URL(
-                                  route.request().url(),
-                                ).searchParams.get("section"),
-                                items: [
-                                  {
-                                    effective_at: instants[0],
-                                    created_at: instants[1],
-                                    completed_at: instants[2],
-                                    due_at: "invalid",
-                                    measured_at: null,
-                                    start_date: "2026-03-08",
-                                    end_date: "2026-03-09",
-                                  },
-                                ],
-                                has_more: false,
-                              }
-                            : path === "/api/terminal/receipts"
-                              ? { actions: [] }
-                              : {};
+                : path === "/api/persona-history"
+                  ? { items: history, total: history.length }
+                  : path === "/api/persona-history/3"
+                    ? history[0]
+                    : ["/api/update", "/api/update/check"].includes(path)
+                      ? {
+                          supported: true,
+                          installed: operation.sha,
+                          latest: operation.sha,
+                          checkedAt: operation.at,
+                          lastOperation: operation,
+                        }
+                      : path === "/api/terminal/receipts"
+                        ? { actions: [] }
+                        : {};
         await route.fulfill({ json: body });
       });
       await page.goto(
@@ -283,27 +240,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
         `Last upgrade succeeded · ${operation.sha.slice(0, 12)} · ${expected[2]}`,
       );
       await page.locator("#coachTab").click();
-      await page
-        .getByRole("button", { name: "Synthetic Member", exact: true })
-        .click();
-      await page.locator(".member-item").first().waitFor();
-      assert.deepEqual(
-        await page.locator(".member-item small").allTextContents(),
-        expected,
-      );
-      await page.locator(".activity-card > summary").first().click();
-      await page.locator(".activity-card dd").first().waitFor();
-      assert.deepEqual(
-        await page.locator(".activity-card dd").allTextContents(),
-        [
-          expected[0],
-          "2026-03-08",
-          "2026-03-09",
-          expected[1],
-          expected[2],
-          "Time unavailable",
-        ],
-      );
+      assert.equal(new URL(page.url()).pathname, "/chat/operator");
       assert.equal(await page.locator("#operatorMessages").count(), 0);
       assert.deepEqual(errors, []);
     } finally {
