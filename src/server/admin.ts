@@ -124,7 +124,7 @@ export async function admin(
         secrets: Object.values(store.secrets),
         vision: c.provider.vision === true,
         skills,
-        memories: store.memories.runtime({ host: c.origin }),
+        memories: store.memories.runtime({ host: store.memoryAuthority() }),
         onDiagnostic: (event) => logs.record(event),
         archiveTaskInvalidation: (record) =>
           archiveTaskInvalidation(store.dir, record),
@@ -540,6 +540,7 @@ export async function admin(
         return send(
           200,
           store.memories.list({
+            host: store.memoryAuthority(),
             scope: (params.get("scope") || undefined) as any,
             kind: (params.get("kind") || undefined) as any,
             q: params.get("q") || undefined,
@@ -551,7 +552,10 @@ export async function admin(
       if (req.method === "GET" && path.startsWith("/api/memories/history/")) {
         const id = path.slice("/api/memories/history/".length);
         if (!/^[a-f0-9]{32}$/.test(id)) throw new Error("MEMORY_NOT_FOUND");
-        return send(200, store.memories.history(id));
+        return send(
+          200,
+          store.memories.history(id, { host: store.memoryAuthority() }),
+        );
       }
       if (
         req.method === "GET" &&
@@ -820,7 +824,7 @@ export async function admin(
         try {
           if (!id) {
             const entry = await store.memories.add({
-              host: store.publicConfig().origin,
+              host: store.memoryAuthority(),
               subject: { scope: body.scope },
               kind: body.kind,
               text: body.text,
@@ -836,35 +840,46 @@ export async function admin(
               },
             });
             return send(200, {
-              revision: store.memories.list().revision,
+              revision: store.memories.list({ host: store.memoryAuthority() })
+                .revision,
               entry,
             });
           }
           if (action === "archive") {
-            await store.memories.archive(id);
+            await store.memories.archive(id, { host: store.memoryAuthority() });
             return send(200, {
               ok: true,
-              revision: store.memories.list().revision,
+              revision: store.memories.list({ host: store.memoryAuthority() })
+                .revision,
             });
           }
           if (action === "forget") {
-            await store.memories.forget(id);
+            await store.memories.forget(id, { host: store.memoryAuthority() });
             return send(200, {
               ok: true,
-              revision: store.memories.list().revision,
+              revision: store.memories.list({ host: store.memoryAuthority() })
+                .revision,
             });
           }
-          const entry = await store.memories.update(id, {
-            text: body.text,
-            kind: body.kind,
-            confidence: body.confidence,
-            importance: body.importance,
-            relevance: body.relevance,
-            review_after: body.review_after ?? null,
-            pinned: body.pinned !== false,
-            operator_note: body.source_note,
+          const entry = await store.memories.update(
+            id,
+            {
+              text: body.text,
+              kind: body.kind,
+              confidence: body.confidence,
+              importance: body.importance,
+              relevance: body.relevance,
+              review_after: body.review_after ?? null,
+              pinned: body.pinned !== false,
+              operator_note: body.source_note,
+            },
+            { host: store.memoryAuthority() },
+          );
+          return send(200, {
+            revision: store.memories.list({ host: store.memoryAuthority() })
+              .revision,
+            entry,
           });
-          return send(200, { revision: store.memories.list().revision, entry });
         } catch (error: any) {
           const code = error?.message;
           return send(code === "MEMORY_AUTHORITY_UNAVAILABLE" ? 409 : 400, {

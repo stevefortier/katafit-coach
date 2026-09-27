@@ -207,7 +207,7 @@ export async function openNativeGateway(
 ) {
   const config = store.publicConfig();
   const skills = store.skills.runtime();
-  const memories = store.memories.runtime({ host: config.origin });
+  const memories = store.memories.runtime({ host: store.memoryAuthority() });
   const secrets = { ...store.secrets };
   const abort = new AbortController();
   const lifetime = signal
@@ -215,6 +215,7 @@ export async function openNativeGateway(
     : abort.signal;
   let closed = false;
   let active = false;
+  const disclosedMemories = new Set<string>();
   // One bounded human-turn latch, set only by the trusted host terminal.
   let turnArmed = false;
   let terminated: string | undefined;
@@ -273,9 +274,6 @@ export async function openNativeGateway(
         : undefined;
     },
   });
-  const check = () => {
-    if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
-  };
   let disposal: Promise<void> | undefined;
   let deadline: NodeJS.Timeout | undefined;
   const close = () => {
@@ -296,6 +294,19 @@ export async function openNativeGateway(
       hooks.onTerminate?.(reason);
     } catch {
       /* Owner hook failure must not resurrect the gateway. */
+    }
+  };
+  const trackMemoryDisclosure = (ids: string[]) => {
+    for (const id of ids) disclosedMemories.add(id);
+  };
+  const memoryCurrent = () =>
+    disclosedMemories.size === 0 ||
+    memories.active([...disclosedMemories.values()]);
+  const check = () => {
+    if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
+    if (!memoryCurrent()) {
+      terminate("MEMORY_FORGOTTEN");
+      throw new Error("NATIVE_SESSION_REVOKED");
     }
   };
   const settle = (error: unknown) => {
@@ -744,7 +755,26 @@ export async function openNativeGateway(
       if (request.name === "coach_recall_memory") {
         const tool = memoryRecallTool(memories, "operator-private");
         const args = tool.prepareArguments?.(request.args) ?? request.args;
-        return tool.execute(randomUUID(), args, abort.signal);
+        const result = await tool.execute(randomUUID(), args, abort.signal);
+        const first = result?.content?.[0];
+        const text = first?.type === "text" ? first.text : undefined;
+        if (typeof text === "string") {
+          try {
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed?.items))
+              trackMemoryDisclosure(
+                parsed.items
+                  .map((item: any) => item?.id)
+                  .filter(
+                    (id: unknown): id is string => typeof id === "string",
+                  ),
+              );
+          } catch {
+            throw new Error("NATIVE_TOOL_REJECTED");
+          }
+        }
+        check();
+        return result;
       }
       const tool = session.tools.find((t) => t.name === request.name);
       if (!tool) throw new Error("NATIVE_TOOL_REJECTED");
@@ -813,6 +843,8 @@ export async function openNativeGateway(
       recall.status === "ok" && recall.items.length
         ? formatMemoryRecall(recall, "operator")
         : "";
+    if (memoryNotice)
+      trackMemoryDisclosure(recall.items.map((item) => item.id));
     const body = {
       ...request.body,
       messages: memoryNotice

@@ -511,6 +511,28 @@ export class Store {
     delete config.models;
     return config;
   }
+  /**
+   * Local memory partition for operator-owned memories. This is intentionally
+   * credential-scoped, not a backend tenant identity: rotation hides prior
+   * local memories until a canonical backend memory authority exists.
+   */
+  memoryAuthority() {
+    const tokenHash = createHash("sha256")
+      .update(this.secrets.token || "")
+      .digest("hex");
+    return (
+      "local-authority:v1:" +
+      createHash("sha256")
+        .update(
+          JSON.stringify({
+            origin: this.config.origin,
+            token_present: !!this.secrets.token,
+            token_hash: tokenHash,
+          }),
+        )
+        .digest("hex")
+    );
+  }
   /** Public registry view: credential presence only, never keys or refs. */
   modelRegistry() {
     assertNoSecrets(this.registry, Object.values(this.secrets));

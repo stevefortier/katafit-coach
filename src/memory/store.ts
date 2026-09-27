@@ -86,6 +86,7 @@ interface MemoryRecord {
 export interface MemoryRuntime {
   host: string;
   revision: number;
+  active(ids: string[]): boolean;
   recall(input: {
     audience: "operator-private" | "member-private";
     query?: string;
@@ -339,7 +340,7 @@ export class MemoryStore {
   private get manifestPath() {
     return this.dir + "/memories.json";
   }
-  private get lockDir() {
+  private get lockPath() {
     return this.dir + "/memories.lock";
   }
   private async prepare() {
@@ -419,20 +420,68 @@ export class MemoryStore {
   }
   private async withLock<T>(work: () => Promise<T>): Promise<T> {
     const deadline = Date.now() + 5000;
+    let locked = false;
     for (;;) {
       try {
-        await mkdir(this.lockDir, { mode: 0o700 });
+        const lock = await open(
+          this.lockPath,
+          constants.O_WRONLY |
+            constants.O_CREAT |
+            constants.O_EXCL |
+            constants.O_NOFOLLOW,
+          0o600,
+        );
+        try {
+          await lock.writeFile(
+            JSON.stringify({
+              pid: process.pid,
+              created_at: new Date().toISOString(),
+            }),
+          );
+          await lock.sync();
+        } finally {
+          await lock.close();
+        }
+        locked = true;
         break;
       } catch (error: any) {
         if (error.code !== "EEXIST" || Date.now() > deadline)
           throw new Error("MEMORY_LOCK_UNAVAILABLE");
+        await this.recoverLock().catch(() => {});
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
     }
     try {
       return await work();
     } finally {
-      await rm(this.lockDir, { recursive: true, force: true });
+      if (locked) await unlink(this.lockPath).catch(() => {});
+    }
+  }
+  private async recoverLock() {
+    const info = await lstat(this.lockPath);
+    if (info.isDirectory()) {
+      if (Date.now() - info.mtimeMs > 30000)
+        await rm(this.lockPath, { recursive: true, force: true });
+      return;
+    }
+    if (!info.isFile()) throw new Error("MEMORY_LOCK_UNAVAILABLE");
+    let pid: unknown;
+    try {
+      pid = JSON.parse(
+        (await regularBytes(this.lockPath, 4096)).toString(),
+      ).pid;
+    } catch {
+      if (Date.now() - info.mtimeMs > 30000) await unlink(this.lockPath);
+      return;
+    }
+    if (!Number.isSafeInteger(pid) || (pid as number) <= 0) {
+      if (Date.now() - info.mtimeMs > 30000) await unlink(this.lockPath);
+      return;
+    }
+    try {
+      process.kill(pid as number, 0);
+    } catch (error: any) {
+      if (error.code === "ESRCH") await unlink(this.lockPath);
     }
   }
   private async snapshot(record: MemoryRecord) {
@@ -489,31 +538,37 @@ export class MemoryStore {
       await unlink(temp).catch(() => {});
     }
   }
+  private async refreshLocked() {
+    // Pick up records committed by another process before deciding or appending.
+    const fresh = new MemoryStore(this.dir, this.secrets);
+    await fresh.init();
+    this.revision = fresh.revision;
+    this.head = fresh.head;
+    this.records = fresh.records;
+    this.entries = fresh.entries;
+    this.tombstones = fresh.tombstones;
+    this.revokedSources = fresh.revokedSources;
+  }
+  private async appendLocked(action: MemoryRecord["action"]) {
+    const record: MemoryRecord = {
+      version: 1,
+      revision: this.revision + 1,
+      savedAt: new Date().toISOString(),
+      previous: this.head,
+      action,
+    };
+    const name = await this.snapshot(record);
+    await syncDirectory(this.historyDir);
+    await this.writeManifest(name, record.revision);
+    this.records.push(record);
+    this.revision = record.revision;
+    this.head = name;
+    applyRecord(this.entries, this.tombstones, this.revokedSources, record);
+  }
   private async append(action: MemoryRecord["action"]) {
     await this.withLock(async () => {
-      // Pick up records committed by another process before appending.
-      const fresh = new MemoryStore(this.dir, this.secrets);
-      await fresh.init();
-      this.revision = fresh.revision;
-      this.head = fresh.head;
-      this.records = fresh.records;
-      this.entries = fresh.entries;
-      this.tombstones = fresh.tombstones;
-      this.revokedSources = fresh.revokedSources;
-      const record: MemoryRecord = {
-        version: 1,
-        revision: this.revision + 1,
-        savedAt: new Date().toISOString(),
-        previous: this.head,
-        action,
-      };
-      const name = await this.snapshot(record);
-      await syncDirectory(this.historyDir);
-      await this.writeManifest(name, record.revision);
-      this.records.push(record);
-      this.revision = record.revision;
-      this.head = name;
-      applyRecord(this.entries, this.tombstones, this.revokedSources, record);
+      await this.refreshLocked();
+      await this.appendLocked(action);
     });
   }
   private input(value: any, manual = true): MemoryEntry {
@@ -594,74 +649,102 @@ export class MemoryStore {
   }
   async add(value: any) {
     return this.serial(async () => {
-      const entry = this.input(value, true);
-      assertNoSecrets(entry, this.secrets());
-      if (this.tombstones.has(tombstoneKey(entry)))
+      return this.withLock(async () => {
+        await this.refreshLocked();
+        const entry = this.input(value, true);
+        assertNoSecrets(entry, this.secrets());
+        if (!this.tombstones.has(tombstoneKey(entry)))
+          await this.appendLocked({ type: "upsert", entry });
         return structuredClone(entry);
-      await this.append({ type: "upsert", entry });
-      return structuredClone(entry);
+      });
     });
   }
-  async update(id: string, patch: any) {
+  async update(id: string, patch: any, options: { host?: string } = {}) {
     return this.serial(async () => {
-      const current = this.entries.get(id);
-      if (!current || current.status !== "active")
-        throw new Error("MEMORY_NOT_FOUND");
-      const now = new Date().toISOString();
-      const entry: MemoryEntry = {
-        ...structuredClone(current),
-        text:
-          patch.text !== undefined
-            ? boundedText(patch.text, 2000)
-            : current.text,
-        kind: patch.kind ?? current.kind,
-        confidence: boundedNumber(patch.confidence, current.confidence),
-        importance: boundedNumber(patch.importance, current.importance),
-        relevance: boundedNumber(patch.relevance, current.relevance),
-        review_after:
-          patch.review_after === undefined
-            ? current.review_after
-            : patch.review_after === null
-              ? null
-              : boundedText(patch.review_after, 40),
-        pinned: patch.pinned !== undefined ? patch.pinned === true : true,
-        protected: true,
-        updated_at: now,
-        sources: [
-          ...current.sources,
-          {
-            type: "operator_correction",
-            id: "operator-correction:" + randomBytes(12).toString("hex"),
-            at: now,
-            ...(patch.operator_note
-              ? { note: boundedText(patch.operator_note, 500, true) }
-              : {}),
-          },
-        ],
-      };
-      if (entry.review_after !== null && !iso(entry.review_after))
-        throw new Error("INVALID_MEMORY");
-      validateEntry(entry);
-      assertNoSecrets(entry, this.secrets());
-      await this.append({ type: "upsert", entry });
-      return structuredClone(entry);
+      return this.withLock(async () => {
+        await this.refreshLocked();
+        const current = this.entries.get(id);
+        if (
+          !current ||
+          current.status !== "active" ||
+          (options.host !== undefined && current.host !== options.host)
+        )
+          throw new Error("MEMORY_NOT_FOUND");
+        const now = new Date().toISOString();
+        const entry: MemoryEntry = {
+          ...structuredClone(current),
+          text:
+            patch.text !== undefined
+              ? boundedText(patch.text, 2000)
+              : current.text,
+          kind: patch.kind ?? current.kind,
+          confidence: boundedNumber(patch.confidence, current.confidence),
+          importance: boundedNumber(patch.importance, current.importance),
+          relevance: boundedNumber(patch.relevance, current.relevance),
+          review_after:
+            patch.review_after === undefined
+              ? current.review_after
+              : patch.review_after === null
+                ? null
+                : boundedText(patch.review_after, 40),
+          pinned: patch.pinned !== undefined ? patch.pinned === true : true,
+          protected: true,
+          updated_at: now,
+          sources: [
+            ...current.sources,
+            {
+              type: "operator_correction",
+              id: "operator-correction:" + randomBytes(12).toString("hex"),
+              at: now,
+              ...(patch.operator_note
+                ? { note: boundedText(patch.operator_note, 500, true) }
+                : {}),
+            },
+          ],
+        };
+        if (entry.review_after !== null && !iso(entry.review_after))
+          throw new Error("INVALID_MEMORY");
+        validateEntry(entry);
+        assertNoSecrets(entry, this.secrets());
+        await this.appendLocked({ type: "upsert", entry });
+        return structuredClone(entry);
+      });
     });
   }
-  async archive(id: string) {
+  async archive(id: string, options: { host?: string } = {}) {
     return this.serial(async () => {
-      if (!this.entries.has(id)) throw new Error("MEMORY_NOT_FOUND");
-      await this.append({ type: "archive", id, at: new Date().toISOString() });
+      await this.withLock(async () => {
+        await this.refreshLocked();
+        const current = this.entries.get(id);
+        if (
+          !current ||
+          (options.host !== undefined && current.host !== options.host)
+        )
+          throw new Error("MEMORY_NOT_FOUND");
+        await this.appendLocked({
+          type: "archive",
+          id,
+          at: new Date().toISOString(),
+        });
+      });
     });
   }
-  async forget(id: string) {
+  async forget(id: string, options: { host?: string } = {}) {
     return this.serial(async () => {
-      const entry = this.entries.get(id);
-      if (!entry) throw new Error("MEMORY_NOT_FOUND");
-      await this.append({
-        type: "forget",
-        id,
-        at: new Date().toISOString(),
-        tombstone_key: tombstoneKey(entry),
+      await this.withLock(async () => {
+        await this.refreshLocked();
+        const entry = this.entries.get(id);
+        if (
+          !entry ||
+          (options.host !== undefined && entry.host !== options.host)
+        )
+          throw new Error("MEMORY_NOT_FOUND");
+        await this.appendLocked({
+          type: "forget",
+          id,
+          at: new Date().toISOString(),
+          tombstone_key: tombstoneKey(entry),
+        });
       });
     });
   }
@@ -677,6 +760,7 @@ export class MemoryStore {
   list(
     filter: {
       scope?: MemoryScope;
+      host?: string;
       subject_ref?: string;
       kind?: MemoryKind;
       q?: string;
@@ -686,6 +770,9 @@ export class MemoryStore {
     const q = filter.q ? canonicalText(filter.q) : "";
     const items = [...this.entries.values()]
       .filter((entry) => filter.include_archived || entry.status === "active")
+      .filter(
+        (entry) => filter.host === undefined || entry.host === filter.host,
+      )
       .filter((entry) => !filter.scope || entry.subject.scope === filter.scope)
       .filter(
         (entry) =>
@@ -707,7 +794,7 @@ export class MemoryStore {
       .map((entry) => structuredClone(entry));
     return { revision: this.revision, items, total: items.length };
   }
-  history(id: string) {
+  history(id: string, filter: { host?: string } = {}) {
     const items = this.records
       .filter(
         (record) =>
@@ -718,7 +805,27 @@ export class MemoryStore {
       )
       .map((record) => structuredClone(record));
     if (!items.length) throw new Error("MEMORY_NOT_FOUND");
+    if (
+      filter.host !== undefined &&
+      !items.some(
+        (record) =>
+          record.action.type === "upsert" &&
+          record.action.entry.host === filter.host,
+      )
+    )
+      throw new Error("MEMORY_NOT_FOUND");
     return { revision: this.revision, items };
+  }
+  active(input: { host: string; ids: string[] }) {
+    return input.ids.every((id) => {
+      const entry = this.entries.get(id);
+      return (
+        !!entry &&
+        entry.status === "active" &&
+        entry.host === input.host &&
+        entry.sources.some((source) => !this.revokedSources.has(source.id))
+      );
+    });
   }
   recall(input: {
     host: string;
@@ -777,52 +884,55 @@ export class MemoryStore {
     at?: string;
   }) {
     return this.serial(async () => {
-      const extracted = extractMemory(input.text);
-      if (!extracted) return;
-      const now =
-        input.at && iso(input.at) ? input.at : new Date().toISOString();
-      const candidate = this.input(
-        {
-          host: input.host,
-          subject: { scope: "boss" },
-          kind: extracted.kind,
-          text: extracted.text,
-          confidence: 0.72,
-          importance: 0.6,
-          relevance: 0.6,
-          pinned: false,
-          protected: false,
-          source: { type: "native_boss_turn", id: input.source_id, at: now },
-        },
-        false,
-      );
-      if (this.tombstones.has(tombstoneKey(candidate))) return;
-      const duplicate = [...this.entries.values()].find(
-        (entry) =>
-          entry.status === "active" &&
-          entry.host === candidate.host &&
-          entry.subject.scope === "boss" &&
-          entry.kind === candidate.kind &&
-          canonicalText(entry.text) === canonicalText(candidate.text),
-      );
-      if (duplicate) {
-        if (duplicate.sources.some((source) => source.id === input.source_id))
-          return;
-        await this.append({
-          type: "upsert",
-          entry: {
-            ...duplicate,
-            updated_at: now,
-            confidence: Math.max(duplicate.confidence, candidate.confidence),
-            importance: Math.max(duplicate.importance, candidate.importance),
-            relevance: Math.max(duplicate.relevance, candidate.relevance),
-            sources: [...duplicate.sources, candidate.sources[0]],
+      await this.withLock(async () => {
+        await this.refreshLocked();
+        const extracted = extractMemory(input.text);
+        if (!extracted) return;
+        const now =
+          input.at && iso(input.at) ? input.at : new Date().toISOString();
+        const candidate = this.input(
+          {
+            host: input.host,
+            subject: { scope: "boss" },
+            kind: extracted.kind,
+            text: extracted.text,
+            confidence: 0.72,
+            importance: 0.6,
+            relevance: 0.6,
+            pinned: false,
+            protected: false,
+            source: { type: "native_boss_turn", id: input.source_id, at: now },
           },
-        });
-        return;
-      }
-      assertNoSecrets(candidate, this.secrets());
-      await this.append({ type: "upsert", entry: candidate });
+          false,
+        );
+        if (this.tombstones.has(tombstoneKey(candidate))) return;
+        const duplicate = [...this.entries.values()].find(
+          (entry) =>
+            entry.status === "active" &&
+            entry.host === candidate.host &&
+            entry.subject.scope === "boss" &&
+            entry.kind === candidate.kind &&
+            canonicalText(entry.text) === canonicalText(candidate.text),
+        );
+        if (duplicate) {
+          if (duplicate.sources.some((source) => source.id === input.source_id))
+            return;
+          await this.appendLocked({
+            type: "upsert",
+            entry: {
+              ...duplicate,
+              updated_at: now,
+              confidence: Math.max(duplicate.confidence, candidate.confidence),
+              importance: Math.max(duplicate.importance, candidate.importance),
+              relevance: Math.max(duplicate.relevance, candidate.relevance),
+              sources: [...duplicate.sources, candidate.sources[0]],
+            },
+          });
+          return;
+        }
+        assertNoSecrets(candidate, this.secrets());
+        await this.appendLocked({ type: "upsert", entry: candidate });
+      });
     });
   }
   async retainWorkerInteraction(_input: {
@@ -836,6 +946,7 @@ export class MemoryStore {
     return {
       host: options.host,
       revision: this.revision,
+      active: (ids) => this.active({ host: options.host, ids }),
       recall: (input) => this.recall({ host: options.host, ...input }),
       retainNativeBossTurn: (input) =>
         this.retainNativeBossTurn({ host: options.host, ...input }),

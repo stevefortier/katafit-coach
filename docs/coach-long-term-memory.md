@@ -10,7 +10,8 @@ recall without a backend durable-memory authority contract.
   workspace.
 - Small `memories.json` head plus immutable content-addressed records in
   `memories-history/`.
-- Cross-process append serialization using a protected lock directory.
+- Cross-process append serialization using a crash-recoverable protected
+  PID lock file.
 - Structured records with scope (`coach`, `boss`, `member`, `dojo`), kind
   (`fact`, `preference`, `commitment`, `goal`, `lesson`, `hypothesis`),
   confidence, importance, relevance, review timing, sources, history, archive
@@ -20,6 +21,10 @@ recall without a backend durable-memory authority contract.
 - Boss/operator-private memory recall for native Operator Pi. The host injects
   the current bounded memory selection into each provider request, so UI edits
   are visible on the next native turn without restarting Pi.
+- Local boss/operator memories are partitioned by the current configured
+  backend origin plus local backend credential hash. This is a fail-closed
+  local isolation boundary, not a canonical backend owner identity; rotating the
+  credential hides prior local memories until a backend authority mapping exists.
 - A local `coach_recall_memory` tool. In worker/member contexts it returns
   `authority_unavailable` until the backend contract exists.
 - Studio Memories UI for list/search/filter/add/edit/archive/forget/history and
@@ -37,6 +42,11 @@ Studio admin access as authority for previously persisted derived text.
 Attempts to create member/dojo memories through Studio return
 `MEMORY_AUTHORITY_UNAVAILABLE`. Worker extraction returns `{ stored: 0,
 status: "authority_unavailable" }`.
+
+Automatic boss-memory extraction is intentionally narrow in this interim host
+implementation: it recognizes only simple "remember", "I prefer", and "my goal
+is" phrasings from native Operator turns, with deduplication and tombstone
+fencing. It is not an intelligent consolidation or persona-ranking proof.
 
 ## Required Backend Contract
 
@@ -61,6 +71,8 @@ significance/ranking, not truth or authority. A commitment memory is not proof
 that scheduling or any other mutation occurred.
 
 Forget appends a tombstone that fences matching stale extraction from recreating
-the same record. Archive hides a memory from default recall/listing but keeps it
-reviewable with archived filters.
-
+the same record. If a native Pi runtime has already seen the forgotten memory,
+the host tears down that runtime through the retained-context termination hook;
+bytes already disclosed to the provider cannot be retroactively erased. Archive
+hides a memory from default recall/listing but keeps it reviewable with archived
+filters.
