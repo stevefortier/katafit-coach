@@ -107,6 +107,28 @@ Workflow:
 4. Before any authorized Operator write, re-check identity, arguments, scope, and side effect. Execute once. Host-injected session and idempotency authority must never be invented or supplied by guidance.
 5. Treat only the tool's canonical receipt or an advertised read-back as verification. If dispatch or receipt is uncertain, say the outcome is unknown and do not retry automatically. Never claim the member's plan changed from a draft, suggestion, chat message, or transport success alone.`,
   },
+  {
+    id: "fetch-checkin-images",
+    name: "Fetch and inspect check-in images",
+    defaultVersion: 1,
+    basedOnDefaultVersion: 1,
+    customized: false,
+    enabled: true,
+    purpose:
+      "Fetch authorized check-in photos for visual review with correct reference provenance, bounded image delivery, and honest coverage limits.",
+    triggers:
+      "Use when fetching, inspecting, comparing, or troubleshooting check-in photos or progress images. Metadata and historical photo-review prose are not fresh visual evidence.",
+    instructions: `${commonBoundary}
+
+Operator image workflow (only when both tools are advertised):
+1. Execute roster, check-in listing and image reads sequentially, one call at a time; wait for each result before dispatching another. First call studio_operator_list_dojo_checkins successfully. Select the exact paired member_ref and media_ref from the same shared row. A member roster entry or activity-detail media_files reference does not satisfy this prerequisite. Do not guess, reconstruct, mix members' references, or assume metadata grants access; the backend reauthorizes each read.
+2. Choose the photos most relevant to the requested subjects and dates before fetching. A five-photo inventory is valid, but delivery is limited to 4 images and 16 MiB total per turn, with 8 MiB maximum per image. Use remaining_capacity from successful receipts and remaining capacity in safe errors. Listing more descriptors does not increase capacity, and a nonzero image count does not guarantee that another image fits the byte or tool-call budget.
+3. Call studio_operator_read_dojo_checkin_image with only the exact listed pair and any other fields the advertised schema explicitly permits. Never supply host-owned session, generation, or identity authority. Actual image pixels delivered to a vision-capable model are required for visual claims. A list, a metadata receipt, or a prior textual assessment is not an image inspection.
+4. Recover according to the specific error. IMAGE_READ_BUSY is a pre-dispatch concurrency refusal, not quota exhaustion: wait for the pending call to finish, inspect its receipt and remaining capacity, then retry the still-needed read sequentially. That busy attempt consumed no capacity; the pending call may consume some. For other failures, do not repeat the unchanged failed call. A missing prerequisite requires a successful check-in listing and an exact paired selection; invalid arguments require correcting the schema inputs. Exhausted image or tool-call budgets require stopping and summarizing the inspected subset. A backend failure is not proof of absent photos or disabled sharing. An integrity/format rejection supplies no usable image evidence. Never reopen a session to bypass quotas or bypass authorization or revocation. Do not retry uncertain writes.
+5. State which requested coverage was actually inspected and which remains uninspected. Use other authorized evidence only with its source type clearly identified; never infer comparative physiology, adherence, or progress from missing or unequal photo coverage.
+
+Worker scope: do not call Operator tools or open an Operator session. Use only image evidence already supplied through the claimed request's authorized context or explicitly offered request-scoped media tools. Otherwise state that pixels are unavailable.`,
+  },
 ] as const;
 
 const idPattern = /^[a-z][a-z0-9-]{0,63}$/;
@@ -217,8 +239,22 @@ function validateSkill(skill: any): asserts skill is CoachSkill {
     )
       throw new Error("INVALID_SKILL_STORAGE");
 }
-function validateSet(skills: any): asserts skills is CoachSkill[] {
-  if (!Array.isArray(skills) || skills.length !== stockSkills.length)
+function validateSet(
+  skills: any,
+  allowLegacy = false,
+): asserts skills is CoachSkill[] {
+  // Accept only the exact previous catalog when reading immutable history.
+  // Arbitrary omissions are corruption, not an invitation to fill defaults.
+  const legacyIds = ["review-activity", "understand-progress", "change-plan"];
+  const legacy =
+    allowLegacy &&
+    Array.isArray(skills) &&
+    skills.length === legacyIds.length &&
+    legacyIds.every((id) => skills.some((skill: any) => skill?.id === id));
+  if (
+    !Array.isArray(skills) ||
+    (!legacy && skills.length !== stockSkills.length)
+  )
     throw new Error("INVALID_SKILL_STORAGE");
   const ids = new Set<string>();
   for (const skill of skills) {
@@ -228,7 +264,7 @@ function validateSet(skills: any): asserts skills is CoachSkill[] {
       throw new Error("INVALID_SKILL_STORAGE");
     ids.add(skill.id);
   }
-  if (stockSkills.some((skill) => !ids.has(skill.id)))
+  if (!legacy && stockSkills.some((skill) => !ids.has(skill.id)))
     throw new Error("INVALID_SKILL_STORAGE");
 }
 
@@ -312,12 +348,17 @@ export class SkillStore {
             !Number.isFinite(Date.parse(record.savedAt))))
       )
         throw new Error("INVALID_SKILL_STORAGE");
-      validateSet(record.skills);
+      validateSet(record.skills, true);
       records.push(record);
       last = record.revision;
       name = record.previous;
     }
     records.reverse();
+    let modernSeen = false;
+    for (const record of records) {
+      if (record.skills.length === stockSkills.length) modernSeen = true;
+      else if (modernSeen) throw new Error("INVALID_SKILL_STORAGE");
+    }
     const current = records.at(-1);
     if (!current || current.revision !== manifest.revision)
       throw new Error("INVALID_SKILL_STORAGE");
@@ -336,6 +377,10 @@ export class SkillStore {
         return { ...skill, defaultVersion: builtin.defaultVersion };
       return structuredClone(builtin);
     });
+    // Existing/customized/disabled entries and historical bytes stay intact.
+    for (const builtin of stockSkills)
+      if (!upgraded.some((skill) => skill.id === builtin.id))
+        upgraded.push(structuredClone(builtin));
     if (JSON.stringify(upgraded) !== JSON.stringify(this.skills))
       await this.append(upgraded, this.head);
   }

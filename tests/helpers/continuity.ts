@@ -180,6 +180,8 @@ export interface ContinuityOptions {
   closeGate?: Promise<void>;
   // Negotiate check-in listing and original image reads.
   images?: boolean;
+  imageCount?: number;
+  imageGate?: Promise<void>;
   // Runs after each successful authorize_context (1-based count).
   afterAuthorize?: (state: Backend, count: number) => void;
   // Answer a tools/call with this bare HTTP status (401/403 credential
@@ -531,14 +533,23 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
             display_name: "Synthetic Alice",
             access: "shared",
             checkin_status: "completed_media",
-            images: [{ media_ref: "media-1", checkin_at: iso(now) }],
+            images: Array.from({ length: options.imageCount ?? 1 }, (_, i) => ({
+              media_ref: `media-${i + 1}`,
+              checkin_at: iso(now),
+            })),
           },
         ],
         has_more: false,
         next_cursor: null,
       };
     if (name === IMAGE && options.images) {
-      if (args.member_ref !== "fixture-member" || args.media_ref !== "media-1")
+      if (
+        args.member_ref !== "fixture-member" ||
+        !Array.from(
+          { length: options.imageCount ?? 1 },
+          (_, i) => `media-${i + 1}`,
+        ).includes(args.media_ref)
+      )
         return deny();
       const m = {
         schema_version: 1,
@@ -637,6 +648,7 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
           })),
       };
     if (body.method === "tools/call") {
+      if (name === IMAGE && options.imageGate) await options.imageGate;
       const failure = options.httpFailure?.(name, body.params?.arguments);
       if (failure === "drop") {
         res.destroy();
