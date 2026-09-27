@@ -131,9 +131,7 @@ export function providerDiagnostic(payload: unknown, secrets: string[] = []) {
     names.some(
       (name) =>
         typeof name !== "string" ||
-        !/^(?:(?:coach_|studio_operator_)[a-z_]{1,48}|local_load_coach_skill)$/.test(
-          name,
-        ),
+        !/^(?:coach_|studio_operator_)[a-z_]{1,48}$/.test(name),
     )
   )
     return undefined;

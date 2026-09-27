@@ -7,7 +7,8 @@ import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { createServer } from "node:http";
 import { complete } from "../src/runtime/piAdapter.js";
-import { operatorSkillTool, skillCatalog } from "../src/config/skills.js";
+import { Worker } from "../src/worker/runner.js";
+import { taskFixture } from "./task-fixtures.js";
 
 for (const operation of ["save", "restore"] as const) {
   test(`Skills ${operation} preserves unrelated drafts`, async () => {
@@ -287,7 +288,7 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
     assert.equal(await page.locator("#skillEnabled").isChecked(), true);
 
     // Exercise the edited instruction, not merely the in-memory runtime shape:
-    // real served UI -> authenticated save -> disk restart -> actual Pi tool load.
+    // real served UI -> authenticated save -> disk restart -> worker -> actual Pi.
     const marker = "SYNTHETIC_UI_RESTART_SKILL_INSTRUCTION";
     await page
       .locator("#skillInstructions")
@@ -312,53 +313,74 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
       providerRequests.push(body);
       const loaded = body.messages.some(
         (message: any) =>
-          message.role === "tool" &&
-          JSON.stringify(message.content).includes(marker),
+          message.role === "system" && message.content.includes(marker),
       );
-      const delta = loaded
-        ? { content: "UI_RESTART_INSTRUCTION_RECEIVED" }
-        : {
-            tool_calls: [
-              {
-                index: 0,
-                id: "load-edited",
-                type: "function",
-                function: {
-                  name: "local_load_coach_skill",
-                  arguments: '{"id":"review-activity"}',
-                },
-              },
-            ],
-          };
+      const delta = {
+        content: JSON.stringify({
+          activity_feedback: { reaction: "flex", reply_worthwhile: loaded },
+          general_advice: loaded ? "UI_RESTART_INSTRUCTION_RECEIVED" : "",
+        }),
+      };
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.end(
         `data: ${JSON.stringify({ id: "ui-restart", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n` +
-          `data: ${JSON.stringify({ id: "ui-restart", choices: [{ index: 0, delta: {}, finish_reason: loaded ? "stop" : "tool_calls" }] })}\n\ndata: [DONE]\n\n`,
+          `data: ${JSON.stringify({ id: "ui-restart", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
       );
     });
     await new Promise<void>((resolve) =>
       provider.listen(0, "127.0.0.1", resolve),
     );
+    const task = await taskFixture();
+    const worker = new Worker({
+      origin: task.origin,
+      token: "synthetic-worker-credential",
+      system: "Synthetic Coach",
+      skills: pinned,
+      complete: (context, signal, system, tools) =>
+        complete(
+          {
+            baseUrl: `http://127.0.0.1:${(provider.address() as any).port}/v1`,
+            model: "synthetic-ui-restart",
+            apiKey: "synthetic-model-key",
+          },
+          system,
+          context,
+          signal,
+          tools,
+        ),
+    });
     try {
-      const answer = await complete(
-        {
-          baseUrl: `http://127.0.0.1:${(provider.address() as any).port}/v1`,
-          model: "synthetic-ui-restart",
-          apiKey: "synthetic-ui-key",
-        },
-        `Enabled local skill metadata: ${JSON.stringify(skillCatalog(pinned))}`,
-        "Review this activity using the relevant saved workflow.",
-        AbortSignal.timeout(10000),
-        [operatorSkillTool(pinned)!],
+      task.enqueue("activity_reaction");
+      await worker.pollOnce();
+      assert.equal(task.saved.length, 1);
+      assert.ok(
+        JSON.stringify(task.saved[0]).includes(
+          "UI_RESTART_INSTRUCTION_RECEIVED",
+        ),
       );
-      assert.equal(answer, "UI_RESTART_INSTRUCTION_RECEIVED");
-      assert.equal(providerRequests.length, 2);
-      assert.ok(!JSON.stringify(providerRequests[0]).includes(marker));
-      assert.ok(JSON.stringify(providerRequests[1]).includes(marker));
+      assert.equal(providerRequests.length, 1);
+      const request = providerRequests[0];
+      const system = request.messages
+        .filter((message: any) => message.role === "system")
+        .map((message: any) => message.content)
+        .join("\n");
+      assert.ok(system.includes(marker));
+      assert.match(system, /scope: worker/);
+      assert.match(system, /<coach_skill id="review-activity"/);
+      assert.doesNotMatch(
+        system,
+        /<coach_skill id="(?:understand-progress|change-plan)"/,
+      );
+      assert.ok(
+        !request.tools?.length,
+        "generation remains tool-free after the UI edit",
+      );
       assert.ok(
         !JSON.stringify(runtimeStore.skills.history(1)).includes(marker),
       );
     } finally {
+      await worker.stop();
+      await task.close();
       provider.closeAllConnections();
       await new Promise<void>((resolve) => provider.close(() => resolve()));
     }

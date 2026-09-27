@@ -11,7 +11,6 @@ import {
 import { constants } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { assertNoSecrets } from "./store.js";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
 
 export type SkillScope = "operator" | "worker";
 export interface SkillContent {
@@ -588,60 +587,4 @@ export function formatSkillBodies(skills: CoachSkill[], scope: SkillScope) {
       )
       .join("\n")
   );
-}
-export function skillCatalog(runtime: SkillRuntime) {
-  return runtime.skills.map(({ id, name, purpose, triggers }) => ({
-    id,
-    name,
-    purpose,
-    triggers,
-  }));
-}
-
-/** Local guidance loader. It carries no backend client, authority, or side effect. */
-export function operatorSkillTool(
-  runtime: SkillRuntime,
-): AgentTool | undefined {
-  if (!runtime.skills.length) return undefined;
-  const loaded = new Set<string>();
-  return {
-    name: "local_load_coach_skill",
-    label: "Load Coach skill",
-    description:
-      "Load one enabled local Coach guidance skill only when its purpose and triggers match the operator's request. This grants no backend capability or permission.",
-    parameters: {
-      type: "object",
-      properties: {
-        id: { type: "string", enum: runtime.skills.map((skill) => skill.id) },
-      },
-      required: ["id"],
-      additionalProperties: false,
-    } as any,
-    async execute(_toolCallId: string, args: any) {
-      if (
-        !args ||
-        typeof args !== "object" ||
-        Array.isArray(args) ||
-        Object.keys(args).join() !== "id" ||
-        typeof args.id !== "string"
-      )
-        throw new Error("ARGUMENTS_REJECTED");
-      const skill = runtime.skills.find((entry) => entry.id === args.id);
-      if (!skill) throw new Error("ARGUMENTS_REJECTED");
-      if (loaded.has(skill.id)) throw new Error("READ_REPEAT_BLOCKED");
-      loaded.add(skill.id);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text:
-              `Loaded local Coach skill ${skill.name} at Skills revision ${runtime.revision}. ` +
-              "This is guidance, not backend authority.\n\n" +
-              formatSkillBodies([skill], "operator"),
-          },
-        ],
-        details: { revision: runtime.revision },
-      };
-    },
-  };
 }

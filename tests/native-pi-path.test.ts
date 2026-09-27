@@ -6,6 +6,37 @@ import { NativeRuntime } from "../src/sandbox/runtime.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { writeFile } from "node:fs/promises";
 import { compileOperator } from "../src/config/store.js";
+import { stockSkills } from "../src/config/skills.js";
+
+function assertManagerAndSkills(system: string) {
+  assert.match(system, /operator is your manager and boss, not a trainee/i);
+  assert.match(
+    system,
+    /manager relationship takes precedence over trainee-facing discipline/i,
+  );
+  // Pi XML-escapes descriptions in its native metadata block.
+  const metadata = system
+    .match(/<available_skills>[\s\S]*?<\/available_skills>/)?.[0]
+    .replaceAll("&apos;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+  assert.ok(
+    metadata,
+    "native Pi must advertise skills beside the primary Coach identity",
+  );
+  for (const skill of stockSkills) {
+    assert.ok(metadata.includes(`<name>${skill.id}</name>`));
+    assert.ok(metadata.includes(skill.purpose));
+    assert.ok(metadata.includes(skill.triggers));
+    assert.ok(metadata.includes(`/${skill.id}/SKILL.md`));
+    assert.ok(
+      !system.includes(skill.instructions),
+      "skill bodies remain on-demand",
+    );
+  }
+}
 
 test(
   "actual isolated Pi calls authorized MCP through extension and answers from tool result",
@@ -120,6 +151,7 @@ test(
           "Coach identity must be the primary system instruction, not a coding-assistant addendum",
         );
         assert.doesNotMatch(system, /You are an expert coding assistant/);
+        assertManagerAndSkills(system);
       }
       assert.ok(
         requests[0].tools.some(
@@ -191,6 +223,7 @@ test(
         freshSystem.startsWith(compileOperator(f.store.publicConfig())),
       );
       assert.match(freshSystem, /Captain Quartz/);
+      assertManagerAndSkills(freshSystem);
       assert.doesNotMatch(
         JSON.stringify(fresh),
         /Iron Warden|I missed training/,

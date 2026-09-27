@@ -84,6 +84,20 @@ test("retired Operator service and its review orchestration are not shipped", as
     readFile(new URL("../dist/chat/operator.js", import.meta.url)),
     { code: "ENOENT" },
   );
+  for (const path of [
+    "src/config/skills.ts",
+    "src/diagnostics/log.ts",
+    "src/runtime/piAdapter.ts",
+    "dist/config/skills.js",
+    "dist/diagnostics/log.js",
+    "dist/runtime/piAdapter.js",
+  ]) {
+    assert.doesNotMatch(
+      await readFile(new URL("../" + path, import.meta.url), "utf8"),
+      /operatorSkillTool|skillCatalog|local_load_coach_skill/,
+      path + " must not retain the retired Operator skill loader",
+    );
+  }
   const storage = await readFile(
     new URL("../src/chat/history.ts", import.meta.url),
     "utf8",
