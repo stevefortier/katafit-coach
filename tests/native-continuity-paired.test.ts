@@ -1,4 +1,5 @@
 import test from "node:test";
+import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
@@ -154,7 +155,7 @@ test(
       };
       const type = (data: string) =>
         ws!.send(JSON.stringify({ type: "input", data }));
-      await waitFor(() => output.includes("ripgrep not found"), "Pi ready");
+      await waitFor(() => output.includes(PI_READY), "Pi ready");
       await new Promise((r) => setTimeout(r, 150));
 
       type("Perform the first synthetic manager task\r");

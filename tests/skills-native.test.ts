@@ -1,4 +1,5 @@
 import test from "node:test";
+import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -140,7 +141,7 @@ test(
     try {
       await runtime.start(gateway);
       await runtime.attach();
-      await waitFor("ripgrep not found");
+      await waitFor(PI_READY);
       const sandbox = await runtime.inspect();
       assert.equal(sandbox.HostConfig.NetworkMode, "none");
       assert.equal(sandbox.HostConfig.ReadonlyRootfs, true);

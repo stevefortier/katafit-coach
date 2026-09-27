@@ -1,4 +1,5 @@
 import test from "node:test";
+import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { fixture } from "./helpers/native.js";
@@ -125,7 +126,7 @@ test(
         output = (output + c).slice(-100000);
       };
       await runtime.attach();
-      await wait("ripgrep not found");
+      await wait(PI_READY);
       await new Promise((r) => setTimeout(r, 100));
       assert.match(output, /approved-custom-model/);
       runtime.input(
@@ -210,7 +211,7 @@ test(
       };
       await runtime.start(gateway);
       await runtime.attach();
-      await wait("ripgrep not found");
+      await wait(PI_READY);
       await new Promise((r) => setTimeout(r, 100));
       runtime.input("List the authorized members.\r");
       await wait("Authorized roster contains Synthetic Alice.");

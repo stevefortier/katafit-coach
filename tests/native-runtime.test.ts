@@ -1,4 +1,5 @@
 import test from "node:test";
+import { waitForPiReady } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
 import { execFile } from "node:child_process";
@@ -18,10 +19,7 @@ test(
     try {
       await runtime.start();
       await runtime.attach();
-      const end = Date.now() + 5000;
-      while (!output.includes("ripgrep not found") && Date.now() < end)
-        await new Promise((r) => setTimeout(r, 20));
-      await new Promise((r) => setTimeout(r, 100));
+      await waitForPiReady(() => output);
       runtime.input("\u0004");
       assert.equal(
         await Promise.race([
@@ -47,19 +45,7 @@ test(
       let output = "";
       runtime.onOutput = (chunk) => (output += chunk);
       await runtime.attach();
-      await new Promise<void>((resolve, reject) => {
-        const deadline = setTimeout(() => {
-          clearInterval(poll);
-          reject(new Error(output));
-        }, 15000);
-        const poll = setInterval(() => {
-          if (output.includes("0.86.1")) {
-            clearTimeout(deadline);
-            clearInterval(poll);
-            resolve();
-          }
-        }, 50);
-      });
+      await waitForPiReady(() => output);
       assert.match(output, /0\.86\.1/);
       const info = await runtime.inspect();
       assert.equal(info.HostConfig.NetworkMode, "none");
