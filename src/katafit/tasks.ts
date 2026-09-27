@@ -150,11 +150,13 @@ function textBound(value: any, min: number, max: number) {
   );
 }
 function iso(value: any) {
-  return (
-    typeof value === "string" &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value) &&
-    Number.isFinite(Date.parse(value))
-  );
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+  )
+    return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value;
 }
 function validEvidence(e: any) {
   return (
@@ -448,4 +450,34 @@ export function verifyTaskReceipt(task: any, receipt: any, digest?: string) {
   )
     throw new Error("DELIVERY_UNVERIFIED");
   return receipt.status;
+}
+
+export function verifyTaskInvalidation(task: any, receipt: any) {
+  if (
+    !exactKeys(receipt, [
+      "task",
+      "status",
+      "result_sha256",
+      "completed_at",
+      "consumed_at",
+      "failure_code",
+      "invalidation_code",
+      "invalidated_at",
+    ]) ||
+    !exactKeys(receipt.task, Object.keys(task)) ||
+    !receipt.task ||
+    Object.keys(task).some(
+      (key) => key !== "status" && receipt.task[key] !== task[key],
+    ) ||
+    receipt.task.status !== "invalidated" ||
+    receipt.status !== "invalidated" ||
+    receipt.result_sha256 !== null ||
+    receipt.completed_at !== null ||
+    receipt.consumed_at !== null ||
+    receipt.failure_code !== null ||
+    receipt.invalidation_code !== "TASK_SOURCE_CHANGED" ||
+    !iso(receipt.invalidated_at)
+  )
+    throw new Error("DELIVERY_UNVERIFIED");
+  return receipt;
 }

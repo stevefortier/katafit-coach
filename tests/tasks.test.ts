@@ -2,8 +2,97 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Worker } from "../src/worker/runner.js";
-import { parseTaskResult, TaskOutputError } from "../src/katafit/tasks.js";
+import {
+  parseTaskResult,
+  TaskOutputError,
+  verifyTaskInvalidation,
+} from "../src/katafit/tasks.js";
 import { taskFixture, names } from "./task-fixtures.js";
+
+test("terminal invalidation receipt requires exact identity, null completion evidence and bounded disposition", () => {
+  const task = {
+    id: "1".repeat(24),
+    kind: "activity_followup",
+    protocol: "coach.tasks.v1",
+    schema_id: "coach.tasks.v1/activity_followup",
+    requester_id: "2".repeat(24),
+    owner_type: "personal",
+    owner_id: "2".repeat(24),
+    scope_generation: 2,
+    requester_generation: 3,
+    conversation_generation: 4,
+    status: "claimed",
+    lease_generation: 5,
+    created_at: "2026-01-01T00:00:00.000Z",
+    timeout_at: "2026-01-01T00:15:00.000Z",
+    lease_expires_at: "2026-01-01T00:01:00.000Z",
+  };
+  const valid: any = {
+    task: { ...task, status: "invalidated" },
+    status: "invalidated",
+    result_sha256: null,
+    completed_at: null,
+    consumed_at: null,
+    failure_code: null,
+    invalidation_code: "TASK_SOURCE_CHANGED",
+    invalidated_at: "2026-01-01T00:00:30.000Z",
+  };
+  assert.equal(verifyTaskInvalidation(task, valid), valid);
+  for (const [key, value] of Object.entries(valid.task)) {
+    const changed = {
+      ...valid.task,
+      [key]: typeof value === "number" ? value + 1 : `${value}-mismatch`,
+    };
+    assert.throws(
+      () => verifyTaskInvalidation(task, { ...valid, task: changed }),
+      /DELIVERY_UNVERIFIED/,
+      `reject changed retained task field ${key}`,
+    );
+    const missing = { ...valid.task };
+    delete missing[key];
+    assert.throws(
+      () => verifyTaskInvalidation(task, { ...valid, task: missing }),
+      /DELIVERY_UNVERIFIED/,
+      `reject missing retained task field ${key}`,
+    );
+  }
+  for (const key of Object.keys(valid)) {
+    const missing = { ...valid };
+    delete missing[key];
+    assert.throws(
+      () => verifyTaskInvalidation(task, missing),
+      /DELIVERY_UNVERIFIED/,
+      `reject missing receipt field ${key}`,
+    );
+  }
+  const malformed = [
+    { result_sha256: "0".repeat(64) },
+    { completed_at: valid.invalidated_at },
+    { consumed_at: valid.invalidated_at },
+    { failure_code: "TASK_SOURCE_CHANGED" },
+    { invalidation_code: null },
+    { invalidation_code: "TASK_ROUTING_CHANGED" },
+    { invalidated_at: null },
+    { invalidated_at: "yesterday" },
+    { invalidated_at: "2026-02-31T00:00:30.000Z" },
+    { invalidated_at: "2026-01-01T00:00:30Z" },
+    { invalidated_at: "2026-01-01T00:00:30.0Z" },
+    { idempotent: false },
+    { result: {} },
+    { task: { ...valid.task, lease_generation: 6 } },
+    {
+      task: { ...valid.task, schema_id: "coach.tasks.v1/workout_suggestions" },
+    },
+    { task: { ...valid.task, created_at: "2026-01-01T00:00:01.000Z" } },
+    { task: { ...valid.task, timeout_at: "2026-01-01T00:16:00.000Z" } },
+    { task: { ...valid.task, lease_expires_at: null } },
+  ];
+  for (const patch of malformed)
+    assert.throws(
+      () => verifyTaskInvalidation(task, { ...valid, ...patch }),
+      /DELIVERY_UNVERIFIED/,
+    );
+});
 test("task output rejects backend-denied credential-shaped text locally", () => {
   for (const text of [
     "Bearer synthetic-unrelated-token",

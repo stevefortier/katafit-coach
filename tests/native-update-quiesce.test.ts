@@ -107,6 +107,59 @@ test("auto quiesce is refused while native Pi is starting and blocks every later
   }
 });
 
+test("manual update defers native startup without teardown or acceptance", async () => {
+  const h = held();
+  const f = await fixture(async (name, result) => {
+    if (name === "initialize") {
+      h.entered();
+      await h.gate;
+    }
+    return result;
+  });
+  const updates = new Updates("a".repeat(40), async () => {});
+  updates.latest = "b".repeat(40);
+  updates.checkedAt = Date.now();
+  const app = await admin(f.store, 0, undefined, undefined, updates);
+  const headers = {
+    Authorization: "Bearer " + f.store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string, body = {}) =>
+    fetch(app.origin + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  let ws: WebSocket | undefined;
+  let pending: Promise<Response> | undefined;
+  try {
+    const ticket = await (await post("/api/terminal/ticket")).json();
+    const starting = await connect(app.origin, ticket.ticket);
+    ws = starting.ws;
+    await h.started;
+    pending = post("/api/update/apply", { confirm: true, sha: updates.latest });
+    const response = await Promise.race([
+      pending,
+      new Promise<undefined>((resolve) => setTimeout(resolve, 250)),
+    ]);
+    assert.equal(
+      response?.status,
+      409,
+      "reject immediately, do not await teardown of starting native work",
+    );
+    assert.deepEqual(await response!.json(), { error: "AUTO_UPDATE_BUSY" });
+    assert.equal(updates.lastOperation, undefined);
+    assert.equal(ws.readyState, WebSocket.OPEN);
+  } finally {
+    h.release();
+    await pending;
+    ws?.terminate();
+    await app.close();
+    await f.close();
+  }
+});
+
 async function supervised(prefix: string, badTarget: string) {
   const { supervise } = await import("./helpers/legacy-supervisor.js");
   const home = await mkdtemp(join(tmpdir(), prefix));

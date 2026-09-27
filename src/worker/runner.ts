@@ -10,6 +10,7 @@ import {
   verifyTaskReceipt,
   verifyTaskFailure,
   verifyTaskResolution,
+  verifyTaskInvalidation,
 } from "../katafit/tasks.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
@@ -67,7 +68,60 @@ export interface WorkerOptions {
   isolationMs?: number;
   /** Immutable snapshot captured when this Worker instance is constructed. */
   skills?: SkillRuntime;
+  archiveTaskInvalidation?: (record: {
+    protocol: typeof TASK_PROTOCOL;
+    attempted_result_sha256: string;
+    receipt: unknown;
+  }) => Promise<void>;
 }
+/** Never send an unknown filter: older backends silently strip it. */
+async function verifyRequestReceipt(
+  client: Client,
+  fence: { request_id: string; lease_generation: number },
+  budget: () => number,
+) {
+  let cursor: string | undefined;
+  let supported = false;
+  const seen = new Set<string>();
+  for (let page = 0; page < 8; page++) {
+    const catalog = await client.rpc(
+      "tools/list",
+      cursor ? { cursor } : {},
+      false,
+      budget(),
+    );
+    if (!Array.isArray(catalog?.tools)) break;
+    supported = catalog.tools.some(
+      (tool: any) =>
+        tool.name === "coach_list_requests" &&
+        Object.hasOwn(tool.inputSchema?.properties ?? {}, "request_id"),
+    );
+    if (supported) break;
+    const next = catalog.nextCursor;
+    if (typeof next !== "string" || !next || seen.has(next)) break;
+    seen.add(next);
+    cursor = next;
+  }
+  if (!supported) throw new SafeError("DELIVERY_UNVERIFIED");
+  const checked = await client.call(
+    "coach_list_requests",
+    {
+      request_id: fence.request_id,
+      statuses: ["completed"],
+      limit: 1,
+    },
+    budget(),
+  );
+  if (
+    !Array.isArray(checked.requests) ||
+    checked.requests.length !== 1 ||
+    checked.requests[0].id !== fence.request_id ||
+    checked.requests[0].status !== "completed" ||
+    checked.requests[0].lease_generation !== fence.lease_generation
+  )
+    throw new SafeError("DELIVERY_UNVERIFIED");
+}
+
 type PendingTask = { task: any; digest: string; ref: string };
 type Incident = PendingTask & { reason: string; nextCheck: number };
 const DENIAL_CODES = new Set([
@@ -89,7 +143,9 @@ export class Worker {
       this.state !== "idle" ||
       this.active ||
       this.stopping ||
-      this.updateQuiesced
+      this.updateQuiesced ||
+      !this.safeToReplace ||
+      this.reconciling
     )
       return false;
     this.updateQuiesced = true;
@@ -101,13 +157,78 @@ export class Worker {
   private preferTask = true;
   private pendingTask?: PendingTask;
   private isolated: Incident[] = [];
+  // Main-chat ambiguity must not disappear when a later error overwrites history.
+  private unresolvedRequests = new Map<
+    string,
+    { request_id: string; lease_generation: number }
+  >();
+  private reconciling?: Promise<void>;
+  /** Stopped-owner recovery: receipts only; never claim, infer, or replay writes. */
+  reconcilePublications(): Promise<void> {
+    if (this.reconciling) return this.reconciling;
+    if (this.state !== "stopped" || this.active)
+      return Promise.reject(new SafeError("WORKER_STOP_UNCONFIRMED"));
+    this.reconciling = (async () => {
+      for (const [key, fence] of this.unresolvedRequests) {
+        try {
+          const c = new Client(
+            this.options.origin,
+            this.options.token,
+            AbortSignal.timeout(3000),
+          );
+          await verifyRequestReceipt(c, fence, () => 3000);
+          this.unresolvedRequests.delete(key);
+        } catch {
+          // Missing capability, denied, absent or mismatched evidence is unresolved.
+        }
+      }
+      for (const pending of [this.pendingTask, ...this.isolated]) {
+        if (!pending) continue;
+        try {
+          const c = new Client(
+            this.options.origin,
+            this.options.token,
+            AbortSignal.timeout(3000),
+          );
+          const receipt = await c.call(
+            "coach_read_task_receipt",
+            {
+              protocol: TASK_PROTOCOL,
+              task_id: pending.task.id,
+              lease_generation: pending.task.lease_generation,
+            },
+            3000,
+          );
+          if (receipt?.status === "invalidated") {
+            verifyTaskInvalidation(pending.task, receipt);
+            if (!this.options.archiveTaskInvalidation)
+              throw new Error("TASK_INVALIDATION_ARCHIVE_UNAVAILABLE");
+            await this.options.archiveTaskInvalidation({
+              protocol: TASK_PROTOCOL,
+              attempted_result_sha256: pending.digest,
+              receipt,
+            });
+          } else verifyTaskReceipt(pending.task, receipt, pending.digest);
+          if (pending === this.pendingTask) this.pendingTask = undefined;
+          else
+            this.isolated = this.isolated.filter((entry) => entry !== pending);
+        } catch {
+          /* Missing, denied or mismatched reads are never proof. */
+        }
+      }
+    })().finally(() => {
+      this.reconciling = undefined;
+    });
+    return this.reconciling;
+  }
   get safeToReplace() {
     // Never throw away unresolved publication identities by constructing a
     // replacement worker. They require read-only reconciliation, not replay.
     return (
       !this.pendingTask &&
       this.isolated.length === 0 &&
-      this.lastError?.code !== "DELIVERY_UNVERIFIED"
+      this.unresolvedRequests.size === 0 &&
+      !this.reconciling
     );
   }
   get stopConfirmed() {
@@ -252,6 +373,9 @@ export class Worker {
       }
       this.preferTask = true;
       const instructions = await fetchInstructions(c);
+      // Never reclaim/replay an ambiguously published request, even under a new lease.
+      // Typed tasks can still progress; main publication resumes after reconciliation.
+      if (this.unresolvedRequests.size) return;
       const { request } = await c.call("coach_claim_request", {
         lease_seconds: 120,
       });
@@ -370,18 +494,13 @@ export class Worker {
       )
         throw new Error("OUTPUT_REJECTED");
       publishing = true;
+      this.unresolvedRequests.set(JSON.stringify(fence), { ...fence });
       stage("publishing");
       await c.call("coach_respond", { ...fence, text }, budget());
       stage("verifying");
       // Read canonical state back; never claim persistence from transport success alone.
-      const checked = await c.call(
-        "coach_list_requests",
-        { statuses: ["completed"], limit: 100 },
-        budget(),
-      );
-      const saved = checked.requests?.find((r: any) => r.id === request.id);
-      if (!saved || saved.status !== "completed")
-        throw new Error("DELIVERY_UNVERIFIED");
+      await verifyRequestReceipt(c, fence, budget);
+      this.unresolvedRequests.delete(JSON.stringify(fence));
       this.update("reply-persisted");
       stage("reply-persisted");
     } catch (error) {
