@@ -780,17 +780,81 @@ header {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 0;
-  padding: 4px 16px 12px;
-  margin: 16px 0;
+  background: #111111;
+  padding: 0;
+  margin: 24px 0;
 }
-.provider-card legend {
-  padding: 0 6px;
+.provider-header {
+  background: #292929;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.provider-header h3 {
+  margin: 4px 0 0;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.registry-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.connection-group,
+.models-group {
+  padding: 20px;
+}
+.connection-group {
+  border-bottom: 1px solid var(--line);
+}
+.provider-card h4 {
+  margin: 0 0 14px;
+  font-size: 15px;
+}
+.provider-card label {
+  margin-top: 12px;
+}
+.connection-group .split label {
+  margin-top: 0;
+}
+.model-list {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 12px;
 }
 .model-row {
+  min-width: 0;
+  border: 1px solid #454545;
+  background: #202020;
+  padding: 16px;
+}
+.model-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: flex-start;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.model-title {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.provider-actions {
+  padding: 12px 20px;
   border-top: 1px solid var(--line);
-  margin-top: 14px;
-  padding-top: 4px;
+}
+.provider-card button {
+  max-width: 100%;
+}
+.model-row > button {
+  margin-top: 12px;
 }
 .saved-badge {
   margin-left: auto;
@@ -811,8 +875,17 @@ header {
   flex: 1 1 14rem;
 }
 @media (max-width: 760px) {
-  .provider-card {
-    padding: 4px 10px 10px;
+  .provider-header,
+  .connection-group,
+  .models-group,
+  .provider-actions {
+    padding: 12px;
+  }
+  .model-row {
+    padding: 12px;
+  }
+  .model-list {
+    gap: 12px;
   }
 }
 
