@@ -47,6 +47,32 @@ export async function admin(
   let autoQuiesced = false;
   let autoWasRunning = false;
   let autoQuiescePending: Promise<void> | undefined;
+  let nextPublicationRecovery = 0;
+  // Child-owned compatibility path: existing stable owners already call
+  // quiesce/release. Never stop an idle worker just to inspect a receipt.
+  const reconcileForAutomaticUpdate = async () => {
+    if (
+      !worker ||
+      worker.safeToReplace ||
+      busy ||
+      preview ||
+      !terminal.idle ||
+      updates.applying ||
+      closing ||
+      Date.now() < nextPublicationRecovery ||
+      !["idle", "stopped"].includes(worker.state)
+    )
+      return;
+    nextPublicationRecovery = Date.now() + 60000;
+    busy = true; // Fence native and admin admission throughout read/archive.
+    try {
+      await worker.reconcilePublications(true);
+    } catch {
+      // A raced claim or failed read is deferral, never replacement authority.
+    } finally {
+      busy = false;
+    }
+  };
   const completed = new Map<
     string,
     { fingerprint: string; status: number; data: unknown }
@@ -592,6 +618,13 @@ export async function admin(
         if (Object.keys(body).length)
           return send(400, { error: "ARGUMENTS_REJECTED" });
         await autoQuiescePending?.catch(() => {});
+        await reconcileForAutomaticUpdate();
+        if (
+          autoQuiesced &&
+          worker &&
+          (!worker.stopConfirmed || !worker.safeToReplace)
+        )
+          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
         autoQuiesced = false;
         autoWasRunning = false;
         worker?.releaseUpdateQuiesce();
@@ -604,6 +637,7 @@ export async function admin(
       ) {
         if (Object.keys(body).length)
           return send(400, { error: "ARGUMENTS_REJECTED" });
+        await reconcileForAutomaticUpdate();
         if (autoQuiesced) {
           try {
             await autoQuiescePending;

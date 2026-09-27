@@ -732,11 +732,12 @@ test("auto quiesce rejects an unconfirmed stop and retains running intent across
       );
     }
     assert.equal((await post("terminal/ticket")).status, 409);
-    assert.equal((await post("update/auto/release")).status, 200);
+    assert.equal((await post("update/auto/release")).status, 409);
+    assert.equal((await status()).autoWasRunning, true);
     assert.equal(
       (await post("run")).status,
-      400,
-      "release cannot waive stop safety",
+      409,
+      "release retains the admission barrier until stop safety is confirmed",
     );
     assert.equal((await post("update/auto/quiesce")).status, 409);
     assert.equal(f.reports.filter((r) => r.state === "running").length, 1);

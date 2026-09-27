@@ -163,18 +163,26 @@ export class Worker {
     { request_id: string; lease_generation: number }
   >();
   private reconciling?: Promise<void>;
-  /** Stopped-owner recovery: receipts only; never claim, infer, or replay writes. */
-  reconcilePublications(): Promise<void> {
+  /** Receipt-only recovery under the same instance's claim admission fence. */
+  reconcilePublications(idle = false): Promise<void> {
     if (this.reconciling) return this.reconciling;
-    if (this.state !== "stopped" || this.active)
+    if (
+      (this.state !== "stopped" && !(idle && this.state === "idle")) ||
+      this.active ||
+      (this.state !== "stopped" && this.stopping)
+    )
       return Promise.reject(new SafeError("WORKER_STOP_UNCONFIRMED"));
+    const wasQuiesced = this.updateQuiesced;
+    this.updateQuiesced = true;
+    const signal = AbortSignal.timeout(6000);
     this.reconciling = (async () => {
       for (const [key, fence] of this.unresolvedRequests) {
+        if (signal.aborted) break;
         try {
           const c = new Client(
             this.options.origin,
             this.options.token,
-            AbortSignal.timeout(3000),
+            AbortSignal.any([signal, AbortSignal.timeout(3000)]),
           );
           await verifyRequestReceipt(c, fence, () => 3000);
           this.unresolvedRequests.delete(key);
@@ -183,12 +191,13 @@ export class Worker {
         }
       }
       for (const pending of [this.pendingTask, ...this.isolated]) {
+        if (signal.aborted) break;
         if (!pending) continue;
         try {
           const c = new Client(
             this.options.origin,
             this.options.token,
-            AbortSignal.timeout(3000),
+            AbortSignal.any([signal, AbortSignal.timeout(3000)]),
           );
           const receipt = await c.call(
             "coach_read_task_receipt",
@@ -217,6 +226,7 @@ export class Worker {
         }
       }
     })().finally(() => {
+      this.updateQuiesced = wasQuiesced;
       this.reconciling = undefined;
     });
     return this.reconciling;
@@ -948,7 +958,7 @@ export class Worker {
     let delay = this.options.pollMs ?? 5000;
     while (!this.controller.signal.aborted) {
       try {
-        await this.pollOnce();
+        if (!this.updateQuiesced) await this.pollOnce();
         delay = this.options.pollMs ?? 5000;
       } catch (e: any) {
         if (!this.controller.signal.aborted)

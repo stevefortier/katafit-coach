@@ -83,6 +83,56 @@ The installed stable launcher and protocol stay fixed while managed runtime sour
 - **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime. Workers remain stopped unless a pending durable manual-update resume intent requires recovery; recovery never reapplies source or replays chat/actions. Keep the home and the bootstrap launcher.
 - **Corrupt active installation/manual recovery:** stop the owner first and preserve a private backup. Restore a known-good home/active pointer or remove `active.json` to return to the installed bootstrap application only if it is compatible with your unchanged data schema. Never delete a live lock inode.
 
+## Automatic publication recovery
+
+The runtime child performs receipt-only reconciliation when the stable owner
+calls its existing automatic quiesce or release endpoint. This works with an
+already-loaded auto-update owner that supports those endpoints; no new owner
+RPC, unsafe flag, or browser timer is needed. It does **not** repair an old
+Worker closure merely because newer files exist on disk. The reviewed child
+must actually be loaded. A launcher predating automatic updates still needs the
+supported reviewed launcher/package/container replacement using the same
+protected home, not a guard override or an old-image restart.
+
+For an idle worker, the child fences claims and native/admin admission, reads
+exact retained publication identities, and durably archives strict invalidation
+receipts **before stopping anything**. Denied/missing/mismatched evidence or an
+archive failure leaves the original worker running and the update deferred.
+Stopped workers use the same read-only path; intentionally stopped intent is
+preserved. A previously held automatic gate remains held until publication
+safety **and** stopped presence are confirmed; the existing owner then releases
+and resumes its original running intent. No completion, claim, lease expiry,
+renewal, model inference, or action is replayed by this reconciliation path.
+
+Automatic receipt passes are limited to one per minute per child (including
+failed passes), with a shared six-second network deadline and three-second
+per-identity transports. Fast owner HTTP retries do not trigger more reads.
+Durable archive completion is awaited, not timed out into permission to replace.
+Historical delivery diagnostics are retained. Explicit stopped reconciliation
+remains available and is not rate-limited by the automatic cadence.
+
+### External artifact release preflight remains required
+
+This recovery change does not provision a sandbox artifact or move the loaded
+stable owner's native preflight. Existing owners perform candidate native
+preflight **before replacing the server process, but after automatic worker
+quiesce/stop**. A missing artifact can therefore still fail and suppress that
+source SHA, followed by restoration of the original worker. Do not describe
+that as a pre-stop deferral or a permanent artifact-upgrade solution.
+
+Before making a native-fingerprint-changing revision eligible on `main`, the
+authorized release operator must provision and preflight the reviewed matching
+artifact through the external release path. Matching protected fingerprint
+receipts can already be reused for source-only revisions. To make unavailable
+artifacts a retryable pre-worker-stop deferral in code requires a separate
+reviewed stable-launcher release: reserve preparation against concurrent manual
+apply, stage and preflight the exact candidate while the old worker runs,
+recheck consent and idle/publication/native admission before stopping, then
+consume that same prepared candidate. Missing readiness must not be recorded as
+a failed source SHA; prepare retries need bounded backoff. Installing a child
+alone cannot change that owner's ordering. Never weaken native receipt or
+publication guards to bypass this release prerequisite.
+
 ## Publication-safe update admission and stopped recovery
 
 Manual apply now requires an idle, publication-safe running worker, just like
