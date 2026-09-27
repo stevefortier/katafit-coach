@@ -11,8 +11,15 @@ import {
   ImageReadFailure,
   openOperatorTools,
 } from "../katafit/operatorTools.js";
-import { providerFailure } from "../runtime/errors.js";
-import { formatMemoryRecall, memoryRecallTool } from "../memory/prompt.js";
+import { providerFailure, safeError } from "../runtime/errors.js";
+import { complete as providerComplete } from "../runtime/piAdapter.js";
+import { backendWireBudget } from "../katafit/wireBudget.js";
+import {
+  commitMemory,
+  formatRecall,
+  type MemoryItem,
+} from "../memory/backend.js";
+import { extractMemories } from "../memory/extract.js";
 import {
   PROVIDER_TEXT_LIMIT,
   canonicalImages,
@@ -117,6 +124,46 @@ async function upstreamErrorCode(response: Response): Promise<unknown> {
   }
 }
 
+function nativeMessageText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value))
+    return value
+      .map((part) =>
+        typeof part?.text === "string"
+          ? part.text
+          : typeof part?.content === "string"
+            ? part.content
+            : "",
+      )
+      .join("\n");
+  return "";
+}
+
+function providerAssistantText(type: string, body: string): string {
+  try {
+    if (type.includes("text/event-stream"))
+      return body
+        .replace(/\r\n/g, "\n")
+        .split("\n\n")
+        .flatMap((event) =>
+          event
+            .split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .filter((line) => line && line !== "[DONE]"),
+        )
+        .map((line) => JSON.parse(line)?.choices?.[0]?.delta?.content)
+        .filter((text): text is string => typeof text === "string")
+        .join("")
+        .slice(0, 16000);
+    const parsed = JSON.parse(body);
+    const text = parsed?.choices?.[0]?.message?.content;
+    return typeof text === "string" ? text.slice(0, 16000) : "";
+  } catch {
+    return "";
+  }
+}
+
 class NativeClient extends Client {
   requestSignal?: AbortSignal;
   override fetch(
@@ -207,7 +254,6 @@ export async function openNativeGateway(
 ) {
   const config = store.publicConfig();
   const skills = store.skills.runtime();
-  const memories = store.memories.runtime({ host: store.memoryAuthority() });
   const secrets = { ...store.secrets };
   const abort = new AbortController();
   const lifetime = signal
@@ -215,7 +261,6 @@ export async function openNativeGateway(
     : abort.signal;
   let closed = false;
   let active = false;
-  const disclosedMemories = new Set<string>();
   // One bounded human-turn latch, set only by the trusted host terminal.
   let turnArmed = false;
   let terminated: string | undefined;
@@ -274,6 +319,9 @@ export async function openNativeGateway(
         : undefined;
     },
   });
+  const check = () => {
+    if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
+  };
   let disposal: Promise<void> | undefined;
   let deadline: NodeJS.Timeout | undefined;
   const close = () => {
@@ -294,19 +342,6 @@ export async function openNativeGateway(
       hooks.onTerminate?.(reason);
     } catch {
       /* Owner hook failure must not resurrect the gateway. */
-    }
-  };
-  const trackMemoryDisclosure = (ids: string[]) => {
-    for (const id of ids) disclosedMemories.add(id);
-  };
-  const memoryCurrent = () =>
-    disclosedMemories.size === 0 ||
-    memories.active([...disclosedMemories.values()]);
-  const check = () => {
-    if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
-    if (!memoryCurrent()) {
-      terminate("MEMORY_FORGOTTEN");
-      throw new Error("NATIVE_SESSION_REVOKED");
     }
   };
   const settle = (error: unknown) => {
@@ -606,12 +641,6 @@ export async function openNativeGateway(
     )
       throw new Error("NATIVE_REQUEST_REJECTED");
     if (request.kind === "catalog") {
-      const recallTool = memoryRecallTool(memories, "operator-private");
-      const recallAvailable =
-        memories.recall({
-          audience: "operator-private",
-          scopes: ["boss", "coach"],
-        }).items.length > 0;
       const catalog = {
         model: config.provider.model,
         vision: config.provider.vision === true,
@@ -630,15 +659,6 @@ export async function openNativeGateway(
             description: t.description,
             parameters: t.parameters,
           })),
-          ...(recallAvailable
-            ? [
-                {
-                  name: recallTool.name,
-                  description: recallTool.description,
-                  parameters: recallTool.parameters,
-                },
-              ]
-            : []),
           ...(owner ? [attachmentTool()] : []),
         ],
       };
@@ -752,30 +772,6 @@ export async function openNativeGateway(
           request.args,
           requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
         );
-      if (request.name === "coach_recall_memory") {
-        const tool = memoryRecallTool(memories, "operator-private");
-        const args = tool.prepareArguments?.(request.args) ?? request.args;
-        const result = await tool.execute(randomUUID(), args, abort.signal);
-        const first = result?.content?.[0];
-        const text = first?.type === "text" ? first.text : undefined;
-        if (typeof text === "string") {
-          try {
-            const parsed = JSON.parse(text);
-            if (Array.isArray(parsed?.items))
-              trackMemoryDisclosure(
-                parsed.items
-                  .map((item: any) => item?.id)
-                  .filter(
-                    (id: unknown): id is string => typeof id === "string",
-                  ),
-              );
-          } catch {
-            throw new Error("NATIVE_TOOL_REJECTED");
-          }
-        }
-        check();
-        return result;
-      }
       const tool = session.tools.find((t) => t.name === request.name);
       if (!tool) throw new Error("NATIVE_TOOL_REJECTED");
       lastImage = undefined;
@@ -817,10 +813,10 @@ export async function openNativeGateway(
       !Array.isArray(request.body.messages)
     )
       throw new Error("NATIVE_MODEL_REJECTED");
-    // Fully validate the unmodified provider body before any turn transition or
-    // authorization side effect. Memory is injected only after fresh authority
-    // checks, then the final envelope is rebuilt and revalidated.
+    // Fully validate the original envelope before any turn transition or
+    // authorization side effect. Memory is injected only after fresh authority.
     nativeProviderEnvelope(request.body);
+    let recalledMemories: MemoryItem[] = [];
     try {
       // A pending human turn is consumed here, once, before any disclosure.
       // A journaled transition is resumed (identically) before anything else.
@@ -831,28 +827,45 @@ export async function openNativeGateway(
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
       await authorizeNative();
       check();
+      const query = request.body.messages
+        .slice(-6)
+        .map((message: any) => nativeMessageText(message?.content))
+        .join("\n")
+        .slice(0, 2000);
+      try {
+        recalledMemories = await session.recallMemories(query);
+        if (recalledMemories.length)
+          hooks.onDiagnostic?.({
+            source: "provider",
+            stage: "memory-recalled",
+            ref: randomUUID(),
+            metadata: { memoryItems: recalledMemories.length },
+          });
+      } catch (error) {
+        hooks.onDiagnostic?.({
+          source: "provider",
+          stage: "memory-unavailable",
+          level: "warn",
+          ref: randomUUID(),
+          error: safeError(error),
+        });
+        recalledMemories = [];
+      }
     } catch (error) {
       throw authority(error);
     }
-    const recall = memories.recall({
-      audience: "operator-private",
-      query: JSON.stringify(request.body.messages.slice(-4)),
-      scopes: ["boss", "coach"],
-    });
-    const memoryNotice =
-      recall.status === "ok" && recall.items.length
-        ? formatMemoryRecall(recall, "operator")
-        : "";
-    if (memoryNotice)
-      trackMemoryDisclosure(recall.items.map((item) => item.id));
-    const body = {
-      ...request.body,
-      messages: memoryNotice
-        ? [{ role: "system", content: memoryNotice }, ...request.body.messages]
-        : request.body.messages,
-    };
-    assertNoSecrets(body, Object.values(secrets));
-    const wire = nativeProviderEnvelope(body);
+    const memoryNotice = formatRecall(recalledMemories, "operator");
+    const bodyWithMemory = memoryNotice
+      ? {
+          ...request.body,
+          messages: [
+            { role: "system", content: memoryNotice },
+            ...request.body.messages,
+          ],
+        }
+      : request.body;
+    assertNoSecrets(bodyWithMemory, Object.values(secrets));
+    const wire = nativeProviderEnvelope(bodyWithMemory);
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const timeout = AbortSignal.timeout(120000);
     // Transport failures are classified by cause only; never by error text.
@@ -917,28 +930,93 @@ export async function openNativeGateway(
     } catch (error) {
       throw authority(error, true);
     }
-    const responseBody = Buffer.concat(chunks).toString("utf8");
+    const body = Buffer.concat(chunks).toString("utf8");
     try {
-      assertNoSecrets(responseBody, Object.values(secrets));
+      assertNoSecrets(body, Object.values(secrets));
     } catch (error) {
       throw new NativeFailure(
         "NATIVE_PROVIDER_OUTPUT_REJECTED",
         (error as Error).message,
       );
     }
-    await memories
-      .retainNativeBossTurn({
-        text: request.body.messages
-          .slice(-2)
-          .map((message: any) =>
-            typeof message?.content === "string" ? message.content : "",
-          )
-          .join("\n"),
-        source_id: "native-turn:" + randomUUID(),
-      })
-      .catch(() => {});
+    const assistantText = providerAssistantText(
+      response.headers.get("content-type") ?? "",
+      body,
+    );
+    const humanText = request.body.messages
+      .slice()
+      .reverse()
+      .map((message: any) =>
+        message?.role === "user" ? nativeMessageText(message.content) : "",
+      )
+      .find((text: string) => text.trim());
+    if (humanText && assistantText) {
+      try {
+        const capture = await session.recordInteraction({
+          human_text: humanText.slice(0, 8000),
+          assistant_text: assistantText,
+        });
+        if (capture) {
+          const proposals = await extractMemories({
+            complete: (system, context, s) =>
+              providerComplete(
+                {
+                  ...config.provider,
+                  apiKey: secrets.apiKey,
+                  secrets: Object.values(secrets),
+                },
+                system,
+                context,
+                s,
+                [],
+                {},
+              ),
+            persona: compileOperator(config, Object.values(secrets)),
+            origin: "operator_turn",
+            evidence: { human_text: humanText, assistant_text: assistantText },
+            recalled: recalledMemories,
+            secrets: Object.values(secrets),
+            signal: lifetime,
+          });
+          if (proposals.length) {
+            const memoryClient = new Client(
+              config.origin,
+              secrets.token,
+              lifetime,
+              hooks.onDiagnostic,
+            );
+            const receipt = await commitMemory(
+              memoryClient,
+              capture,
+              proposals,
+              String(config.revision),
+              Object.values(secrets),
+              backendWireBudget(30000),
+            );
+            hooks.onDiagnostic?.({
+              source: "provider",
+              stage: "memory-retained",
+              ref: randomUUID(),
+              metadata: {
+                created: receipt.created.length,
+                superseded: receipt.superseded.length,
+                skipped: receipt.skipped.length,
+              },
+            });
+          }
+        }
+      } catch (error) {
+        hooks.onDiagnostic?.({
+          source: "provider",
+          stage: "memory-retention-skipped",
+          level: "warn",
+          ref: randomUUID(),
+          error: safeError(error),
+        });
+      }
+    }
     return {
-      body: responseBody,
+      body,
       type: response.headers.get("content-type")?.includes("text/event-stream")
         ? "text/event-stream"
         : "application/json",

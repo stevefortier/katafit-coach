@@ -1514,30 +1514,61 @@ for (const [index, section] of diagnosticsSections.entries()) {
     });
   };
 }
-let memoriesData = { revision: 0, items: [] },
-  selectedMemoryId = "";
+let memoriesData = { items: [], members: [] },
+  selectedMemoryId = "",
+  selectedMemoryRevision = 0;
 function memoryNumber(id, fallback) {
   const value = Number($(id).value);
   return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback;
 }
+function memoryAudienceLabel(value) {
+  return (
+    {
+      member_private: "Member private",
+      member_coach: "Member Coach",
+      operator_private: "Operator private",
+    }[value] || value
+  );
+}
+function syncMemoryMembers() {
+  for (const id of ["memoryMemberFilter", "memoryMember"]) {
+    const select = $(id);
+    const value = select.value;
+    select.replaceChildren(
+      new Option(id === "memoryMember" ? "No member subject" : "All", ""),
+      ...memoriesData.members.map(
+        (m) => new Option(m.display_name || m.member_ref, m.member_ref),
+      ),
+    );
+    select.value = [...select.options].some((o) => o.value === value)
+      ? value
+      : "";
+  }
+}
 function memoryDraft(entry) {
   selectedMemoryId = entry?.id || "";
+  selectedMemoryRevision = entry?.revision || 0;
   $("memoryEditorTitle").textContent = entry
-    ? "Edit protected memory"
-    : "Add boss-private memory";
-  $("memoryScope").value = entry?.subject?.scope || "boss";
+    ? "Edit backend memory"
+    : "Add backend memory";
+  $("memoryAudience").value = entry?.audience || "operator_private";
+  $("memoryMember").value = entry?.subject?.member_ref || "";
   $("memoryKind").value = entry?.kind || "preference";
   $("memoryText").value = entry?.text || "";
   $("memoryImportance").value = entry?.importance ?? 0.85;
-  $("memoryRelevance").value = entry?.relevance ?? 0.85;
-  $("memorySourceNote").value = "";
+  $("memoryRelevance").value = entry?.goal_relevance ?? 0.85;
+  $("memoryReviewAt").value = entry?.review_at
+    ? entry.review_at.slice(0, 10)
+    : "";
   $("memoryPinned").checked = entry ? entry.pinned !== false : true;
+  $("memoryText").disabled = entry?.availability === "unavailable";
   $("memoryHistoryList").replaceChildren();
 }
 async function loadMemoryHistory(id) {
-  const history = await api("memories/history/" + id);
+  const { history, item } = await api("memories/" + id);
   $("memoryHistoryList").replaceChildren();
-  for (const record of history.items.slice().reverse()) {
+  memoryDraft(item);
+  for (const record of history.slice().reverse()) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "secondary history-item";
@@ -1545,12 +1576,12 @@ async function loadMemoryHistory(id) {
       "Revision " +
       record.revision +
       " · " +
-      record.action.type +
+      record.change +
       " · " +
-      formatTimestamp(record.savedAt);
+      formatTimestamp(record.at);
     button.onclick = () => {
       $("memoryHistoryList").replaceChildren(
-        detailText("pre", JSON.stringify(record.action, null, 2)),
+        detailText("pre", JSON.stringify(record, null, 2)),
       );
     };
     $("memoryHistoryList").append(button);
@@ -1558,57 +1589,69 @@ async function loadMemoryHistory(id) {
 }
 function renderMemories() {
   $("memoryList").replaceChildren();
+  syncMemoryMembers();
   $("memoryStatus").textContent =
     memoriesData.items.length +
-    " memories · store revision " +
-    memoriesData.revision;
+    " memories" +
+    (memoriesData.has_more ? " · more available" : "");
   for (const entry of memoriesData.items) {
     const card = document.createElement("section");
     card.className = "memory-card";
     if (entry.status !== "active") card.dataset.status = entry.status;
+    const subject = entry.subject?.display_name
+      ? " · " + entry.subject.display_name
+      : "";
     const title = detailText(
       "h3",
-      `${entry.kind} · ${entry.subject.scope}${entry.subject.ref ? " · " + entry.subject.ref : ""}`,
+      `${entry.kind} · ${memoryAudienceLabel(entry.audience)}${subject}`,
     );
-    const text = detailText("p", entry.text);
+    const text = detailText(
+      "p",
+      entry.availability === "unavailable"
+        ? "Unavailable: " + entry.unavailable_code
+        : entry.text,
+    );
     const meta = detailText(
       "p",
-      `Importance ${entry.importance} · relevance ${entry.relevance} · confidence ${entry.confidence}${entry.pinned ? " · pinned" : ""}`,
+      `Revision ${entry.revision} · importance ${entry.importance} · relevance ${entry.goal_relevance ?? "n/a"} · confidence ${entry.confidence}${entry.pinned ? " · pinned" : ""}${entry.protected ? " · protected" : ""}`,
     );
     meta.className = "hint";
     const sources = document.createElement("details");
     sources.append(detailText("summary", "Sources"));
     const sourceList = document.createElement("ul");
     for (const source of entry.sources)
-      sourceList.append(
-        detailText(
-          "li",
-          `${source.type} · ${source.id} · ${formatTimestamp(source.at)}${source.note ? " · " + source.note : ""}`,
-        ),
-      );
+      sourceList.append(detailText("li", `${source.family} · ${source.label}`));
     sources.append(sourceList);
     const actions = document.createElement("div");
     actions.className = "actions";
     const edit = detailText("button", "Edit");
     edit.type = "button";
+    edit.disabled = entry.availability === "unavailable";
     edit.onclick = async () => {
-      memoryDraft(entry);
       await loadMemoryHistory(entry.id).catch(() => {});
     };
-    const archive = detailText("button", "Archive");
+    const archive = detailText(
+      "button",
+      entry.status === "archived" ? "Restore" : "Archive",
+    );
     archive.type = "button";
     archive.className = "secondary";
     archive.onclick = async () => {
-      await api("memories/" + entry.id + "/archive", {});
+      await api("memories/" + entry.id, {
+        expected_revision: entry.revision,
+        status: entry.status === "archived" ? "active" : "archived",
+      });
       await loadMemories();
-      notice("Memory archived.", "success");
+      notice("Memory status updated.", "success");
     };
     const forget = detailText("button", "Forget");
     forget.type = "button";
     forget.className = "secondary";
     forget.onclick = async () => {
       if (!confirm("Forget this memory and fence stale recreation?")) return;
-      await api("memories/" + entry.id + "/forget", {});
+      await api("memories/" + entry.id + "/forget", {
+        expected_revision: entry.revision,
+      });
       if (selectedMemoryId === entry.id) memoryDraft();
       await loadMemories();
       notice(
@@ -1623,18 +1666,21 @@ function renderMemories() {
 }
 async function loadMemories() {
   const params = new URLSearchParams();
-  if ($("memorySearch").value) params.set("q", $("memorySearch").value);
-  if ($("memoryScopeFilter").value)
-    params.set("scope", $("memoryScopeFilter").value);
+  if ($("memorySearch").value) params.set("query", $("memorySearch").value);
+  if ($("memoryAudienceFilter").value)
+    params.set("audience", $("memoryAudienceFilter").value);
+  if ($("memoryMemberFilter").value)
+    params.set("member_ref", $("memoryMemberFilter").value);
   if ($("memoryKindFilter").value)
     params.set("kind", $("memoryKindFilter").value);
-  if ($("memoryArchivedFilter").checked) params.set("include_archived", "true");
+  if ($("memoryArchivedFilter").checked) params.set("status", "all");
   memoriesData = await api("memories" + (params.size ? "?" + params : ""));
   renderMemories();
 }
 for (const id of [
   "memorySearch",
-  "memoryScopeFilter",
+  "memoryAudienceFilter",
+  "memoryMemberFilter",
   "memoryKindFilter",
   "memoryArchivedFilter",
 ])
@@ -1643,20 +1689,22 @@ action("memoryRefresh", loadMemories);
 action("memoryNew", async () => memoryDraft());
 action("memorySave", async () => {
   const body = {
-    scope: $("memoryScope").value,
+    audience: $("memoryAudience").value,
+    member_ref: $("memoryMember").value || undefined,
     kind: $("memoryKind").value,
     text: $("memoryText").value,
     importance: memoryNumber("memoryImportance", 0.85),
-    relevance: memoryNumber("memoryRelevance", 0.85),
+    goal_relevance: memoryNumber("memoryRelevance", 0.85),
+    review_at: $("memoryReviewAt").value || null,
     pinned: $("memoryPinned").checked,
-    source_note: $("memorySourceNote").value,
+    expected_revision: selectedMemoryRevision || undefined,
   };
   const result = await api(
     selectedMemoryId ? "memories/" + selectedMemoryId : "memories",
     body,
   );
-  memoryDraft(result.entry);
-  await loadMemoryHistory(result.entry.id).catch(() => {});
+  memoryDraft(result.item);
+  await loadMemoryHistory(result.item.id).catch(() => {});
   await loadMemories();
   notice("Memory saved.", "success");
 });

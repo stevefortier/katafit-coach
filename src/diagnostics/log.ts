@@ -52,6 +52,10 @@ export const stages = [
   "stopped",
   "preview-started",
   "preview-completed",
+  "memory-recalled",
+  "memory-unavailable",
+  "memory-retained",
+  "memory-retention-skipped",
 ] as const;
 export type Stage = (typeof stages)[number];
 export interface LogInput {

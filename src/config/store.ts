@@ -11,7 +11,6 @@ import {
 import { constants } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { SkillStore } from "./skills.js";
-import { MemoryStore } from "../memory/store.js";
 
 // Bounded even for maximal JSON escaping; below the stable owner's 4MiB cap.
 const snapshotLimit = 1024 * 1024;
@@ -394,10 +393,8 @@ export class Store {
     admin: randomBytes(32).toString("hex"),
   };
   readonly skills: SkillStore;
-  readonly memories: MemoryStore;
   constructor(readonly dir: string) {
     this.skills = new SkillStore(dir, () => Object.values(this.secrets));
-    this.memories = new MemoryStore(dir, () => Object.values(this.secrets));
   }
   private get snapshotDir() {
     return this.dir + "/persona-history";
@@ -492,7 +489,6 @@ export class Store {
       [...loaded, ...Object.values(this.secrets)],
     );
     await this.skills.init();
-    await this.memories.init();
   }
   private resolve(c: Config) {
     return (
@@ -510,28 +506,6 @@ export class Store {
     const config = structuredClone(this.config);
     delete config.models;
     return config;
-  }
-  /**
-   * Local memory partition for operator-owned memories. This is intentionally
-   * credential-scoped, not a backend tenant identity: rotation hides prior
-   * local memories until a canonical backend memory authority exists.
-   */
-  memoryAuthority() {
-    const tokenHash = createHash("sha256")
-      .update(this.secrets.token || "")
-      .digest("hex");
-    return (
-      "local-authority:v1:" +
-      createHash("sha256")
-        .update(
-          JSON.stringify({
-            origin: this.config.origin,
-            token_present: !!this.secrets.token,
-            token_hash: tokenHash,
-          }),
-        )
-        .digest("hex")
-    );
   }
   /** Public registry view: credential presence only, never keys or refs. */
   modelRegistry() {
@@ -957,10 +931,6 @@ export class Store {
     // A credential added in the future must also be absent from every current
     // and immutable historical skill snapshot before it can be committed.
     this.skills.assertSafe([
-      ...Object.values(this.secrets),
-      ...Object.values(secrets),
-    ]);
-    this.memories.assertSafe([
       ...Object.values(this.secrets),
       ...Object.values(secrets),
     ]);

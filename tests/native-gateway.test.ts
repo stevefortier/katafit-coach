@@ -54,6 +54,180 @@ test("known credentials echoed by provider cannot enter the sandbox transcript",
   }
 });
 
+test("native provider imports backend memory and records completed operator turns for retention", async () => {
+  const memoryId = "1234567890abcdef12345678";
+  const stamp = new Date().toISOString();
+  const remembered = {
+    id: memoryId,
+    revision: 1,
+    kind: "preference",
+    text: "Synthetic Alice prefers short morning check-ins.",
+    availability: "available",
+    status: "active",
+    audience: "operator_private",
+    subject: { member_ref: "fixture-member", display_name: "Synthetic Alice" },
+    confidence: 0.9,
+    importance: 0.8,
+    goal_relevance: 0.7,
+    review_at: null,
+    pinned: false,
+    protected: false,
+    provenance: {
+      type: "derived",
+      origin: "operator_turn",
+      corrected: false,
+      created_by: "model_extraction",
+      persona_revision: "1",
+    },
+    sources: [{ family: "owner", label: "Coach owner authority" }],
+    observed_at: stamp,
+    created_at: stamp,
+    updated_at: stamp,
+  };
+  const sse = (text: string) =>
+    `data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+  const commandExpires = new Date(Date.now() + 600000).toISOString();
+  const contextExpires = new Date(Date.now() + 600000).toISOString();
+  const f = await fixture((name, result, body) => {
+    if (name === "tools/list")
+      result.tools.push(
+        { name: "studio_operator_authorize_context" },
+        { name: "studio_operator_advance_turn" },
+        { name: "studio_operator_recall_memories" },
+        { name: "studio_operator_record_interaction" },
+        { name: "coach_memory_commit" },
+      );
+    if (name === "studio_operator_open_session")
+      Object.assign(result, {
+        continuity: {
+          version: 1,
+          host_controls: [
+            "studio_operator_authorize_context",
+            "studio_operator_advance_turn",
+          ],
+          max_turns: 8,
+          max_tool_calls_per_turn: 8,
+          command_ttl_ms: 600000,
+          retained_ttl_ms: 600000,
+          failure_requires: "destroy_runtime",
+          generation_field: "turn_generation",
+        },
+        turn_generation: 0,
+        expires_at: commandExpires,
+        context_expires_at: contextExpires,
+        capabilities: {
+          version: 1,
+          tools: [
+            {
+              name: "studio_operator_list_members",
+              schema_ref: "mcp:tools/list#studio_operator_list_members",
+              kind: "read",
+              target: "dojo",
+              domain: "roster",
+              coverage: "current_dojo_members",
+              pagination: {
+                type: "cursor",
+                default_limit: 10,
+                max_limit: 100,
+                complete_when: "has_more_false",
+              },
+              side_effect: "none",
+              receipt: "none",
+            },
+          ],
+        },
+      });
+    if (name === "studio_operator_authorize_context")
+      return {
+        schema_version: 1,
+        session_id: "native-fixture-session",
+        turn_generation: 0,
+        status: "authorized",
+        expires_at: commandExpires,
+        context_expires_at: contextExpires,
+      };
+    if (name === "studio_operator_recall_memories")
+      return {
+        protocol: "coach.memory.v1",
+        session_id: "native-fixture-session",
+        turn_generation: 0,
+        import_receipt_id: "import-receipt",
+        ledger_revision: 1,
+        items: [remembered],
+      };
+    if (name === "studio_operator_record_interaction")
+      return {
+        protocol: "coach.memory.v1",
+        capture_id: "abcdefabcdefabcdefabcdef",
+        memory_epoch: 0,
+        extraction_expires_at: new Date(Date.now() + 600000).toISOString(),
+      };
+    if (name === "coach_memory_commit")
+      return {
+        protocol: "coach.memory.v1",
+        capture_id: "abcdefabcdefabcdefabcdef",
+        status: "committed",
+        memory_epoch: 0,
+        created: [{ id: "fedcbafedcbafedcbafedcba", revision: 1 }],
+        superseded: [],
+        skipped: [],
+        idempotent: false,
+      };
+    if (name === "provider") {
+      const system = body.messages
+        .filter((m: any) => m.role === "system")
+        .map((m: any) => m.content)
+        .join("\n");
+      if (/You maintain the long-term memory/.test(system))
+        return sse(
+          JSON.stringify({
+            proposals: [
+              {
+                kind: "lesson",
+                text: "Synthetic Alice responds well to short morning check-ins.",
+                confidence: 0.8,
+                importance: 0.7,
+              },
+            ],
+          }),
+        );
+      assert.match(system, /Synthetic Alice prefers short morning check-ins/);
+      return sse("I will keep it short and morning-focused.");
+    }
+    return result;
+  });
+  const gateway = await openNativeGateway(f.store);
+  try {
+    await gateway.handle({
+      kind: "provider",
+      body: {
+        model: "approved-custom-model",
+        messages: [{ role: "user", content: "How should I brief Alice?" }],
+      },
+    });
+    assert.ok(
+      f.calls.some(
+        (c) => c.body.params?.name === "studio_operator_recall_memories",
+      ),
+    );
+    assert.ok(
+      f.calls.some(
+        (c) => c.body.params?.name === "studio_operator_record_interaction",
+      ),
+    );
+    const commit = f.calls.find(
+      (c) => c.body.params?.name === "coach_memory_commit",
+    );
+    assert.equal(
+      commit.body.params.arguments.proposals[0].text,
+      "Synthetic Alice responds well to short morning check-ins.",
+    );
+  } finally {
+    await gateway.close();
+    await f.close();
+  }
+});
+
 test("native MCP catalog consumes bounded pages, rejects repeated cursors", async () => {
   let repeated = false;
   const f = await fixture((name, result, body) => {

@@ -597,12 +597,16 @@
                 >Search<input id="memorySearch" type="search" maxlength="200"
               /></label>
               <label
-                >Scope<select id="memoryScopeFilter">
+                >Audience<select id="memoryAudienceFilter">
                   <option value="">All</option>
-                  <option value="coach">Coach</option>
-                  <option value="boss">Boss</option>
-                  <option value="member">Member</option>
-                  <option value="dojo">Dojo</option>
+                  <option value="member_private">Member private</option>
+                  <option value="member_coach">Member Coach</option>
+                  <option value="operator_private">Operator private</option>
+                </select></label
+              >
+              <label
+                >Member<select id="memoryMemberFilter">
+                  <option value="">All</option>
                 </select></label
               >
               <label
@@ -628,15 +632,15 @@
             <section id="memoryEditor" aria-label="Memory editor">
               <h3 id="memoryEditorTitle">Add boss-private memory</h3>
               <label
-                >Scope<select id="memoryScope">
-                  <option value="boss">Boss</option>
-                  <option value="coach">Coach</option>
-                  <option value="member">
-                    Member (requires backend authority)
-                  </option>
-                  <option value="dojo">
-                    Dojo (requires backend authority)
-                  </option>
+                >Audience<select id="memoryAudience">
+                  <option value="operator_private">Operator private</option>
+                  <option value="member_coach">Member Coach</option>
+                  <option value="member_private">Member private</option>
+                </select></label
+              >
+              <label
+                >Member<select id="memoryMember">
+                  <option value="">No member subject</option>
                 </select></label
               >
               <label
@@ -676,9 +680,7 @@
                     value="0.85"
                 /></label>
               </div>
-              <label
-                >Source note<input id="memorySourceNote" maxlength="500"
-              /></label>
+              <label>Review at<input id="memoryReviewAt" type="date" /></label>
               <label class="toggle-label"
                 ><input id="memoryPinned" type="checkbox" checked /> Pinned
                 correction</label
@@ -690,9 +692,8 @@
                 </button>
               </div>
               <p class="hint">
-                Member and dojo memories require a backend durable memory
-                authority contract. Studio admin access alone is not source
-                authority.
+                Backend authority is checked before every list, edit, history,
+                recall and deletion. Unavailable memories never reveal prose.
               </p>
               <details id="memoryHistory">
                 <summary>Selected memory history</summary>

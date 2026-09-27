@@ -13,6 +13,12 @@ import {
   operatorEvidenceDomain,
   type OperatorReadReceipt,
 } from "../chat/operatorEvidence.js";
+import {
+  formatRecall,
+  memoryItem,
+  MEMORY_PROTOCOL,
+  type MemoryItem,
+} from "../memory/backend.js";
 
 const READ = "studio_operator_read_member_coach_feed";
 const ROSTER = "studio_operator_list_members";
@@ -36,6 +42,8 @@ export class ImageReadFailure extends Error {
 }
 const AUTHORIZE = "studio_operator_authorize_context";
 const ADVANCE = "studio_operator_advance_turn";
+const RECALL_MEMORY = "studio_operator_recall_memories";
+const RECORD_MEMORY = "studio_operator_record_interaction";
 // Host-only continuity controls: never model tools, whatever a catalog says.
 const HOST_CONTROLS = [AUTHORIZE, ADVANCE];
 // Continuity identity is host-owned; stripped from every model schema.
@@ -1079,6 +1087,9 @@ export async function openOperatorTools(
       }
       return r?.structuredContent ?? JSON.parse(text);
     };
+    const memoryAvailable = [RECALL_MEMORY, RECORD_MEMORY].every((name) =>
+      listed.tools.some((tool: any) => tool.name === name),
+    );
     const retryable = (error: unknown) =>
       [
         "OPERATOR_UNAVAILABLE",
@@ -1325,6 +1336,76 @@ export async function openOperatorTools(
           throw new Error("RESULT_REJECTED");
       }
     };
+    const recallMemories = async (query: string): Promise<MemoryItem[]> => {
+      if (!continuity || !memoryAvailable) return [];
+      live();
+      if (transition) throw new Error("CONTINUITY_TRANSITION_PENDING");
+      const value = await hostCall(RECALL_MEMORY, {
+        session_id,
+        turn_generation: generation,
+        idempotency_key:
+          "provider-memory:" +
+          generation +
+          ":" +
+          createHash("sha256").update(query).digest("hex").slice(0, 32),
+        ...(query ? { query: query.slice(0, 2000) } : {}),
+        limit: 8,
+      });
+      if (
+        value?.protocol !== MEMORY_PROTOCOL ||
+        value.session_id !== session_id ||
+        value.turn_generation !== generation ||
+        typeof value.import_receipt_id !== "string" ||
+        !Number.isInteger(value.ledger_revision) ||
+        !Array.isArray(value.items)
+      )
+        throw new Error("MEMORY_RESULT_REJECTED");
+      return value.items.map((item: unknown) =>
+        memoryItem(item, options.secrets),
+      );
+    };
+    const recordInteraction = async (input: {
+      human_text: string;
+      assistant_text: string;
+    }) => {
+      if (!continuity || !memoryAvailable) return null;
+      live();
+      if (
+        !input.human_text.trim() ||
+        !input.assistant_text.trim() ||
+        Buffer.byteLength(input.human_text) > 8000 ||
+        Buffer.byteLength(input.assistant_text) > 16000
+      )
+        return null;
+      const value = await hostCall(RECORD_MEMORY, {
+        session_id,
+        turn_generation: generation,
+        idempotency_key:
+          "interaction:" +
+          generation +
+          ":" +
+          createHash("sha256")
+            .update(input.human_text + "\n---\n" + input.assistant_text)
+            .digest("hex")
+            .slice(0, 32),
+        human_text: input.human_text,
+        assistant_text: input.assistant_text,
+      });
+      if (
+        value?.protocol !== MEMORY_PROTOCOL ||
+        typeof value.capture_id !== "string" ||
+        !/^[a-f0-9]{24}$/i.test(value.capture_id) ||
+        !Number.isInteger(value.memory_epoch) ||
+        typeof value.extraction_expires_at !== "string" ||
+        !Number.isFinite(Date.parse(value.extraction_expires_at))
+      )
+        throw new Error("MEMORY_RESULT_REJECTED");
+      return value as {
+        capture_id: string;
+        memory_epoch: number;
+        extraction_expires_at: string;
+      };
+    };
     return {
       tools,
       capabilityGuidance,
@@ -1332,6 +1413,8 @@ export async function openOperatorTools(
       reconcile,
       authorize,
       advance,
+      recallMemories,
+      recordInteraction,
       /** A journaled transition must be resumed before any disclosure. */
       transitionPending: () => !!transition,
       /** Content-free lifecycle state for the trusted host only. */
