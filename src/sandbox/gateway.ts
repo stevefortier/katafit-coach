@@ -468,7 +468,9 @@ export async function openNativeGateway(
     try {
       await session.authorize();
     } catch (error) {
-      if (owner) throw disclosureFailure(error);
+      // Apply attachment erasure side effects without replacing the native
+      // authority cause: provider guidance still distinguishes turn expiry.
+      if (owner) disclosureFailure(error);
       throw error;
     }
   };
@@ -625,7 +627,11 @@ export async function openNativeGateway(
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     }
     if (active) {
-      if (owner && request.kind === "tool" && request.name === ATTACHMENT_TOOL) {
+      if (
+        owner &&
+        request.kind === "tool" &&
+        request.name === ATTACHMENT_TOOL
+      ) {
         settle(undefined);
         check();
         return { attachmentError: { code: "ATTACHMENT_BUSY" } };
