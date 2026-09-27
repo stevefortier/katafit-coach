@@ -1827,7 +1827,9 @@ action("logDownload", async () => {
 });
 
 let updateData,
+  updateClockOffset = 0,
   updateRequest = false,
+  updateCheckRequested = false,
   updatePending = false,
   updateWorkerBlocked = true,
   updateError = "",
@@ -1923,12 +1925,58 @@ function renderHeaderStatus() {
     $("state").dataset.tone = workerStatusTone(workerState);
   }
 }
+function renderUpdateSchedule() {
+  const data = updateData;
+  if (!data || !key || document.hidden || $("studio").hidden) return;
+  const schedule = data.autoSchedule;
+  let text;
+  if (!data.auto?.enabled) {
+    text = "No automatic retry while automatic updates are off.";
+  } else if (!schedule) {
+    text =
+      "Automatic retry time unknown: this older launcher does not report its schedule. Source upgrades do not replace the stable launcher.";
+  } else if (schedule.reason === "running" && schedule.nextAttemptAt === null) {
+    text =
+      "Launcher automatic cycle in progress; next attempt is not scheduled yet.";
+  } else if (
+    Number.isSafeInteger(schedule.nextAttemptAt) &&
+    schedule.nextAttemptAt > 0 &&
+    ["poll", "check-failed", "readiness", "recovery"].includes(schedule.reason)
+  ) {
+    const reasons = {
+      poll: "Normal polling.",
+      "check-failed": "Source-check failure backoff.",
+      readiness: "Native readiness cooldown.",
+      recovery: "Worker recovery retry (before another source check).",
+    };
+    const localDeadline = schedule.nextAttemptAt - updateClockOffset;
+    const seconds = Math.max(0, Math.ceil((localDeadline - Date.now()) / 1000));
+    const local = formatTimestamp(localDeadline);
+    text = `${reasons[schedule.reason]} ${
+      seconds > 0
+        ? `Next automatic attempt in ${Math.floor(seconds / 60)}m ${seconds % 60}s · ${local} (local time).`
+        : `Scheduled for ${local} (local time). Awaiting launcher status; the deadline passing does not confirm a check has started.`
+    }`;
+  } else {
+    text =
+      "Automatic retry time unknown: the launcher has not reported a valid schedule.";
+  }
+  if (updateError && data.auto?.enabled)
+    text = `Last reported schedule (Studio unavailable). ${text}`;
+  if ($("updateSchedule").textContent !== text)
+    $("updateSchedule").textContent = text;
+}
+setInterval(() => {
+  if (!$("settingsPanel").hidden && !$("updates").hidden)
+    renderUpdateSchedule();
+}, 1000);
 function renderUpdate() {
   renderHeaderStatus();
   const data = updateData;
   $("restorePersona").disabled =
     historyBusy || updatePending || data?.applying === true;
   if (!data) return;
+  renderUpdateSchedule();
   const locked =
     updatePending ||
     data.applying ||
@@ -2002,7 +2050,7 @@ function renderUpdate() {
     sourceSha(autoOutcome.sha) &&
     (autoOutcome.sha === data.latest || autoOutcome.sha === data.installed) &&
     !(autoOutcome.state === "suppressed" && autoOutcome.sha === data.installed);
-  $("updateAutoStatus").textContent =
+  const historicalAuto =
     relevantAuto && autoOutcome.state === "deferred" && failedLatest
       ? "Last attempt for this revision failed. See the failure details before retrying manually."
       : relevantAuto &&
@@ -2018,14 +2066,43 @@ function renderUpdate() {
             : data.auto?.enabled
               ? "Enabled. Waiting for a newer verified main revision and an idle worker."
               : "Off. Enable to upgrade from main automatically.";
+  const checkErrors = {
+    RATE_LIMITED: "GitHub rate limit. Source check failed.",
+    FORBIDDEN:
+      "GitHub denied the source check (HTTP 403). Rate limiting was not confirmed.",
+    UNAVAILABLE:
+      "GitHub unavailable or timed out. Source check failed; check network access.",
+  };
+  // Older owners only send guidance. Preserve it even when a historical
+  // successful autoOutcome matches the installed revision.
+  const checkError = Object.hasOwn(checkErrors, data.checkError)
+    ? checkErrors[data.checkError]
+    : data.checkError === undefined &&
+        !sourceSha(data.latest) &&
+        data.checkedAt &&
+        /^GitHub /i.test(data.guidance || "")
+      ? data.guidance
+      : "";
+  const checkStatus =
+    data.checking === true
+      ? `Checking GitHub for main source…${checkError ? ` Previous check: ${checkError}` : ""}`
+      : updateCheckRequested
+        ? `Source check requested; waiting for launcher…${checkError ? ` Previous check: ${checkError}` : ""}`
+        : checkError;
+  $("updateAutoStatus").textContent =
+    (checkStatus ? `${checkStatus} ` : "") +
+    (relevantAuto
+      ? `Last automatic result: ${historicalAuto}`
+      : historicalAuto);
   const validOutcome = !!outcome;
   $("updateOutcome").dataset.tone = failed ? "error" : "neutral";
   $("updateOutcome").setAttribute("role", failed ? "alert" : "status");
   $("updateAutoStatus").dataset.tone =
-    relevantAuto &&
-    ["failed", "suppressed", "restored-running", "resume-failed"].includes(
-      autoOutcome.state,
-    )
+    checkError ||
+    (relevantAuto &&
+      ["failed", "suppressed", "restored-running", "resume-failed"].includes(
+        autoOutcome.state,
+      ))
       ? "error"
       : "neutral";
   const failureHelp = !failed
@@ -2098,6 +2175,7 @@ async function refreshUpdate(check = false) {
   if (!key || updateRequest || document.hidden || $("studio").hidden) return;
   const generation = authGeneration;
   updateRequest = true;
+  updateCheckRequested = check;
   const controller = new AbortController();
   updateController = controller;
   renderUpdate();
@@ -2111,6 +2189,9 @@ async function refreshUpdate(check = false) {
     if (updateInitialRevision === undefined)
       updateInitialRevision = data.installed;
     updateData = data;
+    updateClockOffset = Number.isSafeInteger(data.serverNow)
+      ? data.serverNow - Date.now()
+      : 0;
     updatePending = data.applying;
     updateError = "";
   } catch {
@@ -2121,6 +2202,7 @@ async function refreshUpdate(check = false) {
     if (generation !== authGeneration || updateController !== controller)
       return;
     updateRequest = false;
+    updateCheckRequested = false;
     updateController = undefined;
     renderUpdate();
     if (key && !document.hidden && !$("studio").hidden)
@@ -2294,6 +2376,7 @@ function lockSession(message) {
   updateController?.abort();
   updateController = undefined;
   updateRequest = false;
+  updateCheckRequested = false;
   updatePending = false;
   updateWorkerBlocked = true;
   workerState = undefined;

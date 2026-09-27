@@ -44,6 +44,7 @@ interface Boundary {
     signal: AbortSignal,
   ) => Promise<string | undefined>;
   autoRetryMs?: number;
+  autoTimer?: typeof setTimeout;
   request?: typeof fetch;
 }
 export async function supervise(
@@ -225,7 +226,7 @@ export async function supervise(
               if (resume) await recoverAmbiguousQuiesce();
               if (ambiguousQuiesce && !closing) {
                 clearTimeout(autoTimer);
-                schedule(10000);
+                schedule(10000, "recovery");
               }
               send({ type: "state", data: updates.snapshot() });
             });
@@ -872,8 +873,13 @@ export async function supervise(
   };
   let autoTimer: ReturnType<typeof setTimeout> | undefined;
   let autoTimerWork: Promise<void> | undefined;
-  const schedule = (ms: number) => {
-    autoTimer = setTimeout(() => {
+  const schedule = (
+    ms: number,
+    reason: NonNullable<Updates["autoSchedule"]>["reason"],
+  ) => {
+    updates.autoSchedule = { nextAttemptAt: Date.now() + ms, reason };
+    autoTimer = (boundary.autoTimer ?? setTimeout)(() => {
+      updates.autoSchedule = { nextAttemptAt: null, reason: "running" };
       const work = (async () => {
         if (closing) return;
         try {
@@ -890,6 +896,13 @@ export async function supervise(
                 : updates.latest === null && updates.checkedAt
                   ? 900000
                   : 90000,
+            ambiguousQuiesce
+              ? "recovery"
+              : auto.retryDelay() !== undefined
+                ? "readiness"
+                : updates.latest === null && updates.checkedAt
+                  ? "check-failed"
+                  : "poll",
           );
       })();
       autoTimerWork = work;
@@ -904,7 +917,11 @@ export async function supervise(
     }, ms);
     autoTimer.unref();
   };
-  if (supported) schedule(ambiguousQuiesce ? 1 : 90000);
+  if (supported)
+    schedule(
+      ambiguousQuiesce ? 1 : 90000,
+      ambiguousQuiesce ? "recovery" : "poll",
+    );
   // Refresh state even for code-driven updates and across a replaced child.
   const timer = setInterval(
     () => send({ type: "state", data: updates.snapshot() }),
@@ -922,6 +939,7 @@ export async function supervise(
     async close() {
       closing = true;
       if (autoTimer) clearTimeout(autoTimer);
+      updates.autoSchedule = undefined;
       controller.abort();
       clearInterval(timer);
       await autoTimerWork?.catch(() => {});

@@ -40,6 +40,26 @@ lives in the protected Coach home, independently of persona revisions and
 rollback. Unsupported/embedded or explicitly disabled installations cannot
 enable it. The browser does not schedule checks.
 
+Studio reports the stable owner's `autoSchedule.nextAttemptAt` and `reason`
+from `GET /api/update`, rather than deriving a retry from the last check time.
+The owner publishes the actual armed timer: normal polling, failed-check backoff
+(currently 15 minutes), native readiness cooldown, or worker recovery retry.
+An automatic cycle is not necessarily a GitHub request: consent, admission and
+recovery still apply. Disabling automatic updates gates the next cycle; it does
+not cancel the timer. Studio hides the automatic countdown while disabled.
+Manual checks retain their one-minute throttle and do not rearm that timer, even
+after a successful check. `checking` and `checkError` describe the source check
+separately from historical upgrade outcomes; only a successful source response
+clears the error. HTTP 429 and HTTP 403 with rate-limit headers report rate
+limiting; an unqualified 403 reports access denied without claiming a rate limit.
+
+The countdown uses `serverNow` to account for browser/host clock differences and
+shows a local retry time. A passed deadline means awaiting launcher status, not
+proof that a request started. Older stable owners do not expose this telemetry:
+Studio shows their GitHub error guidance and an unknown retry time. Installing
+new application source alone cannot add schedule telemetry to a running old
+owner; replace the stable launcher/image separately using the same protected home.
+
 Open **Settings → Updates** in Studio. Unlock performs a source check; checks never install anything. The installed identifier is an exact Git SHA, **not** npm `0.1.0` or a persona revision. Unknown/dirty builds report an unknown source rather than falsely claiming the checkout's HEAD.
 
 1. Save or revert unsaved edits and finish/cancel any preview or Operator turn. No manual worker stop is required.
