@@ -16,16 +16,26 @@ enable the checkbox to have the stable Linux supervisor check the fixed public
 `main` about every 90 seconds (longer after failed/rate-limited checks). It
 only installs a SHA verified as ahead of the known installed Git revision;
 unknown/dirty, divergent and behind revisions are skipped. It waits for
-preview, native Operator Pi and worker actions to finish, then quiesces and stops
-an idle worker before applying. A previously running worker is started again
+the stable owner to reserve the target, stage and validate its exact metadata,
+run native artifact/preflight checks, and probe the candidate on a disposable
+home while the current worker is still running. It then rechecks consent,
+target and child admission before quiescing and stopping an idle worker. A
+manual apply uses the same owner reservation, so manual and automatic preparation
+cannot overlap. `GET /api/update` exposes `preparing` and
+`preparationSupported`; preparation does not commit `active.json`. A previously running worker is started again
 after a healthy upgrade or restored previous runtime; a previously stopped
 worker stays stopped. A successful local start is not proof of ongoing backend
 connectivity or reply delivery. Check Worker status after an upgrade. If resume
 cannot be confirmed, Studio reports it separately from the source operation.
-Disabling prevents future automatic apply; a worker stopped for a deferred
-upgrade is restarted unless the service is shutting down. A failed target is
-not retried automatically on subsequent polls; use the manual confirmation
-path after investigating, or wait for a different main SHA. The preference
+Disabling during preparation discards the prepared candidate before worker
+quiescence. Missing, mismatched or untrusted native readiness is a retryable
+deferral with a bounded cooldown: it does not blacklist that SHA. Once an
+external matching receipt/image is provisioned, the same SHA is retried on a
+later automatic tick. Source/build errors and post-quiescence activation failures
+remain suppressed for that exact SHA; use the manual confirmation path after
+investigating, or wait for a different main SHA. A worker stopped after an
+ambiguous local transport failure is restarted unless the service is shutting
+down. The preference
 lives in the protected Coach home, independently of persona revisions and
 rollback. Unsupported/embedded or explicitly disabled installations cannot
 enable it. The browser does not schedule checks.
@@ -35,7 +45,7 @@ Open **Settings → Updates** in Studio. Unlock performs a source check; checks 
 1. Save or revert unsaved edits and finish/cancel any preview or Operator turn. No manual worker stop is required.
 2. Check the displayed latest revision from the fixed public repository, `stevefortier/katafit-coach`, branch `main`.
 3. Click Upgrade and explicitly confirm the full displayed SHA and stop/apply/restart operation. This authorizes executing that trusted source and its pinned dependencies on your machine. Cancel performs no stop or apply. A running Coach is stopped safely, native sessions are closed, and actions/chat are never replayed.
-4. Studio stages and validates the revision while the existing server stays available. Run, configuration changes, preview and shutdown are rejected during apply. Brief reconnecting is normal during replacement; disappearance is not success.
+4. The stable owner stages, validates, native-preflights and probes the revision while the existing server and worker remain available. Because this can be slow, it rechecks the target and live admission afterward; work that began meanwhile defers activation without stopping Coach. Once activation is accepted, Run, configuration changes and preview are rejected. Brief reconnecting is normal during replacement; disappearance is not success.
 5. Wait for the installed SHA to match the confirmed target and the success result. The stable owner resumes a previously running Coach after activation or rollback; an intentionally stopped Coach stays stopped. Read Worker status separately from source success. Resume failure exposes **Retry Coach restart**, which starts the saved configuration only, without reinstalling or replaying work. Reload Studio to load its new UI assets. Closing the browser does not cancel an accepted upgrade.
 
 Manual resume requires the explicitly advertised `manualRestartSupported` launcher capability. Source-upgrading an old child does **not** upgrade its stable owner. An old owner receives no stop/apply for a running manual upgrade: Studio reports `LAUNCHER_UPGRADE_REQUIRED` with instructions to replace the reviewed stable launcher using the same protected home. Do not bypass the guard. Settings, persona restore, legacy rollback and preview use the child-owned lifecycle and do not need this launcher upgrade.
@@ -46,7 +56,22 @@ Checks use GitHub's compact `git/ref/heads/main` endpoint with a 10-second deadl
 
 ## One-time bootstrap
 
-Older installations have no stable updater launcher. **Once**, pause and stop the old service, install a reviewed build containing this feature using the repository's existing clone/build/pack/install steps, and start it again with the same `KATAFIT_COACH_HOME`. Do not replace a running global package. Keep a private backup of the Coach home. Subsequent compatible application source upgrades happen in Studio without overwriting the global package or your Git checkout.
+Older installations have no stable updater launcher. **Once**, replace it outside
+Studio. For the README host-package layout, build the approved clean revision
+with `npm ci --include=dev --ignore-scripts`, `npm run build`, and `npm pack`;
+pause Coach, finish Operator work, run `katafit-coach stop`, and verify the old
+owner exited before using the installation's existing package-manager authority
+to install that reviewed local tarball (`npm install -g ./katafit-coach-0.1.0.tgz`
+is the documented bootstrap command). Preserve a private backup and the exact
+`KATAFIT_COACH_HOME`, port, OS identity and service definition, then start the
+same way it was previously supervised. Do not invent `sudo`, change ownership,
+or replace a running global package. A container installation instead replaces
+the reviewed outer control-plane image using the existing volume/socket/GID and
+the [native bootstrap transaction](native-bootstrap.md); it does not run global
+npm installation on the host. Verify authenticated health, the expected launcher
+capabilities, and the intentionally stopped worker before Run. Subsequent
+compatible application source upgrades happen in Studio without overwriting the
+stable package/outer image or Git checkout.
 
 **Important when adding auto-update to an existing managed installation:** an in-Studio source upgrade replaces only the runtime child, **not** its stable launcher or Docker image. A pre-auto-update launcher can show the newer checkbox but cannot poll or write the auto-update preference; it returns `409 UNSUPPORTED_INSTALLATION`. Replace the installed launcher/package or rebuild and recreate the container from the current reviewed source, preserving the exact Coach home/volume, then reload Studio. Merely stopping and restarting the old package/image does not add the feature. The worker is stopped after the service restart; verify it before choosing Run. The revised UI identifies this as “Launcher upgrade required.”
 
@@ -68,11 +93,40 @@ Managed directory ancestors cannot be symlinks; metadata/lockfile reads require 
 
 An isolated child loads the candidate's **own Store and admin code**, with a disposable home and no real secrets. It must serve authenticated stopped-worker health. Only then does the owner snapshot existing JSON records, stop the old runtime, launch the candidate against the real home, wait through startup probation, and require authenticated health at the original port. The active pointer is atomically renamed only after health. Startup errors, hangs and early exits cause old-runtime restart and JSON restoration. Confirmed manual upgrades and opt-in automatic upgrades restore a previously running worker only after healthy activation or rollback. This certifies startup health, not every future request.
 
+The stable owner removes a prepared candidate when readiness or post-preparation
+admission defers, consent is revoked, preparation fails, or shutdown cancels it.
+It never treats the active application directory as preparation-owned cleanup.
+An error while re-reading automatic-update consent after preparation releases
+the reservation before it escapes. Initial active-image preflight failure also
+drains retained native probe ownership before launcher startup rejects. Native
+probe ownership is first persisted in the protected home, before Docker create,
+with an unpredictable name/token, exact source/image identity and required
+labels. The returned container ID is added when known. On restart the launcher
+validates that private record, inspects only its exact name, and removes only the
+verified ID; missing, ambiguous, mismatched, corrupt or daemon-unreachable state
+fails closed and remains retryable without touching an unrelated container.
+If exact candidate deletion fails, the owner reports a cleanup warning, retains
+that deletion, and retries it before the same SHA can be staged again. Shutdown
+aborts the build/process group, awaits preparation, and drains retained candidate
+and native cleanup before the owner exits; an unconfirmed drain returns an
+explicit cleanup-pending result and leaves the owner running for another bounded
+shutdown attempt. A native probe whose removal fails remains owner-held and must
+be removed successfully before a later preflight can proceed.
+
 ### Compatibility and limits
 
 `dist/build.json` is `{revision: <40 lowercase hex|null>, protocol: 2, fingerprint: <64 lowercase hex>}` for native releases. The fingerprint binds the dependency lock, package, bridge and image recipe to native contract 2; the protected provisioning receipt additionally binds the exact application revision and local immutable image ID/platform. Protocol 1 remains accepted for legacy rollback. Both protocols require the **unchanged existing JSON data schema** and forbid migrations. Native readiness runs before stopping the previous child and again before launch. `active.json` commits the native image ID with its application revision; image receipt drift on the active revision fails closed. Unknown/incompatible candidates fail before activation. The updater does not promise arbitrary migrations, signed release verification, automatic image publication, support for custom forks, or an npm registry release.
 
 The installed stable launcher and protocol stay fixed while managed runtime source changes. Current source identity is the active runtime revision, not a claim that the global launcher package has been overwritten. Clean Git builds embed HEAD. Dirty builds embed null. Git-less builders can attest a clean exported tree through `KATAFIT_BUILD_REVISION`; do not set it for dirty exports.
+
+Application admin code advertises its two-phase update capability through an
+explicit numeric module export. A new admin under the immediately previous
+owner refuses a running manual update before worker stop because that owner
+cannot prepare. A new owner masks running-restart support from a versionless
+legacy admin; an intentionally stopped legacy application remains upgradeable
+through owner-side lazy preparation. No capability is inferred from source text.
+Readiness deferrals retain same-SHA retry only until cooldown, success, manual
+installation, disablement, or a changed target restores the normal cadence.
 
 ## Troubleshooting and recovery
 
@@ -81,7 +135,57 @@ The installed stable launcher and protocol stay fixed while managed runtime sour
 - **GitHub unavailable/rate limit:** check access to `api.github.com`; wait at least one minute, then retry. No provider credentials are involved.
 - **Upgrade failed:** the active pointer remains previous unless the candidate passed health. Check free disk, Git/npm availability and outbound access. Do not infer success from a closed browser or a returned 202.
 - **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime. Workers remain stopped unless a pending durable manual-update resume intent requires recovery; recovery never reapplies source or replays chat/actions. Keep the home and the bootstrap launcher.
+- **Native probe cleanup pending at startup:** preserve the entire protected home, including `native-probe-cleanup.json`, and restore Docker/socket availability for the same reviewed launcher identity. Restart retries only the receipt's exact name and verifies its token labels, immutable image and recorded container ID before removal. A missing container clears the receipt; a mismatch or invalid receipt remains blocked. Never delete the receipt, remove a same-name container, or prune merely to force startup. Use reviewed offline recovery if exact ownership cannot be established.
 - **Corrupt active installation/manual recovery:** stop the owner first and preserve a private backup. Restore a known-good home/active pointer or remove `active.json` to return to the installed bootstrap application only if it is compatible with your unchanged data schema. Never delete a live lock inode.
+
+### Stable launcher replacement, including the `8daaa71` owner
+
+An application source update never replaces the process-resident stable owner.
+In particular, an owner built from `8daaa71` remains old even after it loads a
+new child: it does not acquire the current two-phase preparation or durable probe
+reconciliation contract. Do not interpret a newer runtime SHA, a reconnect, or
+an accepted old-owner request as a launcher upgrade. Current child code rejects
+a running manual source update when the owner does not explicitly advertise
+preparation support; do not bypass that guard. Automatic publication recovery
+also cannot retrofit the owner.
+
+For a future authorized replacement, first discover the actual unit/container,
+Node binary, package mode, service UID/GID, protected home/volume, environment,
+port and prior worker running intent; no service name or path is implied here.
+Build, pack and qualify the approved clean release outside the Pi and install the
+complete production tree side-by-side under a private new prefix, retaining the
+old package/outer image and service definition. Provision an exact native
+receipt only through the authorized external release path and run preflight from
+that exact candidate without changing `active.json` or starting a second owner.
+
+Finish preview/Operator work, read authenticated status and record the prior
+running intent outside the home. Use the supported authenticated automatic
+quiesce endpoint and require stopped presence, publication safety and
+`autoQuiesceReady:true`; stop on ambiguity. Stop the discovered outer owner and
+verify every owner/runtime descendant exited. Privately back up the **entire**
+protected home and old service/container definition. Never unlink `service.lock`,
+discard active/image receipts, or selectively copy configuration; preserve
+secrets, history, persona records, auto-update consent, active pointer, durable
+cleanup/update receipts and the original running/stopped intent.
+
+For a host-package service, change only the reviewed launcher path and working
+directory while preserving its Node binary, `serve` foreground mode, user/group,
+environment, home, port, hardening and proxy. For outer-container mode, replace
+the reviewed outer image while retaining the exact protected volume, private
+networking and socket supplementary GID; do not switch install modes. Start one
+owner, then verify its exact command/PID, authenticated stopped health, runtime
+SHA/image binding and `preparationSupported:true` plus
+`manualRestartSupported:true`. Because persisted `active.json` still wins, a
+legacy active child may intentionally mask capabilities until it is upgraded by
+the supported stopped-manual or consented automatic path.
+
+Resume through authenticated `POST /api/run` only when the recorded prior intent
+was running. Verify running/idle presence, installed SHA and image, unchanged
+consent, and private pre/post hashes for configuration, secrets and history. On
+failure, stop the new owner, reconcile/remove only exactly owned probe resources,
+restore the prior launcher/package and full protected home/pointer, then restore
+only the prior running intent. Retain both application/image pairs through
+probation.
 
 ## Automatic publication recovery
 
@@ -210,6 +314,14 @@ matrix separately verifies real native A→B pairing, missing artifacts, failed
 post-stop activation, restart and image-pointer drift, using synthetic candidate
 identities (not published releases). CI runs both matrices. Daemon-independent
 CLI/supervisor tests use explicit legacy fixtures, never a production bypass.
+The workflow builds an ephemeral sandbox image on the CI runner and passes its
+local ID through `NATIVE_TEST_IMAGE`; package smokes only consume such an already
+available ID and provision disposable homes. CI does not publish, sign, transfer,
+load, select or provision an image in a production Coach home, and there is no
+registry watcher or privileged artifact daemon in this repository. Production
+automation must remain an external trusted release/deployment step that supplies
+an approved local immutable image ID to `provisionArtifact`; the updater never
+gains image build/pull authority.
 
 `npm test` builds and exercises revision checking, explicit confirmation/auth fences, metadata, isolated staging, child replacement, incompatible Store probing, immediate and delayed startup rollback, stable port/auth/data, disabled support and legacy-platform behavior. `npm run test:package` verifies the normal production-only package.
 

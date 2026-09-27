@@ -56,7 +56,7 @@ test("manual update stable owner resumes after replacement and rollback without 
       );
       await writeFile(
         join(root, "dist/server/admin.js"),
-        `import {admin as base} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export async function admin(...args){${sha === bad ? `if(args[0].dir===${JSON.stringify(home)}) throw Error('synthetic startup failure');` : ""}return base(...args);}`,
+        `import {admin as base} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export {updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export async function admin(...args){${sha === bad ? `if(args[0].dir===${JSON.stringify(home)}) throw Error('synthetic startup failure');` : ""}return base(...args);}`,
       );
       return root;
     },

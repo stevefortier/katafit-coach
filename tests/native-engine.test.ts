@@ -120,3 +120,55 @@ test("ambiguous removal retains ownership until Docker API confirms absence", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("probe runtime creates with exact ownership labels and removes only its captured ID", async () => {
+  const id = "1".repeat(64);
+  const token = "12345678-1234-4234-8234-123456789abc";
+  const image = "sha256:" + "c".repeat(64);
+  const labels = {
+    "fit.kata.native.probe": "1",
+    "fit.kata.native.probe-owner": token,
+    "fit.kata.native.revision": "a".repeat(40),
+    "fit.kata.native.fingerprint": "b".repeat(64),
+  };
+  const ownership = {
+    protocol: 1 as const,
+    name: "katafit-pi-probe-" + token,
+    token,
+    revision: "a".repeat(40),
+    fingerprint: "b".repeat(64),
+    image,
+    labels,
+    containerId: null,
+  };
+  const commands: string[][] = [];
+  const removals: string[] = [];
+  const runtime = new NativeRuntime(image, {
+    ownership,
+    exec: async (_file, args) => {
+      commands.push(args);
+      return { stdout: args.includes("version") ? "1.52" : id };
+    },
+    probeEngine: {
+      async inspect(reference) {
+        assert.ok(reference === ownership.name || reference === id);
+        return {
+          Id: id,
+          Name: "/" + ownership.name,
+          Image: image,
+          Config: { Image: image, Labels: labels },
+        };
+      },
+      async remove(found) {
+        removals.push(found);
+      },
+    },
+  });
+  await runtime.start();
+  assert.equal(runtime.containerId, id);
+  const create = commands.find((args) => args.includes("create"))!;
+  for (const [key, value] of Object.entries(labels))
+    assert.ok(create.includes(`${key}=${value}`));
+  await runtime.stop();
+  assert.deepEqual(removals, [id]);
+});

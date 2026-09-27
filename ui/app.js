@@ -1802,7 +1802,7 @@ const sourceSha = (value) =>
   typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const updateFailureHelp = {
   EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED:
-    "Matching native artifact or bootstrap required. Provision and preflight the exact candidate image outside Pi, then retry manually. The updater never builds or pulls sandbox images.",
+    "Matching native artifact or bootstrap required. Provision and preflight the exact candidate image outside Pi. Manual updates need another confirmation; opted-in automatic updates retry after cooldown. The updater never builds or pulls sandbox images.",
   INSUFFICIENT_DISK:
     "Not enough free disk. Free at least 1.5 GiB in the Coach home filesystem, then retry manually.",
   BUILD_TOOL_UNAVAILABLE:
@@ -1871,8 +1871,15 @@ function renderHeaderStatus() {
   if (lifecycleBusy || lifecycleUncertain || serverTransition) {
     $("state").textContent = "APPLYING";
     $("state").dataset.tone = "busy";
-  } else if (updatePending || updateData?.applying === true) {
-    $("state").textContent = "UPGRADING";
+  } else if (
+    updatePending ||
+    updateData?.preparing === true ||
+    updateData?.applying === true
+  ) {
+    $("state").textContent =
+      updateData?.preparing === true && updateData?.applying !== true
+        ? "PREPARING"
+        : "UPGRADING";
     $("state").dataset.tone = "busy";
   } else if (workerState) {
     $("state").textContent = workerState.toUpperCase();
@@ -1910,13 +1917,18 @@ function renderUpdate() {
     ? data.latest.slice(0, 12)
     : "Not available";
   $("updateLatest").title = sourceSha(data.latest) ? data.latest : "";
-  $("updateStatus").textContent =
+  const guidance =
     updateError ||
     (data.auto?.enabled && data.guidance?.startsWith("New source available.")
       ? failedLatest
         ? "Main differs from the installed source. The last attempt failed; see the upgrade failure below."
         : "Main differs from the installed source. Automatic upgrade will verify it and wait for an idle worker."
       : data.guidance);
+  $("updateStatus").textContent =
+    guidance +
+    (data.cleanupWarning === true && !/cleanup/i.test(guidance)
+      ? " Candidate cleanup is incomplete; repair protected-home permissions before retrying this revision."
+      : "");
   $("updateAuto").disabled =
     !data.supported || data.auto?.available !== true || updateRequest;
   $("updateAuto").checked = data.auto?.enabled === true;
@@ -1944,6 +1956,8 @@ function renderUpdate() {
       "Automatic attempt deferred: local Studio communication failed. No source operation was accepted; the supervisor will reconcile worker state before retrying.",
     AUTO_UPDATE_DISABLED:
       "Automatic attempt cancelled before installation because automatic updates were disabled or the owner was shutting down.",
+    ARTIFACT_NOT_READY:
+      "Automatic attempt deferred before worker stop: the exact trusted native artifact or synthetic preflight is not ready. External provisioning is required; this same revision will retry after cooldown.",
   };
   const autoOutcome = data.autoOutcome;
   const relevantAuto =
@@ -1998,12 +2012,13 @@ function renderUpdate() {
   $("updateApply").disabled =
     updateRequest ||
     locked ||
+    data.preparing === true ||
     updateWorkerBlocked ||
     !data.supported ||
     !sourceSha(data.latest) ||
     data.latest === data.installed;
   $("updateConfirmApply").disabled =
-    locked || updateRequest || updateWorkerBlocked;
+    locked || data.preparing === true || updateRequest || updateWorkerBlocked;
   for (const id of [
     "run",
     "stop",
@@ -2075,6 +2090,7 @@ async function refreshUpdate(check = false) {
       updateTimer = setTimeout(
         () => refreshUpdate(),
         updatePending ||
+          updateData?.preparing ||
           updateData?.applying ||
           updateData?.recovering ||
           updateError
@@ -2123,7 +2139,12 @@ action("updateApply", async () => {
     );
     return;
   }
-  if (!sourceSha(updateData?.latest) || updatePending || updateData.applying)
+  if (
+    !sourceSha(updateData?.latest) ||
+    updatePending ||
+    updateData.preparing ||
+    updateData.applying
+  )
     return;
   updateTarget = updateData.latest;
   $("updateTarget").textContent = updateTarget;
@@ -2147,6 +2168,7 @@ action("updateConfirmApply", async () => {
     !sourceSha(updateTarget) ||
     updateTarget !== updateData?.latest ||
     updatePending ||
+    updateData.preparing ||
     updateData.applying
   )
     return;

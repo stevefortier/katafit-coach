@@ -15,6 +15,8 @@ export class Updates {
   latest: string | null = null;
   checkedAt = 0;
   applying = false;
+  preparing = false;
+  preparationSupported = false;
   manualRestartSupported = false;
   recovering = false;
   cleanupWarning = false;
@@ -26,6 +28,7 @@ export class Updates {
       | "AUTO_UPDATE_BUSY"
       | "WORKER_STOP_UNCONFIRMED"
       | "LOCAL_UNAVAILABLE"
+      | "ARTIFACT_NOT_READY"
       | "AUTO_UPDATE_DISABLED";
   };
   accepted: Promise<void> = Promise.resolve();
@@ -37,8 +40,11 @@ export class Updates {
     readonly applyTarget: ((sha: string) => Promise<void>) | null,
     private readonly request: typeof fetch = fetch,
     private readonly persist?: (operation: LastOperation) => Promise<void>,
+    private readonly prepareTarget?: (sha: string) => Promise<void>,
+    private readonly cancelPreparedTarget?: (sha: string) => Promise<void>,
   ) {
     if (applyTarget) this.guidance = "Check for source updates.";
+    this.preparationSupported = !!prepareTarget;
   }
   snapshot() {
     return {
@@ -47,15 +53,18 @@ export class Updates {
       checkedAt: this.checkedAt,
       supported: !!this.applyTarget,
       applying: this.applying,
+      preparing: this.preparing,
+      preparationSupported: this.preparationSupported,
       manualRestartSupported: this.manualRestartSupported,
       recovering: this.recovering,
+      cleanupWarning: this.cleanupWarning,
       guidance: this.guidance,
       lastOperation: this.lastOperation,
       autoOutcome: this.autoOutcome,
     };
   }
   validate(sha: unknown): string {
-    if (this.applying) throw new Error("UPDATE_IN_PROGRESS");
+    if (this.applying || this.preparing) throw new Error("UPDATE_IN_PROGRESS");
     if (!validSha(sha)) throw new Error("TARGET_REJECTED");
     if (!this.latest || Date.now() - this.checkedAt > 300000)
       throw new Error("CHECK_FIRST");
@@ -64,8 +73,68 @@ export class Updates {
     if (!this.applyTarget) throw new Error("UNSUPPORTED_INSTALLATION");
     return sha;
   }
-  async apply(value: unknown, _resume = false) {
+  validatePrepared(sha: unknown): string {
+    if (this.applying) throw new Error("UPDATE_IN_PROGRESS");
+    if (!validSha(sha) || sha !== this.latest || sha === this.installed)
+      throw new Error("TARGET_REJECTED");
+    if (!this.applyTarget) throw new Error("UNSUPPORTED_INSTALLATION");
+    return sha;
+  }
+  async prepare(value: unknown) {
     const sha = this.validate(value);
+    if (!this.prepareTarget) return;
+    this.preparing = true;
+    this.guidance =
+      "Preparing and validating pinned source while Coach remains available.";
+    try {
+      await this.prepareTarget(sha);
+    } finally {
+      this.preparing = false;
+    }
+  }
+  async cancelPreparation(value: unknown) {
+    if (!validSha(value)) return;
+    await this.cancelPreparedTarget?.(value);
+  }
+  async recordPreparationFailure(sha: string, error: unknown) {
+    this.lastOperation = {
+      id: randomUUID(),
+      sha,
+      state: "failed",
+      at: Date.now(),
+      phase: "preparing",
+      reason: failureReason(error),
+    };
+    this.guidance =
+      "Upgrade preparation failed before Coach was stopped. Check free disk and Git/npm network access.";
+    if (this.cleanupWarning)
+      this.guidance +=
+        " Candidate cleanup is incomplete and must succeed before this revision can be staged again.";
+    await this.persist?.(this.lastOperation);
+  }
+  async apply(value: unknown, _resume = false, prepared = false) {
+    let sha: string;
+    if (!prepared && this.prepareTarget) {
+      sha = this.validate(value);
+      try {
+        await this.prepare(sha);
+      } catch (error) {
+        await this.recordPreparationFailure(sha, error).catch(() => {});
+        this.guidance =
+          error instanceof Error &&
+          error.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
+            ? "Upgrade failed: matching external artifact or native bootstrap required. Provision and preflight the exact candidate image outside Pi, then retry. Previous runtime was not replaced."
+            : this.guidance;
+        if (this.cleanupWarning && !/cleanup/i.test(this.guidance))
+          this.guidance +=
+            " Candidate cleanup is incomplete and must succeed before this revision can be staged again.";
+        throw new Error("UPGRADE_FAILED");
+      }
+      prepared = true;
+      sha = this.validatePrepared(sha);
+    } else {
+      sha = prepared ? this.validatePrepared(value) : this.validate(value);
+    }
     this.applying = true;
     this.cleanupWarning = false;
     this.lastOperation = {
@@ -99,6 +168,9 @@ export class Updates {
         error.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
           ? "Upgrade failed: matching external artifact or native bootstrap required. Provision and preflight the exact candidate image outside Pi, then retry. Previous runtime was not replaced."
           : "Upgrade failed; previous version restored if available. Check free disk and Git/npm network access.";
+      if (this.cleanupWarning)
+        this.guidance +=
+          " Candidate cleanup is incomplete and must succeed before this revision can be staged again.";
       throw new Error("UPGRADE_FAILED");
     } finally {
       this.lastOperation = {

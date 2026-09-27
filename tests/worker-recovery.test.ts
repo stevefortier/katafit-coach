@@ -33,7 +33,13 @@ test("manual update excludes an in-flight claim and fences late claims and nativ
     token: "synthetic-token",
     apiKey: "synthetic-key",
   });
-  const updates = new Updates("a".repeat(40), async () => {});
+  const updates = new Updates(
+    "a".repeat(40),
+    async () => {},
+    fetch,
+    undefined,
+    async () => {},
+  );
   updates.latest = "b".repeat(40);
   updates.checkedAt = Date.now();
   updates.manualRestartSupported = true;
@@ -126,9 +132,15 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
     token: "synthetic-token",
     apiKey: "synthetic-key",
   });
-  const updates = new Updates("a".repeat(40), async () => {
-    throw new Error("must not apply");
-  });
+  const updates = new Updates(
+    "a".repeat(40),
+    async () => {
+      throw new Error("must not apply");
+    },
+    fetch,
+    undefined,
+    async () => {},
+  );
   updates.latest = "b".repeat(40);
   updates.checkedAt = Date.now();
   updates.manualRestartSupported = true;

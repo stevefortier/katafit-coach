@@ -182,7 +182,7 @@ async function supervised(prefix: string, badTarget: string) {
     );
     await writeFile(
       join(root, "dist/server/admin.js"),
-      `import {admin as base} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export async function admin(...args){${target === badTarget ? `if(args[0].dir===${JSON.stringify(home)}) throw Error('candidate startup failed');` : ""}return base(...args);}`,
+      `import {admin as base} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export {updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export async function admin(...args){${target === badTarget ? `if(args[0].dir===${JSON.stringify(home)}) throw Error('candidate startup failed');` : ""}return base(...args);}`,
     );
     return root;
   };
@@ -239,7 +239,7 @@ async function supervised(prefix: string, badTarget: string) {
   };
 }
 
-test("supervised auto update is deferred, without staging, while native Pi is starting", async () => {
+test("supervised auto update prepares but defers activation while native Pi is starting", async () => {
   const h = held();
   const f = await fixture(async (name, result) => {
     if (name === "initialize") {
@@ -263,7 +263,11 @@ test("supervised auto update is deferred, without staging, while native Pi is st
     await h.started;
     await s.owner.auto.tick();
     assert.equal(s.owner.updates.snapshot().autoOutcome?.state, "deferred");
-    assert.equal(s.prepares(), 0, "no source staged or journal snapshot");
+    assert.equal(
+      s.prepares(),
+      1,
+      "stable owner prepares before the child admission recheck",
+    );
     assert.equal(s.owner.pid, pid);
     assert.equal(s.owner.updates.snapshot().installed, "b".repeat(40));
   } finally {

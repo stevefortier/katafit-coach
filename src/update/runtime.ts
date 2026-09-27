@@ -16,8 +16,17 @@ const rpc = (method: string, sha?: unknown) =>
   });
 class RemoteUpdates extends Updates {
   supported = false;
+  private preparationAwareAdmin = false;
+  configureAdmin(protocol: unknown) {
+    this.preparationAwareAdmin = protocol === 1;
+  }
   override snapshot() {
-    return { ...super.snapshot(), supported: this.supported };
+    const state = { ...super.snapshot(), supported: this.supported };
+    if (!this.preparationAwareAdmin) {
+      state.preparationSupported = false;
+      state.manualRestartSupported = false;
+    }
+    return state;
   }
   override validate(sha: unknown) {
     if (!this.supported) throw new Error("UNSUPPORTED_INSTALLATION");
@@ -28,14 +37,33 @@ class RemoteUpdates extends Updates {
     Object.assign(this, state);
     return this.snapshot();
   }
-  override async apply(sha: unknown, resume = false) {
+  override async prepare(sha: unknown) {
+    if (!this.preparationAwareAdmin)
+      throw new Error("LAUNCHER_UPGRADE_REQUIRED");
     this.validate(sha);
+    this.preparing = true;
+    try {
+      const state = await rpc("prepare", sha);
+      Object.assign(this, state);
+    } finally {
+      this.preparing = false;
+    }
+  }
+  override async cancelPreparation(sha: unknown) {
+    if (typeof sha !== "string") return;
+    const state = await rpc("cancelPreparation", sha);
+    Object.assign(this, state);
+  }
+  override async apply(sha: unknown, resume = false) {
+    if (this.preparationAwareAdmin) this.validatePrepared(sha);
+    else this.validate(sha);
     this.applying = true;
-    this.accepted = rpc("apply", resume ? { sha, resume: true } : sha).then(
-      (state) => {
-        Object.assign(this, state);
-      },
-    );
+    this.accepted = rpc(
+      this.preparationAwareAdmin ? "apply" : "legacyApply",
+      resume ? { sha, resume: true } : sha,
+    ).then((state) => {
+      Object.assign(this, state);
+    });
     try {
       await this.accepted;
     } catch {
@@ -72,12 +100,14 @@ process.on("message", async (message: any) => {
     const { Store } = await import(
       pathToFileURL(join(root, "dist/config/store.js")).href
     );
-    const { admin } = await import(
+    const application = await import(
       pathToFileURL(join(root, "dist/server/admin.js")).href
     );
+    if (typeof application.admin !== "function") throw new Error();
+    updates.configureAdmin(application.updatePreparationProtocol);
     const store = new Store(home);
     await store.init();
-    app = await admin(
+    app = await application.admin(
       store,
       Number(port),
       undefined,
