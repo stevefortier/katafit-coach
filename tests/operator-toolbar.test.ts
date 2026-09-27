@@ -285,6 +285,11 @@ test(
       await start();
       await emit({ type: "ready" });
       const green = await state("connected", /Connected/);
+      assert.doesNotMatch(
+        (await page.locator("#nativeConnectionTooltip").textContent())!,
+        /ephemeral|\/model|\/mcp/,
+        "connection tooltip does not repeat the removed workspace/command suffix",
+      );
       await emit({
         type: "output",
         data: "Synthetic transport fixture — not a live Pi session\r\n",

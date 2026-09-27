@@ -190,10 +190,7 @@ function nativeTerminal({ api, authorized }) {
           });
         } else if (message.type === "ready") {
           failed = false;
-          status(
-            "connected",
-            "Connected · ephemeral workspace · /model · /mcp",
-          );
+          status("connected", "Connected to isolated Pi.");
           pending = false;
           $("nativeStart").disabled = false;
           resize();
