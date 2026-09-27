@@ -36,6 +36,8 @@ import {
   formatRecall,
   negotiateMemory,
   recallMemory,
+  pendingMemory,
+  resumeMemory,
   type MemoryCapture,
   type MemoryItem,
 } from "../memory/backend.js";
@@ -344,7 +346,12 @@ export class Worker {
       });
       return { capture, recalled: items };
     } catch (error) {
-      if (error instanceof Error && error.message === "LEASE_EXPIRED")
+      if (
+        !(error instanceof ToolFailure) ||
+        !["MEMORY_UNAVAILABLE", "MEMORY_COVERAGE_UNAVAILABLE"].includes(
+          error.code ?? "",
+        )
+      )
         throw error;
       this.diagnostic({
         source: "worker",
@@ -361,6 +368,7 @@ export class Worker {
     c: Client,
     memory: { capture: MemoryCapture; recalled: MemoryItem[] },
     budget: () => number,
+    terminal: AbortController,
   ): AgentTool {
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
     return {
@@ -393,7 +401,14 @@ export class Worker {
           { query: args.query, mode: "search", limit: 8 },
           secrets,
           budget(),
-        );
+        ).catch((error) => {
+          if (
+            !(error instanceof ToolFailure) ||
+            error.code !== "MEMORY_UNAVAILABLE"
+          )
+            terminal.abort(error);
+          throw error;
+        });
         for (const item of items)
           if (!memory.recalled.some((known) => known.id === item.id))
             memory.recalled.push(item);
@@ -412,6 +427,34 @@ export class Worker {
     } as AgentTool;
   }
   /** Extraction runs only after verified publication and commits under the capture's own deadline. */
+  private async recoverMemory(c: Client, ref: string) {
+    if (!(await negotiateMemory(c, backendWireBudget(15000)))?.recovery) return;
+    const secrets = [this.options.token, ...(this.options.secrets ?? [])];
+    const pending = await pendingMemory(c, secrets, backendWireBudget(15000));
+    if (!pending.length) return;
+    try {
+      const resumed = await resumeMemory(
+        c,
+        pending[0].capture_id,
+        secrets,
+        backendWireBudget(15000),
+      );
+      await this.retainMemory(resumed, resumed.origin, resumed.evidence, ref);
+    } catch (error) {
+      if (this.controller.signal.aborted) throw error;
+      // A job may be invalidated between discovery and resume. It must not
+      // replay its execution, or prevent unrelated new work from proceeding.
+      if (!(error instanceof ToolFailure) || !error.code?.startsWith("MEMORY_"))
+        throw error;
+      this.diagnostic({
+        source: "worker",
+        stage: "memory-retention-skipped",
+        ref,
+        level: "warn",
+        error: safeError(error),
+      });
+    }
+  }
   private async retainMemory(
     memory: { capture: MemoryCapture; recalled: MemoryItem[] },
     origin: MemoryOrigin,
@@ -432,16 +475,33 @@ export class Worker {
       this.diagnostic(e),
     );
     try {
-      const proposals = await extractMemories({
-        complete: (system, context, s) =>
-          this.options.complete(context, s, system, [], ref),
-        persona: this.options.system,
-        origin,
-        evidence,
-        recalled: memory.recalled,
-        secrets,
+      if ((await negotiateMemory(c, backendWireBudget(15000)))?.recovery) {
+        const resumed = await resumeMemory(
+          c,
+          memory.capture.capture_id,
+          secrets,
+          backendWireBudget(15000),
+        );
+        evidence = resumed.evidence;
+        memory = { capture: resumed.capture, recalled: resumed.recalled };
+      }
+      const proposals = await bounded(
+        () =>
+          extractMemories({
+            complete: (system, context, s) =>
+              this.options.complete(context, s, system, [], ref, {
+                deadlineAt: until,
+              }),
+            persona: this.options.system,
+            origin,
+            evidence,
+            recalled: memory.recalled,
+            secrets,
+            signal,
+          }),
         signal,
-      });
+      );
+      signal.throwIfAborted();
       if (!proposals.length) {
         this.diagnostic({
           source: "worker",
@@ -449,7 +509,6 @@ export class Worker {
           ref,
           metadata: { proposals: 0 },
         });
-        return;
       }
       const receipt = await commitMemory(
         c,
@@ -464,6 +523,7 @@ export class Worker {
         stage: "memory-retained",
         ref,
         metadata: {
+          publication: receipt.publication ?? "unknown",
           created: receipt.created.length,
           superseded: receipt.superseded.length,
           skipped: receipt.skipped.length,
@@ -513,6 +573,7 @@ export class Worker {
     };
     try {
       await c.connect();
+      await this.recoverMemory(c, ref);
       const taskKinds = await discoverTasks(c);
       const due = this.isolated.find(
         (incident) => incident.nextCheck <= Date.now(),
@@ -617,7 +678,8 @@ export class Worker {
       if (ms <= 0) throw new Error("LEASE_EXPIRED");
       const deadlineAt = Date.now() + ms;
       const timeout = AbortSignal.timeout(ms);
-      modelSignal = AbortSignal.any([signal, timeout]);
+      const terminal = new AbortController();
+      modelSignal = AbortSignal.any([signal, timeout, terminal.signal]);
       const inferenceSignal = modelSignal;
       const reads = await bounded(
         () =>
@@ -676,7 +738,10 @@ export class Worker {
               photoReviewGuidance(current.message, current.created_at) +
               formatRecall(memory?.recalled ?? [], "worker"),
             memory
-              ? [...reads.tools, this.memorySearchTool(c, memory, budget)]
+              ? [
+                  ...reads.tools,
+                  this.memorySearchTool(c, memory, budget, terminal),
+                ]
               : reads.tools,
             ref,
             { deadlineAt, readBudget: reads.readBudget },
@@ -715,7 +780,11 @@ export class Worker {
         await this.retainMemory(
           memory,
           "request",
-          { member_message: current.message, coach_reply: text },
+          {
+            member_message: current.message,
+            coach_reply: text,
+            initial_context: JSON.parse(serialized),
+          },
           ref,
         );
       this.update("reply-persisted");

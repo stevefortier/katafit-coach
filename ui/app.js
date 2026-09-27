@@ -316,6 +316,11 @@ async function load(preserveDrafts = false) {
   const data = await api("config");
   if (generation !== authGeneration) throw staleAuthentication();
   if (config) resetMembers();
+  if (
+    config &&
+    (config.revision !== data.revision || config.origin !== data.origin)
+  )
+    resetMemories();
   config = data;
   for (const f of fields) $(f).value = config.persona[f];
   if (!preserveDrafts || !modelsDraft) {
@@ -1516,7 +1521,10 @@ for (const [index, section] of diagnosticsSections.entries()) {
 }
 let memoriesData = { items: [], members: [] },
   selectedMemoryId = "",
-  selectedMemoryRevision = 0;
+  selectedMemoryRevision = 0,
+  memoryListEpoch = 0,
+  memoryHistoryEpoch = 0,
+  selectedMemoryReviewAt = null;
 function memoryNumber(id, fallback) {
   const value = Number($(id).value);
   return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback;
@@ -1546,6 +1554,8 @@ function syncMemoryMembers() {
   }
 }
 function memoryDraft(entry) {
+  ++memoryHistoryEpoch;
+  selectedMemoryReviewAt = entry?.review_at || null;
   selectedMemoryId = entry?.id || "";
   selectedMemoryRevision = entry?.revision || 0;
   $("memoryEditorTitle").textContent = entry
@@ -1565,7 +1575,9 @@ function memoryDraft(entry) {
   $("memoryHistoryList").replaceChildren();
 }
 async function loadMemoryHistory(id) {
+  const epoch = ++memoryHistoryEpoch;
   const { history, item } = await api("memories/" + id);
+  if (epoch !== memoryHistoryEpoch || !key) return;
   $("memoryHistoryList").replaceChildren();
   memoryDraft(item);
   for (const record of history.slice().reverse()) {
@@ -1590,6 +1602,7 @@ async function loadMemoryHistory(id) {
 function renderMemories() {
   $("memoryList").replaceChildren();
   syncMemoryMembers();
+  $("memoryMore").hidden = !memoriesData.next_cursor;
   $("memoryStatus").textContent =
     memoriesData.items.length +
     " memories" +
@@ -1628,7 +1641,7 @@ function renderMemories() {
     edit.type = "button";
     edit.disabled = entry.availability === "unavailable";
     edit.onclick = async () => {
-      await loadMemoryHistory(entry.id).catch(() => {});
+      await loadMemoryHistory(entry.id).catch(memoryLoadError);
     };
     const archive = detailText(
       "button",
@@ -1637,34 +1650,64 @@ function renderMemories() {
     archive.type = "button";
     archive.className = "secondary";
     archive.onclick = async () => {
-      await api("memories/" + entry.id, {
-        expected_revision: entry.revision,
-        status: entry.status === "archived" ? "active" : "archived",
-      });
-      await loadMemories();
-      notice("Memory status updated.", "success");
+      const epoch = invalidateMemory();
+      try {
+        await api("memories/" + entry.id, {
+          expected_revision: entry.revision,
+          status: entry.status === "archived" ? "active" : "archived",
+        });
+        if (epoch !== memoryHistoryEpoch || !key) return;
+        await loadMemories();
+        notice("Memory status updated.", "success");
+      } catch (error) {
+        if (epoch === memoryHistoryEpoch) memoryLoadError(error);
+      }
     };
     const forget = detailText("button", "Forget");
     forget.type = "button";
     forget.className = "secondary";
     forget.onclick = async () => {
       if (!confirm("Forget this memory and fence stale recreation?")) return;
-      await api("memories/" + entry.id + "/forget", {
-        expected_revision: entry.revision,
-      });
-      if (selectedMemoryId === entry.id) memoryDraft();
-      await loadMemories();
-      notice(
-        "Memory forgotten. Matching stale extraction is fenced.",
-        "success",
-      );
+      const epoch = invalidateMemory();
+      try {
+        await api("memories/" + entry.id + "/forget", {
+          expected_revision: entry.revision,
+        });
+        if (epoch !== memoryHistoryEpoch || !key) return;
+        await loadMemories();
+        notice(
+          "Memory forgotten. Matching stale extraction is fenced.",
+          "success",
+        );
+      } catch (error) {
+        if (epoch === memoryHistoryEpoch) memoryLoadError(error);
+      }
     };
     actions.append(edit, archive, forget);
     card.append(title, text, meta, sources, actions);
     $("memoryList").append(card);
   }
 }
-async function loadMemories() {
+function memoryLoadError(error) {
+  if (key) notice(error.message || "Memory could not be loaded.", "error");
+}
+function invalidateMemory() {
+  ++memoryListEpoch;
+  memoryDraft();
+  return memoryHistoryEpoch;
+}
+function resetMemories() {
+  invalidateMemory();
+  memoriesData = { items: [], members: [] };
+  renderMemories();
+  $("memoryStatus").textContent = "";
+}
+async function loadMemories(more = false) {
+  // action() may pass an event; pagination is explicitly opt-in only.
+  more = more === true;
+  const cursor = more ? memoriesData.next_cursor : null;
+  if (more && !cursor) return;
+  const epoch = ++memoryListEpoch;
   const params = new URLSearchParams();
   if ($("memorySearch").value) params.set("query", $("memorySearch").value);
   if ($("memoryAudienceFilter").value)
@@ -1674,9 +1717,37 @@ async function loadMemories() {
   if ($("memoryKindFilter").value)
     params.set("kind", $("memoryKindFilter").value);
   if ($("memoryArchivedFilter").checked) params.set("status", "all");
-  memoriesData = await api("memories" + (params.size ? "?" + params : ""));
-  renderMemories();
+  if (cursor) params.set("cursor", cursor);
+  $("memoryMore").disabled = true;
+  try {
+    const result = await api("memories" + (params.size ? "?" + params : ""));
+    if (epoch !== memoryListEpoch || !key) return;
+    memoriesData = {
+      ...result,
+      items: more
+        ? [
+            ...new Map(
+              [...memoriesData.items, ...result.items].map((item) => [
+                item.id,
+                item,
+              ]),
+            ).values(),
+          ]
+        : result.items,
+    };
+    renderMemories();
+  } catch (error) {
+    if (epoch !== memoryListEpoch || !key) return;
+    memoriesData = { items: [], members: [] };
+    renderMemories();
+    $("memoryStatus").textContent =
+      "Memory could not be loaded. Refresh to retry.";
+    memoryLoadError(error);
+  } finally {
+    if (epoch === memoryListEpoch) $("memoryMore").disabled = false;
+  }
 }
+
 for (const id of [
   "memorySearch",
   "memoryAudienceFilter",
@@ -1684,8 +1755,12 @@ for (const id of [
   "memoryKindFilter",
   "memoryArchivedFilter",
 ])
-  $(id).addEventListener("input", () => void loadMemories());
+  $(id).addEventListener("input", () => {
+    invalidateMemory();
+    void loadMemories();
+  });
 action("memoryRefresh", loadMemories);
+action("memoryMore", () => loadMemories(true));
 action("memoryNew", async () => memoryDraft());
 action("memorySave", async () => {
   const body = {
@@ -1695,16 +1770,21 @@ action("memorySave", async () => {
     text: $("memoryText").value,
     importance: memoryNumber("memoryImportance", 0.85),
     goal_relevance: memoryNumber("memoryRelevance", 0.85),
-    review_at: $("memoryReviewAt").value || null,
+    review_at:
+      $("memoryReviewAt").value === (selectedMemoryReviewAt?.slice(0, 10) || "")
+        ? selectedMemoryReviewAt
+        : $("memoryReviewAt").value
+          ? $("memoryReviewAt").value + "T00:00:00.000Z"
+          : null,
     pinned: $("memoryPinned").checked,
     expected_revision: selectedMemoryRevision || undefined,
   };
-  const result = await api(
-    selectedMemoryId ? "memories/" + selectedMemoryId : "memories",
-    body,
-  );
+  const path = selectedMemoryId ? "memories/" + selectedMemoryId : "memories";
+  const epoch = invalidateMemory();
+  const result = await api(path, body);
+  if (epoch !== memoryHistoryEpoch || !key) return;
   memoryDraft(result.item);
-  await loadMemoryHistory(result.item.id).catch(() => {});
+  await loadMemoryHistory(result.item.id).catch(memoryLoadError);
   await loadMemories();
   notice("Memory saved.", "success");
 });
@@ -2695,6 +2775,7 @@ function lockSession(message, severity) {
   $("skillHistorySnapshot").replaceChildren();
   $("skillHistoryDetail").hidden = true;
   resetMembers();
+  resetMemories();
   renderOperatorActions();
 
   $("operatorStatus").textContent = "";

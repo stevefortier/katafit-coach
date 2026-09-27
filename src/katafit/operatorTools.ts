@@ -1076,14 +1076,14 @@ export async function openOperatorTools(
         ? r.content.find((part: any) => part?.type === "text")?.text
         : undefined;
       if (r?.isError) {
-        let code = "OPERATOR_REFUSED";
-        try {
-          const parsed = JSON.parse(text);
-          if (/^[A-Z_]{1,64}$/.test(parsed?.code)) code = parsed.code;
-        } catch {
-          /* An unparseable refusal remains a refusal. */
-        }
-        throw new Error(code);
+        const error = toolFailure(r);
+        if (error.contextRevoked || error.code === "MEMORY_NOT_AUTHORIZED")
+          throw revoke("CONTEXT_REVOKED");
+        // Keep the bounded code and marker together. Context authorization
+        // callers classify retryable outages; memory callers cannot lose denial.
+        throw Object.assign(error, {
+          message: error.code ?? "OPERATOR_REFUSED",
+        });
       }
       return r?.structuredContent ?? JSON.parse(text);
     };
@@ -1350,6 +1350,9 @@ export async function openOperatorTools(
           createHash("sha256").update(query).digest("hex").slice(0, 32),
         ...(query ? { query: query.slice(0, 2000) } : {}),
         limit: 8,
+      }).catch(async (error) => {
+        await resolveDenial(error);
+        throw error;
       });
       if (
         value?.protocol !== MEMORY_PROTOCOL ||
@@ -1364,12 +1367,16 @@ export async function openOperatorTools(
         memoryItem(item, options.secrets),
       );
     };
-    const recordInteraction = async (input: {
-      human_text: string;
-      assistant_text: string;
-    }) => {
+    const recordInteraction = async (
+      input: {
+        human_text: string;
+        assistant_text: string;
+      },
+      expectedGeneration = generation,
+    ) => {
       if (!continuity || !memoryAvailable) return null;
       live();
+      if (expectedGeneration !== generation) return null;
       if (
         !input.human_text.trim() ||
         !input.assistant_text.trim() ||
@@ -1379,10 +1386,10 @@ export async function openOperatorTools(
         return null;
       const value = await hostCall(RECORD_MEMORY, {
         session_id,
-        turn_generation: generation,
+        turn_generation: expectedGeneration,
         idempotency_key:
           "interaction:" +
-          generation +
+          expectedGeneration +
           ":" +
           createHash("sha256")
             .update(input.human_text + "\n---\n" + input.assistant_text)
@@ -1390,6 +1397,9 @@ export async function openOperatorTools(
             .slice(0, 32),
         human_text: input.human_text,
         assistant_text: input.assistant_text,
+      }).catch(async (error) => {
+        await resolveDenial(error);
+        throw error;
       });
       if (
         value?.protocol !== MEMORY_PROTOCOL ||
@@ -1415,6 +1425,9 @@ export async function openOperatorTools(
       advance,
       recallMemories,
       recordInteraction,
+      memoryRecovery: ["studio_memory_pending", "studio_memory_resume"].every(
+        (name) => listed.tools.some((tool: any) => tool.name === name),
+      ),
       /** A journaled transition must be resumed before any disclosure. */
       transitionPending: () => !!transition,
       /** Content-free lifecycle state for the trusted host only. */

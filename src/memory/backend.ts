@@ -170,9 +170,11 @@ export function memoryItem(value: unknown, secrets: string[]): MemoryItem {
   } else if (
     v.availability !== "unavailable" ||
     Object.hasOwn(v, "text") ||
-    !["MEMORY_SOURCE_REVOKED", "MEMORY_ANCESTOR_FORGOTTEN"].includes(
-      v.unavailable_code,
-    )
+    ![
+      "MEMORY_SOURCE_REVOKED",
+      "MEMORY_ANCESTOR_FORGOTTEN",
+      "MEMORY_ANCESTOR_CHANGED",
+    ].includes(v.unavailable_code)
   )
     reject();
   if (v.subject != null) {
@@ -263,6 +265,7 @@ export async function listedTools(client: Transport, budget?: number) {
 export interface MemoryNegotiation {
   protocol: typeof MEMORY_PROTOCOL;
   nativeImport: boolean;
+  recovery: boolean;
   studio: boolean;
   limits: { max_proposals: number; max_recall_items: number };
 }
@@ -288,6 +291,10 @@ export async function negotiateMemory(
     nativeImport:
       caps.native_import_version === 1 &&
       NATIVE_MEMORY_TOOLS.every((n) => names.has(n)),
+    recovery:
+      caps.extraction_recovery_version === 1 &&
+      names.has("coach_memory_pending") &&
+      names.has("coach_memory_resume"),
     studio: STUDIO_MEMORY_TOOLS.every((n) => names.has(n)),
     limits: {
       max_proposals: Math.min(8, caps.limits.max_proposals),
@@ -395,11 +402,14 @@ export async function commitMemory(
     "superseded",
     "skipped",
     "idempotent",
+    "publication",
   ]);
   if (
     value.protocol !== MEMORY_PROTOCOL ||
     value.capture_id !== capture.capture_id ||
     value.status !== "committed" ||
+    (value.publication !== undefined &&
+      !["pending", "published"].includes(value.publication)) ||
     !Array.isArray(value.created) ||
     value.created.length > proposals.length ||
     value.created.some(
@@ -409,6 +419,7 @@ export async function commitMemory(
   )
     reject();
   return value as {
+    publication?: "pending" | "published";
     created: { id: string; revision: number }[];
     superseded: { id: string; revision: number }[];
     skipped: { index: number; reason: string }[];
@@ -447,4 +458,144 @@ export function formatRecall(
       })),
     )
   );
+}
+
+export async function pendingMemory(
+  client: Transport,
+  secrets: string[],
+  budget?: number,
+): Promise<{ capture_id: string; origin: "request" | "task" }[]> {
+  const value = await client.call("coach_memory_pending", {}, budget);
+  assertNoSecrets(value, secrets);
+  keys(value, ["protocol", "captures"]);
+  if (
+    value.protocol !== MEMORY_PROTOCOL ||
+    !Array.isArray(value.captures) ||
+    value.captures.length > 8
+  )
+    reject();
+  for (const entry of value.captures) {
+    keys(entry, ["capture_id", "origin"]);
+    if (
+      !/^[a-f0-9]{24}$/.test(entry.capture_id) ||
+      !["request", "task"].includes(entry.origin)
+    )
+      reject();
+  }
+  return value.captures;
+}
+export async function resumeMemory(
+  client: Transport,
+  id: string,
+  secrets: string[],
+  budget?: number,
+) {
+  const value = await client.call(
+    "coach_memory_resume",
+    { capture_id: id },
+    budget,
+  );
+  assertNoSecrets(value, secrets);
+  keys(value, [
+    "protocol",
+    "origin",
+    "publication",
+    "capture",
+    "recalled",
+    "evidence",
+  ]);
+  if (
+    value.protocol !== MEMORY_PROTOCOL ||
+    !["request", "task"].includes(value.origin) ||
+    !["pending", "published"].includes(value.publication) ||
+    !value.evidence ||
+    typeof value.evidence !== "object" ||
+    Array.isArray(value.evidence) ||
+    Buffer.byteLength(JSON.stringify(value)) > 768 * 1024
+  )
+    reject();
+  const capture = validateCapture(value.capture, secrets);
+  if (capture.capture_id !== id) reject();
+  const recalled = items(value.recalled, secrets, 20);
+  if (
+    recalled.some(
+      (item) =>
+        item.audience === "operator_private" ||
+        item.availability !== "available",
+    )
+  )
+    reject();
+  return {
+    capture,
+    recalled,
+    origin: value.origin as "request" | "task",
+    evidence: value.evidence as Record<string, unknown>,
+  };
+}
+
+/** Trusted Operator host recovery; never included in worker tools. */
+export async function pendingOperatorMemory(
+  client: Transport,
+  secrets: string[],
+  budget?: number,
+): Promise<{ capture_id: string; origin: "operator_turn" }[]> {
+  const value = await client.call("studio_memory_pending", {}, budget);
+  assertNoSecrets(value, secrets);
+  keys(value, ["protocol", "captures"]);
+  if (
+    value.protocol !== MEMORY_PROTOCOL ||
+    !Array.isArray(value.captures) ||
+    value.captures.length > 8
+  )
+    reject();
+  for (const entry of value.captures) {
+    keys(entry, ["capture_id", "origin"]);
+    if (
+      !/^[a-f0-9]{24}$/.test(entry.capture_id) ||
+      !["operator_turn"].includes(entry.origin)
+    )
+      reject();
+  }
+  return value.captures;
+}
+export async function resumeOperatorMemory(
+  client: Transport,
+  id: string,
+  secrets: string[],
+  budget?: number,
+) {
+  const value = await client.call(
+    "studio_memory_resume",
+    { capture_id: id },
+    budget,
+  );
+  assertNoSecrets(value, secrets);
+  keys(value, [
+    "protocol",
+    "origin",
+    "publication",
+    "capture",
+    "recalled",
+    "evidence",
+  ]);
+  if (
+    value.protocol !== MEMORY_PROTOCOL ||
+    !["operator_turn"].includes(value.origin) ||
+    !["pending", "published"].includes(value.publication) ||
+    !value.evidence ||
+    typeof value.evidence !== "object" ||
+    Array.isArray(value.evidence) ||
+    Buffer.byteLength(JSON.stringify(value)) > 768 * 1024
+  )
+    reject();
+  const capture = validateCapture(value.capture, secrets);
+  if (capture.capture_id !== id) reject();
+  const recalled = items(value.recalled, secrets, 20);
+  if (recalled.some((item) => item.availability !== "available")) reject();
+  return {
+    capture,
+    recalled,
+    origin: value.origin as "operator_turn",
+    evidence: value.evidence as Record<string, unknown>,
+  };
 }

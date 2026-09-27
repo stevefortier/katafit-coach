@@ -152,6 +152,8 @@ const record = (value: any) =>
 function validFrame(frame: any): boolean {
   if (!record(frame)) return false;
   const keys = Object.keys(frame);
+  if (keys.length === 1 && keys[0] === "delivered")
+    return Number.isSafeInteger(frame.delivered) && frame.delivered > 0;
   if (keys.length === 1 && keys[0] === "cancel")
     return Number.isSafeInteger(frame.cancel) && frame.cancel > 0;
   if (
@@ -341,6 +343,7 @@ export class NativeRuntime {
       let pending = 0,
         lastId = 0;
       const requests = this.requests;
+      const deliveries = new Map<number, string>();
       relay.stderr.resume();
       relay.on("error", () => {
         void this.stop().catch(() => {});
@@ -364,6 +367,14 @@ export class NativeRuntime {
           void this.stop().catch(() => {});
           return;
         }
+        if (
+          response.result?.completion_id &&
+          Buffer.byteLength(JSON.stringify(response) + "\n") <=
+            NATIVE_RESPONSE_FRAME_LIMIT
+        ) {
+          deliveries.clear(); // at most one completed response awaits delivery
+          deliveries.set(response.id, response.result.completion_id);
+        }
         relay.stdin.write(data);
       };
       const accept = (line: string) => {
@@ -374,6 +385,13 @@ export class NativeRuntime {
         } catch {
           void this.stop().catch(() => {});
           return false;
+        }
+        if (Number.isSafeInteger(frame.delivered)) {
+          const completion = deliveries.get(frame.delivered);
+          deliveries.delete(frame.delivered);
+          if (completion)
+            void this.gateway?.confirmDelivery?.(completion).catch(() => {});
+          return true;
         }
         if (Number.isSafeInteger(frame.cancel)) {
           requests.get(frame.cancel)?.abort();

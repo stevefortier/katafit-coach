@@ -120,12 +120,14 @@ export async function fixture(
     failureMismatch?: "code" | "generation";
     leaseMs?: number;
     discoveryDelayMs?: number;
+    memoryDenial?: { code: string; after: number };
   } = {},
 ) {
   let history: any[] = [];
   let current: any = null;
   let calls: string[] = [];
   let publications = 0;
+  let memoryRecalls = 0;
   let contexts: any[] = [];
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
@@ -170,6 +172,15 @@ export async function fixture(
             ]
           : [],
       };
+      if (options.memoryDenial)
+        value.tools.push(
+          ...[
+            "coach_memory_capabilities",
+            "coach_memory_begin",
+            "coach_memory_recall",
+            "coach_memory_commit",
+          ].map((name) => ({ name })),
+        );
       value.tools.push({
         name: "coach_list_requests",
         inputSchema: {
@@ -179,6 +190,64 @@ export async function fixture(
       });
     } else {
       switch (msg.params.name) {
+        case "coach_memory_capabilities":
+          value = {
+            protocol: "coach.memory.v1",
+            storage: "backend",
+            kinds: [
+              "fact",
+              "preference",
+              "commitment",
+              "goal",
+              "lesson",
+              "hypothesis",
+            ],
+            limits: { max_proposals: 8, max_recall_items: 20 },
+          };
+          break;
+        case "coach_memory_begin":
+          value = {
+            protocol: "coach.memory.v1",
+            capture_id: "abcdefabcdefabcdefabcdef",
+            audience: "member_private",
+            memory_epoch: 0,
+            extraction_expires_at: new Date(Date.now() + 600000).toISOString(),
+          };
+          break;
+        case "coach_memory_recall":
+          if (++memoryRecalls > options.memoryDenial!.after) {
+            if (options.memoryDenial!.code === "CREDENTIAL_REJECTED") {
+              res.writeHead(403).end();
+              return;
+            }
+            res.setHeader("Content-Type", "application/json");
+            res.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: msg.id,
+                result: {
+                  isError: true,
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({
+                        code: options.memoryDenial!.code,
+                      }),
+                    },
+                  ],
+                },
+              }),
+            );
+            return;
+          }
+          value = {
+            protocol: "coach.memory.v1",
+            capture_id: a.capture_id,
+            memory_epoch: 0,
+            items: [],
+            coverage: {},
+          };
+          break;
         case "coach_get_capabilities":
           value = {
             contract_version: 2,
@@ -873,3 +942,42 @@ for (const mismatch of ["code", "generation"] as const) {
     }
   });
 }
+
+for (const code of [
+  "LEASE_LOST",
+  "MEMORY_NOT_AUTHORIZED",
+  "CREDENTIAL_REJECTED",
+])
+  for (const after of [0, 1])
+    test(`worker memory authority ${code} after ${after} recalls prevents later disclosure`, async () => {
+      const f = await fixture({ memoryDenial: { code, after } });
+      let inference = 0,
+        laterInference = 0;
+      const worker = new Worker({
+        origin: f.origin,
+        token: "synthetic-token",
+        system: "Coach",
+        complete: async (_context, signal, _system, tools) => {
+          inference++;
+          if (after) {
+            try {
+              await tools
+                .find((t) => t.name === "coach_memory_search")!
+                .execute("search", { query: "morning training" }, signal);
+            } catch {}
+            if (!signal.aborted) laterInference++;
+          }
+          return "Should not be published";
+        },
+      });
+      try {
+        f.enqueue("Memory question");
+        await assert.rejects(worker.pollOnce());
+        assert.equal(inference, after);
+        assert.equal(laterInference, 0);
+        assert.equal(f.publications, 0);
+      } finally {
+        await worker.stop();
+        await f.close();
+      }
+    });

@@ -57,12 +57,13 @@ Keep only reusable guidance in Skills, never member evidence or credentials. Sav
 
 ### Memories
 
-**Settings → Memories** manages protected local boss/coach-private memories with
-search, filters, sources, history, Archive and Forget. Native Operator Pi receives
-current boss-private memory on each provider turn, so saved edits are visible
-without restarting Pi. Member/dojo source-derived recall is disabled until the
-backend negotiates durable memory authority and source-proof import; Studio admin
-access is not source authority. See [Coach long-term memory](docs/coach-long-term-memory.md).
+**Settings → Memories** manages backend-owned Coach memories with search,
+pagination, explicit audiences, protected corrections, sources, history, Archive
+and Forget. Worker and native recall require current backend authority. Native
+sessions that already saw a corrected or revoked memory are terminated; a fresh
+session can use the current revision. Automatic extraction uses the configured
+model and durable backend recovery, with no local prose fallback. See
+[Coach long-term memory](docs/coach-long-term-memory.md).
 
 ### Persona revision history
 

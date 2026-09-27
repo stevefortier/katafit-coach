@@ -628,6 +628,9 @@
                 Refresh memories
               </button>
             </div>
+            <button id="memoryMore" type="button" class="secondary" hidden>
+              Load more memories
+            </button>
             <div id="memoryList" class="memory-list"></div>
             <section id="memoryEditor" aria-label="Memory editor">
               <h3 id="memoryEditorTitle">Add boss-private memory</h3>
@@ -680,7 +683,9 @@
                     value="0.85"
                 /></label>
               </div>
-              <label>Review at<input id="memoryReviewAt" type="date" /></label>
+              <label
+                >Review date (UTC)<input id="memoryReviewAt" type="date"
+              /></label>
               <label class="toggle-label"
                 ><input id="memoryPinned" type="checkbox" checked /> Pinned
                 correction</label

@@ -198,13 +198,14 @@ test("native provider imports backend memory and records completed operator turn
   });
   const gateway = await openNativeGateway(f.store);
   try {
-    await gateway.handle({
+    const delivered = await gateway.handle({
       kind: "provider",
       body: {
         model: "approved-custom-model",
         messages: [{ role: "user", content: "How should I brief Alice?" }],
       },
     });
+    await gateway.confirmDelivery(delivered.completion_id);
     assert.ok(
       f.calls.some(
         (c) => c.body.params?.name === "studio_operator_recall_memories",
@@ -227,6 +228,320 @@ test("native provider imports backend memory and records completed operator turn
     await f.close();
   }
 });
+
+for (const scenario of [
+  "recall_denied",
+  "record_denied",
+  "extraction_revoked",
+  "tool_call",
+  "truncated",
+  "cancel_extraction",
+  "record_pending",
+  "delivery",
+])
+  test(`native memory correction ${scenario}`, async () => {
+    let revoked = false;
+    let entered!: () => void, release!: () => void;
+    const extractionEntered = new Promise<void>((r) => {
+      entered = r;
+    });
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const cancel = new AbortController();
+    const denial = {
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            code: "OPERATOR_NOT_AUTHORIZED",
+            context_revoked: true,
+          }),
+        },
+      ],
+    };
+    const memoryId = "1234567890abcdef12345678";
+    const stamp = new Date().toISOString();
+    const remembered = {
+      id: memoryId,
+      revision: 1,
+      kind: "preference",
+      text: "Synthetic Alice prefers short morning check-ins.",
+      availability: "available",
+      status: "active",
+      audience: "operator_private",
+      subject: {
+        member_ref: "fixture-member",
+        display_name: "Synthetic Alice",
+      },
+      confidence: 0.9,
+      importance: 0.8,
+      goal_relevance: 0.7,
+      review_at: null,
+      pinned: false,
+      protected: false,
+      provenance: {
+        type: "derived",
+        origin: "operator_turn",
+        corrected: false,
+        created_by: "model_extraction",
+        persona_revision: "1",
+      },
+      sources: [{ family: "owner", label: "Coach owner authority" }],
+      observed_at: stamp,
+      created_at: stamp,
+      updated_at: stamp,
+    };
+    const sse = (text: string) =>
+      `data: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "fixture", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    const commandExpires = new Date(Date.now() + 600000).toISOString();
+    const contextExpires = new Date(Date.now() + 600000).toISOString();
+    const f = await fixture(async (name, result, body) => {
+      if (
+        (scenario === "recall_denied" &&
+          name === "studio_operator_recall_memories") ||
+        (scenario === "record_denied" &&
+          name === "studio_operator_record_interaction") ||
+        (revoked && name === "studio_operator_authorize_context")
+      )
+        return denial;
+      if (name === "tools/list")
+        result.tools.push(
+          { name: "studio_operator_authorize_context" },
+          { name: "studio_operator_advance_turn" },
+          { name: "studio_operator_recall_memories" },
+          { name: "studio_operator_record_interaction" },
+          { name: "coach_memory_commit" },
+        );
+      if (name === "studio_operator_open_session")
+        Object.assign(result, {
+          continuity: {
+            version: 1,
+            host_controls: [
+              "studio_operator_authorize_context",
+              "studio_operator_advance_turn",
+            ],
+            max_turns: 8,
+            max_tool_calls_per_turn: 8,
+            command_ttl_ms: 600000,
+            retained_ttl_ms: 600000,
+            failure_requires: "destroy_runtime",
+            generation_field: "turn_generation",
+          },
+          turn_generation: 0,
+          expires_at: commandExpires,
+          context_expires_at: contextExpires,
+          capabilities: {
+            version: 1,
+            tools: [
+              {
+                name: "studio_operator_list_members",
+                schema_ref: "mcp:tools/list#studio_operator_list_members",
+                kind: "read",
+                target: "dojo",
+                domain: "roster",
+                coverage: "current_dojo_members",
+                pagination: {
+                  type: "cursor",
+                  default_limit: 10,
+                  max_limit: 100,
+                  complete_when: "has_more_false",
+                },
+                side_effect: "none",
+                receipt: "none",
+              },
+            ],
+          },
+        });
+      if (name === "studio_operator_authorize_context")
+        return {
+          schema_version: 1,
+          session_id: "native-fixture-session",
+          turn_generation: 0,
+          status: "authorized",
+          expires_at: commandExpires,
+          context_expires_at: contextExpires,
+        };
+      if (name === "studio_operator_recall_memories")
+        return {
+          protocol: "coach.memory.v1",
+          session_id: "native-fixture-session",
+          turn_generation: 0,
+          import_receipt_id: "import-receipt",
+          ledger_revision: 1,
+          items: [remembered],
+        };
+      if (
+        name === "studio_operator_record_interaction" &&
+        scenario === "record_pending"
+      ) {
+        entered();
+        await held;
+      }
+      if (name === "studio_operator_record_interaction")
+        return {
+          protocol: "coach.memory.v1",
+          capture_id: "abcdefabcdefabcdefabcdef",
+          memory_epoch: 0,
+          extraction_expires_at: new Date(Date.now() + 600000).toISOString(),
+        };
+      if (name === "coach_memory_commit")
+        return {
+          protocol: "coach.memory.v1",
+          capture_id: "abcdefabcdefabcdefabcdef",
+          status: "committed",
+          memory_epoch: 0,
+          created: [{ id: "fedcbafedcbafedcbafedcba", revision: 1 }],
+          superseded: [],
+          skipped: [],
+          idempotent: false,
+        };
+      if (name === "provider") {
+        const system = body.messages
+          .filter((m: any) => m.role === "system")
+          .map((m: any) => m.content)
+          .join("\n");
+        if (/You maintain the long-term memory/.test(system)) {
+          if (scenario === "extraction_revoked") revoked = true;
+          if (scenario === "cancel_extraction") {
+            entered();
+            await held;
+          }
+          return sse(
+            JSON.stringify({
+              proposals: [
+                {
+                  kind: "lesson",
+                  text: "Synthetic Alice responds well to short morning check-ins.",
+                  confidence: 0.8,
+                  importance: 0.7,
+                },
+              ],
+            }),
+          );
+        }
+        if (scenario === "tool_call" || scenario === "truncated")
+          return `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "Intermediate prose", ...(scenario === "tool_call" ? { tool_calls: [{ index: 0, id: "t", type: "function", function: { name: "studio_operator_list_members", arguments: "{}" } }] } : {}) }, finish_reason: scenario === "tool_call" ? "tool_calls" : "length" }] })}\n\ndata: [DONE]\n\n`;
+        assert.match(system, /Synthetic Alice prefers short morning check-ins/);
+        return sse("I will keep it short and morning-focused.");
+      }
+      return result;
+    });
+    const gateway = await openNativeGateway(f.store);
+    try {
+      const pending = gateway.handle(
+        {
+          kind: "provider",
+          body: {
+            model: "approved-custom-model",
+            messages: [{ role: "user", content: "Brief Alice" }],
+          },
+        },
+        cancel.signal,
+      );
+      if (scenario === "tool_call" || scenario === "truncated") {
+        await pending;
+        assert.equal(
+          f.calls.filter(
+            (c) => c.body.params?.name === "studio_operator_record_interaction",
+          ).length,
+          0,
+        );
+      } else if (scenario === "delivery") {
+        const response = await pending;
+        assert.equal(
+          f.calls.filter(
+            (c) => c.body.params?.name === "studio_operator_record_interaction",
+          ).length,
+          0,
+        );
+        assert.ok(response.completion_id);
+        await gateway.confirmDelivery(response.completion_id);
+        assert.equal(
+          f.calls.filter(
+            (c) => c.body.params?.name === "studio_operator_record_interaction",
+          ).length,
+          1,
+        );
+        await gateway.confirmDelivery(response.completion_id);
+        assert.equal(
+          f.calls.filter(
+            (c) => c.body.params?.name === "studio_operator_record_interaction",
+          ).length,
+          1,
+        );
+      } else if (scenario === "record_pending") {
+        const delivered = await pending;
+        const recording = gateway.confirmDelivery(delivered.completion_id);
+        await extractionEntered;
+        const next = gateway.handle({
+          kind: "provider",
+          body: {
+            model: "approved-custom-model",
+            messages: [{ role: "user", content: "Next question" }],
+          },
+        });
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          assert.equal(
+            f.calls.filter((c) => c.path === "/v1/chat/completions").length,
+            1,
+            "next provider waits only for durable interaction recording",
+          );
+        } finally {
+          release();
+          await recording;
+          await next;
+        }
+      } else if (scenario === "cancel_extraction") {
+        const delivered = await pending;
+        const rejection = assert.rejects(
+          gateway.confirmDelivery(delivered.completion_id),
+        );
+        await extractionEntered;
+        cancel.abort();
+        await Promise.race([
+          rejection,
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("cancellation did not release gateway")),
+              1500,
+            ),
+          ),
+        ]);
+        release();
+        assert.equal(
+          f.calls.filter((c) => c.body.params?.name === "coach_memory_commit")
+            .length,
+          0,
+        );
+      } else {
+        if (scenario === "recall_denied") await assert.rejects(pending);
+        else {
+          const delivered = await pending;
+          await assert.rejects(
+            gateway.confirmDelivery(delivered.completion_id),
+          );
+          await assert.rejects(
+            gateway.handle({
+              kind: "provider",
+              body: { model: "approved-custom-model", messages: [] },
+            }),
+          );
+        }
+        if (scenario === "recall_denied")
+          assert.equal(
+            f.calls.filter((c) => c.path === "/v1/chat/completions").length,
+            0,
+          );
+      }
+    } finally {
+      release();
+      await gateway.close();
+      await f.close();
+    }
+  });
 
 test("native MCP catalog consumes bounded pages, rejects repeated cursors", async () => {
   let repeated = false;

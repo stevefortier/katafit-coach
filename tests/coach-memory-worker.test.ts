@@ -258,3 +258,170 @@ test(
     }
   },
 );
+
+test(
+  "real backend recovers cancelled extraction after worker restart without replaying the reply",
+  { skip: !memoryBackendEnabled, timeout: 180000 },
+  async () => {
+    const backend = await startBackend();
+    const { db, service, ObjectId } = backend;
+    const user = new ObjectId();
+    await db.collection("users").insertOne({
+      _id: user,
+      display_name: "Recovery synthetic member",
+      timezone: "UTC",
+      external_coach_agent: { enabled: true },
+    });
+    const token = (await service.createCredential(String(user), {})).token;
+    await service.enqueueExternalCoachRequest(
+      String(user),
+      "I prefer morning walks",
+      [],
+      { client_request_id: "recovery-source" },
+    );
+    let entered!: () => void;
+    const extracting = new Promise<void>((r) => {
+      entered = r;
+    });
+    let replies = 0,
+      recovered = 0;
+    const first = new Worker({
+      origin: backend.origin,
+      token,
+      system: PERSONA,
+      complete: async (_context, signal, system) => {
+        if (!system.includes("You maintain the long-term memory")) {
+          replies++;
+          return "Morning walks noted.";
+        }
+        entered();
+        return new Promise<string>((_resolve, reject) => {
+          if (signal.aborted) reject(new Error("CANCELLED"));
+          else
+            signal.addEventListener(
+              "abort",
+              () => reject(new Error("CANCELLED")),
+              { once: true },
+            );
+        });
+      },
+    });
+    const second = new Worker({
+      origin: backend.origin,
+      token,
+      system: PERSONA,
+      complete: async (context, _signal, system) => {
+        assert.match(system, /You maintain the long-term memory/);
+        const evidence = JSON.parse(context).evidence;
+        assert.equal(
+          evidence.initial_context.profile.display_name,
+          "Recovery synthetic member",
+        );
+        assert.equal(evidence.coach_reply, "Morning walks noted.");
+        recovered++;
+        return JSON.stringify({
+          proposals: [
+            {
+              kind: "preference",
+              text: "Prefers morning walks.",
+              confidence: 0.9,
+              importance: 0.8,
+            },
+          ],
+        });
+      },
+    });
+    try {
+      const turn = first.pollOnce();
+      await Promise.race([
+        extracting,
+        turn.then(() => {
+          throw new Error("Extraction was not admitted");
+        }),
+      ]);
+      await first.stop();
+      await turn;
+      assert.equal(await db.collection("coach_memories").countDocuments(), 0);
+      await second.pollOnce();
+      assert.equal(recovered, 1);
+      assert.equal(
+        await db
+          .collection("coach_memories")
+          .countDocuments({ status: "active" }),
+        1,
+      );
+      await second.pollOnce();
+      assert.equal(recovered, 1);
+      assert.equal(replies, 1);
+      assert.equal(
+        await db
+          .collection("external_coach_requests")
+          .countDocuments({ status: "completed" }),
+        1,
+      );
+    } finally {
+      await first.stop();
+      await second.stop();
+      await backend.close();
+    }
+  },
+);
+
+test(
+  "real worker preserves ordinary legacy context when optional durable ancestry is unavailable",
+  { skip: !memoryBackendEnabled, timeout: 60000 },
+  async () => {
+    const backend = await startBackend();
+    const { db, service, ObjectId } = backend;
+    let inference = 0;
+    const user = new ObjectId(),
+      plan = new ObjectId();
+    await db.collection("users").insertOne({
+      _id: user,
+      display_name: "Legacy synthetic member",
+      timezone: "UTC",
+      external_coach_agent: { enabled: true },
+    });
+    await db
+      .collection("activity_plans")
+      .insertOne({ _id: plan, user_id: new ObjectId() });
+    await db.collection("activities").insertOne({
+      user_id: user,
+      type: "workout",
+      name: "Owned legacy workout",
+      created_at: new Date(),
+      source: { activity_plan_id: plan },
+    });
+    const token = (await service.createCredential(String(user), {})).token;
+    const worker = new Worker({
+      origin: backend.origin,
+      token,
+      system: PERSONA,
+      complete: async (context, _signal, system) => {
+        assert.doesNotMatch(system, /You maintain the long-term memory/);
+        assert.match(context, /Owned legacy workout/);
+        inference++;
+        return "Ordinary authorized reply.";
+      },
+    });
+    try {
+      await service.enqueueExternalCoachRequest(
+        String(user),
+        "Read my recent workout.",
+        [],
+        { client_request_id: "legacy-coverage" },
+      );
+      await worker.pollOnce();
+      assert.equal(worker.state, "reply-persisted");
+      assert.equal(inference, 1);
+      assert.equal(
+        await db.collection("coach_memory_captures").countDocuments(),
+        0,
+      );
+      assert.equal(await db.collection("coach_memories").countDocuments(), 0);
+    } finally {
+      await worker.stop();
+      await backend.close();
+    }
+  },
+);

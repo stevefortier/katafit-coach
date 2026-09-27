@@ -65,7 +65,7 @@ test("generic reads without a backend source-authorization contract fail before 
       f.calls.filter(
         (c) => c.body.params?.name === "studio_operator_list_members",
       ).length,
-      3,
+      4,
     );
   } finally {
     await gateway?.close();
@@ -264,7 +264,7 @@ for (const schema of [
       const reads = f.calls.filter(
         (c) => c.body.params?.name === "studio_operator_list_members",
       );
-      assert.equal(reads.length, 3);
+      assert.equal(reads.length, 4);
       assert.ok(
         reads.every(
           (c) =>

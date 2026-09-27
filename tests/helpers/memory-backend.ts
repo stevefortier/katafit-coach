@@ -19,6 +19,16 @@ export async function closeServer(s?: Server) {
 
 export async function startBackend() {
   const require = createRequire(backendDir + "/package.json");
+  // Each synthetic backend lifetime gets fresh application modules; otherwise
+  // modules retain the connector of a previously closed replica set.
+  for (const path of Object.keys(require.cache)) {
+    if (
+      ["core/", "config/", "routes/"].some((prefix) =>
+        path.startsWith(backendDir + "/" + prefix),
+      )
+    )
+      delete require.cache[path];
+  }
   const { MongoMemoryReplSet } = require("mongodb-memory-server");
   const { MongoClient, ObjectId } = require("mongodb");
   const express = require("express");
@@ -27,7 +37,9 @@ export async function startBackend() {
     replSet: { count: 1, storageEngine: "wiredTiger" },
   });
   const client = await MongoClient.connect(mongo.getUri());
-  const db = client.db("standalone-memory-acceptance");
+  const db = require("./core/coachMemorySourceEpochs").instrument(
+    client.db("standalone-memory-acceptance"),
+  );
   const connect: any = async () => db;
   connect.getClient = () => client;
   const dbPath = require.resolve("./config/db");

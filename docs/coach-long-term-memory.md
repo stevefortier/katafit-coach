@@ -1,78 +1,87 @@
-# Coach Long-Term Memory
+# Coach long-term memory
 
-This build adds the local host store and UI/runtime seams for approved Coach
-memory, but intentionally does **not** enable member/source-derived cross-session
-recall without a backend durable-memory authority contract.
+Coach memory is stored in the Kata.fit backend, under the canonical owner and
+explicit audience. The installation keeps no local fallback copy of memory prose.
+A backend without `coach.memory.v1` leaves durable memory unavailable.
 
-## What Is Enabled
+## Learning and recall
 
-- A dedicated persistent store under the Coach home, outside the native Pi
-  workspace.
-- Small `memories.json` head plus immutable content-addressed records in
-  `memories-history/`.
-- Cross-process append serialization using a crash-recoverable protected
-  PID lock file.
-- Structured records with scope (`coach`, `boss`, `member`, `dojo`), kind
-  (`fact`, `preference`, `commitment`, `goal`, `lesson`, `hypothesis`),
-  confidence, importance, relevance, review timing, sources, history, archive
-  and Forget tombstones.
-- Protected/pinned Studio corrections. Automatic extraction cannot overwrite a
-  protected correction.
-- Boss/operator-private memory recall for native Operator Pi. The host injects
-  the current bounded memory selection into each provider request, so UI edits
-  are visible on the next native turn without restarting Pi.
-- Local boss/operator memories are partitioned by the current configured
-  backend origin plus local backend credential hash. This is a fail-closed
-  local isolation boundary, not a canonical backend owner identity; rotating the
-  credential hides prior local memories until a backend authority mapping exists.
-- A local `coach_recall_memory` tool. In worker/member contexts it returns
-  `authority_unavailable` until the backend contract exists.
-- Studio Memories UI for list/search/filter/add/edit/archive/forget/history and
-  source inspection.
+The host uses the configured model to propose bounded structured memories from
+original member context, tool evidence, accepted event results, and completed
+Operator exchanges. The persona affects significance, not truth or permissions.
+Evidence and recalled text are untrusted data. Model replies do not establish new
+facts, and an intention or recommendation does not prove an action occurred.
+Extraction has no mutation tools and cannot choose subjects, audiences, source
+proofs, capture identities, or permissions. Invalid output is discarded.
 
-## What Is Deliberately Disabled
+The backend records original source and authority proofs when evidence is read,
+before a later extraction capture can begin. Writer-maintained source versions,
+transactional fences, membership, privacy, Clear and grant epochs prevent old
+content from acquiring fresh authority. Every derived memory keeps the complete
+proof ledger and transitive ancestor content revisions. Legacy derived records
+without those proofs are unavailable; they are not silently upgraded.
 
-Member and dojo source-derived recall is fail-closed. The current external Coach
-contract verifies a request or native session for the current operation, but it
-does not provide durable source proofs, canonical long-lived subject identity,
-batch current-authorization, or atomic import into native continuity. The host
-therefore must not treat `requester_id`, opaque `member_ref`, display names, or
-Studio admin access as authority for previously persisted derived text.
+Member requests and all seven registered task producers support bounded recall.
+The worker can search deeper within the same authorized capture. Task result
+acceptance is distinct from consumption: a committed extraction receipt can have
+`publication: "pending"`. Such records remain unavailable until the producer
+consumes its original result. Failed consumption never counts as publication.
+Task schemas and the prohibition on direct mutations remain unchanged.
 
-Attempts to create member/dojo memories through Studio return
-`MEMORY_AUTHORITY_UNAVAILABLE`. Worker extraction returns `{ stored: 0,
-status: "authority_unavailable" }`.
+Native Operator recall imports dependencies into the current continuity session.
+A corrected, Forgotten or revoked imported memory terminates that runtime before
+further provider, send, image or attachment disclosure. A fresh native session
+can read the current revision; the host never reopens authority over retained Pi
+context. Retention starts only after the immutable relay acknowledges delivery of
+a final, non-truncated provider response to Pi. Intermediate tool-call responses
+and undelivered responses are ineligible. This boundary is delivery to Pi, not
+proof that a human read the answer.
 
-Automatic boss-memory extraction is intentionally narrow in this interim host
-implementation: it recognizes only simple "remember", "I prefer", and "my goal
-is" phrasings from native Operator turns, with deduplication and tombstone
-fencing. It is not an intelligent consolidation or persona-ranking proof.
+## Audiences and source coverage
 
-## Required Backend Contract
+- `member_private`: a personal owner's member conversation.
+- `member_coach`: one dojo member's Coach conversation; the chief also needs
+  current source authority to view it.
+- `operator_private`: the issuing chief's private Operator context. It never
+  enters member worker recall. Comparative dojo derivations use this audience.
 
-To enable member recall safely, the backend must negotiate a versioned durable
-memory authority response that includes:
+Initial context, typed activity/record/summary readers, canonical and legacy
+Coach conversations, original-image metadata, dojo room messages, social reads,
+and the seven registered task producers have source-specific proof adapters.
+All selected subjects and sources constrain a derivation. Personal comparative
+extractions have no Operator audience and are refused; a model cannot select a
+favorable subset of the evidence. Non-image uploads and source shapes outside
+the existing read contract remain unsupported.
 
-- backend namespace and canonical owner/member identity;
-- current owner, membership, Clear and source generations;
-- explicit audience (`member-private`, `operator-private`, shareable dojo);
-- bounded source-proof references for the actual evidence disclosed;
-- batch reauthorization for stored proofs after original leases/sessions expire;
-- native continuity import so recalled memory dependencies are registered before
-  model disclosure.
+An otherwise authorized legacy context with unprovable ancestry remains usable
+by ordinary callers. `MEMORY_COVERAGE_UNAVAILABLE` explicitly disables durable
+capture for that execution, including later rereads; this is not an authority
+approval or completed retention. Source-proof budgets also fail closed without
+truncating a derivation. Image recovery evidence contains authorized metadata,
+not a persisted copy of image bytes; extraction must not invent visual facts.
 
-Until that exists, source-derived memory remains unavailable rather than falling
-back to local search.
+## Management and recovery
 
-## Safety Notes
+Settings → Memories reads the canonical backend and supports search, scoped
+pagination, filters, source labels, history, edits, pins, archive and Forget.
+Manual assertions have truthful manual provenance. Editing derived text preserves
+its dependencies and protects the correction from automatic replacement.
+Archive preserves history; Forget erases prose/history text and advances a scope
+epoch that blocks stale extraction from recreating it. Review dates use UTC
+calendar dates; unchanged backend timestamps are preserved exactly.
 
-Memory text is evidence, never permission or instruction. Persona can influence
-significance/ranking, not truth or authority. A commitment memory is not proof
-that scheduling or any other mutation occurred.
+Configuration/credential replacement, lock, newer searches and mutations invalidate
+older UI responses. Known installation credentials are rejected before memory
+create/update requests leave the host. Unauthorized records expose no preview or
+history prose; Forget remains available from authorized metadata.
 
-Forget appends a tombstone that fences matching stale extraction from recreating
-the same record. If a native Pi runtime has already seen the forgotten memory,
-the host tears down that runtime through the retained-context termination hook;
-bytes already disclosed to the provider cannot be retroactively erased. Archive
-hides a memory from default recall/listing but keeps it reviewable with archived
-filters.
+Open extraction jobs and their original evidence live in the backend. A restarted
+worker or native host can reauthorize and finish one without replaying the reply,
+task or action. Lost commit acknowledgements reconcile with a deterministic key.
+Recovery preserves original epochs and expires with the original 30-minute
+capture deadline. Native extraction is bounded and owned through cancellation,
+shutdown and update; it does not delay delivery of the original reply.
+
+The executable acceptance tests distinguish real Mongo/backend/client behavior
+from synthetic model responses. Synthetic provider tests establish wiring and
+boundaries, not live-model semantic quality or a production deployment.

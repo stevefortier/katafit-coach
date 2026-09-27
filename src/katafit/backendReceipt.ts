@@ -15,6 +15,8 @@ export const backendTools = [
   "coach_memory_capabilities",
   "coach_memory_commit",
   "coach_memory_recall",
+  "coach_memory_pending",
+  "coach_memory_resume",
   "coach_memory_search",
   "coach_read_activity",
   "coach_read_catalog",
@@ -56,6 +58,8 @@ export const backendTools = [
   "studio_memory_forget",
   "studio_memory_get",
   "studio_memory_list",
+  "studio_memory_pending",
+  "studio_memory_resume",
   "studio_memory_update",
 ] as const;
 export const backendOperations = [

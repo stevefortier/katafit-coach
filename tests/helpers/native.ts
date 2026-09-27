@@ -84,7 +84,9 @@ export async function fixture(
         jsonrpc: "2.0",
         id: body.id,
         result:
-          body.method === "tools/call" ? { structuredContent: result } : result,
+          body.method === "tools/call" && !result?.isError
+            ? { structuredContent: result }
+            : result,
       }),
     );
   });

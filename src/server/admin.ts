@@ -11,7 +11,12 @@ import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { timingSafeEqual, randomUUID, createHash } from "node:crypto";
-import { Store, compile, stockPersona } from "../config/store.js";
+import {
+  Store,
+  compile,
+  stockPersona,
+  assertNoSecrets,
+} from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
 import { Worker } from "../worker/runner.js";
 import { Client, ToolFailure } from "../katafit/client.js";
@@ -108,28 +113,39 @@ export async function admin(
       };
     return null;
   };
-  const memoryClient = async (signal: AbortSignal) => {
-    const c = store.publicConfig();
-    if (!store.secrets.token) throw new SafeError("CREDENTIAL_REJECTED");
-    const client = new Client(c.origin, store.secrets.token, signal, (event) =>
-      logs.record(event),
-    );
-    await client.connect();
-    return client;
+  const memoryOperation = (signal = AbortSignal.timeout(15000)) => {
+    const config = store.publicConfig();
+    const token = store.secrets.token;
+    const credentials = { ...store.secrets };
+    const fence = () => {
+      signal.throwIfAborted();
+      const current = store.publicConfig();
+      if (
+        current.revision !== config.revision ||
+        current.origin !== config.origin ||
+        JSON.stringify(store.secrets) !== JSON.stringify(credentials) ||
+        updates.applying ||
+        closing
+      )
+        throw new SafeError("CANCELLED");
+      if (!token) throw new SafeError("CREDENTIAL_REJECTED");
+    };
+    return async (name: string, args: unknown) => {
+      fence();
+      assertNoSecrets(args, Object.values(credentials));
+      const client = new Client(config.origin, token, signal, (event) =>
+        logs.record(event),
+      );
+      await client.connect();
+      fence();
+      const result = await client.call(name, args, 15000);
+      fence();
+      assertNoSecrets(result, Object.values(credentials));
+      return result;
+    };
   };
-  const memoryCall = async (
-    name: string,
-    args: unknown,
-    signal = AbortSignal.timeout(15000),
-  ) => (await memoryClient(signal)).call(name, args, 15000);
-  const currentMemoryRevision = async (id: string, signal: AbortSignal) => {
-    const result = await memoryCall(
-      "studio_memory_get",
-      { memory_id: id },
-      signal,
-    );
-    return result.item?.revision;
-  };
+  const memoryCall = (name: string, args: unknown) =>
+    memoryOperation()(name, args);
   // One server-owned operation holds busy from admission through resume. HTTP
   // disconnects never cancel configuration application or restart recovery.
   let lifecycle:
@@ -875,83 +891,72 @@ export async function admin(
         );
       if (memoryMutation) {
         const [, id, action] = memoryMutation;
-        const signal = AbortSignal.timeout(15000);
+        const call = memoryOperation();
         if (!id) {
-          const result = await memoryCall(
-            "studio_memory_create",
-            {
-              idempotency_key:
-                typeof body.idempotency_key === "string"
-                  ? body.idempotency_key
-                  : randomUUID(),
-              audience: body.audience,
-              ...(body.member_ref ? { member_ref: body.member_ref } : {}),
-              kind: body.kind,
-              text: body.text,
-              ...(body.confidence !== undefined
-                ? { confidence: body.confidence }
-                : {}),
-              ...(body.importance !== undefined
-                ? { importance: body.importance }
-                : {}),
-              ...(body.goal_relevance !== undefined
-                ? { goal_relevance: body.goal_relevance }
-                : {}),
-              ...(body.review_at !== undefined
-                ? { review_at: body.review_at || null }
-                : {}),
-              ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
-            },
-            signal,
-          );
+          const result = await call("studio_memory_create", {
+            idempotency_key:
+              typeof body.idempotency_key === "string"
+                ? body.idempotency_key
+                : randomUUID(),
+            audience: body.audience,
+            ...(body.member_ref ? { member_ref: body.member_ref } : {}),
+            kind: body.kind,
+            text: body.text,
+            ...(body.confidence !== undefined
+              ? { confidence: body.confidence }
+              : {}),
+            ...(body.importance !== undefined
+              ? { importance: body.importance }
+              : {}),
+            ...(body.goal_relevance !== undefined
+              ? { goal_relevance: body.goal_relevance }
+              : {}),
+            ...(body.review_at !== undefined
+              ? { review_at: body.review_at || null }
+              : {}),
+            ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+          });
           return send(200, result);
         }
         if (action === "forget") {
-          const result = await memoryCall(
-            "studio_memory_forget",
-            {
-              memory_id: id,
-              ...(body.expected_revision !== undefined
-                ? { expected_revision: body.expected_revision }
-                : {}),
-            },
-            signal,
-          );
+          const result = await call("studio_memory_forget", {
+            memory_id: id,
+            ...(body.expected_revision !== undefined
+              ? { expected_revision: body.expected_revision }
+              : {}),
+          });
           return send(200, result);
         }
         const expected =
-          body.expected_revision ?? (await currentMemoryRevision(id, signal));
-        const result = await memoryCall(
-          "studio_memory_update",
-          {
-            memory_id: id,
-            expected_revision: expected,
-            ...(action === "archive"
-              ? { status: "archived" }
-              : {
-                  ...(body.text !== undefined ? { text: body.text } : {}),
-                  ...(body.kind !== undefined ? { kind: body.kind } : {}),
-                  ...(body.confidence !== undefined
-                    ? { confidence: body.confidence }
-                    : {}),
-                  ...(body.importance !== undefined
-                    ? { importance: body.importance }
-                    : {}),
-                  ...(body.goal_relevance !== undefined
-                    ? { goal_relevance: body.goal_relevance }
-                    : {}),
-                  ...(body.review_at !== undefined
-                    ? { review_at: body.review_at || null }
-                    : {}),
-                  ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
-                  ...(body.protected !== undefined
-                    ? { protected: body.protected }
-                    : {}),
-                  ...(body.status !== undefined ? { status: body.status } : {}),
-                }),
-          },
-          signal,
-        );
+          body.expected_revision ??
+          (await call("studio_memory_get", { memory_id: id })).item?.revision;
+        const result = await call("studio_memory_update", {
+          memory_id: id,
+          expected_revision: expected,
+          ...(action === "archive"
+            ? { status: "archived" }
+            : {
+                ...(body.text !== undefined ? { text: body.text } : {}),
+                ...(body.kind !== undefined ? { kind: body.kind } : {}),
+                ...(body.confidence !== undefined
+                  ? { confidence: body.confidence }
+                  : {}),
+                ...(body.importance !== undefined
+                  ? { importance: body.importance }
+                  : {}),
+                ...(body.goal_relevance !== undefined
+                  ? { goal_relevance: body.goal_relevance }
+                  : {}),
+                ...(body.review_at !== undefined
+                  ? { review_at: body.review_at || null }
+                  : {}),
+                ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+                ...(body.protected !== undefined
+                  ? { protected: body.protected }
+                  : {}),
+                ...(body.status !== undefined ? { status: body.status } : {}),
+              }),
+        });
         return send(200, result);
       }
       if (path === "/api/worker/reconcile") {

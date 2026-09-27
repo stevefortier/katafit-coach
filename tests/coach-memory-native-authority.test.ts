@@ -1,0 +1,220 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { Readable } from "node:stream";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import sharp from "sharp";
+import { Store } from "../src/config/store.js";
+import { openNativeGateway } from "../src/sandbox/gateway.js";
+import {
+  memoryBackendEnabled,
+  startBackend,
+  startProvider,
+} from "./helpers/memory-backend.js";
+
+for (const boundary of ["provider", "send", "image", "attachment"])
+  test(
+    `paired native imported memory revocation blocks actual ${boundary} disclosure`,
+    { skip: !memoryBackendEnabled, timeout: 60000 },
+    async () => {
+      const backend = await startBackend();
+      const dir = await mkdtemp(tmpdir() + "/memory-native-authority-");
+      const provider = await startProvider(() => "Synthetic response.");
+      let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
+      try {
+        const { db, service, ObjectId } = backend;
+        const chief = new ObjectId(),
+          member = new ObjectId(),
+          dojo = new ObjectId(),
+          activity = new ObjectId(),
+          file = new ObjectId();
+        await db.collection("users").insertMany([
+          { _id: chief, display_name: "Chief" },
+          {
+            _id: member,
+            display_name: "Synthetic image member",
+            privacy_settings: { media: ["dojo_chief"] },
+          },
+        ]);
+        await db.collection("dojos").insertOne({
+          _id: dojo,
+          chief_id: chief,
+          external_coach_agent: { enabled: true },
+        });
+        await db.collection("dojo_members").insertMany([
+          {
+            user_id: chief,
+            dojo_id: dojo,
+            role: "chief",
+            joined_at: new Date(0),
+          },
+          {
+            user_id: member,
+            dojo_id: dojo,
+            role: "member",
+            joined_at: new Date(0),
+          },
+        ]);
+        await db.collection("activities").insertOne({
+          _id: activity,
+          user_id: member,
+          dojo_id: dojo,
+          type: "media",
+          status: "complete",
+          name: "Weekly progress check-in",
+          created_at: new Date(Date.now() - 10000),
+          data: { files: [{ _id: file, type: "image" }] },
+        });
+        const token = (
+          await service.createCredential(String(chief), {
+            scopes: [
+              ...service.DEFAULT_SCOPES,
+              "history:read",
+              "userdata:read",
+              "media:read",
+            ],
+          })
+        ).token;
+        const auth = await service.authenticateCredential(token),
+          memory = backend.require("./core/coachMemory");
+        const remembered = (
+          await memory.execute(auth, "studio_memory_create", {
+            idempotency_key: "retained",
+            audience: "operator_private",
+            kind: "fact",
+            text: "Operator prefers brief reports.",
+            pinned: true,
+          })
+        ).item;
+        const store = new Store(dir);
+        await store.init();
+        await store.save({
+          ...store.publicConfig(),
+          origin: backend.origin,
+          token,
+          apiKey: "synthetic-model-key",
+          provider: { baseUrl: provider.origin + "/v1", model: "synthetic" },
+        });
+        let terminated = 0,
+          published = 0,
+          imageReads = 0;
+        const bytes = await sharp({
+          create: { width: 3, height: 2, channels: 3, background: "#123456" },
+        })
+          .png()
+          .toBuffer();
+        // Only object-store bytes are synthetic. Source identities, original image
+        // selection, authorization, policy, MCP transport and MIME checks are real.
+        backend.require("./core/activities/media").getMediaFile = async () => {
+          imageReads++;
+          return {
+            fileStream: Readable.from([bytes]),
+            contentType: "image/png",
+          };
+        };
+        gateway = await openNativeGateway(store, undefined, {
+          onTerminate: () => {
+            terminated++;
+          },
+          attachments: {
+            read: async () => {
+              throw new Error("No workspace fixture");
+            },
+            publish: () => {
+              published++;
+              return true;
+            },
+          },
+        });
+        const tool = (name: string, args: any) =>
+          gateway!.handle({ kind: "tool", name, args });
+        const text = (result: any) => JSON.parse(result.content[0].text);
+        await gateway.handle({
+          kind: "provider",
+          body: {
+            model: "synthetic",
+            messages: [
+              { role: "user", content: "Use my reporting preferences." },
+            ],
+          },
+        });
+        const session = await db
+          .collection("studio_operator_sessions")
+          .findOne({ status: "active" });
+        assert.equal(session.retained_memories[0].id, remembered.id);
+        const checkins = text(
+          await tool("studio_operator_list_dojo_checkins", {}),
+        );
+        const entry = checkins.items.find(
+          (item: any) => item.display_name === "Synthetic image member",
+        );
+        assert.ok(entry.images[0].media_ref);
+        const args = {
+          member_ref: entry.member_ref,
+          media_ref: entry.images[0].media_ref,
+        };
+        const image = text(
+          await tool("studio_operator_read_dojo_checkin_image", args),
+        );
+        assert.equal(imageReads, 1);
+        const attachment = text(
+          await tool("send_to_operator", {
+            image_receipt: image.image_receipt,
+            caption: "Synthetic check-in",
+          }),
+        );
+        assert.equal(published, 1);
+        assert.deepEqual(
+          (await gateway.readAttachment(attachment.attachment_id)).bytes,
+          bytes,
+        );
+        await memory.execute(auth, "studio_memory_forget", {
+          memory_id: remembered.id,
+        });
+        const count = provider.bodies.length;
+        if (boundary === "provider")
+          await assert.rejects(
+            gateway.handle({
+              kind: "provider",
+              body: {
+                model: "synthetic",
+                messages: [{ role: "user", content: "Continue." }],
+              },
+            }),
+          );
+        else if (boundary === "send")
+          await assert.rejects(
+            tool("studio_operator_send_message", {
+              member_ref: entry.member_ref,
+              text: "Must not publish stale advice.",
+            }),
+          );
+        else if (boundary === "image")
+          await assert.rejects(
+            tool("studio_operator_read_dojo_checkin_image", args),
+          );
+        else
+          await assert.rejects(
+            gateway.readAttachment(attachment.attachment_id),
+          );
+        assert.equal(provider.bodies.length, count);
+        assert.equal(imageReads, 1);
+        assert.equal(published, 1);
+        assert.equal(terminated, 1);
+        assert.deepEqual(gateway.attachments(), []);
+        assert.equal(
+          await db.collection("studio_operator_actions").countDocuments(),
+          0,
+        );
+        assert.equal(
+          await db.collection("studio_operator_sessions").countDocuments(),
+          1,
+        );
+      } finally {
+        await gateway?.close();
+        await provider.close();
+        await backend.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );

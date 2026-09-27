@@ -221,6 +221,7 @@ async function startMemoryBackend() {
   return {
     origin: "http://127.0.0.1:" + (server.address() as any).port,
     calls,
+    remember,
     async close() {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
@@ -381,3 +382,225 @@ test("served Memories UI proxies canonical backend CRUD, history, filters and sc
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+for (const scenario of [
+  "search_race",
+  "forget_history",
+  "lock",
+  "pagination",
+  "date_create",
+  "date_preserve",
+  "archive_failure",
+  "forget_failure",
+  "refresh_failure",
+])
+  test(`memory UI correction ${scenario}`, async () => {
+    const dir = await mkdtemp(tmpdir() + "/memory-ui-correction-");
+    const store = new Store(dir);
+    const backend = await startMemoryBackend();
+    await store.init();
+    await store.save({
+      ...store.publicConfig(),
+      origin: backend.origin,
+      token: "synthetic-token",
+      apiKey: "synthetic-provider-key",
+    });
+    const app = await admin(store, 0);
+    const browser = await chromium.launch({
+      executablePath: chromePath(),
+      headless: true,
+      args: ["--no-sandbox"],
+    });
+    const page = await browser.newPage();
+    let release = () => {};
+    const id = "000000000000000000000001";
+    const original = item({
+      id,
+      text: "Prior private prose",
+      review_at: "2027-02-03T15:45:00.000Z",
+    });
+    backend.remember(original);
+    try {
+      await page.goto(
+        app.origin + "/settings?section=memories#" + store.secrets.admin,
+      );
+      await page
+        .locator("#memoryList")
+        .getByText("Prior private prose")
+        .waitFor();
+      if (scenario.endsWith("failure")) {
+        const failures: string[] = [];
+        page.on("pageerror", (error) => failures.push(error.message));
+        await page.route(
+          (url) => url.pathname.startsWith("/api/memories"),
+          (route) =>
+            route.fulfill({
+              status: 409,
+              json: { error: "Synthetic memory operation failed" },
+            }),
+        );
+        if (scenario === "refresh_failure")
+          await page.locator("#memorySearch").fill("new filter");
+        else {
+          if (scenario === "forget_failure")
+            page.once("dialog", (dialog) => dialog.accept());
+          await page
+            .getByRole("button", {
+              name: scenario === "forget_failure" ? "Forget" : "Archive",
+              exact: true,
+            })
+            .last()
+            .click();
+        }
+        await page
+          .getByText("Synthetic memory operation failed", { exact: true })
+          .waitFor({ timeout: 2000 });
+        assert.deepEqual(failures, []);
+        if (scenario === "refresh_failure")
+          assert.doesNotMatch(
+            await page.locator("#memoryList").innerText(),
+            /Prior private prose/,
+          );
+      } else if (scenario === "search_race") {
+        let entered!: () => void;
+        const seen = new Promise<void>((r) => {
+          entered = r;
+        });
+        const held = new Promise<void>((r) => {
+          release = r;
+        });
+        await page.route("**/api/memories?query=older", async (route) => {
+          entered();
+          await held;
+          await route.fulfill({
+            json: { items: [original], members: [], has_more: false },
+          });
+        });
+        await page.locator("#memorySearch").fill("older");
+        await seen;
+        await page.locator("#memorySearch").fill("newer");
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#memoryStatus")
+            ?.textContent?.startsWith("0 memories"),
+        );
+        const response = page.waitForResponse((r) =>
+          r.url().endsWith("query=older"),
+        );
+        release();
+        await response;
+        await page.waitForTimeout(80);
+        assert.doesNotMatch(
+          await page.locator("#memoryList").innerText(),
+          /Prior private prose/,
+        );
+      } else if (scenario === "forget_history") {
+        let entered!: () => void;
+        const seen = new Promise<void>((r) => {
+          entered = r;
+        });
+        const held = new Promise<void>((r) => {
+          release = r;
+        });
+        await page.route("**/api/memories/" + id, async (route) => {
+          entered();
+          await held;
+          await route.fulfill({ json: { item: original, history: [] } });
+        });
+        await page
+          .getByRole("button", { name: "Edit", exact: true })
+          .last()
+          .click();
+        await seen;
+        page.once("dialog", (d) => d.accept());
+        await page
+          .getByRole("button", { name: "Forget", exact: true })
+          .last()
+          .click();
+        await page.waitForFunction(
+          () =>
+            !document
+              .querySelector("#memoryList")
+              ?.textContent?.includes("Prior private prose"),
+        );
+        const response = page.waitForResponse((r) =>
+          r.url().endsWith("/" + id),
+        );
+        release();
+        await response;
+        await page.waitForTimeout(80);
+        assert.equal(await page.locator("#memoryText").inputValue(), "");
+      } else if (scenario === "lock") {
+        await page
+          .getByRole("button", { name: "Edit", exact: true })
+          .last()
+          .click();
+        await page.waitForFunction(
+          () =>
+            (document.querySelector("#memoryText") as HTMLInputElement)
+              .value === "Prior private prose",
+        );
+        await page.locator("#lockStudio").click();
+        assert.equal(await page.locator("#memoryText").inputValue(), "");
+      } else if (scenario === "pagination") {
+        await page.route("**/api/memories*", async (route) => {
+          const cursor = new URL(route.request().url()).searchParams.get(
+            "cursor",
+          );
+          await route.fulfill({
+            json: {
+              items: [
+                item({
+                  id: cursor ? "000000000000000000000002" : id,
+                  text: cursor ? "Second page fact" : "First page fact",
+                }),
+              ],
+              members: [],
+              has_more: !cursor,
+              next_cursor: cursor ? null : "scoped-cursor",
+            },
+          });
+        });
+        await page.locator("#memoryRefresh").click();
+        await page.getByText("First page fact", { exact: true }).waitFor();
+        assert.equal(await page.locator("#memoryMore").count(), 1);
+        await page.locator("#memoryMore").click();
+        await page.getByText("Second page fact", { exact: true }).waitFor();
+      } else {
+        if (scenario === "date_preserve") {
+          await page
+            .getByRole("button", { name: "Edit", exact: true })
+            .last()
+            .click();
+          await page.waitForFunction(
+            () =>
+              (document.querySelector("#memoryText") as HTMLInputElement)
+                .value === "Prior private prose",
+          );
+        } else await page.locator("#memoryReviewAt").fill("2027-02-03");
+        await page.locator("#memoryText").fill("Updated safe assertion");
+        const response = page.waitForResponse(
+          (r) =>
+            r.request().method() === "POST" &&
+            r.url().includes("/api/memories"),
+        );
+        await page.locator("#memorySave").click();
+        await response;
+        const call = backend.calls.findLast((c) =>
+          /studio_memory_(create|update)/.test(c.name),
+        );
+        assert.equal(
+          call?.args.review_at,
+          scenario === "date_preserve"
+            ? original.review_at
+            : "2027-02-03T00:00:00.000Z",
+        );
+      }
+    } finally {
+      release();
+      await browser.close();
+      await app.close();
+      await backend.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
