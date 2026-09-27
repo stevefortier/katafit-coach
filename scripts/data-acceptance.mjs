@@ -98,6 +98,13 @@ const server = createServer(async (req, res) => {
     else if (m.method === "tools/list")
       result = {
         tools: [
+          {
+            name: "coach_list_requests",
+            inputSchema: {
+              type: "object",
+              properties: { request_id: { type: "string" } },
+            },
+          },
           { name: "coach_get_capabilities" },
           { name: "coach_read_media", inputSchema },
           { name: "coach_respond", inputSchema },

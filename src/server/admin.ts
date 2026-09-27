@@ -477,6 +477,8 @@ export async function admin(
           state: worker?.state ?? "stopped",
           presence: worker?.presence ?? "unconfirmed",
           preview: !!preview,
+          safeToReplace: worker?.safeToReplace ?? true,
+          stopConfirmed: worker?.stopConfirmed ?? true,
           nativeActive: terminal.active,
           lastError: logs.lastError,
           revision: store.publicConfig().revision,
@@ -641,15 +643,39 @@ export async function admin(
           if (autoQuiescePending === stopping) autoQuiescePending = undefined;
         }
       }
-      if (autoQuiesced) return send(409, { error: "AUTO_UPDATE_QUIESCED" });
+      if (autoQuiesced && path !== "/api/worker/reconcile")
+        return send(409, { error: "AUTO_UPDATE_QUIESCED" });
       if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
-      if (updates.recovering && path !== "/api/update/resume")
+      if (
+        updates.recovering &&
+        !["/api/update/resume", "/api/worker/reconcile"].includes(path)
+      )
         return send(409, {
           error: "UPDATE_RECOVERING",
           hint: "The launcher is restoring Coach. Check worker status; do not reapply the update.",
         });
       if (busy && path !== "/api/cancel")
         return send(409, { error: "OPERATION_IN_PROGRESS" });
+      if (path === "/api/worker/reconcile") {
+        if (Object.keys(input).length)
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        if (worker && worker.state !== "stopped")
+          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+        busy = true;
+        try {
+          await worker?.reconcilePublications();
+          const safeToReplace = worker?.safeToReplace ?? true;
+          const stopConfirmed = worker?.stopConfirmed ?? true;
+          const ready = safeToReplace && stopConfirmed;
+          return send(ready ? 200 : 409, {
+            safeToReplace,
+            stopConfirmed,
+            ...(!ready ? { error: "WORKER_STOP_UNCONFIRMED" } : {}),
+          });
+        } finally {
+          busy = false;
+        }
+      }
       if (path === "/api/update/check") {
         await updates.check();
         return send(200, await updateSnapshot());
@@ -672,11 +698,22 @@ export async function admin(
           return send(400, { error: e.message });
         }
         const wasRunning = !!worker && worker.state !== "stopped";
+        // Reject before native teardown or irreversible Worker.stop().
+        if (
+          worker &&
+          (!worker.safeToReplace || (!wasRunning && !worker.stopConfirmed))
+        )
+          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
         if (wasRunning && !updates.snapshot().manualRestartSupported)
           return send(409, {
             error: "LAUNCHER_UPGRADE_REQUIRED",
             hint: "This older launcher cannot preserve running Coach across a manual update. Nothing was stopped or applied. Replace the stable launcher with a reviewed current build using the same Coach home; settings and preview restarts do not need this upgrade.",
           });
+        // Fence native start/active/cleanup before any teardown or worker gate.
+        if (!terminal.idle) return send(409, { error: "AUTO_UPDATE_BUSY" });
+        // Fence claims synchronously so publication cannot start after admission.
+        if (wasRunning && !worker!.quiesceForUpdate())
+          return send(409, { error: "AUTO_UPDATE_BUSY" });
         busy = true;
         try {
           await terminal.stop();
@@ -700,6 +737,7 @@ export async function admin(
             hint: "Could not persist the update request. Check protected home storage.",
           });
         } finally {
+          worker?.releaseUpdateQuiesce();
           busy = false;
         }
         return send(202, { ok: true });

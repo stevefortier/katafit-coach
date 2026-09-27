@@ -73,12 +73,23 @@ test("manual update stable owner resumes after replacement and rollback without 
       body: JSON.stringify(body),
     });
   let recoveredOwner: Awaited<ReturnType<typeof supervise>> | undefined;
+  const waitIdle = async () => {
+    for (let i = 0; i < 100; i++) {
+      const status = await (
+        await fetch(owner.origin + "/api/status", { headers })
+      ).json();
+      if (status.state === "idle" && status.safeToReplace) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.fail("manual admission requires idle publication-safe worker");
+  };
   try {
     assert.equal((await post("run")).status, 200);
     for (const target of [latest, bad]) {
       latest = target;
       owner.updates.checkedAt = 0;
       await post("update/check");
+      await waitIdle();
       const pid = owner.pid;
       const accepted = await post("update/apply", {
         sha: target,
@@ -120,6 +131,7 @@ test("manual update stable owner resumes after replacement and rollback without 
     latest = "c".repeat(40);
     owner.updates.checkedAt = 0;
     await post("update/check");
+    await waitIdle();
     unavailable = true;
     assert.equal(
       (await post("update/apply", { sha: latest, confirm: true })).status,

@@ -67,7 +67,19 @@ export async function taskFixture(options: any = {}) {
     if (m.method === "initialize") value = { protocolVersion: "2025-03-26" };
     else if (m.method === "tools/list")
       value = {
-        tools: (options.tools ?? names).map((name: string) => ({ name })),
+        tools: [
+          ...(options.tools ?? names).map((name: string) => ({ name })),
+          {
+            name: "coach_list_requests",
+            inputSchema: {
+              type: "object",
+              properties:
+                options.exactReceipt === false
+                  ? {}
+                  : { request_id: { type: "string" } },
+            },
+          },
+        ],
       };
     else if (n === "coach_task_capabilities")
       value = options.capabilities ?? {
@@ -79,6 +91,7 @@ export async function taskFixture(options: any = {}) {
         completion_is_publication: false,
       };
     else if (n === "coach_claim_task") {
+      await options.onClaimTask?.();
       // Backend orders queued before expired claims and invalidates source-denied
       // reclaim candidates instead of returning them forever.
       current = queue.shift() ?? null;
@@ -135,6 +148,26 @@ export async function taskFixture(options: any = {}) {
       }
       value = receipt(true);
     } else if (n === "coach_read_task_receipt") {
+      current = byId.get(a.task_id) ?? current;
+      if (options.reconcileDenial && denied.has(a.task_id)) {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: m.id,
+            result: {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ code: options.reconcileDenial }),
+                },
+              ],
+            },
+          }),
+        );
+        return;
+      }
       value = { ...receipt(false), ...options.receipt };
       if (options.receiptHash) value.result_sha256 = options.receiptHash;
       if (options.receiptError) {
@@ -225,10 +258,27 @@ export async function taskFixture(options: any = {}) {
       };
     else if (n === "coach_respond") {
       options.main = false;
+      if (options.dropRespond) {
+        req.socket.destroy();
+        return;
+      }
       value = {};
     }
     if (n === "coach_list_requests" && a.statuses)
-      value = { requests: [{ id: "main", status: "completed" }] };
+      value = {
+        requests: (
+          options.mainReceipts ?? [
+            { id: "main", status: "completed", lease_generation: main },
+          ]
+        )
+          .filter(
+            (r: any) =>
+              !a.request_id ||
+              options.exactReceipt === false ||
+              r.id === a.request_id,
+          )
+          .slice(0, a.limit ?? 25),
+      };
     res.setHeader("Content-Type", "application/json");
     res.end(
       JSON.stringify({

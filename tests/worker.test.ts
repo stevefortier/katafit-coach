@@ -170,6 +170,13 @@ export async function fixture(
             ]
           : [],
       };
+      value.tools.push({
+        name: "coach_list_requests",
+        inputSchema: {
+          type: "object",
+          properties: { request_id: { type: "string" } },
+        },
+      });
     } else {
       switch (msg.params.name) {
         case "coach_get_capabilities":

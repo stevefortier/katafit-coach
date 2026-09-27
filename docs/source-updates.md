@@ -83,6 +83,53 @@ The installed stable launcher and protocol stay fixed while managed runtime sour
 - **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime. Workers remain stopped unless a pending durable manual-update resume intent requires recovery; recovery never reapplies source or replays chat/actions. Keep the home and the bootstrap launcher.
 - **Corrupt active installation/manual recovery:** stop the owner first and preserve a private backup. Restore a known-good home/active pointer or remove `active.json` to return to the installed bootstrap application only if it is compatible with your unchanged data schema. Never delete a live lock inode.
 
+## Publication-safe update admission and stopped recovery
+
+Manual apply now requires an idle, publication-safe running worker, just like
+automatic quiescence. An unsafe or busy worker is rejected **before** native
+teardown or worker stop; no update is accepted. Wait for active work to finish.
+`GET /api/status` exposes `safeToReplace` separately from `stopConfirmed` and
+historical `lastError`. An old delivery error is not itself live uncertainty;
+retained unresolved task/request identities are.
+
+For an intentionally stopped worker on a build supporting this endpoint, an
+authenticated, same-origin `POST /api/worker/reconcile` with `{}` performs only
+bounded backend receipt reads against the **same Worker instance**. It never
+starts the worker, claims work, runs inference, renews/expires a lease, or retries
+a publication. It remains callable while an automatic quiesce recovery gate is
+held. It does not release that gate or override failed presence confirmation.
+Read status back; only when both publication safety and stop confirmation are
+true may the normal launcher release/resume or Run lifecycle replace the worker.
+
+Typed tasks resolve only from a validated completed/consumed receipt matching the
+original full task identity and result digest. Failed, missing, denied or
+mismatched reads remain unresolved. In particular, `TASK_SOURCE_CHANGED` is not
+proof that no result was stored. Recovery uses `coach_read_task_receipt`, **not**
+`coach_reconcile_task`, whose backend contract can expire/requeue claims. Main
+normal verification and stopped recovery first discover
+`tools/list` → `coach_list_requests.inputSchema.properties.request_id`, then read
+`coach_list_requests({request_id: captured.id, statuses: ['completed'], limit: 1})`.
+The backend must filter the exact ID before pagination. Only matching ID,
+completed status and lease generation resolve the retained identity. Missing
+capability never falls back to a bounded list: old backends silently strip unknown
+arguments. An unresolved main publication blocks further main claims/writes until
+receipt-only recovery succeeds; typed task polling remains independent.
+
+Permanently denied typed receipts remain a backend-contract prerequisite, not a
+solved recovery case. The minimal safe extension is an authenticated read-only
+terminal disposition fenced to the original credential, task identity and lease,
+with matching result digest for completed/consumed output (or authoritative
+nonpublication), no source prose and no expiry/requeue side effects. Until that
+contract is implemented and integrated, missing/denied/invalidated evidence stays
+unresolved. Historical errors remain visible after successful reconciliation.
+
+Older already-stopped runtimes have no such endpoint and upgrading their source
+on disk cannot update their in-memory owner. Do not restart, clear errors, replay
+writes or bypass replacement guards to recover them. Preserve the live process
+and obtain reviewed in-process identity export or backend-authoritative audit
+before any migration. A fix for future workers is not proof that an existing old
+incident was reconciled.
+
 ## Verification
 
 For clean protocol-2 builds, first build the exact sandbox artifact as in
