@@ -214,6 +214,7 @@ for (const parallel of [false, true])
           .messages.filter(
             (m: any) =>
               m.role === "tool" &&
+              /^image_(?:[1-5]|retry_\d+)$/.test(m.tool_call_id ?? "") &&
               JSON.stringify(m.content).includes("IMAGE_READ_BUSY"),
           );
         assert.equal(busyMessages.length, parallel ? 3 : 0);
