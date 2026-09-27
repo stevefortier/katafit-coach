@@ -5,10 +5,13 @@ import type { Store } from "../config/store.js";
 import { NativeRuntime } from "../sandbox/runtime.js";
 import { nativeImage } from "../sandbox/artifact.js";
 import { openNativeGateway, type NativeGateway } from "../sandbox/gateway.js";
+import { AttachmentFailure } from "../sandbox/attachments.js";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 /** Installation-admin terminal only; not a managed multi-tenant service. */
 export class NativeTerminal {
+  /** Maximum age of a backend authorization before retained bytes are served. */
+  static attachmentFreshnessMs = 30000;
   private tickets = new Map<string, { expires: number; authority: string }>();
   private sockets = new Set<WebSocket>();
   private ws?: WebSocket;
@@ -20,6 +23,9 @@ export class NativeTerminal {
   private generation = 0;
   private controller?: AbortController;
   private output = "";
+  // Random per runtime; scopes the private attachment endpoint to it.
+  private session?: string;
+  private sessionAuthority?: string;
   private detach?: NodeJS.Timeout;
   private readonly wss = new WebSocketServer({
     noServer: true,
@@ -140,7 +146,15 @@ export class NativeTerminal {
           this.ws = ws;
           this.send(ws, { type: "output", data: this.output });
           await this.start();
-          if (this.ws === ws) this.send(ws, { type: "ready" });
+          if (this.ws === ws) {
+            this.send(ws, { type: "ready" });
+            // One content-free snapshot per admission; the browser dedups by id.
+            this.send(ws, {
+              type: "attachments",
+              session: this.session,
+              items: this.gateway?.attachments?.() ?? [],
+            });
+          }
           return;
         }
         if (this.ws !== ws || authority !== this.authority())
@@ -175,8 +189,35 @@ export class NativeTerminal {
       await this.stopping;
       if (generation !== this.generation) throw new Error("REVOKED");
       const controller = (this.controller = new AbortController());
+      const session = randomBytes(16).toString("hex");
+      const authority = this.authority();
+      let owned: NativeRuntime | undefined;
       const gateway = await openNativeGateway(this.store, controller.signal, {
         onDiagnostic: this.onDiagnostic,
+        attachmentFreshnessMs: NativeTerminal.attachmentFreshnessMs,
+        attachments: {
+          // Only this generation's own container; never a sandbox-named path.
+          read: (parts, limit, signal) => {
+            if (
+              generation !== this.generation ||
+              !owned ||
+              this.runtime !== owned
+            )
+              throw new AttachmentFailure("ATTACHMENT_UNAVAILABLE");
+            return owned.readWorkspaceFile(parts, limit, signal);
+          },
+          publish: (item) => {
+            if (generation !== this.generation || this.session !== session)
+              return false;
+            const ws = this.ws;
+            if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+            this.send(ws, { type: "attachment", session, item });
+            return ws.readyState === WebSocket.OPEN;
+          },
+          connected: () =>
+            generation === this.generation &&
+            this.ws?.readyState === WebSocket.OPEN,
+        },
         // Retained context was denied, expired or became unknown. The gateway
         // has closed its backend session; destroy this whole runtime (process,
         // transcript, filesystem, retained output). Never reopen it: a later
@@ -194,7 +235,7 @@ export class NativeTerminal {
       });
       let image: string;
       try {
-        image = await nativeImage(this.store.dir);
+        image = await this.resolveImage();
       } catch (error) {
         await gateway.close();
         throw error;
@@ -204,7 +245,9 @@ export class NativeTerminal {
         throw new Error("REVOKED");
       }
       this.gateway = gateway;
-      const runtime = (this.runtime = new NativeRuntime(image));
+      this.session = session;
+      this.sessionAuthority = authority;
+      const runtime = (this.runtime = owned = this.createRuntime(image));
       runtime.onExit = () => {
         if (this.runtime === runtime) void this.stop().catch(() => {});
       };
@@ -231,13 +274,58 @@ export class NativeTerminal {
       this.starting = undefined;
     }));
   }
+  /** Test seam: the Docker-backed runtime for one generation. */
+  protected createRuntime(image: string) {
+    return new NativeRuntime(image);
+  }
+  protected resolveImage() {
+    return nativeImage(this.store.dir);
+  }
+  /**
+   * Fenced attachment bytes for the exact current native session. Unknown,
+   * foreign or old sessions are indistinguishable (not found).
+   */
+  async attachment(session: string, id: string) {
+    const gateway = this.gateway;
+    if (
+      typeof session !== "string" ||
+      !this.session ||
+      session !== this.session ||
+      !this.runtime ||
+      this.runtime.cleanupPending ||
+      !gateway?.readAttachment ||
+      this.stopping ||
+      this.starting ||
+      this.cleanupFailed
+    )
+      throw new Error("ATTACHMENT_NOT_FOUND");
+    if (this.sessionAuthority !== this.authority()) {
+      void this.stop().catch(() => {});
+      throw new Error("ATTACHMENT_REVOKED");
+    }
+    if (!this.allowed()) throw new Error("ATTACHMENT_UNAVAILABLE");
+    const entry = await gateway.readAttachment(id);
+    if (
+      this.session !== session ||
+      this.gateway !== gateway ||
+      this.sessionAuthority !== this.authority()
+    )
+      throw new Error("ATTACHMENT_REVOKED");
+    return entry;
+  }
   stop() {
     this.generation++;
     this.tickets.clear();
     clearTimeout(this.detach);
     this.controller?.abort();
+    // Erase panel access before teardown completes; old URLs are now unknown.
+    this.session = undefined;
+    this.sessionAuthority = undefined;
     if (this.stopping) return this.stopping;
-    for (const ws of this.sockets) ws.close(1008, "Session stopped");
+    for (const ws of this.sockets) {
+      this.send(ws, { type: "attachments-cleared" });
+      ws.close(1008, "Session stopped");
+    }
     this.ws = undefined;
     this.output = "";
     const starting = this.starting;

@@ -10,6 +10,23 @@ import {
   ImageReadFailure,
   openOperatorTools,
 } from "../katafit/operatorTools.js";
+import {
+  ATTACHMENT_LIMITS,
+  ATTACHMENT_TOOL,
+  AttachmentFailure,
+  ImageReceipts,
+  OperatorAttachments,
+  RECEIPT_PATTERN,
+  WORKSPACE_READ_CODES,
+  attachmentTool,
+  classifyAttachment,
+  sanitizeCaption,
+  sanitizeFilename,
+  workspacePathParts,
+  type AttachmentItem,
+} from "./attachments.js";
+
+const IMAGE = "studio_operator_read_dojo_checkin_image";
 
 class NativeClient extends Client {
   requestSignal?: AbortSignal;
@@ -81,6 +98,18 @@ export interface NativeGatewayHooks {
    * and filesystem) and must not reopen a session for it.
    */
   onTerminate?: (reason: string) => void;
+  /**
+   * Trusted host attachment owner. Enables send_to_operator. `read` must read
+   * the runtime's own /workspace without following links; `publish` shows an
+   * accepted item in the operator panel and reports whether one is connected.
+   */
+  attachments?: {
+    read(parts: string[], limit: number, signal: AbortSignal): Promise<Buffer>;
+    publish(item: AttachmentItem): boolean;
+    connected?(): boolean;
+  };
+  /** Maximum age of a backend authorization before retained bytes are served. */
+  attachmentFreshnessMs?: number;
 }
 
 /** A runtime-owned capability, not an HTTP proxy. No caller-selected destinations. */
@@ -113,6 +142,15 @@ export async function openNativeGateway(
         secrets[k as keyof typeof secrets] ===
         store.secrets[k as keyof typeof secrets],
     );
+  const owner = hooks.attachments;
+  const freshness = hooks.attachmentFreshnessMs ?? 30000;
+  const receipts = new ImageReceipts();
+  const attachments = new OperatorAttachments();
+  let lastImage:
+    | { bytes: Buffer; mime_type: string; sha256: string }
+    | undefined;
+  let authorizedAt = -Infinity;
+  let hostWork: Promise<void> | undefined;
   const actions = new Actions(store, hooks.onDiagnostic);
   if (actions.snapshot().some((a) => ["pending", "unknown"].includes(a.status)))
     throw new Error("DELIVERY_UNVERIFIED");
@@ -135,7 +173,22 @@ export async function openNativeGateway(
       hooks.onDiagnostic,
     ),
     continuity: true,
+    onImage: (image) => {
+      lastImage = owner
+        ? {
+            bytes: image.bytes,
+            mime_type: image.mime_type,
+            sha256: image.sha256,
+          }
+        : undefined;
+    },
   });
+  // Every successful backend re-authorization of retained evidence renews the
+  // attachment serving fence, whichever path performed it.
+  const authorize = async () => {
+    await session.authorize();
+    authorizedAt = Date.now();
+  };
   const check = () => {
     if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
   };
@@ -145,6 +198,8 @@ export async function openNativeGateway(
     closed = true;
     clearTimeout(deadline);
     abort.abort();
+    receipts.clear();
+    attachments.clear();
     return (disposal ??= session.dispose());
   };
   // Continuity failures invalidate this gateway and ask the owner to destroy
@@ -173,7 +228,160 @@ export async function openNativeGateway(
     );
     deadline.unref();
   }
+  const reject = (code: string): never => {
+    throw new AttachmentFailure(code);
+  };
+  const sendAttachment = async (args: any, signal: AbortSignal) => {
+    if (
+      !args ||
+      typeof args !== "object" ||
+      Array.isArray(args) ||
+      Object.keys(args).some(
+        (key) =>
+          !["image_receipt", "workspace_path", "filename", "caption"].includes(
+            key,
+          ),
+      ) ||
+      Object.hasOwn(args, "image_receipt") ===
+        Object.hasOwn(args, "workspace_path") ||
+      (Object.hasOwn(args, "image_receipt") &&
+        (typeof args.image_receipt !== "string" ||
+          !RECEIPT_PATTERN.test(args.image_receipt))) ||
+      (args.filename !== undefined &&
+        (typeof args.filename !== "string" ||
+          !args.filename ||
+          args.filename.length > 120)) ||
+      (args.caption !== undefined &&
+        (typeof args.caption !== "string" || args.caption.length > 500))
+    )
+      reject("ATTACHMENT_ARGUMENTS_REJECTED");
+    const caption = sanitizeCaption(args.caption);
+    let bytes: Buffer, fallback: string, source: AttachmentItem["source"];
+    if (Object.hasOwn(args, "image_receipt")) {
+      const receipt = receipts.get(args.image_receipt);
+      if (!receipt) return reject("ATTACHMENT_RECEIPT_UNKNOWN");
+      bytes = receipt.bytes;
+      source = "image_receipt";
+      fallback = `checkin-${receipt.sha256.slice(0, 12)}.${receipt.mime_type === "image/jpeg" ? "jpg" : receipt.mime_type.slice(6)}`;
+    } else {
+      const parts = workspacePathParts(args.workspace_path);
+      let read: unknown;
+      try {
+        read = await owner!.read(parts, ATTACHMENT_LIMITS.maxFileBytes, signal);
+      } catch (error) {
+        check();
+        if (
+          error instanceof AttachmentFailure &&
+          WORKSPACE_READ_CODES.includes(error.code)
+        )
+          throw error;
+        return reject("ATTACHMENT_FILE_UNAVAILABLE");
+      }
+      check();
+      if (!Buffer.isBuffer(read)) return reject("ATTACHMENT_FILE_UNAVAILABLE");
+      if (read.length > ATTACHMENT_LIMITS.maxFileBytes)
+        return reject("ATTACHMENT_TOO_LARGE");
+      bytes = read;
+      source = "workspace";
+      fallback = sanitizeFilename(parts.at(-1), "attachment.bin");
+    }
+    const filename = sanitizeFilename(args.filename, fallback);
+    // Nothing that carries a configured credential leaves the host.
+    const values = Object.values(secrets).filter(
+      (v): v is string => typeof v === "string" && !!v,
+    );
+    try {
+      assertNoSecrets([args, filename, caption], values);
+    } catch {
+      reject("ATTACHMENT_REJECTED");
+    }
+    if (values.some((secret) => bytes.includes(secret)))
+      reject("ATTACHMENT_REJECTED");
+    const classified = await classifyAttachment(bytes, filename);
+    check();
+    // Acceptance is itself a fresh backend authorization of retained context.
+    await authorize();
+    check();
+    if (signal.aborted) throw new Error("NATIVE_CANCELLED");
+    const { item, duplicate } = attachments.add({
+      source,
+      bytes,
+      filename: classified.filename,
+      caption,
+      mime_type: classified.mime_type,
+      preview: classified.preview,
+    });
+    let connected = false;
+    try {
+      connected = duplicate
+        ? owner!.connected?.() === true
+        : owner!.publish(structuredClone(item)) === true;
+    } catch {
+      connected = false;
+    }
+    const text = JSON.stringify({
+      status: "accepted_to_operator_panel",
+      attachment_id: item.id,
+      filename: item.filename,
+      mime_type: item.mime_type,
+      byte_count: item.byte_count,
+      preview: item.preview,
+      duplicate,
+      operator_viewed: "not_confirmed",
+      panel_connected: connected,
+      remaining: attachments.remaining(),
+      note: "Accepted into the operator's attachments panel on this page. This does not confirm the operator opened or saw it; do not claim they viewed it.",
+    });
+    assertNoSecrets(text, values);
+    return { content: [{ type: "text" as const, text }], details: {} };
+  };
+  /**
+   * Retained evidence (receipts and workspace-derived files) is served only
+   * behind a recent backend authorization. A stale fence is refreshed only
+   * when no relay request is in flight; relay requests wait for the refresh.
+   */
+  const authorizeRetained = async () => {
+    check();
+    const retained = session.continuity();
+    if (retained?.revoked) {
+      terminate(retained.revoked);
+      throw new Error("NATIVE_SESSION_REVOKED");
+    }
+    if (retained && Date.parse(retained.context_expires_at) <= Date.now()) {
+      terminate("CONTEXT_EXPIRED");
+      throw new Error("NATIVE_SESSION_REVOKED");
+    }
+    if (Date.now() - authorizedAt < freshness) return;
+    if (hostWork) {
+      await hostWork.catch(() => {});
+      check();
+      if (Date.now() - authorizedAt < freshness) return;
+    }
+    if (active || hostWork) throw new Error("ATTACHMENT_AUTHORIZATION_BUSY");
+    const work = (hostWork = authorize());
+    try {
+      await work;
+    } catch (error) {
+      settle(error);
+      check();
+      throw new Error("ATTACHMENT_AUTHORIZATION_FAILED");
+    } finally {
+      if (hostWork === work) hostWork = undefined;
+    }
+    check();
+  };
   return {
+    /** Trusted host only: content-free metadata of accepted attachments. */
+    attachments: () => (closed ? [] : attachments.list()),
+    /** Trusted host only: fenced bytes for one accepted attachment. */
+    async readAttachment(id: string) {
+      check();
+      if (!attachments.get(id)) throw new Error("ATTACHMENT_NOT_FOUND");
+      await authorizeRetained();
+      const entry = attachments.get(id);
+      if (!entry) throw new Error("ATTACHMENT_NOT_FOUND");
+      return entry;
+    },
     /**
      * Trusted host only: authenticated browser terminal input. Enter arms at
      * most one pending turn; repeated input cannot queue additional budgets.
@@ -226,18 +434,37 @@ export async function openNativeGateway(
               body: `# ${name}\n\nPurpose: ${purpose}\n\nTriggers: ${triggers}\n\n${instructions}\n\nThis native Pi session is Operator scope. Apply only the Operator branch. Never claim or respond to background worker jobs.`,
             }),
           ),
-          tools: session.tools.map((t) => ({
-            name: t.name,
-            description: t.description,
-            parameters: t.parameters,
-          })),
+          tools: [
+            ...session.tools.map((t) => ({
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters,
+            })),
+            ...(owner ? [attachmentTool()] : []),
+          ],
         };
         // Catalog metadata is an outbound disclosure too: the relay persists
         // this complete envelope in the untrusted Pi workspace.
         assertNoSecrets(catalog, Object.values(secrets));
         return catalog;
       }
+      // A host-side retained-evidence refresh is brief and must never race a
+      // relay request (for example a turn advance); wait for it.
+      while (hostWork) {
+        await hostWork.catch(() => {});
+        check();
+        if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
+      }
       if (active) {
+        if (
+          owner &&
+          request.kind === "tool" &&
+          request.name === ATTACHMENT_TOOL
+        ) {
+          settle(undefined);
+          check();
+          return { attachmentError: { code: "ATTACHMENT_BUSY" } };
+        }
         // No dispatch, no argument echo, no quota accounting. Capacity is
         // deliberately omitted: the pending request may still consume it.
         if (
@@ -262,6 +489,10 @@ export async function openNativeGateway(
           check();
           return { imageReadError: error.safe };
         }
+        if (owner && error instanceof AttachmentFailure) {
+          check();
+          return { attachmentError: { code: error.code } };
+        }
         throw error;
       } finally {
         active = false;
@@ -272,14 +503,37 @@ export async function openNativeGateway(
   };
   async function dispatch(request: any, requestSignal?: AbortSignal) {
     if (request.kind === "tool") {
+      if (owner && request.name === ATTACHMENT_TOOL)
+        return sendAttachment(
+          request.args,
+          requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
+        );
       const tool = session.tools.find((t) => t.name === request.name);
       if (!tool) throw new Error("NATIVE_TOOL_REJECTED");
-      const result = await tool.execute(
+      lastImage = undefined;
+      const result: any = await tool.execute(
         randomUUID(),
         request.args,
         abort.signal,
       );
       check();
+      // Set by the onImage hook during execute(); TS cannot see that write.
+      const image = lastImage as
+        | { bytes: Buffer; mime_type: string; sha256: string }
+        | undefined;
+      lastImage = undefined;
+      // Mint an opaque host receipt for pixels this validated read delivered.
+      if (owner && request.name === IMAGE && image) {
+        const text = result?.content?.[0];
+        if (text?.type !== "text") throw new Error("RESULT_REJECTED");
+        const summary = JSON.parse(text.text);
+        summary.image_receipt = receipts.add(
+          image.bytes,
+          image.mime_type,
+          image.sha256,
+        );
+        text.text = JSON.stringify(summary);
+      }
       return result;
     }
     assertNoSecrets(request.body, Object.values(secrets));
@@ -295,7 +549,7 @@ export async function openNativeGateway(
       await session.advance();
     }
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
-    await session.authorize();
+    await authorize();
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const response = await fetch(
@@ -328,7 +582,7 @@ export async function openNativeGateway(
           throw new Error("NATIVE_RESPONSE_TOO_LARGE");
         chunks.push(c);
       }
-    await session.authorize();
+    await authorize();
     check();
     const body = Buffer.concat(chunks).toString("utf8");
     assertNoSecrets(body, Object.values(secrets));
@@ -343,4 +597,9 @@ export async function openNativeGateway(
 type OpenedGateway = Awaited<ReturnType<typeof openNativeGateway>>;
 /** Runtime-facing surface; host-only members are optional for test stubs. */
 export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
-  Partial<Pick<OpenedGateway, "noteHumanInput" | "continuity">>;
+  Partial<
+    Pick<
+      OpenedGateway,
+      "noteHumanInput" | "continuity" | "attachments" | "readAttachment"
+    >
+  >;

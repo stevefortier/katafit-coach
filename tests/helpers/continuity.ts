@@ -184,6 +184,8 @@ export interface ContinuityOptions {
   imageGate?: Promise<void>;
   // Runs after each successful authorize_context (1-based count).
   afterAuthorize?: (state: Backend, count: number) => void;
+  // Hold authorize_context responses (host serialization tests).
+  authorizeGate?: () => Promise<void> | void;
   // Answer a tools/call with this bare HTTP status (401/403 credential
   // rejection, 5xx outage) or drop the connection ("drop"), before any MCP
   // processing. The body carries private text the host must never surface.
@@ -649,6 +651,8 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
       };
     if (body.method === "tools/call") {
       if (name === IMAGE && options.imageGate) await options.imageGate;
+      if (name === AUTHORIZE && options.authorizeGate)
+        await options.authorizeGate();
       const failure = options.httpFailure?.(name, body.params?.arguments);
       if (failure === "drop") {
         res.destroy();

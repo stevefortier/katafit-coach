@@ -2439,6 +2439,14 @@ async function loadNativeReceipts() {
 $("operatorReconcile").onclick = () => loadNativeReceipts();
 const native = nativeTerminal({
   api,
+  // Private attachment bytes; bound to the key of the session that requested.
+  fetchAttachment: (path, signal) =>
+    fetch(path, {
+      headers: { Authorization: "Bearer " + key },
+      signal,
+      redirect: "error",
+      cache: "no-store",
+    }),
   authorized: () =>
     !!key &&
     !lifecycleBusy &&

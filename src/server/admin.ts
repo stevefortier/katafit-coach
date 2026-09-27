@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 import { Actions } from "../chat/actions.js";
 import { NativeTerminal } from "./terminal.js";
+import { contentDisposition } from "../sandbox/attachments.js";
 import { StudioReads } from "../katafit/studio.js";
 import { Updates } from "../update/updates.js";
 import { AutoUpdateSetting } from "../update/auto.js";
@@ -323,6 +324,43 @@ export async function admin(
         return send(200, {
           actions: new Actions(store, onBackendDiagnostic).snapshot(),
         });
+      if (
+        req.method === "GET" &&
+        path.startsWith("/api/terminal/attachments/")
+      ) {
+        const match =
+          /^\/api\/terminal\/attachments\/([a-f0-9]{32})\/(at_[a-f0-9]{32})$/.exec(
+            path,
+          );
+        if (!match) return send(404, { error: "NOT_FOUND" });
+        let entry: Awaited<ReturnType<typeof terminal.attachment>>;
+        try {
+          entry = await terminal.attachment(match[1], match[2]);
+        } catch (error: any) {
+          const code = error?.message;
+          if (code === "ATTACHMENT_NOT_FOUND")
+            return send(404, { error: "NOT_FOUND" });
+          if (code === "ATTACHMENT_AUTHORIZATION_BUSY") {
+            res.setHeader("Retry-After", "2");
+            return send(503, { error: code });
+          }
+          if (code === "ATTACHMENT_UNAVAILABLE")
+            return send(409, { error: "OPERATION_IN_PROGRESS" });
+          return send(410, { error: "ATTACHMENT_REVOKED" });
+        }
+        res.writeHead(200, {
+          "Content-Type":
+            entry.item.preview === "image"
+              ? entry.item.mime_type
+              : "application/octet-stream",
+          "Content-Length": entry.bytes.length,
+          "Content-Disposition": contentDisposition(entry.item.filename),
+          "Content-Security-Policy": "sandbox; default-src 'none'",
+          "Cross-Origin-Resource-Policy": "same-origin",
+        });
+        res.end(entry.bytes);
+        return;
+      }
       if (req.method === "POST" && path === "/api/terminal/ticket") {
         if (
           closing ||
