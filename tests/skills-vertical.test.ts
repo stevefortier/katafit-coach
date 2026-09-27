@@ -43,6 +43,12 @@ test("Skills save travels through authenticated Studio, immutable disk history, 
           "default",
         ],
         ["change-plan", "Make and verify a plan change", true, "default"],
+        [
+          "fetch-checkin-images",
+          "Fetch and inspect check-in images",
+          true,
+          "default",
+        ],
       ],
     );
     const edited = {

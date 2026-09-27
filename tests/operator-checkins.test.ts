@@ -25,13 +25,19 @@ export async function fixture(
     failSend?: boolean;
     imageCount?: number;
     mediaRefLength?: number;
+    imageSize?: number;
+    imageDescription?: string;
+    imageGate?: Promise<void>;
   } = {},
 ) {
-  const bytes = await sharp({
+  const png = await sharp({
     create: { width: 3, height: 2, channels: 3, background: "#123456" },
   })
     .png()
     .toBuffer();
+  const bytes = options.imageSize
+    ? Buffer.concat([png, Buffer.alloc(options.imageSize - png.length)])
+    : png;
   const calls: string[] = [];
   const callArgs: Array<{ name: string; args: any }> = [];
   const openings: any[] = [];
@@ -145,7 +151,12 @@ export async function fixture(
           "studio_operator_list_members",
           LIST,
           ...(options.advertised === false ? [] : [IMAGE]),
-        ].map((name) => ({ name })),
+        ].map((name) => ({
+          name,
+          ...(name === IMAGE && options.imageDescription
+            ? { description: options.imageDescription }
+            : {}),
+        })),
       };
     if (name === "studio_operator_open_session")
       result = ["dojo_read", "dojo_operator"].includes(
@@ -269,6 +280,7 @@ export async function fixture(
             message_id: "message-photo",
             idempotent: false,
           };
+    if (name === IMAGE && options.imageGate) await options.imageGate;
     if (name === IMAGE)
       result =
         options.revoke || revoked

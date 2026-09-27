@@ -18,7 +18,12 @@ test("native gateway exports enabled skills without host secrets and revokes its
     const catalog = await gateway.handle({ kind: "catalog" });
     assert.deepEqual(
       catalog.skills.map((skill: any) => skill.id),
-      ["review-activity", "understand-progress", "change-plan"],
+      [
+        "review-activity",
+        "understand-progress",
+        "change-plan",
+        "fetch-checkin-images",
+      ],
     );
     assert.match(catalog.skills[0].body, /Operator scope:/);
     assert.match(catalog.skills[0].body, /Worker scope:/);
