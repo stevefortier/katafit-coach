@@ -15,6 +15,7 @@ import { complete } from "../runtime/piAdapter.js";
 import { Worker } from "../worker/runner.js";
 import { Client } from "../katafit/client.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
+import { archiveTaskInvalidation } from "../worker/taskInvalidationArchive.js";
 export async function admin(
   store: Store,
   port = 4317,
@@ -91,6 +92,8 @@ export async function admin(
         vision: c.provider.vision === true,
         skills,
         onDiagnostic: (event) => logs.record(event),
+        archiveTaskInvalidation: (record) =>
+          archiveTaskInvalidation(store.dir, record),
         complete: (context, signal, system, tools, ref, budget) =>
           infer(
             {

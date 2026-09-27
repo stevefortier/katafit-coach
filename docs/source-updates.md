@@ -101,9 +101,10 @@ held. It does not release that gate or override failed presence confirmation.
 Read status back; only when both publication safety and stop confirmation are
 true may the normal launcher release/resume or Run lifecycle replace the worker.
 
-Typed tasks resolve only from a validated completed/consumed receipt matching the
-original full task identity and result digest. Failed, missing, denied or
-mismatched reads remain unresolved. In particular, `TASK_SOURCE_CHANGED` is not
+Typed canonical completion resolves from a validated completed/consumed receipt
+matching the original full task identity and result digest; terminal invalidation
+has the separate strict proof and durable archive requirements below. Failed,
+missing, denied or mismatched reads remain unresolved. In particular, `TASK_SOURCE_CHANGED` is not
 proof that no result was stored. Recovery uses `coach_read_task_receipt`, **not**
 `coach_reconcile_task`, whose backend contract can expire/requeue claims. Main
 normal verification and stopped recovery first discover
@@ -115,13 +116,17 @@ capability never falls back to a bounded list: old backends silently strip unkno
 arguments. An unresolved main publication blocks further main claims/writes until
 receipt-only recovery succeeds; typed task polling remains independent.
 
-Permanently denied typed receipts remain a backend-contract prerequisite, not a
-solved recovery case. The minimal safe extension is an authenticated read-only
-terminal disposition fenced to the original credential, task identity and lease,
-with matching result digest for completed/consumed output (or authoritative
-nonpublication), no source prose and no expiry/requeue side effects. Until that
-contract is implemented and integrated, missing/denied/invalidated evidence stays
-unresolved. Historical errors remain visible after successful reconciliation.
+The typed receipt reader may also resolve the retained stopped incident from a
+strict `invalidated` receipt. Every original identity, generation, schema and
+timestamp must match; `invalidation_code` must be `TASK_SOURCE_CHANGED`,
+`invalidated_at` must be a valid timestamp, and result digest, completion and
+consumption fields must all be null. Legacy, denied, malformed or inconsistent
+responses—including any unexpected completion evidence—remain unresolved. The
+attempted local digest and full terminal disposition are durably archived in the
+protected Coach home before the retained identity clears. Archive publication
+failure remains update-blocking. This is authoritative nonacceptance, not digest
+equality and never authority to replay. Historical errors remain visible after
+successful reconciliation.
 
 Older already-stopped runtimes have no such endpoint and upgrading their source
 on disk cannot update their in-memory owner. Do not restart, clear errors, replay
@@ -129,6 +134,18 @@ writes or bypass replacement guards to recover them. Preserve the live process
 and obtain reviewed in-process identity export or backend-authoritative audit
 before any migration. A fix for future workers is not proof that an existing old
 incident was reconciled.
+
+Artifact provisioning is outside receipt recovery. Recovery does not build,
+pull, select or bless a native image. A protocol-2 candidate must resolve to the
+protected provisioned receipt and exact immutable image described in
+[native-bootstrap.md](native-bootstrap.md) before source apply. An existing
+receipt may be reused for a different source revision only when its native
+fingerprint is identical; this does not claim that every source revision needs a
+new image. A changed fingerprint still requires new out-of-band provisioning.
+Likewise, a runtime source update cannot replace or expand the stable owner's
+launcher, poller, filesystem authority or protocol support. Install a reviewed
+stable-owner update through the deployment/bootstrap procedure; do not treat
+child activation, restart, or a recovered task receipt as an owner upgrade.
 
 ## Verification
 
@@ -143,7 +160,6 @@ matrix separately verifies real native A→B pairing, missing artifacts, failed
 post-stop activation, restart and image-pointer drift, using synthetic candidate
 identities (not published releases). CI runs both matrices. Daemon-independent
 CLI/supervisor tests use explicit legacy fixtures, never a production bypass.
-
 
 `npm test` builds and exercises revision checking, explicit confirmation/auth fences, metadata, isolated staging, child replacement, incompatible Store probing, immediate and delayed startup rollback, stable port/auth/data, disabled support and legacy-platform behavior. `npm run test:package` verifies the normal production-only package.
 

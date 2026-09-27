@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Worker } from "../src/worker/runner.js";
 import { taskFixture } from "./task-fixtures.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
@@ -110,11 +110,12 @@ test("manual update excludes an in-flight claim and fences late claims and nativ
 
 test("actual admin rejects idle-unsafe manual apply before stop and supports receipt-only stopped recovery", async () => {
   const options = {
-    dropComplete: true,
+    dropCompleteBeforeAcceptance: true,
     reconcileDenial: "TASK_SOURCE_CHANGED",
   };
   const f = await taskFixture(options);
   const task = f.enqueue();
+  const retainedTask = structuredClone(task);
   f.deny(task.id);
   const home = await mkdtemp(tmpdir() + "/worker-recovery-");
   const store = new Store(home);
@@ -168,6 +169,11 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
       await sleep(10);
     assert.equal(owned?.state, "idle");
     assert.equal(owned?.incidents.length, 1);
+    assert.equal(f.saved.length, 0, "backend accepted no canonical result");
+    const completionWrites = f.calls.filter(
+      (c) => c.name === "coach_complete_task",
+    ).length;
+    assert.equal(completionWrites, 1);
     const response = await post("/api/update/apply", {
       confirm: true,
       sha: updates.latest,
@@ -187,11 +193,42 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
     const denied = await post("/api/worker/reconcile");
     assert.equal(denied.status, 409);
     assert.equal(owned?.incidents.length, 1);
+    const attemptedDigest = owned!.incidents[0].digest;
     options.reconcileDenial = "";
+    options.receipt = {
+      task: { ...retainedTask, status: "invalidated" },
+      status: "invalidated",
+      result_sha256: null,
+      completed_at: null,
+      consumed_at: null,
+      failure_code: null,
+      invalidation_code: "TASK_SOURCE_CHANGED",
+      invalidated_at: new Date().toISOString(),
+    };
     assert.equal((await post("/api/worker/reconcile")).status, 200);
     assert.equal(owned?.state, "stopped");
     assert.equal(owned?.safeToReplace, true);
     assert.equal(owned?.lastError?.code, "DELIVERY_UNVERIFIED");
+    const archiveNames = await readdir(home + "/task-terminal-receipts");
+    assert.equal(archiveNames.length, 1);
+    const archived = JSON.parse(
+      await readFile(
+        home + "/task-terminal-receipts/" + archiveNames[0],
+        "utf8",
+      ),
+    );
+    assert.equal(archived.attempted_result_sha256, attemptedDigest);
+    assert.deepEqual(archived.receipt, options.receipt);
+    const eligible = await post("/api/update/auto/quiesce");
+    assert.equal(eligible.status, 200);
+    assert.equal((await eligible.json()).wasRunning, false);
+    assert.equal((await post("/api/update/auto/release")).status, 200);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      completionWrites,
+      "update eligibility performs no task replay",
+    );
+    assert.equal(f.saved.length, 0, "recovery creates no canonical result");
     assert.ok(
       f.calls
         .slice(before)
@@ -234,12 +271,297 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
       owned!.presence = "reported";
     }
     assert.equal((await post("/api/run")).status, 200);
-    assert.equal(f.saved.length, 1);
+    assert.equal(f.saved.length, 0);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      completionWrites,
+      "restart performs no write replay",
+    );
   } finally {
     Worker.prototype.start = start;
     await app.close();
     await f.close();
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("stopped admin keeps invalidated task identity when durable archive publication fails", async () => {
+  const options: any = {
+    dropCompleteBeforeAcceptance: true,
+    reconcileDenial: "TASK_SOURCE_CHANGED",
+  };
+  const f = await taskFixture(options);
+  const task = f.enqueue();
+  const retainedTask = structuredClone(task);
+  f.deny(task.id);
+  const home = await mkdtemp(tmpdir() + "/worker-archive-failure-");
+  const store = new Store(home);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-key",
+  });
+  const start = Worker.prototype.start;
+  let owned: Worker | undefined;
+  Worker.prototype.start = function () {
+    owned = this;
+    (this as any).options.complete = async () => '{"text":"synthetic"}';
+    (this as any).options.pollMs = 10;
+    return start.call(this);
+  };
+  const app = await admin(store, 0);
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string) =>
+    fetch(app.origin + path, { method: "POST", headers, body: "{}" });
+  try {
+    await post("/api/run");
+    for (let n = 0; n < 200 && !owned?.incidents.length; n++) await sleep(10);
+    await post("/api/stop");
+    const digest = owned!.incidents[0].digest;
+    const completionWrites = f.calls.filter(
+      (c) => c.name === "coach_complete_task",
+    ).length;
+    assert.equal(completionWrites, 1);
+    assert.equal(f.saved.length, 0, "backend accepted no canonical result");
+    options.reconcileDenial = "";
+    options.receipt = {
+      task: { ...retainedTask, status: "invalidated" },
+      status: "invalidated",
+      result_sha256: null,
+      completed_at: null,
+      consumed_at: null,
+      failure_code: null,
+      invalidation_code: "TASK_SOURCE_CHANGED",
+      invalidated_at: new Date().toISOString(),
+    };
+    await writeFile(home + "/task-terminal-receipts", "blocked");
+    assert.equal((await post("/api/worker/reconcile")).status, 409);
+    assert.equal(owned!.safeToReplace, false);
+    assert.equal(owned!.incidents[0].digest, digest);
+    assert.equal(f.saved.length, 0);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      completionWrites,
+      "failed archival performs no write replay",
+    );
+    await rm(home + "/task-terminal-receipts");
+    assert.equal((await post("/api/worker/reconcile")).status, 200);
+    assert.equal(owned!.safeToReplace, true);
+    assert.equal(
+      f.saved.length,
+      0,
+      "receipt recovery never replays completion",
+    );
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      completionWrites,
+    );
+  } finally {
+    Worker.prototype.start = start;
+    await app.close();
+    await f.close();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("actual worker rejects malformed invalidation receipts without losing original identity or error history", async () => {
+  const options: any = {
+    dropCompleteBeforeAcceptance: true,
+    reconcileDenial: "TASK_SOURCE_CHANGED",
+  };
+  const f = await taskFixture(options);
+  const archived: unknown[] = [];
+  const w = new Worker({
+    origin: f.origin,
+    token: "synthetic-secret",
+    system: "Coach",
+    complete: async () => '{"text":"synthetic"}',
+    archiveTaskInvalidation: async (value) => {
+      archived.push(value);
+    },
+  });
+  try {
+    const task = f.enqueue();
+    const original = structuredClone(task);
+    f.deny(task.id);
+    await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    await w.stop();
+    assert.equal(f.saved.length, 0);
+    assert.equal(w.incidents.length, 1);
+    const identity = structuredClone(w.incidents);
+    const historicalError = w.lastError;
+    assert.equal(historicalError?.code, "DELIVERY_UNVERIFIED");
+    const completionWrites = f.calls.filter(
+      (call) => call.name === "coach_complete_task",
+    ).length;
+    assert.equal(completionWrites, 1);
+    options.reconcileDenial = "";
+    const valid = {
+      task: { ...original, status: "invalidated" },
+      status: "invalidated",
+      result_sha256: null,
+      completed_at: null,
+      consumed_at: null,
+      failure_code: null,
+      invalidation_code: "TASK_SOURCE_CHANGED",
+      invalidated_at: "2026-01-01T00:00:30.000Z",
+    };
+    const invalid = [
+      { ...valid, result_sha256: "0".repeat(64) },
+      { ...valid, completed_at: valid.invalidated_at },
+      { ...valid, invalidation_code: "TASK_ROUTING_CHANGED" },
+      { ...valid, invalidated_at: "2026-02-31T00:00:30.000Z" },
+      {
+        ...valid,
+        task: { ...valid.task, owner_id: "3".repeat(24) },
+      },
+      { ...valid, unexpected: true },
+    ];
+    for (const receipt of invalid) {
+      options.receipt = receipt;
+      await w.reconcilePublications();
+      assert.equal(w.safeToReplace, false);
+      assert.deepEqual(w.incidents, identity);
+      assert.strictEqual(w.lastError, historicalError);
+      assert.equal(archived.length, 0);
+      assert.equal(f.saved.length, 0);
+      assert.equal(
+        f.calls.filter((call) => call.name === "coach_complete_task").length,
+        completionWrites,
+      );
+    }
+    options.receipt = valid;
+    await w.reconcilePublications();
+    assert.equal(w.safeToReplace, true);
+    assert.strictEqual(w.lastError, historicalError);
+    assert.equal(archived.length, 1);
+    assert.equal(f.saved.length, 0);
+    assert.equal(
+      f.calls.filter((call) => call.name === "coach_complete_task").length,
+      completionWrites,
+    );
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+
+test("blocked invalidation archive callback keeps replacement unsafe until durable resolution", async () => {
+  const options: any = {
+    dropCompleteBeforeAcceptance: true,
+    reconcileDenial: "TASK_SOURCE_CHANGED",
+  };
+  const f = await taskFixture(options);
+  let archiveEntered!: () => void;
+  let releaseArchive!: () => void;
+  const entered = new Promise<void>((resolve) => (archiveEntered = resolve));
+  const gate = new Promise<void>((resolve) => (releaseArchive = resolve));
+  const w = new Worker({
+    origin: f.origin,
+    token: "synthetic-secret",
+    system: "Coach",
+    complete: async () => '{"text":"synthetic"}',
+    archiveTaskInvalidation: async () => {
+      archiveEntered();
+      await gate;
+    },
+  });
+  try {
+    const task = f.enqueue();
+    const original = structuredClone(task);
+    f.deny(task.id);
+    await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    await w.stop();
+    const identity = structuredClone(w.incidents);
+    const historicalError = w.lastError;
+    const completionWrites = f.calls.filter(
+      (call) => call.name === "coach_complete_task",
+    ).length;
+    options.reconcileDenial = "";
+    options.receipt = {
+      task: { ...original, status: "invalidated" },
+      status: "invalidated",
+      result_sha256: null,
+      completed_at: null,
+      consumed_at: null,
+      failure_code: null,
+      invalidation_code: "TASK_SOURCE_CHANGED",
+      invalidated_at: "2026-01-01T00:00:30.000Z",
+    };
+    const reconciling = w.reconcilePublications();
+    await entered;
+    assert.equal(w.safeToReplace, false);
+    assert.deepEqual(w.incidents, identity);
+    assert.strictEqual(w.lastError, historicalError);
+    assert.equal(f.saved.length, 0);
+    assert.equal(
+      f.calls.filter((call) => call.name === "coach_complete_task").length,
+      completionWrites,
+    );
+    releaseArchive();
+    await reconciling;
+    assert.equal(w.safeToReplace, true);
+    assert.strictEqual(w.lastError, historicalError);
+    assert.equal(f.saved.length, 0);
+  } finally {
+    releaseArchive();
+    await w.stop();
+    await f.close();
+  }
+});
+
+test("invalidated receipt stays unresolved when durable archive callback is unavailable", async () => {
+  const options: any = {
+    dropCompleteBeforeAcceptance: true,
+    reconcileDenial: "TASK_SOURCE_CHANGED",
+  };
+  const f = await taskFixture(options);
+  const w = new Worker({
+    origin: f.origin,
+    token: "synthetic-secret",
+    system: "Coach",
+    complete: async () => '{"text":"synthetic"}',
+  });
+  try {
+    const task = f.enqueue();
+    const original = structuredClone(task);
+    f.deny(task.id);
+    await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    await w.stop();
+    const identity = structuredClone(w.incidents);
+    const historicalError = w.lastError;
+    const completionWrites = f.calls.filter(
+      (call) => call.name === "coach_complete_task",
+    ).length;
+    options.reconcileDenial = "";
+    options.receipt = {
+      task: { ...original, status: "invalidated" },
+      status: "invalidated",
+      result_sha256: null,
+      completed_at: null,
+      consumed_at: null,
+      failure_code: null,
+      invalidation_code: "TASK_SOURCE_CHANGED",
+      invalidated_at: "2026-01-01T00:00:30.000Z",
+    };
+    await w.reconcilePublications();
+    assert.equal(w.safeToReplace, false);
+    assert.deepEqual(w.incidents, identity);
+    assert.strictEqual(w.lastError, historicalError);
+    assert.equal(f.saved.length, 0);
+    assert.equal(
+      f.calls.filter((call) => call.name === "coach_complete_task").length,
+      completionWrites,
+    );
+  } finally {
+    await w.stop();
+    await f.close();
   }
 });
 

@@ -10,6 +10,7 @@ import {
   verifyTaskReceipt,
   verifyTaskFailure,
   verifyTaskResolution,
+  verifyTaskInvalidation,
 } from "../katafit/tasks.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
@@ -67,6 +68,11 @@ export interface WorkerOptions {
   isolationMs?: number;
   /** Immutable snapshot captured when this Worker instance is constructed. */
   skills?: SkillRuntime;
+  archiveTaskInvalidation?: (record: {
+    protocol: typeof TASK_PROTOCOL;
+    attempted_result_sha256: string;
+    receipt: unknown;
+  }) => Promise<void>;
 }
 /** Never send an unknown filter: older backends silently strip it. */
 async function verifyRequestReceipt(
@@ -193,7 +199,16 @@ export class Worker {
             },
             3000,
           );
-          verifyTaskReceipt(pending.task, receipt, pending.digest);
+          if (receipt?.status === "invalidated") {
+            verifyTaskInvalidation(pending.task, receipt);
+            if (!this.options.archiveTaskInvalidation)
+              throw new Error("TASK_INVALIDATION_ARCHIVE_UNAVAILABLE");
+            await this.options.archiveTaskInvalidation({
+              protocol: TASK_PROTOCOL,
+              attempted_result_sha256: pending.digest,
+              receipt,
+            });
+          } else verifyTaskReceipt(pending.task, receipt, pending.digest);
           if (pending === this.pendingTask) this.pendingTask = undefined;
           else
             this.isolated = this.isolated.filter((entry) => entry !== pending);

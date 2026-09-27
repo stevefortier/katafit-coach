@@ -136,6 +136,12 @@ export async function taskFixture(options: any = {}) {
         ...options.context,
       };
     else if (n === "coach_complete_task") {
+      // Model loss before backend acceptance separately from a lost response
+      // after the canonical completion has already been stored.
+      if (options.dropCompleteBeforeAcceptance) {
+        req.socket.destroy();
+        return;
+      }
       saved.push(a);
       current.status = "completed";
       current.hash = createHash("sha256")
