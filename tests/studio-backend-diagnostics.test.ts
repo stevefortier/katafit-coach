@@ -46,6 +46,55 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(app.origin + "/diagnostics#" + store.secrets.admin);
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#performanceWindow")
+        ?.textContent?.includes("4999 receipts"),
+    );
+    assert.equal(await page.locator("#logLevel").inputValue(), "info");
+    await page.locator("#diagnostics-performance-tab").click();
+    const summaryText = await page.locator("#performanceRows").innerText();
+    assert.match(summaryText, /4999 calls/);
+    await page.locator("#diagnostics-logs-tab").click();
+    await page.locator("#logLevel").selectOption("warn");
+    await page.locator("#diagnostics-performance-tab").click();
+    assert.equal(
+      await page.locator("#performanceRows").innerText(),
+      summaryText,
+    );
+    await page.locator("#performanceRows button").click();
+    assert.equal(await page.locator("#logLevel").inputValue(), "all");
+    assert.equal(await page.locator("#logRows article").count(), 4999);
+    assert.match(
+      await page.locator("#performanceSelection").innerText(),
+      /All levels/,
+    );
+    await page.locator("#logLevel").selectOption("warn");
+    assert.equal(await page.locator("#logRows article").count(), 1);
+    await page.locator("#diagnostics-performance-tab").click();
+    assert.equal(
+      await page.locator("#performanceRows").innerText(),
+      summaryText,
+    );
+    const aggregateDownload = page.waitForEvent("download");
+    await page.locator("#performanceExport").click();
+    const aggregateFile = await aggregateDownload;
+    assert.equal(
+      aggregateFile.suggestedFilename(),
+      "coach-backend-performance.json",
+    );
+    const aggregate = JSON.parse(
+      await readFile((await aggregateFile.path())!, "utf8"),
+    );
+    assert.equal(aggregate.window.receiptCount, 4999);
+    assert.equal(aggregate.groups[0].totalMs, 4998 * 123 + 25000);
+    assert.equal(aggregate.groups[0].timeouts, 1);
+    assert.equal(aggregate.entries, undefined);
+    assert.equal(aggregate.metrics.durationUnit, "ms");
+    await page.locator("#diagnostics-logs-tab").click();
+    await page.locator("#performanceClear").click();
+    assert.equal(await page.locator("#logLevel").inputValue(), "warn");
+    assert.equal(await page.locator("#performanceClear").isVisible(), false);
     await page.locator("#logLevel").selectOption("all");
     await page.waitForFunction(
       () => document.querySelectorAll("#logRows article").length === 5000,
@@ -107,24 +156,75 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
       document.querySelector("#diagnostics")!.prepend(label);
     });
     await page.evaluate("notice('')");
-    for (const width of [1440, 390, 320]) {
-      await page.setViewportSize({ width, height: 1000 });
-      await page.evaluate(() => {
-        scrollTo(0, 0);
-        document.querySelector("#logRows")!.scrollTop = 0;
-      });
-      assert.ok(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-      );
-      await page.screenshot({
-        path: `${evidence}/synthetic-backend-diagnostics-${width}.png`,
-        fullPage: true,
-      });
+    for (const section of ["performance", "logs"]) {
+      await page.locator("#diagnostics-" + section + "-tab").click();
+      for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page.evaluate(() => {
+          scrollTo(0, 0);
+          document.querySelector("#logRows")!.scrollTop = 0;
+        });
+        assert.ok(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        );
+        await page.screenshot({
+          path: `${evidence}/synthetic-backend-diagnostics-${section}-${width}.png`,
+          fullPage: true,
+        });
+      }
     }
     assert.deepEqual(errors, []);
+    await page.route("**/api/logs", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      data.entries.push({
+        source: "backend",
+        stage: "backend-call",
+        level: "verbose",
+        time: "2026-01-01T00:00:00.000Z",
+        metadata: { elapsedMs: 300 },
+        backendCall: {
+          method: "POST",
+          route: "mcp",
+          operation: "tools/call",
+          tool: "coach_list_requests",
+          outcome: "ok",
+        },
+      });
+      await route.fulfill({ json: data });
+    });
+    await page.locator("#diagnostics-performance-tab").click();
+    await page.locator("#performanceRows button").focus();
+    await page.evaluate(() =>
+      (document.querySelector("#logRefresh") as HTMLButtonElement).click(),
+    );
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#performanceRows strong")
+        ?.textContent?.includes("5000 calls"),
+    );
+    assert.equal(
+      await page
+        .locator("#performanceRows button")
+        .evaluate((el) => el === document.activeElement),
+      true,
+    );
+    await page.locator("#performanceRows button").click();
+    await page.locator("#diagnostics-logs-tab").click();
+    await page.locator("#performanceClear").click();
+    assert.equal(
+      await page
+        .locator("#logLevel")
+        .evaluate((el) => el === document.activeElement),
+      true,
+    );
     await page.locator("#lockStudio").click();
+    assert.equal(await page.locator("#performanceRows").innerText(), "");
+    assert.equal(await page.locator("#performanceWindow").innerText(), "");
+    assert.equal(await page.evaluate("performanceData"), null);
+    assert.equal(await page.evaluate("performanceSelection"), null);
     assert.equal(await page.locator("#logRows article").count(), 0);
     assert.equal(
       await page.evaluate("JSON.parse(logJSON()).entries.length"),
