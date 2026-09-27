@@ -12,6 +12,62 @@ import {
 const revision = "a".repeat(40),
   fingerprint = "b".repeat(64),
   image = "sha256:" + "c".repeat(64);
+test("external provisioning initializes a fresh home before acquiring its probe lock", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "artifact-fresh-home-"));
+  const home = join(parent, "state");
+  const root = join(parent, "app");
+  const architecture = process.arch === "arm64" ? "arm64" : "amd64";
+  try {
+    await mkdir(join(root, "dist"), { recursive: true });
+    await writeFile(
+      join(root, "dist/build.json"),
+      JSON.stringify({ revision, protocol: 2, fingerprint }),
+    );
+    const inspect = async () => ({
+      stdout: JSON.stringify([
+        {
+          Id: image,
+          Os: "linux",
+          Architecture: architecture,
+          Config: {
+            Labels: {
+              "fit.kata.native.revision": revision,
+              "fit.kata.native.fingerprint": fingerprint,
+            },
+          },
+        },
+      ]),
+    });
+    let probes = 0;
+    await provisionArtifact(home, root, image, {
+      inspect,
+      probe: async (candidate, protectedHome) => {
+        assert.equal(candidate, root);
+        assert.equal(protectedHome, home);
+        assert.equal(
+          await readFile(join(home, "native-probe.lock"), "utf8"),
+          "",
+        );
+        probes++;
+        return image;
+      },
+    });
+    assert.equal(probes, 1);
+    assert.equal(await nativeImage(home, root, inspect), image);
+    assert.equal(
+      JSON.parse(
+        await readFile(
+          join(home, "native-artifacts", revision + ".json"),
+          "utf8",
+        ),
+      ).image,
+      image,
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("native artifact is immutable and bound to exact application identity", async () => {
   const home = await mkdtemp(join(tmpdir(), "artifact-"));
   const root = join(home, "app");

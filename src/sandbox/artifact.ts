@@ -265,6 +265,8 @@ export async function provisionArtifact(
     signal?: AbortSignal;
   } = {},
 ): Promise<void> {
+  boundary.signal?.throwIfAborted();
+  await directory(home, true);
   return withCleanupLock(
     home,
     async () => {
