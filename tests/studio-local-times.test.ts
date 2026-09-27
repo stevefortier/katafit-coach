@@ -16,7 +16,12 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
     const server = createServer(async (req, res) => {
       const path = new URL(req.url!, "http://localhost").pathname;
       if (path.startsWith("/xterm")) return void res.writeHead(404).end();
-      const file = ["/app.js", "/terminal.js", "/style.css"].includes(path)
+      const file = [
+        "/backend-performance.js",
+        "/app.js",
+        "/terminal.js",
+        "/style.css",
+      ].includes(path)
         ? path.slice(1)
         : "index.html";
       res.setHeader(

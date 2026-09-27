@@ -253,9 +253,13 @@ export async function admin(
           viewPath,
         ) ||
           /^\/chat\/member\/[^/]+$/.test(viewPath) ||
-          ["/app.js", "/terminal.js", "/style.css", "/favicon.svg"].includes(
-            path,
-          )) &&
+          [
+            "/backend-performance.js",
+            "/app.js",
+            "/terminal.js",
+            "/style.css",
+            "/favicon.svg",
+          ].includes(path)) &&
         req.method === "GET"
       ) {
         const file =

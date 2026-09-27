@@ -228,6 +228,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       !assets[file] &&
       ![
         "index.html",
+        "backend-performance.js",
         "app.js",
         "terminal.js",
         "style.css",
@@ -484,7 +485,9 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         assert.equal(await next.innerText(), name);
         assert.ok(await next.evaluate((el) => el === document.activeElement));
         assert.equal(
-          await page.locator('.settings-tabs [tabindex="0"]').count(),
+          await page
+            .locator('#settingsPanel .settings-tabs [tabindex="0"]')
+            .count(),
           1,
         );
         assert.equal(await page.getByRole("tabpanel").count(), 1);

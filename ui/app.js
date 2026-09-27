@@ -322,7 +322,7 @@ action("unlock", async () => {
   $("login").hidden = true;
   $("studio").hidden = false;
   $("lockStudio").hidden = false;
-  restoreStudioRoute();
+  restoreStudioRoute(true);
   void loadOperator();
   await status();
   await refreshUpdate(true);
@@ -1339,8 +1339,47 @@ for (const [index, section] of settingsSections.entries()) {
     });
   };
 }
+const diagnosticsSections = ["performance", "logs"];
+let diagnosticsSection = "logs";
+function selectDiagnosticsSection(section, navigate = true) {
+  diagnosticsSection = diagnosticsSections.includes(section) ? section : "logs";
+  for (const name of diagnosticsSections) {
+    const selected = name === diagnosticsSection;
+    $(name === "performance" ? "backendPerformance" : "logsView").hidden =
+      !selected;
+    const tab = $("diagnostics-" + name + "-tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    tab.classList.toggle("secondary", !selected);
+  }
+  if (navigate) navigateStudio("/diagnostics?section=" + diagnosticsSection);
+}
+for (const [index, section] of diagnosticsSections.entries()) {
+  const tab = $("diagnostics-" + section + "-tab");
+  tab.onclick = () => selectDiagnosticsSection(section);
+  tab.onkeydown = (event) => {
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? 1
+          : event.key === "ArrowRight" || event.key === "ArrowLeft"
+            ? 1 - index
+            : null;
+    if (next === null || event.altKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    selectDiagnosticsSection(diagnosticsSections[next]);
+    $("diagnostics-" + diagnosticsSections[next] + "-tab").focus({
+      preventScroll: true,
+    });
+  };
+}
 function studioRoute() {
-  if (location.pathname === "/diagnostics") return { tab: "diagnostics" };
+  if (location.pathname === "/diagnostics")
+    return {
+      tab: "diagnostics",
+      section: new URLSearchParams(location.search).get("section"),
+    };
   if (location.pathname === "/settings") {
     const section =
       new URLSearchParams(location.search).get("section") ??
@@ -1363,11 +1402,18 @@ function navigateStudio(path) {
   if (location.pathname + location.search + location.hash !== path)
     history.pushState(null, "", path);
 }
-function restoreStudioRoute() {
+function restoreStudioRoute(restartDiagnostics = false) {
   const route = studioRoute();
   if (route.legacy) history.replaceState(null, "", "/diagnostics");
   if (route.tab === "settings") selectSettingsSection(route.section, false);
-  selectStudioTab(route.tab, false);
+  if (route.tab === "diagnostics")
+    selectDiagnosticsSection(route.section, false);
+  if (
+    restartDiagnostics ||
+    route.tab !== "diagnostics" ||
+    $("diagnostics").hidden
+  )
+    selectStudioTab(route.tab, false);
   if (route.tab === "coach") {
     const member = route.member
       ? members.find((m) => m.member_ref === route.member)
@@ -1411,7 +1457,7 @@ function selectStudioTab(tab, navigate = true) {
           ? "/chat/member/" + encodeURIComponent(selectedMember.member_ref)
           : "/chat/operator"
         : tab === "diagnostics"
-          ? "/diagnostics"
+          ? "/diagnostics?section=" + diagnosticsSection
           : settingsPath(),
     );
 }
@@ -1421,11 +1467,125 @@ $("diagnosticsTab").onclick = () => selectStudioTab("diagnostics");
 const logActive = () => key && !$("diagnostics").hidden && !document.hidden;
 function filteredLogs() {
   return logData.entries.filter(
-    (e) => $("logLevel").value === "all" || e.level === $("logLevel").value,
+    (e) =>
+      (!performanceSelection ||
+        BackendPerformance.identity(e)?.key === performanceSelection.key) &&
+      ($("logLevel").value === "all" || e.level === $("logLevel").value),
   );
 }
+let performanceData = null,
+  logReadError = "",
+  logLoading = false,
+  performanceSelection = null,
+  performanceSignature = "";
+const performanceMs = (n) =>
+  n === null
+    ? "—"
+    : n.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " ms";
+const performanceRate = BackendPerformance.rate;
+function logReadStatus() {
+  if (!performanceData)
+    return logLoading
+      ? "Loading diagnostics snapshot…"
+      : logReadError
+        ? "Unable to load diagnostics snapshot. Use Refresh to retry."
+        : "Diagnostics snapshot not loaded. Use Refresh to load.";
+  return logLoading
+    ? "Last loaded snapshot · Refreshing…"
+    : logReadError
+      ? "Last loaded snapshot · Refresh failed. Use Refresh to retry."
+      : "Last loaded snapshot";
+}
+function renderPerformance() {
+  $("performanceExport").disabled = !key || !performanceData;
+  if (!performanceData) {
+    $("performanceWindow").textContent = logReadStatus();
+    $("performanceRows").replaceChildren();
+    performanceSignature = "";
+    $("performanceClear").hidden = true;
+    $("performanceSelection").textContent = "";
+    return;
+  }
+  const w = performanceData.window;
+  $("performanceWindow").textContent =
+    `${logReadStatus()} · ${w.receiptCount} receipts · ${w.measuredCalls} duration samples · ${BackendPerformance.duration(w.measuredCalls ? performanceData.totalMs : null)} cumulative · ${w.retainedEntries} retained entries (capacity ${w.capacity}) · Oldest receipt: ${formatTimestamp(w.oldestReceipt)} · Newest receipt: ${formatTimestamp(w.newestReceipt)}${w.invalidTimestampCount ? ` · ${w.invalidTimestampCount} timestamps unavailable` : ""}`;
+  const rows = BackendPerformance.sort(
+    performanceData.groups,
+    $("performanceSort").value,
+  );
+  const signature = JSON.stringify([rows, performanceSelection]);
+  if (signature !== performanceSignature) {
+    const focusedKey = document.activeElement?.dataset.performanceKey;
+    performanceSignature = signature;
+    const nodes = rows.map((r) => {
+      const row = document.createElement("article");
+      row.className = "performance-row";
+      const button = document.createElement("button");
+      button.className = "secondary";
+      button.textContent = r.name;
+      button.dataset.performanceKey = r.key;
+      button.setAttribute(
+        "aria-pressed",
+        String(performanceSelection?.key === r.key),
+      );
+      button.onclick = () => {
+        performanceSelection = { key: r.key, name: r.name };
+        $("logLevel").value = "all";
+        renderLogs();
+        selectDiagnosticsSection("logs");
+        $("performanceClear").focus({ preventScroll: true });
+      };
+      const primary = document.createElement("strong");
+      primary.textContent = `${r.calls} calls · ${BackendPerformance.duration(r.measuredCalls ? r.totalMs : null)} cumulative · ${performanceRate(r.share)} of backend time`;
+      const duration = document.createElement("small");
+      duration.textContent = `Avg ${performanceMs(r.averageMs)} · Median ${performanceMs(r.medianMs)} · p95 ${performanceMs(r.p95Ms)}${r.measuredCalls < 20 ? " (small sample)" : ""} · Max ${performanceMs(r.maxMs)} · ${r.measuredCalls} measured / ${r.missingDurationCalls} missing durations`;
+      const outcomes = document.createElement("small");
+      outcomes.textContent = `Timeouts ${r.timeouts} (${performanceRate(r.timeoutRate)}) · Other failures ${r.otherFailures} (${performanceRate(r.otherFailureRate)}) · Cancellations ${r.cancellations} (${performanceRate(r.cancellationRate)}) · Unknown outcomes ${r.unknownOutcomes} · Failed time ${BackendPerformance.duration(r.measuredCalls ? r.failedTimeMs : null)} (${performanceRate(r.failedTimeShare)} of call time)`;
+      row.append(button, primary, duration, outcomes);
+      return row;
+    });
+    $("performanceRows").replaceChildren(...nodes);
+    if (focusedKey) {
+      const focused = [...$("performanceRows").querySelectorAll("button")].find(
+        (button) => button.dataset.performanceKey === focusedKey,
+      );
+      (focused || $("performanceSort")).focus({ preventScroll: true });
+    }
+    if (!rows.length)
+      $("performanceRows").textContent = "No retained backend receipts.";
+  }
+  $("performanceClear").hidden = !performanceSelection;
+  $("performanceSelection").textContent = performanceSelection
+    ? `Call: ${performanceSelection.name}. Level: ${$("logLevel").selectedOptions[0].textContent}. Selecting a call switches to All levels; changing Level narrows its receipts. Clear keeps the current level. Raw exports contain only shown rows.`
+    : "Select a call in Performance to inspect its receipts across All levels. Raw exports contain only shown rows.";
+}
+$("performanceSort").onchange = renderPerformance;
+$("performanceClear").onclick = () => {
+  performanceSelection = null;
+  renderLogs();
+  $("logLevel").focus({ preventScroll: true });
+};
+action("performanceExport", async () => {
+  if (!key || !performanceData) return;
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(performanceData, null, 2)], {
+      type: "application/json",
+    }),
+  );
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "coach-backend-performance.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 let logNodes = new Map();
 function renderLogs() {
+  renderPerformance();
+  if (!performanceData) {
+    $("logRows").replaceChildren();
+    $("logStatus").textContent = logReadStatus();
+    return;
+  }
   const rows = filteredLogs();
   const nextNodes = new Map();
   const occurrences = new Map();
@@ -1557,15 +1717,27 @@ async function refreshLogs() {
   if (!logActive() || logController) return;
   const controller = new AbortController();
   logController = controller;
+  logLoading = true;
+  logReadError = "";
+  renderLogs();
   try {
     const data = await api("logs", undefined, controller.signal);
     if (!controller.signal.aborted && logActive()) {
       logData = data;
+      performanceData = BackendPerformance.aggregate(logData);
+      logLoading = false;
       renderLogs();
       await status();
     }
   } catch (e) {
-    if (!controller.signal.aborted) $("logStatus").textContent = e.message;
+    if (!controller.signal.aborted && logActive()) {
+      logLoading = false;
+      logReadError = e.message;
+      renderPerformance();
+      $("logStatus").textContent = performanceData
+        ? e.message
+        : logReadStatus();
+    }
   } finally {
     if (logController === controller) {
       logController = undefined;
@@ -1577,6 +1749,8 @@ function logVisibility() {
   clearTimeout(logTimer);
   logController?.abort();
   logController = undefined;
+  logLoading = false;
+  if (key) renderLogs();
   if (logActive() && !logPaused) refreshLogs();
 }
 document.addEventListener("visibilitychange", logVisibility);
@@ -2081,6 +2255,16 @@ function lockSession(message) {
   logController?.abort();
   logController = undefined;
   logData = { entries: [] };
+  performanceData = null;
+  logLoading = false;
+  logReadError = "";
+  $("performanceExport").disabled = true;
+  performanceSelection = null;
+  performanceSignature = "";
+  $("performanceRows").replaceChildren();
+  $("performanceWindow").textContent = "";
+  $("performanceSelection").textContent = "";
+  $("performanceClear").hidden = true;
   logNodes.clear();
   $("logRows").replaceChildren();
   $("logStatus").textContent = "";
