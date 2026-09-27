@@ -157,7 +157,10 @@ test("an expired command renews only through a human turn on the same session an
     await new Promise((r) => setTimeout(r, 1050));
     await assert.rejects(
       h.gateway.handle(provider("model retry")),
-      /CONTINUITY_TURN_REQUIRED/,
+      // Distinct native reason (human new message), not a connection problem.
+      (error: any) =>
+        /CONTINUITY_TURN_REQUIRED/.test(error.message) &&
+        error.code === "NATIVE_TURN_REQUIRED",
     );
     await assert.rejects(h.gateway.handle(tool(ROSTER)), /CANCELLED/);
     assert.equal(h.f.providerCalls(), 0);
@@ -591,7 +594,11 @@ test("retained context expiry is terminal and never renewed", async () => {
     await h.gateway.handle(tool(ROSTER));
     await new Promise((r) => setTimeout(r, 450));
     h.gateway.noteHumanInput("\r");
-    await assert.rejects(h.gateway.handle(provider("late")));
+    await assert.rejects(
+      h.gateway.handle(provider("late")),
+      // Relayed to Pi as a fixed expired-session code, not a generic failure.
+      (error: any) => error.code === "NATIVE_SESSION_EXPIRED",
+    );
     assert.equal(h.f.providerCalls(), 0);
     assert.equal(h.f.named(ADVANCE).length, 0);
     assert.equal(h.terminated.length, 1);
@@ -692,7 +699,11 @@ test("an expired command at the generation cap is terminal instead of stranding 
     await h.gateway.handle(tool(ROSTER));
     await new Promise((r) => setTimeout(r, 850));
     h.gateway.noteHumanInput("\r");
-    await assert.rejects(h.gateway.handle(provider("exhausted")));
+    await assert.rejects(
+      h.gateway.handle(provider("exhausted")),
+      // Relayed to Pi as a fixed expired-session code, not a generic failure.
+      (error: any) => error.code === "NATIVE_SESSION_EXPIRED",
+    );
     assert.deepEqual(h.terminated, ["TURNS_EXHAUSTED"]);
     assert.equal(h.f.named(ADVANCE).length, 1);
     assert.equal(h.f.providerCalls(), 1);

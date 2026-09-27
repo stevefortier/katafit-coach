@@ -4,6 +4,11 @@ import {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import type { NativeGateway } from "./gateway.js";
+import {
+  NATIVE_REQUEST_FRAME_LIMIT,
+  NATIVE_RESPONSE_FRAME_LIMIT,
+  failureFrame,
+} from "./failures.js";
 import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -329,11 +334,13 @@ export class NativeRuntime {
         ],
         { stdio: "pipe" },
       ));
-      let buffer = "";
+      // Byte-counted line framing over raw chunks: linear in frame size, and a
+      // single request line may not exceed the relay's own request frame cap.
+      let chunks: Buffer[] = [];
+      let buffered = 0;
       let pending = 0,
         lastId = 0;
       const requests = this.requests;
-      relay.stdout.setEncoding("utf8");
       relay.stderr.resume();
       relay.on("error", () => {
         void this.stop().catch(() => {});
@@ -341,66 +348,95 @@ export class NativeRuntime {
       relay.on("exit", () => {
         if (this.created) void this.stop().catch(() => {});
       });
-      relay.stdout.on("data", (chunk) => {
+      const respond = (response: any) => {
+        let data = JSON.stringify(response) + "\n";
+        // An oversized result is withheld as a fixed code, not a teardown.
+        if (Buffer.byteLength(data) > NATIVE_RESPONSE_FRAME_LIMIT)
+          data =
+            JSON.stringify({
+              id: response.id,
+              error: "NATIVE_RESULT_TOO_LARGE",
+            }) + "\n";
+        if (
+          relay.stdin.destroyed ||
+          relay.stdin.writableLength > 2 * NATIVE_RESPONSE_FRAME_LIMIT
+        ) {
+          void this.stop().catch(() => {});
+          return;
+        }
+        relay.stdin.write(data);
+      };
+      const accept = (line: string) => {
+        let frame: any;
+        try {
+          frame = JSON.parse(line);
+          if (!validFrame(frame)) throw new Error("FRAME_REJECTED");
+        } catch {
+          void this.stop().catch(() => {});
+          return false;
+        }
+        if (Number.isSafeInteger(frame.cancel)) {
+          requests.get(frame.cancel)?.abort();
+          return true;
+        }
+        if (
+          ++pending > 4 ||
+          !Number.isSafeInteger(frame.id) ||
+          frame.id <= lastId
+        ) {
+          void this.stop().catch(() => {});
+          return false;
+        }
+        lastId = frame.id;
+        const controller = new AbortController();
+        requests.set(frame.id, controller);
+        void Promise.resolve()
+          .then(() => {
+            if (this.closing) throw new Error("NATIVE_CLOSED");
+            return this.gateway!.handle(frame.request, controller.signal);
+          })
+          .then(
+            (result) => ({ id: frame.id, result }),
+            (error) => ({
+              id: frame.id,
+              ...failureFrame(error, frame.request?.kind),
+            }),
+          )
+          .then((response) => {
+            pending--;
+            requests.delete(frame.id);
+            respond(response);
+          })
+          .catch(() => {
+            void this.stop().catch(() => {});
+          });
+        return true;
+      };
+      relay.stdout.on("data", (data: Buffer | string) => {
         if (this.closing) return;
         try {
-          buffer += chunk;
-          if (Buffer.byteLength(buffer) > 1500000) {
-            void this.stop().catch(() => {});
-            return;
+          const chunk = typeof data === "string" ? Buffer.from(data) : data;
+          let start = 0,
+            end;
+          while ((end = chunk.indexOf(10, start)) >= 0) {
+            if (buffered + end - start > NATIVE_REQUEST_FRAME_LIMIT) {
+              void this.stop().catch(() => {});
+              return;
+            }
+            chunks.push(chunk.subarray(start, end));
+            const line = Buffer.concat(chunks).toString("utf8");
+            chunks = [];
+            buffered = 0;
+            start = end + 1;
+            if (!accept(line)) return;
           }
-          let end;
-          while ((end = buffer.indexOf("\n")) >= 0) {
-            let frame: any;
-            try {
-              frame = JSON.parse(buffer.slice(0, end));
-              if (!validFrame(frame)) throw new Error("FRAME_REJECTED");
-            } catch {
+          if (start < chunk.length) {
+            buffered += chunk.length - start;
+            if (buffered > NATIVE_REQUEST_FRAME_LIMIT) {
               void this.stop().catch(() => {});
               return;
             }
-            buffer = buffer.slice(end + 1);
-            if (Number.isSafeInteger(frame.cancel)) {
-              requests.get(frame.cancel)?.abort();
-              continue;
-            }
-            if (
-              ++pending > 4 ||
-              !Number.isSafeInteger(frame.id) ||
-              frame.id <= lastId
-            ) {
-              void this.stop().catch(() => {});
-              return;
-            }
-            lastId = frame.id;
-            const controller = new AbortController();
-            requests.set(frame.id, controller);
-            void Promise.resolve()
-              .then(() => {
-                if (this.closing) throw new Error("NATIVE_CLOSED");
-                return this.gateway!.handle(frame.request, controller.signal);
-              })
-              .then(
-                (result) => ({ id: frame.id, result }),
-                () => ({ id: frame.id, error: "NATIVE_GATEWAY_REJECTED" }),
-              )
-              .then((response) => {
-                pending--;
-                requests.delete(frame.id);
-                const data = JSON.stringify(response) + "\n";
-                if (
-                  relay.stdin.destroyed ||
-                  relay.stdin.writableLength > 4 * 1024 * 1024 ||
-                  Buffer.byteLength(data) > 4 * 1024 * 1024
-                ) {
-                  void this.stop().catch(() => {});
-                  return;
-                }
-                relay.stdin.write(data);
-              })
-              .catch(() => {
-                void this.stop().catch(() => {});
-              });
+            chunks.push(chunk.subarray(start));
           }
         } catch {
           void this.stop().catch(() => {});
