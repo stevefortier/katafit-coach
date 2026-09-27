@@ -100,22 +100,82 @@
           </button>
           <p id="membersStatus" class="hint" role="status"></p>
           <div id="operatorView">
-            <h2>Operator · Native Pi</h2>
-            <p class="hint">
-              Isolated Pi 0.86.1 · ephemeral workspace. Files and terminal
-              context are deleted on Stop. No private Pi transcript is saved.
-              Use /model and the Kata.fit /mcp extension command.
-            </p>
-            <p class="hint" id="operatorSnapshot"></p>
-            <div class="chat-actions">
-              <button id="nativeStart">Start / reconnect Pi</button
-              ><button id="nativeStop" class="secondary">
-                Stop &amp; erase workspace
+            <div
+              class="native-toolbar"
+              role="group"
+              aria-label="Native Pi controls"
+            >
+              <button id="nativeStart" aria-label="Start / reconnect Pi">
+                <span class="native-label-full">Start / reconnect Pi</span
+                ><span class="native-label-compact" aria-hidden="true"
+                  >Start</span
+                >
               </button>
+              <button
+                id="nativeStop"
+                class="secondary"
+                aria-label="Stop &amp; erase workspace"
+              >
+                <span class="native-label-full">Stop &amp; erase workspace</span
+                ><span class="native-label-compact" aria-hidden="true"
+                  >Stop &amp; erase</span
+                >
+              </button>
+              <button
+                id="nativeConnection"
+                class="secondary native-icon"
+                type="button"
+                data-state="stopped"
+                aria-label="Pi connection: Stopped"
+                aria-describedby="nativeConnectionTooltip"
+                aria-expanded="false"
+                aria-controls="nativeConnectionTooltip"
+              >
+                <span id="nativeStateIcon" aria-hidden="true">■</span>
+              </button>
+              <button
+                id="nativeInfo"
+                class="secondary native-icon"
+                type="button"
+                aria-label="About isolated Pi and saved default"
+                aria-describedby="nativeInfoTooltip"
+                aria-expanded="false"
+                aria-controls="nativeInfoTooltip"
+              >
+                <span aria-hidden="true">ⓘ</span>
+              </button>
+              <div
+                id="nativeConnectionTooltip"
+                class="native-tooltip"
+                role="tooltip"
+                hidden
+              >
+                Stopped. Docker isolation is required; there is no host
+                fallback.
+              </div>
+              <div
+                id="nativeInfoTooltip"
+                class="native-tooltip"
+                role="tooltip"
+                hidden
+              >
+                <p>
+                  Isolated Pi 0.86.1 · ephemeral workspace. Files and terminal
+                  context are deleted on Stop. No private Pi transcript is
+                  saved. Use /model and the Kata.fit /mcp extension command.
+                </p>
+                <p id="operatorSnapshot"></p>
+              </div>
+              <span
+                id="nativeStatus"
+                class="native-sr-only"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                >Stopped. Docker isolation is required; there is no host
+                fallback.</span
+              >
             </div>
-            <p id="nativeStatus" role="status">
-              Stopped. Docker isolation is required; there is no host fallback.
-            </p>
             <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
             <p id="operatorStatus" role="status"></p>
             <div id="operatorActions" role="status" aria-live="polite"></div>
