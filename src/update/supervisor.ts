@@ -6,12 +6,7 @@ import {
 } from "../sandbox/artifact.js";
 import { Store } from "../config/store.js";
 import { Updates, validSha } from "./updates.js";
-import {
-  AutoUpdater,
-  AutoUpdateDeferred,
-  AutoUpdateSetting,
-  isMainDescendant,
-} from "./auto.js";
+import { AutoUpdater, AutoUpdateDeferred, AutoUpdateSetting } from "./auto.js";
 import { UpdateJournal, atomicWrite } from "./journal.js";
 import {
   stage,
@@ -309,6 +304,7 @@ export async function supervise(
     candidate: string;
     image?: string;
     owner: "manual" | "auto";
+    waitingForSource?: boolean;
   };
   type CandidateCleanup = {
     sha: string;
@@ -376,6 +372,22 @@ export async function supervise(
     sha: string,
     owner: Preparation["owner"],
   ) => {
+    // A completed automatic preparation waiting only for source approval must
+    // not monopolize manual admission. Transfer the exact candidate, or release
+    // it before preparing a different manually confirmed target.
+    if (
+      owner === "manual" &&
+      reservation?.owner === "auto" &&
+      reservation.waitingForSource &&
+      !autoAttempt &&
+      !prepareWork &&
+      !operation
+    ) {
+      if (reservation.sha === sha) {
+        reservation.owner = "manual";
+        reservation.waitingForSource = false;
+      } else await releaseReservation(reservation.sha, "auto");
+    }
     if (reservation?.sha === sha && reservation.owner === owner) return;
     if (reservation || prepareWork || operation)
       throw new Error("UPDATE_IN_PROGRESS");
@@ -680,10 +692,17 @@ export async function supervise(
     check: async () => {
       if (closing || !supported || updates.applying)
         return { installed: null, latest: null };
-      const state = await updates.check();
+      const state = await updates.check(true);
+      if (
+        reservation?.owner === "auto" &&
+        reservation.waitingForSource &&
+        (state.installed === reservation.sha ||
+          (state.latest !== null && state.latest !== reservation.sha))
+      )
+        await releaseReservation(reservation.sha, "auto");
       return { installed: state.installed, latest: state.latest };
     },
-    isDescendant: (old, next) => isMainDescendant(old, next, boundary.request),
+    isDescendant: (old, next) => updates.isDescendant(old, next),
     suppressed: (sha) => {
       updates.autoOutcome = {
         sha,
@@ -692,10 +711,21 @@ export async function supervise(
       };
     },
     apply: async (sha) => {
-      if (closing || !supported) return;
+      if (
+        closing ||
+        !supported ||
+        manualPending ||
+        updates.preparing ||
+        reservation?.owner === "manual" ||
+        updates.checking ||
+        updates.checkError ||
+        updates.latest !== sha
+      )
+        return;
       autoAttempt = sha;
       try {
         await prepareAuto(sha);
+        if (reservation) reservation.waitingForSource = false;
       } catch (error) {
         autoAttempt = undefined;
         if (closing || controller.signal.aborted)
@@ -726,7 +756,7 @@ export async function supervise(
         closing ||
         !enabled ||
         updates.installed === sha ||
-        updates.latest !== sha
+        (updates.latest !== null && updates.latest !== sha)
       ) {
         await releaseReservation(sha, "auto");
         autoAttempt = undefined;
@@ -736,6 +766,21 @@ export async function supervise(
           reason: "AUTO_UPDATE_DISABLED",
         };
         return;
+      }
+      // Local readiness can outlive approval. Keep the single exact completed
+      // candidate until a cadence-compliant ref check approves it again.
+      if (
+        updates.checking ||
+        updates.checkError ||
+        updates.latest !== sha ||
+        Date.now() - updates.checkedAt > 300000
+      ) {
+        if (reservation) reservation.waitingForSource = true;
+        autoAttempt = undefined;
+        throw new AutoUpdateDeferred(
+          sha,
+          Math.max(1000, updates.checkedAt + 900000 - Date.now()),
+        );
       }
       // A local transport failure before acceptance is not a bad source SHA.
       const paused = await postRetry("/api/update/auto/quiesce");
@@ -772,7 +817,14 @@ export async function supervise(
       let failure: unknown;
       let attempted = false;
       try {
-        if (!closing && (await autoSetting.read()).enabled) {
+        if (
+          !closing &&
+          (await autoSetting.read()).enabled &&
+          !updates.checking &&
+          !updates.checkError &&
+          updates.latest === sha &&
+          Date.now() - updates.checkedAt <= 300000
+        ) {
           attempted = true;
           await updates.apply(sha, false, true);
         } else {
@@ -869,7 +921,18 @@ export async function supervise(
       await recoverAmbiguousQuiesce();
       return; // Restore the previous worker first; check source on a later tick.
     }
-    await auto.tick();
+    try {
+      await auto.tick();
+    } finally {
+      // AutoUpdater skips its hooks when consent is off. Reconcile retained
+      // preparation here too, including an unreadable consent file.
+      const enabled = await autoSetting.read().then(
+        (setting) => setting.enabled,
+        () => false,
+      );
+      if (!enabled && reservation?.owner === "auto" && !autoAttempt)
+        await releaseReservation(reservation.sha, "auto");
+    }
   };
   let autoTimer: ReturnType<typeof setTimeout> | undefined;
   let autoTimerWork: Promise<void> | undefined;
@@ -877,7 +940,17 @@ export async function supervise(
     ms: number,
     reason: NonNullable<Updates["autoSchedule"]>["reason"],
   ) => {
-    updates.autoSchedule = { nextAttemptAt: Date.now() + ms, reason };
+    const now = Date.now();
+    if (
+      reason !== "recovery" &&
+      reason !== "readiness" &&
+      updates.sourceRetryAt &&
+      updates.sourceRetryAt > now
+    ) {
+      ms = Math.max(ms, updates.sourceRetryAt - now);
+      reason = "check-failed";
+    }
+    updates.autoSchedule = { nextAttemptAt: now + ms, reason };
     autoTimer = (boundary.autoTimer ?? setTimeout)(() => {
       updates.autoSchedule = { nextAttemptAt: null, reason: "running" };
       const work = (async () => {
@@ -893,9 +966,7 @@ export async function supervise(
               ? 10000
               : auto.retryDelay() !== undefined
                 ? Math.max(1000, auto.retryDelay()!)
-                : updates.latest === null && updates.checkedAt
-                  ? 900000
-                  : 90000,
+                : 900000,
             ambiguousQuiesce
               ? "recovery"
               : auto.retryDelay() !== undefined
@@ -917,9 +988,23 @@ export async function supervise(
     }, ms);
     autoTimer.unref();
   };
+  updates.onSourceCooldown = () => {
+    const armed = updates.autoSchedule;
+    if (
+      closing ||
+      !armed?.nextAttemptAt ||
+      armed.reason === "recovery" ||
+      armed.reason === "readiness"
+    )
+      return;
+    if (updates.sourceRetryAt && armed.nextAttemptAt < updates.sourceRetryAt) {
+      clearTimeout(autoTimer);
+      schedule(0, "check-failed");
+    }
+  };
   if (supported)
     schedule(
-      ambiguousQuiesce ? 1 : 90000,
+      ambiguousQuiesce ? 1 : 900000,
       ambiguousQuiesce ? "recovery" : "poll",
     );
   // Refresh state even for code-driven updates and across a replaced child.
