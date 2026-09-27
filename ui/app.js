@@ -143,14 +143,7 @@ async function lifecycleApi(
       !alreadyConfirmed &&
       (state.state !== "stopped" || state.nativeActive)
     ) {
-      if (
-        !confirm(
-          restartExplanation +
-            (path === "preview"
-              ? " Pause, preview, and resume now?"
-              : " Apply now?"),
-        )
-      ) {
+      if (!confirm(restartExplanation + " Apply now?")) {
         notice(
           "Operation cancelled. No settings changed and Coach was not stopped.",
         );
@@ -158,19 +151,14 @@ async function lifecycleApi(
       }
       accepted = true;
     }
-    const mutation = path !== "preview";
-    lifecycleOperation = mutation ? crypto.randomUUID() : undefined;
+    lifecycleOperation = crypto.randomUUID();
     const result = await api(
       path,
       {
         ...body,
         confirmRestart: accepted,
-        ...(mutation
-          ? {
-              operationId: lifecycleOperation,
-              expectedRevision,
-            }
-          : {}),
+        operationId: lifecycleOperation,
+        expectedRevision,
       },
       AbortSignal.timeout(90000),
     );
@@ -1176,9 +1164,17 @@ function chatKeyboard(inputId, sendId) {
 
 chatKeyboard("question", "previewButton");
 let previewBusy = false;
+let previewController;
+// Retry waits for this tab's server cancel, so the cancel can neither refuse
+// nor abort the next preview.
+let previewCancelling = false;
+const previewUnaffected = "Coach and native sessions were not affected.";
+// Preview never stops, starts or restarts Coach or native sessions, so it
+// needs no confirmation and a lost reply leaves no lifecycle uncertainty.
 action("previewButton", async () => {
   const generation = authGeneration;
-  if (!key || previewBusy || !$("question").value.trim()) return;
+  if (!key || previewBusy || previewCancelling || !$("question").value.trim())
+    return;
   if (hasUnsavedEdits()) {
     notice(
       "Unsaved edits: save a new revision or revert edits before previewing.",
@@ -1190,24 +1186,66 @@ action("previewButton", async () => {
     "Fetching backend instructions; exact preview not yet available.";
   notice("Preview running with your saved provider…");
   previewBusy = true;
+  const controller = (previewController = new AbortController());
   $("previewButton").disabled = true;
-  let r;
+  renderUpdate();
   try {
-    r = await lifecycleApi("preview", { text: $("question").value });
+    const r = await api(
+      "preview",
+      { text: $("question").value },
+      AbortSignal.any([controller.signal, AbortSignal.timeout(90000)]),
+    );
+    if (generation !== authGeneration || controller.signal.aborted) return;
+    $("answer").textContent = r.text;
+    $("prompt").textContent = r.prompt;
+    notice("Preview complete · revision " + r.revision);
+  } catch (error) {
+    if (generation !== authGeneration) return;
+    $("answer").textContent = "No preview.";
+    $("prompt").textContent =
+      "Preview the saved revision with freshly fetched backend instructions. Unsaved edits are not previewed.";
+    notice(
+      controller.signal.aborted || error.code === "CANCELLED"
+        ? "Preview cancelled. " + previewUnaffected
+        : !error.status
+          ? "Preview connection lost or timed out; the server cancels a disconnected preview. " +
+            previewUnaffected +
+            " Retry when ready."
+          : error.message,
+    );
   } finally {
+    if (previewController === controller) previewController = undefined;
     if (generation === authGeneration) {
       previewBusy = false;
+      $("previewButton").disabled = false;
       renderUpdate();
     }
   }
-  if (!r || generation !== authGeneration) return;
-  $("answer").textContent = r.text;
-  $("prompt").textContent = r.prompt;
-  notice("Preview complete · revision " + r.revision);
 });
 action("cancel", async () => {
-  await api("cancel", {});
-  notice("Cancellation requested.");
+  // A repeated click must not send a second global cancel that could land
+  // on the retry.
+  if (previewCancelling) return;
+  // Dropping this tab's request cancels its server preview even if the
+  // explicit cancel below is lost; a late answer is never shown.
+  const local = previewController;
+  const generation = authGeneration;
+  local?.abort();
+  if (local) {
+    previewCancelling = true;
+    renderUpdate();
+  }
+  try {
+    await api("cancel", {}, AbortSignal.timeout(10000));
+  } catch (error) {
+    if (!local) throw error;
+  } finally {
+    if (local && generation === authGeneration) {
+      previewCancelling = false;
+      renderUpdate();
+    }
+  }
+  if (!local) notice("Cancellation requested.");
 });
 for (const cmd of ["run", "stop"])
   action(cmd, async () => {
@@ -2146,6 +2184,10 @@ function renderUpdate() {
   ])
     $(id).disabled =
       (locked && !(id === "cancel" && previewBusy)) ||
+      (id === "previewButton" && (previewBusy || previewCancelling)) ||
+      // The server refuses configuration changes while a preview runs.
+      (previewBusy &&
+        ["save", "restorePersona", "saveSkill", "restoreSkill"].includes(id)) ||
       (id === "restorePersona" && historyBusy);
   editorsLocked = locked;
   $("restartRetry").disabled = lifecycleBusy || data.applying;
@@ -2345,7 +2387,10 @@ function lockSession(message) {
   serverTransition = false;
   updateRecoveryVisible = false;
   statusEpoch++;
+  previewController?.abort();
+  previewController = undefined;
   previewBusy = false;
+  previewCancelling = false;
   $("restartRetry").hidden = true;
   $("restartCheck").hidden = true;
   $("restartStatus").textContent = "";

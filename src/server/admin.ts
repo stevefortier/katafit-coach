@@ -42,7 +42,10 @@ export async function admin(
     },
   });
   let worker: Worker | undefined;
+  // Preview is isolated from worker/native lifecycle: it never holds `busy`,
+  // but it excludes configuration mutation and update admission.
   let preview: AbortController | undefined;
+  let previewDone = Promise.resolve();
   let busy = false;
   let configurationUncertain = false;
   let closing = false;
@@ -182,7 +185,7 @@ export async function admin(
       const failure = safeError(error);
       lifecycle.error = failure.code;
       lifecycle.hint = failure.hint;
-      if (safeToResume && operation !== "/api/preview") {
+      if (safeToResume) {
         try {
           const disk = new Store(store.dir);
           await disk.init();
@@ -240,6 +243,8 @@ export async function admin(
     const started = Date.now();
     let acceptedId: string | undefined;
     let fingerprint = "";
+    // Preview outcomes never carry the unrelated last lifecycle result.
+    let previewRequest = false;
     const send = (status: number, data: unknown) => {
       if (acceptedId) {
         completed.set(acceptedId, { fingerprint, status, data });
@@ -695,7 +700,15 @@ export async function admin(
           hint: "The launcher is restoring Coach. Check worker status; do not reapply the update.",
         });
       if (busy && path !== "/api/cancel")
-        return send(409, { error: "OPERATION_IN_PROGRESS" });
+        return send(
+          409,
+          path === "/api/preview"
+            ? {
+                error: "OPERATION_IN_PROGRESS",
+                hint: "Another Coach operation is finishing. Nothing was stopped or changed; retry preview shortly.",
+              }
+            : { error: "OPERATION_IN_PROGRESS" },
+        );
       if (path === "/api/worker/reconcile") {
         if (Object.keys(input).length)
           return send(400, { error: "ARGUMENTS_REJECTED" });
@@ -845,6 +858,137 @@ export async function admin(
         preview?.abort();
         return send(200, { ok: true });
       }
+      if (path === "/api/preview") {
+        previewRequest = true;
+        if (
+          typeof body.text !== "string" ||
+          !body.text.trim() ||
+          body.text.length > 8000
+        )
+          throw new Error("INVALID_PREVIEW");
+        // Admission is synchronous with the busy, update, quiesce and
+        // configuration checks above: no mutation can interleave. The worker
+        // and native sessions are neither consulted nor touched; a legacy
+        // confirmRestart is accepted and ignored. Shutdown may have begun
+        // while the body was read.
+        if (closing) return send(503, { error: "SERVICE_CLOSING" });
+        if (preview)
+          return send(409, {
+            error: "OPERATION_IN_PROGRESS",
+            hint: "A preview is already running. Wait for it or cancel it.",
+          });
+        // A client that left during the body read already fired "close".
+        if (res.destroyed || req.socket.destroyed)
+          throw new SafeError("CANCELLED");
+        const controller = (preview = new AbortController());
+        let settled!: () => void;
+        previewDone = new Promise<void>((resolve) => {
+          settled = resolve;
+        });
+        const cancel = () => controller.abort();
+        res.once("close", cancel);
+        try {
+          logs.record({ source: "studio", stage: "preview-started", ref });
+          // Capture the saved endpoint, model, credentials and redaction set
+          // together; nothing below rereads mutable configuration.
+          const c = store.publicConfig();
+          const token = store.secrets.token;
+          const apiKey = store.secrets.apiKey;
+          const secrets = Object.values(store.secrets);
+          const system = compile(c, secrets);
+          const signal = AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(60000),
+          ]);
+          // Cancel, disconnect, shutdown and the deadline release the single
+          // preview slot even if a provider or backend ignores the signal.
+          // Well-behaved work settles (and logs) itself within the grace.
+          const bounded = <T>(work: Promise<T>) =>
+            new Promise<T>((resolve, reject) => {
+              let grace: NodeJS.Timeout | undefined;
+              const stop = () => {
+                grace = setTimeout(
+                  () =>
+                    reject(
+                      new SafeError(
+                        !controller.signal.aborted &&
+                        signal.reason?.name === "TimeoutError"
+                          ? "PROVIDER_TIMEOUT"
+                          : "CANCELLED",
+                      ),
+                    ),
+                  1000,
+                );
+              };
+              if (signal.aborted) stop();
+              else signal.addEventListener("abort", stop, { once: true });
+              work.then(resolve, reject).finally(() => {
+                clearTimeout(grace);
+                signal.removeEventListener("abort", stop);
+              });
+            });
+          const instructions = await bounded(
+            fetchInstructions(
+              new Client(c.origin, token, signal, onBackendDiagnostic),
+            ),
+          ).catch(() => {
+            if (controller.signal.aborted) throw new SafeError("CANCELLED");
+            throw new Error("BACKEND_INSTRUCTIONS_UNAVAILABLE");
+          });
+          const prompt = effectivePrompt(system, instructions, secrets);
+          const text = await bounded(
+            infer(
+              {
+                ...c.provider,
+                onDiagnostic: (event) => logs.record({ ...event, ref }),
+                apiKey,
+                secrets,
+              },
+              prompt,
+              body.text,
+              signal,
+            ),
+          );
+          // Cancel, disconnect, the deadline, shutdown, an update lock or a
+          // changed saved revision/credential all fence output that arrives late.
+          if (
+            signal.aborted ||
+            closing ||
+            updates.applying ||
+            updates.recovering ||
+            autoQuiesced ||
+            configurationUncertain ||
+            store.publicConfig().revision !== c.revision ||
+            store.secrets.token !== token ||
+            store.secrets.apiKey !== apiKey
+          )
+            throw new SafeError("CANCELLED");
+          for (const secret of new Set([
+            ...secrets,
+            ...Object.values(store.secrets),
+          ]))
+            if (secret && text.includes(secret))
+              throw new Error("OUTPUT_REJECTED");
+          logs.record({ source: "studio", stage: "preview-completed", ref });
+          return send(200, {
+            text,
+            prompt,
+            revision: c.revision,
+            instructionsStatus: "fetched",
+            configuration: "saved",
+            dataAuthority: "none: preview has no claimed request or data tools",
+          });
+        } finally {
+          res.removeListener("close", cancel);
+          if (preview === controller) preview = undefined;
+          settled();
+        }
+      }
+      if (configuration && preview)
+        return send(409, {
+          error: "OPERATION_IN_PROGRESS",
+          hint: "Finish or cancel the running preview, then save or restore again. Your draft is retained.",
+        });
       if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
       busy = true;
       if (configuration && operationId) acceptedId = operationId;
@@ -932,88 +1076,6 @@ export async function admin(
               "Credential accepted. This is connectivity, not a completed Coach reply.",
           });
         }
-        if (path === "/api/preview") {
-          if (
-            typeof body.text !== "string" ||
-            !body.text.trim() ||
-            body.text.length > 8000
-          )
-            throw new Error("INVALID_PREVIEW");
-          const result = await transition(
-            path,
-            { confirmRestart },
-            async () => {
-              preview = new AbortController();
-              const previewRef = ref;
-              logs.record({
-                source: "studio",
-                stage: "preview-started",
-                ref: previewRef,
-              });
-              const controller = preview;
-              const cancel = () => controller.abort();
-              res.once("close", cancel);
-              try {
-                const c = store.publicConfig();
-                const apiKey = store.secrets.apiKey;
-                const signal = AbortSignal.any([
-                  controller.signal,
-                  AbortSignal.timeout(60000),
-                ]);
-                const instructions = await fetchInstructions(
-                  new Client(
-                    c.origin,
-                    store.secrets.token,
-                    signal,
-                    onBackendDiagnostic,
-                  ),
-                ).catch(() => {
-                  if (controller.signal.aborted)
-                    throw new SafeError("CANCELLED");
-                  throw new Error("BACKEND_INSTRUCTIONS_UNAVAILABLE");
-                });
-                const prompt = effectivePrompt(
-                  compile(c, Object.values(store.secrets)),
-                  instructions,
-                  Object.values(store.secrets),
-                );
-                const text = await infer(
-                  {
-                    ...c.provider,
-                    onDiagnostic: (event) =>
-                      logs.record({ ...event, ref: previewRef }),
-                    apiKey,
-                    secrets: Object.values(store.secrets),
-                  },
-                  prompt,
-                  body.text,
-                  signal,
-                );
-                for (const secret of Object.values(store.secrets))
-                  if (secret && text.includes(secret))
-                    throw new Error("OUTPUT_REJECTED");
-                logs.record({
-                  source: "studio",
-                  stage: "preview-completed",
-                  ref: previewRef,
-                });
-                return {
-                  text,
-                  prompt,
-                  revision: c.revision,
-                  instructionsStatus: "fetched",
-                  configuration: "saved",
-                  dataAuthority:
-                    "none: preview has no claimed request or data tools",
-                };
-              } finally {
-                res.removeListener("close", cancel);
-                preview = undefined;
-              }
-            },
-          );
-          return send(200, { ...result, lifecycle });
-        }
         if (path === "/api/run" || path === "/api/update/resume") {
           await startWorker();
           if (lifecycle?.error === "COACH_RESTART_FAILED") {
@@ -1048,7 +1110,7 @@ export async function admin(
         error: failure.code,
         hint: failure.hint,
         metadata: failure.metadata,
-        lifecycle,
+        ...(previewRequest ? {} : { lifecycle }),
       });
     }
   });
@@ -1076,6 +1138,7 @@ export async function admin(
       closing = true;
       preview?.abort();
       await lifecycleDone;
+      await previewDone;
       await terminal.close();
       for (const controller of memberReads) controller.abort();
       preview?.abort();
