@@ -210,10 +210,19 @@ test(
       };
       await assert.rejects(
         nativePreflight(process.cwd(), home),
-        /synthetic cleanup failure/,
+        /EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED/,
       );
       assert.ok(retained);
+      const cleanup = JSON.parse(
+        await readFile(join(home, "native-probe-cleanup.json"), "utf8"),
+      );
+      assert.equal(cleanup.name, retained.name);
+      assert.equal(cleanup.image, process.env.NATIVE_TEST_IMAGE);
+      assert.match(cleanup.containerId, /^[a-f0-9]{64}$/);
       await nativePreflight(process.cwd(), home);
+      await assert.rejects(readFile(join(home, "native-probe-cleanup.json")), {
+        code: "ENOENT",
+      });
       await assert.rejects(
         retained!.inspect(),
         "a retry must remove the previous probe, not lose its owner",
