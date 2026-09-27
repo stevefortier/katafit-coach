@@ -236,6 +236,96 @@ test("activity reaction rejects nonempty day closeout assessment as repairable s
     );
   }
 });
+test("day closure rejects normalized empty prose as repairable semantics", () => {
+  for (const field of [
+    "general_advice",
+    "day_closeout_meal_assessment",
+  ] as const) {
+    const value = {
+      activity_feedback: { reaction: "check", reply_worthwhile: true },
+      general_advice: "Synthetic evidence-bounded closeout.",
+      day_closeout_meal_assessment: "Synthetic meal execution assessment.",
+      [field]: "   ",
+    };
+    assert.throws(
+      () => parseTaskResult("day_closure", JSON.stringify(value), []),
+      (error: any) =>
+        error instanceof TaskOutputError &&
+        error.category === "SEMANTIC" &&
+        error.reason.includes(field) &&
+        error.repairHint.includes(field),
+    );
+  }
+});
+test("day closure mirrors backend written-prose guard without rejecting Unicode", () => {
+  const base = {
+    activity_feedback: { reaction: "check", reply_worthwhile: true },
+    general_advice: "食事の記録が完了しました。",
+    day_closeout_meal_assessment: "記録された食事の実行状況です。",
+  };
+  assert.deepEqual(
+    parseTaskResult("day_closure", JSON.stringify(base), []),
+    base,
+  );
+  for (const field of ["general_advice", "day_closeout_meal_assessment"]) {
+    for (const prose of ["...", "✅", " — "]) {
+      assert.throws(
+        () =>
+          parseTaskResult(
+            "day_closure",
+            JSON.stringify({ ...base, [field]: prose }),
+            [],
+          ),
+        (error: any) =>
+          error instanceof TaskOutputError &&
+          error.category === "SEMANTIC" &&
+          error.repairHint.includes(field),
+      );
+    }
+  }
+});
+test("day closure accepts only the exact bounded structured result", () => {
+  const result = parseTaskResult(
+    "day_closure",
+    JSON.stringify({
+      activity_feedback: { reaction: "check", reply_worthwhile: true },
+      general_advice: "  Synthetic closeout grounded in evidence.  ",
+      day_closeout_meal_assessment: "  Synthetic meal assessment.  ",
+      meal_recommendations: ["  Synthetic meal priority.  "],
+      recovery_recommendations: ["  Synthetic recovery priority.  "],
+    }),
+    [],
+  );
+  assert.deepEqual(result, {
+    activity_feedback: { reaction: "check", reply_worthwhile: true },
+    general_advice: "Synthetic closeout grounded in evidence.",
+    day_closeout_meal_assessment: "Synthetic meal assessment.",
+    meal_recommendations: ["Synthetic meal priority."],
+    recovery_recommendations: ["Synthetic recovery priority."],
+  });
+  for (const value of [
+    {
+      activity_feedback: { reaction: "check", reply_worthwhile: false },
+      general_advice: "Synthetic closeout.",
+      day_closeout_meal_assessment: "Synthetic assessment.",
+    },
+    {
+      activity_feedback: { reaction: "check", reply_worthwhile: true },
+      general_advice: "Synthetic closeout.",
+    },
+    {
+      activity_feedback: { reaction: "check", reply_worthwhile: true },
+      general_advice: "Synthetic closeout.",
+      day_closeout_meal_assessment: "Synthetic assessment.",
+      workout_directives: [],
+    },
+  ])
+    assert.throws(
+      () => parseTaskResult("day_closure", JSON.stringify(value), []),
+      (error: any) =>
+        error instanceof TaskOutputError && error.category === "SCHEMA",
+    );
+});
 for (const outcome of ["corrected", "permanent", "meal", "workout"] as const) {
   test(`individual activity closeout guard: ${outcome}`, async () => {
     const f = await taskFixture({

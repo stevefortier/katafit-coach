@@ -777,6 +777,100 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "kind": "day_closure",
+      "schema_id": "coach.tasks.v1/day_closure",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "activity_feedback": {
+            "type": "object",
+            "properties": {
+              "reaction": {
+                "type": "string",
+                "enum": [
+                  "thumbs_up",
+                  "flex",
+                  "fire",
+                  "trophy",
+                  "rocket",
+                  "clap",
+                  "raised_hands",
+                  "check",
+                  "salute",
+                  "chef_kiss",
+                  "bullseye",
+                  "lightning",
+                  "heart",
+                  "star",
+                  "hundred",
+                  "medal",
+                  "eyes",
+                  "thinking",
+                  "memo",
+                  "hourglass",
+                  "search",
+                  "question",
+                  "thumbs_down",
+                  "grimace",
+                  "facepalm",
+                  "warning",
+                  "red_flag",
+                  "no_entry",
+                  "dizzy",
+                  "cold",
+                  "angry",
+                  "punch",
+                  "slap",
+                  "explosion",
+                  "skull",
+                  "point"
+                ]
+              },
+              "reply_worthwhile": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": ["reaction", "reply_worthwhile"],
+            "additionalProperties": false
+          },
+          "general_advice": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "day_closeout_meal_assessment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "meal_recommendations": {
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "recovery_recommendations": {
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          }
+        },
+        "required": [
+          "activity_feedback",
+          "general_advice",
+          "day_closeout_meal_assessment"
+        ],
+        "additionalProperties": false
+      }
     }
   ]
 }

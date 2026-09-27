@@ -317,6 +317,18 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
       schemaRepairHint(kind, validator?.errors ?? []),
     );
   value = normalize(value, taskSchema(kind));
+  if (kind === "day_closure") {
+    const emptyField = ["general_advice", "day_closeout_meal_assessment"].find(
+      // Match the backend's semantic guard, including non-Latin written prose.
+      (field) => !/[\p{L}\p{N}]/u.test(value[field]),
+    );
+    if (emptyField)
+      throw new TaskOutputError(
+        "SEMANTIC",
+        `${emptyField} must be nonempty after trimming`,
+        `Return nonempty ${emptyField} grounded only in the supplied day evidence.`,
+      );
+  }
   if (!validator(value))
     throw new TaskOutputError(
       "SCHEMA",
