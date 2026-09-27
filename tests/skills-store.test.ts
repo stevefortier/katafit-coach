@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
-import { stockSkills } from "../src/config/skills.js";
+import { skillForTask, stockSkills } from "../src/config/skills.js";
 
 const exec = promisify(execFile);
 const content = (skill: any) => ({
@@ -21,6 +21,24 @@ const content = (skill: any) => ({
   purpose: skill.purpose,
   triggers: skill.triggers,
   instructions: skill.instructions,
+});
+
+test("day closure maps to understand-progress without a stock version bump", () => {
+  const progress = stockSkills.find(
+    (skill) => skill.id === "understand-progress",
+  )!;
+  assert.equal(progress.defaultVersion, 1);
+  assert.equal(progress.basedOnDefaultVersion, 1);
+  assert.deepEqual(
+    skillForTask(
+      {
+        revision: 1,
+        skills: stockSkills.map((skill) => structuredClone(skill)),
+      },
+      "day_closure",
+    ).map((skill) => skill.id),
+    ["understand-progress"],
+  );
 });
 
 test("default catalog upgrades preserve customization and expose the reviewable new default", async () => {

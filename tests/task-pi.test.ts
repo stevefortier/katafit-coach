@@ -16,6 +16,13 @@ const results: Record<string, any> = {
     recovery_recommendations: [],
     workout_directives: [],
   },
+  day_closure: {
+    activity_feedback: { reaction: "check", reply_worthwhile: true },
+    general_advice:
+      "You completed every scheduled meal in the supplied snapshot. The evidence supports consistent execution but does not establish nutrient or target adequacy. One activity remains, so the full day is not yet complete. Keep the next priority to the recorded remaining activity or recovery if its status changes.",
+    day_closeout_meal_assessment:
+      "Scheduled meal completion is established; meal quality beyond the supplied facts is unknown.",
+  },
   media_chat: { text: "Text-only authorized evidence." },
   workout_chat: { text: "Ready to train." },
   exercise_chat: { text: "Keep control." },

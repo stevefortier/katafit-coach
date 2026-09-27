@@ -11,6 +11,7 @@ The finite catalog is pinned in `src/katafit/taskCatalog.ts`:
 - `activity_reaction`: finite reaction enum, worthwhile/silent consistency, bounded advice.
 - `activity_followup`, `media_chat`, `workout_chat`, `exercise_chat`: nonempty text.
 - `daily_insight`: bounded advice/recommendations, exact-ID directives and optional strategy assessment.
+- `day_closure`: mandatory worthwhile feedback, nonempty general advice and meal assessment, with optional bounded meal/recovery recommendations.
 - `workout_suggestions`: 1–40 exact-ID recommendation entries with bounded prescriptions.
 - `exercise_suggestions`: bounded reactions, concern evidence, questions and prescriptions; a silent result is valid.
 
@@ -25,6 +26,14 @@ The worker validates the claimed DTO, then compares every context identity, gene
 Task leases grant **zero** model tools. They never reuse main-chat expanded reads, media references, operator sessions or a fabricated main request ID. Known-secret checks apply before inference and after output, in addition to the provider's actual-envelope guard. No task evidence/result is added to operator history or retained as a future task's context.
 
 Provider output must be bare JSON, at most 24,000 UTF-8 bytes, matching the local strict kind schema and extra semantic constraints. Unknown fields, coercions, null/no-op text, invalid enums, unsafe credential-shaped prose and out-of-range prescriptions fail locally. Backend trim semantics and schema field order are mirrored before submission. Evidence is capped at 65,536 bytes. The Pi provider transport additionally cancels a response beyond 2 MiB of streamed SSE/JSON bytes, independently of token promises or final parsing; existing provider input/cumulative budgets still apply.
+
+`day_closure` is mapped to the existing `understand-progress` skill without adding a skill or changing its stock default version. Fixed runtime guidance still applies when that skill is disabled or customized: it requires 3–6 concise persona-aware sentences, meal-completion acknowledgment, a supported nutrition assessment, and at most one next-day/recovery priority. Full-day completion may be stated only when supplied evidence says no activities remain. The evidence is a snapshot at its explicit as-of timestamp; the worker must not imply that later state is known or infer nutrition adequacy/target alignment from completion alone. One local correction is allowed; repeated empty/invalid output fails the task rather than synthesizing fallback prose.
+
+## Compatibility and rollout
+
+Contracts are negotiated independently per kind. A new client connected to an older server continues to claim every unchanged exact contract. An older client ignores the unknown `day_closure` kind. A schema mismatch disables only the mismatched kind; it does not relax validation or disable unchanged kinds.
+
+Install and verify the day-closeout-capable client before enabling backend capture for that worker. The server capabilities endpoint describes server support, not proof that an installed worker has upgraded, so deployment needs an actual worker-capability/readiness check or an explicit update-required state. There is no hosted-generation fallback for an externally routed day closeout; unavailable support must fail closed while old kinds remain unaffected.
 
 ## Scheduling, deadlines and stop
 
@@ -46,4 +55,4 @@ One content-free pending task identity/digest/reference is retained in memory fo
 
 ## Verification scope
 
-`tests/tasks.test.ts`, `tests/task-validation.test.ts` and `tests/task-pi.test.ts` exercise negotiated lifecycle, all eight result contracts, identity/privacy fences, malformed output, semantic/numeric/UTF-8 bounds, fairness, legacy behavior, cancellation and ambiguous receipt handling. The Pi tests use the actual SDK with loopback synthetic HTTP/SSE providers and an explicit contract-shaped MCP fixture. They do not demonstrate production producer publication, paid-provider model quality, installed-service rollout or real customer authorization. The pinned catalog was compared against the actual backend's exported Zod-generated schemas during implementation.
+`tests/tasks.test.ts`, `tests/task-validation.test.ts`, `tests/skills-store.test.ts` and `tests/skills-worker.test.ts` exercise negotiated lifecycle, all nine result contracts, identity/privacy fences, malformed output, semantic/numeric/UTF-8 bounds, skill routing, disabled/customized skill behavior, correction, fairness, legacy behavior, cancellation and ambiguous receipt handling. The worker tests use the actual SDK with loopback synthetic HTTP/SSE providers and an explicit contract-shaped MCP fixture. They do not demonstrate backend producer publication, paid-provider model quality, installed-service rollout or real customer authorization.

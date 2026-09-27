@@ -545,6 +545,7 @@ const taskSkills: Record<string, string[]> = {
   activity_followup: ["review-activity"],
   media_chat: ["review-activity"],
   daily_insight: ["understand-progress"],
+  day_closure: ["understand-progress"],
   exercise_suggestions: ["understand-progress"],
   workout_suggestions: ["change-plan"],
 };
