@@ -20,6 +20,7 @@ export class ToolFailure extends Error {
 const toolCodes = [
   "OPERATOR_NOT_AUTHORIZED",
   "OPERATOR_CONFLICT",
+  "OPERATOR_BUDGET_EXHAUSTED",
   "OPERATOR_UNAVAILABLE",
   "READ_LIMIT",
   "HISTORY_CHANGED",

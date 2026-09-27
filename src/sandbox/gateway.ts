@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  nativeToolOutcome,
+  nativeToolResultTooLarge,
+} from "../../sandbox/katafit.mjs";
 import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
 import {
@@ -178,7 +182,21 @@ class NativeClient extends Client {
   }
 }
 
+import type { ArchiveResume } from "../katafit/operatorArchive.js";
+import {
+  captureNativeExchange,
+  CanonicalNativeHistory,
+} from "./sessionCapture.js";
+import type { FileEntry } from "@earendil-works/pi-coding-agent";
 export interface NativeGatewayHooks {
+  resume?: ArchiveResume;
+  resumeSessionId?: string;
+  seed?: FileEntry[];
+  onExchange?: (
+    capture: NonNullable<ReturnType<typeof captureNativeExchange>>,
+  ) => Promise<void>;
+  onHistoryMismatch?: () => Promise<void>;
+  onBeforeDispatch?: () => Promise<void>;
   onDiagnostic?: BackendLogger;
   /**
    * Continuity was denied, expired or became unknown. The gateway is already
@@ -204,6 +222,29 @@ export async function openNativeGateway(
   signal?: AbortSignal,
   hooks: NativeGatewayHooks = {},
 ) {
+  const historyLog = new CanonicalNativeHistory(hooks.seed);
+  let historyMismatch = false;
+  let historyUnsafe = false;
+  const canonical = async <T>(
+    operation: () => T,
+    freezeOnly = false,
+  ): Promise<T | undefined> => {
+    try {
+      return operation();
+    } catch (error) {
+      const first = !historyMismatch;
+      historyMismatch = true;
+      if (!freezeOnly) historyUnsafe = true;
+      try {
+        if (first) await hooks.onHistoryMismatch?.();
+      } catch (persistenceError) {
+        historyUnsafe = true;
+        throw persistenceError;
+      }
+      if (freezeOnly) return undefined;
+      throw error;
+    }
+  };
   const config = store.publicConfig();
   const skills = store.skills.runtime();
   const secrets = { ...store.secrets };
@@ -213,6 +254,7 @@ export async function openNativeGateway(
     : abort.signal;
   let closed = false;
   let active = false;
+  let orderedOutcomes: Promise<void> = Promise.resolve();
   // One bounded human-turn latch, set only by the trusted host terminal.
   let turnArmed = false;
   let terminated: string | undefined;
@@ -240,7 +282,15 @@ export async function openNativeGateway(
   let hostSeq = 0;
   let hostWorkSeq = 0;
   const actions = new Actions(store, hooks.onDiagnostic);
-  if (actions.snapshot().some((a) => ["pending", "unknown"].includes(a.status)))
+  if (
+    actions
+      .snapshot()
+      .some(
+        (a) =>
+          (!hooks.resume || a.session_id === hooks.resumeSessionId) &&
+          ["pending", "unknown"].includes(a.status),
+      )
+  )
     throw new Error("DELIVERY_UNVERIFIED");
   const client = new NativeClient(
     config.origin,
@@ -261,6 +311,7 @@ export async function openNativeGateway(
       hooks.onDiagnostic,
     ),
     continuity: true,
+    resume: hooks.resume,
     onImage: (image) => {
       lastImage = owner
         ? {
@@ -513,6 +564,17 @@ export async function openNativeGateway(
   };
   return {
     /** Trusted host only: content-free metadata of accepted attachments. */
+    historyState: () => ({
+      supported: session.archive,
+      sessionId: session.session_id,
+      generation: session.continuity()?.turn_generation ?? 0,
+      action: session.currentAction(),
+    }),
+    sealHistory: async (revision: number, digest: string) => {
+      if (historyMismatch) throw new Error("NATIVE_HISTORY_MISMATCH");
+      return session.seal(revision, digest);
+    },
+    authorizeTranscript: authorizeDisclosure,
     attachments: () => (closed ? [] : attachments.list()),
     /**
      * Trusted host only: freshly authorized bytes for one accepted attachment,
@@ -531,9 +593,10 @@ export async function openNativeGateway(
      * items is itself a disclosure and is freshly authorized; an empty list
      * carries only the absolute context expiry.
      */
-    async snapshot() {
+    async snapshot(includeTranscript = false) {
       check();
-      if (attachments.list().length) await authorizeDisclosure();
+      if (includeTranscript || attachments.list().length)
+        await authorizeDisclosure();
       return {
         items: closed ? [] : attachments.list(),
         context_expires_at: session.continuity()?.context_expires_at ?? null,
@@ -556,15 +619,33 @@ export async function openNativeGateway(
     /** Content-free continuity state for the trusted host only. */
     continuity: () => session.continuity(),
     async handle(request: any, requestSignal?: AbortSignal): Promise<any> {
+      let admitted = false;
       try {
-        return await admit(request, requestSignal);
+        return await emitted(
+          request,
+          (prior) =>
+            admit(request, requestSignal, prior, () => {
+              admitted = true;
+            }),
+          requestSignal,
+        );
       } catch (error) {
         throw classify(error, request?.kind, requestSignal);
+      } finally {
+        if (admitted) {
+          active = false;
+          client.requestSignal = undefined;
+        }
       }
     },
     close,
   };
-  async function admit(request: any, requestSignal?: AbortSignal) {
+  async function admit(
+    request: any,
+    requestSignal: AbortSignal | undefined,
+    prior: Promise<void>,
+    claim: () => void,
+  ) {
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     if (!request || typeof request !== "object" || Array.isArray(request))
@@ -583,7 +664,7 @@ export async function openNativeGateway(
       request.kind === "catalog"
         ? ["kind"]
         : request.kind === "tool"
-          ? ["kind", "name", "args"]
+          ? ["kind", "name", "args", "toolCallId"]
           : request.kind === "provider"
             ? ["kind", "body"]
             : [];
@@ -592,9 +673,19 @@ export async function openNativeGateway(
       Object.keys(request).some((k) => !allowed.includes(k))
     )
       throw new Error("NATIVE_REQUEST_REJECTED");
+    if (
+      request.kind === "tool" &&
+      request.toolCallId !== undefined &&
+      (typeof request.toolCallId !== "string" ||
+        !request.toolCallId.length ||
+        request.toolCallId.length > 256)
+    )
+      throw new Error("NATIVE_REQUEST_REJECTED");
     if (request.kind === "catalog") {
+      if (hooks.seed) await authorizeNative();
       const catalog = {
         model: config.provider.model,
+        ...(hooks.seed ? { history: { entries: hooks.seed } } : {}),
         vision: config.provider.vision === true,
         prompt: compileOperator(config, Object.values(secrets)),
         skills: skills.skills.map(
@@ -650,9 +741,10 @@ export async function openNativeGateway(
       throw new Error("NATIVE_REQUEST_BUSY");
     }
     active = true;
+    claim();
     client.requestSignal = requestSignal;
     try {
-      return await dispatch(request, requestSignal);
+      return await dispatch(request, requestSignal, prior);
     } catch (error) {
       settle(error);
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
@@ -665,10 +757,80 @@ export async function openNativeGateway(
         return { attachmentError: { code: error.code } };
       }
       throw error;
-    } finally {
-      active = false;
-      client.requestSignal = undefined;
     }
+  }
+  // Busy calls also pass this boundary. Serialize capture/seal writes, never
+  // execution; keep the active admission held until its emitted outcome seals.
+  async function emitted(
+    request: any,
+    operation: (prior: Promise<void>) => Promise<any>,
+    requestSignal?: AbortSignal,
+  ) {
+    let selected: object | undefined;
+    let prior = orderedOutcomes;
+    let finish: (() => void) | undefined;
+    // An ID is data from the sandbox, not authority: bind it to the actual
+    // provider-observed name and exact arguments before dispatching any tool.
+    if (
+      request?.kind === "tool" &&
+      session.archive &&
+      hooks.onExchange &&
+      !historyUnsafe &&
+      typeof request.name === "string" &&
+      request.args &&
+      typeof request.args === "object" &&
+      (request.toolCallId === undefined ||
+        typeof request.toolCallId === "string")
+    ) {
+      selected = historyLog.claim(
+        request.name,
+        request.args,
+        request.toolCallId,
+      );
+      if (selected) {
+        orderedOutcomes = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      }
+    }
+    let result: any, failure: NativeFailure | undefined;
+    try {
+      result = await operation(prior);
+    } catch (error) {
+      failure = classify(error, request?.kind, requestSignal);
+    }
+    if (
+      !failure &&
+      request?.kind === "tool" &&
+      nativeToolResultTooLarge(result)
+    )
+      failure = new NativeFailure("NATIVE_RESULT_TOO_LARGE");
+    if (
+      request?.kind === "tool" &&
+      session.archive &&
+      hooks.onExchange &&
+      !historyUnsafe
+    ) {
+      const outcome = nativeToolOutcome(request.name, result, failure?.code);
+      try {
+        const work = prior.then(async () => {
+          const recorded = await canonical(() =>
+            historyLog.dispatch(request.name, request.args, outcome, selected),
+          );
+          if (recorded && !historyMismatch)
+            await hooks.onExchange!(historyLog.snapshot());
+        });
+        await work;
+      } finally {
+        if (selected) historyLog.release(selected);
+        finish?.();
+      }
+    } else {
+      if (selected) historyLog.release(selected);
+      finish?.();
+    }
+    if (failure) throw failure;
+    return result;
   }
   // Map any failure to one fixed code. Session state dominates: a revoked or
   // expired runtime is reported as such even if the proximate error differs.
@@ -717,7 +879,16 @@ export async function openNativeGateway(
       return new NativeFailure("NATIVE_SESSION_EXPIRED", message);
     return new NativeFailure("NATIVE_AUTHORIZATION_FAILED", message);
   }
-  async function dispatch(request: any, requestSignal?: AbortSignal) {
+  async function dispatch(
+    request: any,
+    requestSignal?: AbortSignal,
+    prior?: Promise<void>,
+  ) {
+    if (historyUnsafe) throw new Error("NATIVE_HISTORY_MISMATCH");
+    if (session.archive) {
+      await prior;
+      await hooks.onBeforeDispatch?.();
+    }
     if (request.kind === "tool") {
       if (owner && request.name === ATTACHMENT_TOOL)
         return sendAttachment(
@@ -782,6 +953,14 @@ export async function openNativeGateway(
     }
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const timeout = AbortSignal.timeout(120000);
+    if (session.archive && hooks.onExchange) {
+      await canonical(() => historyLog.validateResultClaims(JSON.parse(wire)));
+      const capture = !historyMismatch
+        ? await canonical(() => historyLog.request(JSON.parse(wire)), true)
+        : undefined;
+      if (capture) await hooks.onExchange(capture);
+      check();
+    }
     // Transport failures are classified by cause only; never by error text.
     const transport = (error: unknown) =>
       requestSignal?.aborted || lifetime.aborted
@@ -853,6 +1032,17 @@ export async function openNativeGateway(
         (error as Error).message,
       );
     }
+    if (session.archive && hooks.onExchange) {
+      const capture = await canonical(() =>
+        historyLog.response(
+          JSON.parse(wire),
+          body,
+          response.headers.get("content-type") ?? "",
+        ),
+      );
+      if (capture && !historyMismatch) await hooks.onExchange(capture);
+      check();
+    }
     return {
       body,
       type: response.headers.get("content-type")?.includes("text/event-stream")
@@ -872,5 +1062,8 @@ export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
       | "attachments"
       | "readAttachment"
       | "snapshot"
+      | "historyState"
+      | "sealHistory"
+      | "authorizeTranscript"
     >
   >;

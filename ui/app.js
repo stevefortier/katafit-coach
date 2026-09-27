@@ -353,6 +353,7 @@ action("unlock", async () => {
   $("lockStudio").hidden = false;
   restoreStudioRoute(true);
   void loadNativeReceipts();
+  void native.refreshHistory();
   await status();
   await refreshUpdate(true);
 });
@@ -2681,7 +2682,7 @@ async function loadMembers(more = false, routePages = 0) {
     selectConversation(null, false);
     renderMembers();
     $("membersStatus").textContent =
-      "Member conversations unavailable. Check your connection in Settings and dojo membership, chief authority and credential access in Kata.fit, or update an older backend, then Refresh members.";
+      "Member conversations unavailable. Check your connection in Settings and dojo membership, chief authority and credential access in Kata.fit, or update an older backend, then Refresh Roster.";
   } finally {
     if (epoch === membersEpoch && generation === authGeneration)
       $("membersMore").disabled = false;
@@ -2712,7 +2713,7 @@ function selectConversation(member, navigate = true) {
   $("memberRefresh").disabled = member.access !== "granted";
   if (member.access !== "granted")
     $("memberStatus").textContent =
-      "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh members. Category sharing controls activity records, not Coach messages.";
+      "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh Roster. Category sharing controls activity records, not Coach messages.";
   else void loadMemberFeed();
 }
 function renderMemberFeed() {

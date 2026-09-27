@@ -12,8 +12,9 @@ import { continuityFixture, CHECKINS, IMAGE } from "./continuity.js";
 // NATIVE_DOCKER_TEST attachment tests.
 export async function attachmentHarness(
   options: Parameters<typeof continuityFixture>[0] = {},
+  makeFixture: typeof continuityFixture = continuityFixture,
 ) {
-  const f = await continuityFixture({ images: true, ...options });
+  const f = await makeFixture({ images: true, ...options });
   const files = new Map<string, Buffer>();
   const runtimes: any[] = [];
   const proto: any = NativeTerminal.prototype;

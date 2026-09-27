@@ -45,6 +45,7 @@ test(
       await mkdir(root, { recursive: true });
       await cp(resolve("dist"), join(root, "dist"), { recursive: true });
       await cp(resolve("ui"), join(root, "ui"), { recursive: true });
+      await cp(resolve("sandbox"), join(root, "sandbox"), { recursive: true });
       await writeFile(join(root, "package.json"), '{"type":"module"}');
       await symlink(resolve("node_modules"), join(root, "node_modules")).catch(
         (error) => {

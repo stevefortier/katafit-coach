@@ -329,6 +329,13 @@ export async function admin(
         return send(200, {
           actions: new Actions(store, onBackendDiagnostic).snapshot(),
         });
+      if (req.method === "GET" && path === "/api/terminal/history")
+        return send(200, await terminal.historyList());
+      if (req.method === "GET" && path.startsWith("/api/terminal/history/")) {
+        const match = /^\/api\/terminal\/history\/([a-f0-9]{64})$/.exec(path);
+        if (!match) return send(404, { error: "NOT_FOUND" });
+        return send(200, await terminal.historyRead(match[1]));
+      }
       if (
         req.method === "GET" &&
         path.startsWith("/api/terminal/attachments/")
@@ -582,6 +589,53 @@ export async function admin(
           return send(413, { error: "TOO_LARGE" });
       }
       const input = JSON.parse(raw || "{}");
+      if (req.method === "POST" && path.startsWith("/api/terminal/history/")) {
+        if (
+          closing ||
+          busy ||
+          configurationUncertain ||
+          updates.applying ||
+          updates.recovering ||
+          autoQuiesced
+        )
+          return send(409, { error: "OPERATION_IN_PROGRESS" });
+        const action = path.slice("/api/terminal/history/".length);
+        if (
+          !["select", "rename", "delete"].includes(action) ||
+          !input ||
+          Array.isArray(input) ||
+          Object.keys(input).some(
+            (key) =>
+              !(
+                action === "rename"
+                  ? ["id", "title"]
+                  : action === "delete"
+                    ? ["id", "confirm"]
+                    : ["id"]
+              ).includes(key),
+          ) ||
+          (!(action === "select" && input.id === null) &&
+            (typeof input.id !== "string" || !/^[a-f0-9]{64}$/.test(input.id)))
+        )
+          return send(400, { error: "INVALID_HISTORY_REQUEST" });
+        if (action === "select") await terminal.historySelect(input.id);
+        if (action === "rename") {
+          if (
+            typeof input.title !== "string" ||
+            Buffer.byteLength(input.title) > 120 ||
+            /[\u0000-\u001f\u007f]/.test(input.title) ||
+            !input.title.trim()
+          )
+            return send(400, { error: "INVALID_HISTORY_TITLE" });
+          await terminal.historyRename(input.id, input.title);
+        }
+        if (action === "delete") {
+          if (input.confirm !== true)
+            return send(400, { error: "CONFIRM_REQUIRED" });
+          await terminal.historyDelete(input.id);
+        }
+        return send(200, { ok: true });
+      }
       if (!input || typeof input !== "object" || Array.isArray(input))
         return send(400, { error: "ARGUMENTS_REJECTED" });
       const { confirmRestart, operationId, expectedRevision, ...body } = input;
@@ -1142,6 +1196,11 @@ export async function admin(
         busy = false;
       }
     } catch (e: any) {
+      if ((e as Error)?.message === "NATIVE_HISTORY_BUSY")
+        return send(409, {
+          error: "NATIVE_HISTORY_BUSY",
+          hint: "Stop Pi explicitly before selecting, creating or deleting a conversation.",
+        });
       const failure = safeError(e);
       logs.record({
         source: "studio",

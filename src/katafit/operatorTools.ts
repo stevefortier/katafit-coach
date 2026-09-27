@@ -1,4 +1,10 @@
 import { randomUUID, createHash } from "node:crypto";
+import {
+  ARCHIVE_CONTROLS,
+  archiveSupported,
+  archiveReceipt,
+  type ArchiveResume,
+} from "./operatorArchive.js";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Ajv } from "ajv";
 import { fullFormats } from "ajv-formats/dist/formats.js";
@@ -43,6 +49,9 @@ const continuityArguments = [
   "turn_generation",
   "continuity_version",
   "resolved_action_id",
+  "archive_id",
+  "archive_revision",
+  "transcript_digest",
 ];
 // These fields belong to the authenticated host, regardless of a server's
 // permissive additionalProperties/patternProperties schema. member_ref remains
@@ -125,6 +134,7 @@ function assertCallerArguments(args: unknown, memberScoped: boolean) {
 const domainFor = (name: string) => operatorEvidenceDomain(name)!;
 export interface OperatorAction {
   session_id: string;
+  turn_generation?: number;
   idempotency_key: string;
   member_ref?: string;
   status: "pending" | "delivered" | "completed" | "unknown" | "not_found";
@@ -161,6 +171,8 @@ export async function openOperatorTools(
     // Request backend continuity v1 when the catalog advertises its host
     // controls. Dojo-wide sessions only; legacy behaviour is otherwise kept.
     continuity?: boolean;
+    /** Trusted durable resume intent, never accepted from model arguments. */
+    resume?: ArchiveResume;
   },
 ) {
   assertNoSecrets(member_ref, options.secrets);
@@ -194,12 +206,25 @@ export async function openOperatorTools(
     options.continuity === true &&
     member_ref === undefined &&
     HOST_CONTROLS.every((n) => listed.tools.some((t: any) => t.name === n));
-  // One runtime-owned session with a fresh key: never reopen for old context.
-  const session = await client.call("studio_operator_open_session", {
-    ...(member_ref === undefined ? { mode: "dojo_operator" } : { member_ref }),
-    idempotency_key: randomUUID(),
-    ...(continuityOffered ? { continuity_version: 1 } : {}),
-  });
+  if (
+    options.resume &&
+    (!continuityOffered ||
+      !ARCHIVE_CONTROLS.every((n) =>
+        listed.tools.some((t: any) => t.name === n),
+      ))
+  )
+    throw new Error("NATIVE_ARCHIVE_UNSUPPORTED");
+  // Resume is a separately authorized successor with original proof continuity,
+  // never a proof-free fresh open for retained context.
+  const session = options.resume
+    ? await client.call(ARCHIVE_CONTROLS[2], options.resume)
+    : await client.call("studio_operator_open_session", {
+        ...(member_ref === undefined
+          ? { mode: "dojo_operator" }
+          : { member_ref }),
+        idempotency_key: randomUUID(),
+        ...(continuityOffered ? { continuity_version: 1 } : {}),
+      });
   try {
     assertNoSecrets(session, options.secrets);
     if (
@@ -233,7 +258,7 @@ export async function openOperatorTools(
       (!capabilities ||
         capabilities.tools.some(
           (t) =>
-            HOST_CONTROLS.includes(t.name) ||
+            [...HOST_CONTROLS, ...ARCHIVE_CONTROLS].includes(t.name) ||
             (t.name === SEND &&
               t.side_effect !== "durable_delivery_one_per_turn_generation"),
         ))
@@ -305,6 +330,10 @@ export async function openOperatorTools(
     const imageReads = new Map<string, Record<string, any>>();
     const control = options.control ?? client;
     const emit = (next: OperatorAction) => {
+      next = {
+        ...next,
+        ...(continuity ? { turn_generation: generation } : {}),
+      };
       options.onAction({ ...next });
       action = next;
     };
@@ -945,7 +974,7 @@ export async function openOperatorTools(
       if (
         tools.some((tool) => tool.name === capability.name) ||
         capability.name === "studio_operator_get_action" ||
-        HOST_CONTROLS.includes(capability.name)
+        [...HOST_CONTROLS, ...ARCHIVE_CONTROLS].includes(capability.name)
       )
         continue;
       const advertised = listed.tools.find(
@@ -1330,6 +1359,27 @@ export async function openOperatorTools(
       capabilityGuidance,
       session_id,
       reconcile,
+      currentAction: () => (action ? structuredClone(action) : undefined),
+      archive:
+        archiveSupported(session.archive) &&
+        ARCHIVE_CONTROLS.every((n) =>
+          listed.tools.some((t: any) => t.name === n),
+        ),
+      async seal(archive_revision: number, transcript_digest: string) {
+        if (!archiveSupported(session.archive))
+          throw new Error("NATIVE_ARCHIVE_UNSUPPORTED");
+        const receipt = await control.call(ARCHIVE_CONTROLS[0], {
+          session_id,
+          turn_generation: generation,
+          archive_revision,
+          transcript_digest,
+        });
+        return archiveReceipt(
+          receipt,
+          { archive_revision, transcript_digest },
+          "sealed",
+        );
+      },
       authorize,
       advance,
       /** A journaled transition must be resumed before any disclosure. */

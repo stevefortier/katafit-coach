@@ -460,7 +460,7 @@ try {
     .click();
   assert.equal(
     await page.locator("#memberStatus").innerText(),
-    "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh members. Category sharing controls activity records, not Coach messages.",
+    "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh Roster. Category sharing controls activity records, not Coach messages.",
   );
   await page.screenshot({
     path: evidence + "/chief-sharing-unavailable.png",

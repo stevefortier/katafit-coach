@@ -42,7 +42,13 @@ test(
         await page
           .locator(".native-toolbar button")
           .evaluateAll((nodes) => nodes.map((n) => n.id)),
-        ["nativeStart", "nativeStop", "nativeConnection", "nativeInfo"],
+        [
+          "nativeStart",
+          "nativeStop",
+          "nativeConnection",
+          "nativeInfo",
+          "nativeHistoryToggle",
+        ],
       );
       assert.equal(
         await page
@@ -52,7 +58,10 @@ test(
       );
       assert.equal(
         await page
-          .getByRole("button", { name: "Stop & erase workspace", exact: true })
+          .getByRole("button", {
+            name: "Stop Pi and keep conversation",
+            exact: true,
+          })
           .count(),
         1,
       );
@@ -165,7 +174,7 @@ test(
         );
         assert.match(
           await infoTip.innerText(),
-          /No private Pi transcript is saved.*\/model.*\/mcp/s,
+          /Conversations persist only when Kata.fit.*current source and credential access.*\/model.*\/mcp/s,
         );
         await page.keyboard.press("Escape");
       }
