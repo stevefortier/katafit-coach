@@ -246,7 +246,7 @@ test("header-invalid and over-limit images, oversized text and oversized raw upl
     assert.equal(isRetryableAssistantError(text as any), false);
     assert.equal(isContextOverflow(text as any, 128000), false);
     // Raw non-image bytes are text even beyond the 24 MiB provider wire; only
-    // a raw upload over the 48 MiB history limit is a transport rejection.
+    // a raw upload over the 32 MiB history limit is a transport rejection.
     const padded = await errorOf(
       await post(f.relay.base, "/v1/chat/completions", {
         model: MODEL,

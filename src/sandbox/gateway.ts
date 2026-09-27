@@ -27,7 +27,7 @@ import {
 /**
  * Authoritative admission of the untrusted sandbox provider body, strictly on
  * the ORIGINAL envelope before anything is discarded:
- * 1. raw history bound (48 MiB) before any image is decoded;
+ * 1. raw history bound (32 MiB) before any image is decoded;
  * 2. every raw canonical image part is validated (MIME, canonical base64,
  *    8 MiB, declared-format header and dimensions; not decoded/re-encoded);
  * 3. every raw non-image byte, including metadata on parts that compaction

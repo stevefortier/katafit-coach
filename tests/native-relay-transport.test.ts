@@ -162,8 +162,8 @@ test("relay forwards raw provider history losslessly up to the upload limit; the
     close: async () => {},
   });
   try {
-    // 10 x 3 MiB decoded (~40 MiB raw): over the 24 MiB provider wire, within
-    // the 48 MiB raw history limit. Includes an invalid older data URL, a
+    // 7 x 3 MiB decoded (~28 MiB raw): over the 24 MiB provider wire, within
+    // the 32 MiB raw history limit. Includes an invalid older data URL, a
     // non-data-URL part and metadata the relay must neither drop nor judge.
     const big = "data:image/png;base64," + "A".repeat(4 * MiB);
     const body = {
@@ -177,7 +177,7 @@ test("relay forwards raw provider history losslessly up to the upload limit; the
             { ...imagePart(big), metadata: "m".repeat(1024) },
           ],
         },
-        ...Array.from({ length: 9 }, () => ({
+        ...Array.from({ length: 6 }, () => ({
           role: "user",
           content: [{ type: "text", text: "photo" }, imagePart(big)],
         })),

@@ -78,7 +78,7 @@ export const NATIVE_PROVIDER_WIRE_LIMIT = 24 * 1024 * 1024;
  * Raw provider history as Pi sends it (every earlier photo is resent each
  * turn). Carried losslessly to the host, which alone validates and compacts.
  */
-export const NATIVE_PROVIDER_UPLOAD_LIMIT = 48 * 1024 * 1024;
+export const NATIVE_PROVIDER_UPLOAD_LIMIT = 32 * 1024 * 1024;
 /** relay -> host: one raw provider request plus the fixed frame envelope. */
 export const NATIVE_REQUEST_FRAME_LIMIT = NATIVE_PROVIDER_UPLOAD_LIMIT + 65536;
 /** host -> relay: an 8 MiB original image result is ~11.2 MB of base64. */

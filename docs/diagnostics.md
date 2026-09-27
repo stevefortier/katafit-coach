@@ -29,7 +29,7 @@ Pre-publication failures send the safe code and fixed hint to fenced `coach_fail
 
 ### Native Operator transport
 
-The sandbox relay accepts at most 48 MiB of raw provider history per request (Pi resends earlier photos every turn) and 1 MiB per tool call. It forwards the raw history losslessly: it never inspects, drops or compacts images. Stdio frames are capped at 48 MiB + 64 KiB toward the host and 16 MiB toward the relay, so an original 8 MiB image result returns intact.
+The sandbox relay accepts at most 32 MiB of raw provider history per request (Pi resends earlier photos every turn) and 1 MiB per tool call. The raw cap leaves parsing/framing headroom inside the 512 MiB sandbox; larger histories fail with an actionable error before parsing. It forwards accepted raw history losslessly: it never inspects, drops or compacts images. Stdio frames are capped at 32 MiB + 64 KiB toward the host and 16 MiB toward the relay, so an original 8 MiB image result returns intact.
 
 The host is authoritative and applies the worker's envelope rules (`src/runtime/providerEnvelope.ts`) to the **original** envelope before discarding anything:
 

@@ -15,7 +15,8 @@ const port = /^[1-9][0-9]{3,4}$/.test(process.env.KATAFIT_RELAY_PORT ?? "")
 // never inspects, drops or compacts images. The host alone validates the
 // original envelope, charges its non-image bytes, compacts and caps the wire.
 const TEXT_LIMIT = 1024 * 1024;
-const UPLOAD_LIMIT = 48 * 1024 * 1024;
+// Keep parsing/framing headroom inside the 512 MiB Pi+relay sandbox.
+const UPLOAD_LIMIT = 32 * 1024 * 1024;
 const REQUEST_FRAME_LIMIT = UPLOAD_LIMIT + 65536;
 const RESPONSE_FRAME_LIMIT = 16 * 1024 * 1024;
 // Fixed allowlisted failures: [HTTP status, actionable message]. Only these
@@ -32,7 +33,7 @@ const failures = {
   ],
   NATIVE_WIRE_TOO_LARGE: [
     413,
-    "The raw request is over the native 48 MiB history budget. Nothing was sent to the provider. /compact may need this same oversized request, so start a new Pi session and ask a focused question with fewer or smaller photos.",
+    "The request exceeds the native 32 MiB history/transport budget. Nothing was sent to the provider. /compact may need this same oversized request, so start a new Pi session and ask a focused question with fewer or smaller photos.",
   ],
   NATIVE_RESULT_TOO_LARGE: [
     413,
