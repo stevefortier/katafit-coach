@@ -33,6 +33,7 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
       ![
         "index.html",
         "backend-performance.js",
+        "dashboard.js",
         "app.js",
         "terminal.js",
         "style.css",

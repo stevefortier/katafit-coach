@@ -1785,6 +1785,7 @@ function renderCoachName() {
   $("coachTab").title = label;
 }
 function studioRoute() {
+  if (location.pathname === "/dashboard") return { tab: "dashboard" };
   if (location.pathname === "/diagnostics")
     return {
       tab: "diagnostics",
@@ -1838,12 +1839,15 @@ window.addEventListener("hashchange", () => {
 });
 function selectStudioTab(tab, navigate = true) {
   const coach = tab === "coach";
+  const dashboard = tab === "dashboard";
   $("coachPanel").hidden = !coach;
+  $("dashboardPanel").hidden = !dashboard;
   $("settingsPanel").hidden = tab !== "settings";
   $("diagnostics").hidden = tab !== "diagnostics";
   if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
     ["coachTab", coach],
+    ["dashboardTab", dashboard],
     ["settingsTab", tab === "settings"],
     ["diagnosticsTab", tab === "diagnostics"],
   ]) {
@@ -1851,17 +1855,31 @@ function selectStudioTab(tab, navigate = true) {
     $(id).classList.toggle("secondary", !active);
   }
   logVisibility();
+  if (dashboard) CoachDashboard.load(api, key);
+  else CoachDashboard.clear();
   if (coach) operatorSnapshotLabel();
   if (navigate)
     navigateStudio(
       coach
         ? "/chat/operator"
-        : tab === "diagnostics"
-          ? "/diagnostics?section=" + diagnosticsSection
-          : settingsPath(),
+        : dashboard
+          ? "/dashboard"
+          : tab === "diagnostics"
+            ? "/diagnostics?section=" + diagnosticsSection
+            : settingsPath(),
     );
 }
 $("coachTab").onclick = () => selectStudioTab("coach");
+$("dashboardTab").onclick = () => selectStudioTab("dashboard");
+$("dashboardRefresh").onclick = () => {
+  if (key && !document.hidden && !$("dashboardPanel").hidden)
+    CoachDashboard.load(api, key);
+};
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) CoachDashboard.clear();
+  else if (key && !$("dashboardPanel").hidden) CoachDashboard.load(api, key);
+});
+window.addEventListener("pagehide", () => CoachDashboard.clear());
 $("settingsTab").onclick = () => selectStudioTab("settings");
 $("diagnosticsTab").onclick = () => selectStudioTab("diagnostics");
 const logActive = () => key && !$("diagnostics").hidden && !document.hidden;
@@ -2715,6 +2733,7 @@ window.addEventListener("pagehide", () => {
   updateController?.abort();
 });
 function lockSession(message, severity) {
+  CoachDashboard.clear();
   if (key)
     void fetch("/api/terminal/stop", {
       method: "POST",

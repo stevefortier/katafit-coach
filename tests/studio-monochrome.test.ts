@@ -229,6 +229,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       ![
         "index.html",
         "backend-performance.js",
+        "dashboard.js",
         "app.js",
         "terminal.js",
         "style.css",
@@ -321,6 +322,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           ),
         [
           ["BUTTON", "Synthetic preview Coach"],
+          ["BUTTON", "Dashboard"],
           ["BUTTON", "Activity"],
           ["BUTTON", "Settings"],
         ],
@@ -329,23 +331,26 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       const primaryGeometry = await page
         .locator(".studio-tabs")
         .evaluate((nav) => {
-          const [coach, activity, settings] = Array.from(nav.children).map(
-            (el) => el.getBoundingClientRect(),
-          );
+          const [coach, dashboard, activity, settings] = Array.from(
+            nav.children,
+          ).map((el) => el.getBoundingClientRect());
           const row = nav.getBoundingClientRect();
           return {
             coachRight: coach.right,
             activityLeft: activity.left,
             activityRight: activity.right,
+            dashboardLeft: dashboard.left,
+            dashboardRight: dashboard.right,
             settingsLeft: settings.left,
             settingsRight: settings.right,
             rowRight: row.right,
           };
         });
-      assert.ok(primaryGeometry.coachRight <= primaryGeometry.activityLeft);
+      assert.ok(primaryGeometry.coachRight <= primaryGeometry.dashboardLeft);
+      assert.ok(primaryGeometry.dashboardRight <= primaryGeometry.activityLeft);
       assert.ok(
         primaryGeometry.settingsLeft - primaryGeometry.activityRight >=
-          (width <= 320 ? 4 : 12),
+          (width <= 760 ? 4 : 12),
         "operations stay left and Settings is separated on the right",
       );
       assert.ok(
@@ -405,7 +410,21 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         await page.getByRole("tab", { name: section, exact: true }).click();
         await capture("settings-" + section.toLowerCase());
       }
-      await page.locator("#diagnosticsTab").focus();
+      await page.locator("#coachTab").focus();
+      await page.keyboard.press("Tab");
+      assert.ok(
+        await page
+          .locator("#dashboardTab")
+          .evaluate((el) => el === document.activeElement),
+        "Dashboard follows Operator in keyboard order",
+      );
+      await page.keyboard.press("Tab");
+      assert.ok(
+        await page
+          .locator("#diagnosticsTab")
+          .evaluate((el) => el === document.activeElement),
+        "Activity follows Dashboard in keyboard order",
+      );
       await page.keyboard.press("Enter");
       await capture("diagnostics");
       assert.equal(

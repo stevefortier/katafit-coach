@@ -12,6 +12,7 @@ test("Settings preview composer retains Enter, Shift+Enter and IME behavior", as
       ![
         "index.html",
         "backend-performance.js",
+        "dashboard.js",
         "app.js",
         "terminal.js",
         "style.css",

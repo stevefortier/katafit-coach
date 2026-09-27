@@ -45,6 +45,14 @@
             Coach
           </button>
           <button
+            id="dashboardTab"
+            class="secondary"
+            aria-controls="dashboardPanel"
+            aria-pressed="false"
+          >
+            Dashboard
+          </button>
+          <button
             id="diagnosticsTab"
             class="secondary"
             aria-controls="diagnostics"
@@ -61,6 +69,29 @@
             Settings
           </button>
         </nav>
+        <section
+          id="dashboardPanel"
+          class="card"
+          aria-labelledby="dashboardTab"
+          hidden
+        >
+          <div class="dashboard-heading">
+            <div>
+              <h2>Dojo dashboard</h2>
+              <p class="hint">
+                Only currently shared photos and statistics are shown.
+              </p>
+            </div>
+            <button id="dashboardRefresh" class="secondary">Refresh</button>
+          </div>
+          <p id="dashboardStatus" role="status" aria-live="polite">
+            Open Dashboard to load shared data.
+          </p>
+          <div id="dashboardCoverage" class="dashboard-coverage" hidden></div>
+          <h3>Latest progress photos</h3>
+          <div id="dashboardRoster" class="dashboard-roster"></div>
+          <div id="dashboardCharts"></div>
+        </section>
         <section id="coachPanel" class="card">
           <div id="operatorView">
             <div
@@ -971,6 +1002,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
     </main>
     <script src="/terminal.js"></script>
     <script src="/backend-performance.js"></script>
+    <script src="/dashboard.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

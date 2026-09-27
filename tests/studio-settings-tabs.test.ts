@@ -10,6 +10,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     const path = new URL(req.url!, "http://localhost").pathname;
     const file = [
       "/backend-performance.js",
+      "/dashboard.js",
       "/app.js",
       "/terminal.js",
       "/style.css",
