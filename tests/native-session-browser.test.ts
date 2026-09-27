@@ -33,11 +33,18 @@ test(
       await page.goto(h.app.origin + "/chat/operator");
       await page.locator("#adminKey").fill(h.f.store.secrets.admin);
       await page.locator("#unlock").click();
-      await page.getByRole("button", { name: "Refresh Roster", exact: true }).waitFor();
+      await page
+        .getByRole("button", { name: "Refresh Roster", exact: true })
+        .waitFor();
       await page.waitForFunction(() =>
-        document.querySelector("#membersStatus")?.textContent?.includes("unavailable"),
+        document
+          .querySelector("#membersStatus")
+          ?.textContent?.includes("unavailable"),
       );
-      assert.match(await page.locator("#membersStatus").innerText(), /Refresh Roster\./);
+      assert.match(
+        await page.locator("#membersStatus").innerText(),
+        /Refresh Roster\./,
+      );
       await page.locator("#nativeStart").click();
       await page.waitForFunction(
         () =>
