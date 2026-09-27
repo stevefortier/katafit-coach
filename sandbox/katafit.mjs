@@ -12,10 +12,17 @@ export default function (pi) {
           body: JSON.stringify({ name: tool.name, args }),
           signal,
         });
-        if (!response.ok)
-          throw new Error(
-            "Kata.fit tool failed; do not replay uncertain actions.",
-          );
+        if (!response.ok) {
+          // Fixed read-only guidance, never backend prose or model arguments.
+          // Keep uncertain-action protection for every other tool.
+          const message =
+            tool.name === "studio_operator_list_dojo_checkins"
+              ? "Check-in listing failed. This does not establish that no photos exist. Image reads require references from a successful check-in listing; activity-detail metadata is not a substitute."
+              : tool.name === "studio_operator_read_dojo_checkin_image"
+                ? "Check-in image read failed; no image was delivered. Use the matching member_ref and media_ref from a successful check-in listing. Activity-detail media references are not sufficient. The per-turn quota is four images and 16 MiB total. Do not repeat the same failed call or claim to have inspected pixels."
+                : "Kata.fit tool failed; do not replay uncertain actions.";
+          throw new Error(message);
+        }
         return response.json();
       },
     });

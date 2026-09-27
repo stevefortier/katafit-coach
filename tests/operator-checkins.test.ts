@@ -26,6 +26,8 @@ export async function fixture(
     denyFeed?: string;
     denyFeedLaterPage?: string;
     failSend?: boolean;
+    imageCount?: number;
+    mediaRefLength?: number;
   } = {},
 ) {
   const bytes = await sharp({
@@ -42,9 +44,13 @@ export async function fixture(
     display_name: "Alex",
     access: "shared",
     checkin_status: "completed_media",
-    images: [
-      { checkin_at: "2026-09-24T12:00:00.000Z", media_ref: "media-photo" },
-    ],
+    images: Array.from({ length: options.imageCount ?? 1 }, (_, i) => ({
+      checkin_at: "2026-09-24T12:00:00.000Z",
+      media_ref: (i === 0 ? "media-photo" : `media-photo-${i}`).padEnd(
+        options.mediaRefLength ?? 0,
+        "x",
+      ),
+    })),
   };
   const roster = {
     schema_version: 1,
@@ -384,6 +390,149 @@ test("session-advertised check-in roster and original image reach model as nativ
       JSON.stringify(read.content[0]),
       new RegExp(f.bytes.toString("base64")),
     );
+    await s.dispose();
+  } finally {
+    await f.close();
+  }
+});
+
+test("five listed check-in descriptors remain selectable while pixel reads stay capped at four", async () => {
+  const f = await fixture({ imageCount: 5 });
+  try {
+    const s = await openOperatorTools(
+      new Client(f.origin, "synthetic-token", AbortSignal.timeout(5000)),
+      undefined,
+      { secrets: ["synthetic-token"], onAction: () => {} },
+    );
+    const roster = await s.tools
+      .find((t) => t.name === LIST)!
+      .execute("roster", {});
+    assert.equal(JSON.parse(roster.content[0].text).items[0].images.length, 5);
+    // The fifth descriptor is selectable, not silently truncated to four.
+    const image = s.tools.find((t) => t.name === IMAGE)!;
+    const read = await image.execute("fifth-descriptor", {
+      member_ref: "member-photo",
+      media_ref: "media-photo-4",
+    });
+    assert.equal(read.content[1].type, "image");
+    for (let i = 0; i < 3; i++)
+      await image.execute(`image-${i}`, {
+        member_ref: "member-photo",
+        media_ref: i === 0 ? "media-photo" : `media-photo-${i}`,
+      });
+    await assert.rejects(
+      image.execute("over-quota", {
+        member_ref: "member-photo",
+        media_ref: "media-photo-3",
+      }),
+      /TOOL_BUDGET_EXHAUSTED/,
+    );
+    assert.equal(f.calls.filter((name) => name === IMAGE).length, 4);
+    await s.dispose();
+  } finally {
+    await f.close();
+  }
+});
+
+test("backend maximum sixteen check-in descriptors are accepted without truncation", async () => {
+  const f = await fixture({ imageCount: 16 });
+  try {
+    const s = await openOperatorTools(
+      new Client(f.origin, "synthetic-token", AbortSignal.timeout(5000)),
+      undefined,
+      { secrets: ["synthetic-token"], onAction: () => {} },
+    );
+    const roster = await s.tools
+      .find((t) => t.name === LIST)!
+      .execute("roster", {});
+    assert.equal(JSON.parse(roster.content[0].text).items[0].images.length, 16);
+    const image = await s.tools
+      .find((t) => t.name === IMAGE)!
+      .execute("last-image", {
+        member_ref: "member-photo",
+        media_ref: "media-photo-15",
+      });
+    assert.equal(image.content[1].type, "image");
+    await s.dispose();
+  } finally {
+    await f.close();
+  }
+});
+
+test("seventeen descriptors are rejected before they can authorize image reads", async () => {
+  const f = await fixture({ imageCount: 17 });
+  try {
+    const s = await openOperatorTools(
+      new Client(f.origin, "synthetic-token", AbortSignal.timeout(5000)),
+      undefined,
+      { secrets: ["synthetic-token"], onAction: () => {} },
+    );
+    await assert.rejects(
+      s.tools.find((t) => t.name === LIST)!.execute("oversized", {}),
+      /RESULT_REJECTED/,
+    );
+    await assert.rejects(
+      s.tools
+        .find((t) => t.name === IMAGE)!
+        .execute("unlisted", {
+          member_ref: "member-photo",
+          media_ref: "media-photo",
+        }),
+      /READ_NOT_AUTHORIZED/,
+    );
+    assert.equal(f.calls.filter((name) => name === IMAGE).length, 0);
+    await s.dispose();
+  } finally {
+    await f.close();
+  }
+});
+
+test("valid sixteen-descriptor pages still consume the aggregate text budget", async () => {
+  const f = await fixture({ imageCount: 16, mediaRefLength: 4096 });
+  try {
+    const s = await openOperatorTools(
+      new Client(f.origin, "synthetic-token", AbortSignal.timeout(5000)),
+      undefined,
+      { secrets: ["synthetic-token"], onAction: () => {} },
+    );
+    const list = s.tools.find((t) => t.name === LIST)!;
+    for (let i = 0; i < 3; i++) await list.execute(`page-${i}`, {});
+    await assert.rejects(
+      list.execute("text-over-budget", {}),
+      /RESULT_REJECTED/,
+    );
+    await s.dispose();
+  } finally {
+    await f.close();
+  }
+});
+
+test("listed image authority is bound to the exact member and media reference", async () => {
+  const f = await fixture({ imageCount: 5 });
+  try {
+    const s = await openOperatorTools(
+      new Client(f.origin, "synthetic-token", AbortSignal.timeout(5000)),
+      undefined,
+      { secrets: ["synthetic-token"], onAction: () => {} },
+    );
+    const image = s.tools.find((t) => t.name === IMAGE)!;
+    await assert.rejects(
+      image.execute("before-list", {
+        member_ref: "member-photo",
+        media_ref: "media-photo",
+      }),
+      /READ_NOT_AUTHORIZED/,
+    );
+    await s.tools.find((t) => t.name === LIST)!.execute("roster", {});
+    for (const args of [
+      { member_ref: "member-denied", media_ref: "media-photo" },
+      { member_ref: "member-photo", media_ref: "activity-detail-only-ref" },
+    ])
+      await assert.rejects(
+        image.execute("wrong-source", args),
+        /READ_NOT_AUTHORIZED/,
+      );
+    assert.equal(f.calls.filter((name) => name === IMAGE).length, 0);
     await s.dispose();
   } finally {
     await f.close();

@@ -789,7 +789,9 @@ export async function openOperatorTools(
                         "not_shared",
                       ].includes(row.checkin_status) ||
                       !Array.isArray(row.images) ||
-                      row.images.length > 4 ||
+                      // Backend inventory permits sixteen descriptors; the
+                      // independent pixel-delivery quota remains four images.
+                      row.images.length > 16 ||
                       (row.access !== "shared" && row.images.length !== 0) ||
                       row.images.some(
                         (image: any) =>
