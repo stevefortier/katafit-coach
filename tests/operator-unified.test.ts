@@ -32,6 +32,7 @@ test("one Operator turn chooses a member through advertised session tools, never
           SEND,
           "studio_operator_list_dojo_checkins",
           "studio_operator_read_dojo_checkin_image",
+          "local_load_coach_skill",
         ],
       );
       await tools[0].execute("roster", {});

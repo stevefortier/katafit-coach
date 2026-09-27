@@ -20,10 +20,14 @@ test("large legitimate history fits every stable-owner backup cap and immutable 
     const backup = new Map<string, Buffer>();
     for (const name of rootNames)
       backup.set(name, await managedFile(dir + "/" + name, 4 * 1024 * 1024));
-    assert.deepEqual(rootNames.sort(), ["config.json", "secrets.json"]);
+    assert.deepEqual(rootNames.sort(), [
+      "config.json",
+      "secrets.json",
+      "skills.json",
+    ]);
     assert.ok(
       [...backup.values()].reduce((n, b) => n + b.buffer.byteLength, 0) <=
-        2 * (4 * 1024 * 1024 + 1),
+        rootNames.length * (4 * 1024 * 1024 + 1),
     );
     const names = (await readdir(archive)).filter((n) => n.endsWith(".json"));
     const originals = new Map<string, Buffer>();
