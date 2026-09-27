@@ -16,7 +16,10 @@ test("failed checks clear approval and rate-limit guidance; apply accepts only r
       calls++;
       return calls === 1
         ? new Response(JSON.stringify({ object: { sha } }))
-        : new Response("{}", { status: 403 });
+        : new Response("{}", {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "0" },
+          });
     },
   );
   await assert.rejects(updates.apply(sha), /CHECK_FIRST/);

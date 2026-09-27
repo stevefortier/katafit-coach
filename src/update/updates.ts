@@ -14,6 +14,14 @@ export const validSha = (value: unknown): value is string =>
 export class Updates {
   latest: string | null = null;
   checkedAt = 0;
+  checking = false;
+  checkError: "RATE_LIMITED" | "FORBIDDEN" | "UNAVAILABLE" | null = null;
+  // Only the stable owner sets this, at the point it arms its actual timer.
+  // Missing means an older owner, not a deadline inferred from checkedAt.
+  autoSchedule?: {
+    nextAttemptAt: number | null;
+    reason: "poll" | "check-failed" | "readiness" | "recovery" | "running";
+  };
   applying = false;
   preparing = false;
   preparationSupported = false;
@@ -48,9 +56,13 @@ export class Updates {
   }
   snapshot() {
     return {
+      serverNow: Date.now(),
       installed: this.installed,
       latest: this.latest,
       checkedAt: this.checkedAt,
+      checking: this.checking,
+      checkError: this.checkError,
+      autoSchedule: this.autoSchedule,
       supported: !!this.applyTarget,
       applying: this.applying,
       preparing: this.preparing,
@@ -193,6 +205,7 @@ export class Updates {
       return this.snapshot();
     this.checkedAt = Date.now();
     this.latest = null;
+    this.checking = true;
     this.pending = (async () => {
       try {
         const response = await this.request(
@@ -207,9 +220,14 @@ export class Updates {
           },
         );
         if ([403, 429].includes(response.status)) {
-          this.guidance =
-            "GitHub rate limit. Wait before checking again (at least one minute).";
-          return this.snapshot();
+          await response.body?.cancel();
+          throw new Error(
+            response.status === 429 ||
+            response.headers.get("x-ratelimit-remaining") === "0" ||
+            response.headers.has("retry-after")
+              ? "RATE_LIMITED"
+              : "FORBIDDEN",
+          );
         }
         const chunks: Uint8Array[] = [];
         let size = 0;
@@ -230,14 +248,26 @@ export class Updates {
         const data = JSON.parse(text) as { object?: { sha: unknown } };
         if (!response.ok || !validSha(data.object?.sha)) throw new Error();
         this.latest = data.object.sha;
+        this.checkError = null;
         this.guidance = this.applyTarget
           ? this.installed === this.latest
             ? "Installed source is current."
             : "New source available. Pause worker and finish preview before upgrading."
           : "Use a managed Linux launcher to enable upgrades.";
-      } catch {
+      } catch (error) {
+        this.checkError =
+          error instanceof Error &&
+          (error.message === "RATE_LIMITED" || error.message === "FORBIDDEN")
+            ? error.message
+            : "UNAVAILABLE";
         this.guidance =
-          "GitHub unavailable or timed out. Check network access and retry after one minute.";
+          this.checkError === "RATE_LIMITED"
+            ? "GitHub rate limit. Source check failed."
+            : this.checkError === "FORBIDDEN"
+              ? "GitHub denied the source check (HTTP 403). Rate limiting was not confirmed."
+              : "GitHub unavailable or timed out. Source check failed; check network access.";
+      } finally {
+        this.checking = false;
       }
       return this.snapshot();
     })();
