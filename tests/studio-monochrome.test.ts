@@ -313,15 +313,11 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         "the selected member tab replaces the redundant member heading",
       );
       const refresh = page.getByRole("button", {
-        name: "Refresh members",
+        name: "Refresh Roster",
         exact: true,
       });
-      assert.equal(
-        (await refresh.innerText()).trim(),
-        "",
-        "refresh uses an icon, not visible text",
-      );
-      assert.equal(await refresh.locator('svg[aria-hidden="true"]').count(), 1);
+      assert.equal((await refresh.innerText()).trim(), "Refresh Roster");
+      assert.equal(await refresh.locator("svg").count(), 0);
       const toolbarGeometry = await page.evaluate(() => {
         const tabs = document
           .getElementById("conversationTabs")!
@@ -385,10 +381,36 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           ),
         [
           ["BUTTON", "Coach"],
-          ["BUTTON", "Diagnostics"],
+          ["BUTTON", "Activity"],
           ["BUTTON", "Settings"],
         ],
         "primary route controls keep their existing semantics with Settings last",
+      );
+      const primaryGeometry = await page
+        .locator(".studio-tabs")
+        .evaluate((nav) => {
+          const [coach, activity, settings] = Array.from(nav.children).map(
+            (el) => el.getBoundingClientRect(),
+          );
+          const row = nav.getBoundingClientRect();
+          return {
+            coachRight: coach.right,
+            activityLeft: activity.left,
+            activityRight: activity.right,
+            settingsLeft: settings.left,
+            settingsRight: settings.right,
+            rowRight: row.right,
+          };
+        });
+      assert.ok(primaryGeometry.coachRight <= primaryGeometry.activityLeft);
+      assert.ok(
+        primaryGeometry.settingsLeft - primaryGeometry.activityRight >=
+          (width <= 320 ? 4 : 12),
+        "operations stay left and Settings is separated on the right",
+      );
+      assert.ok(
+        Math.abs(primaryGeometry.settingsRight - primaryGeometry.rowRight) <= 2,
+        "Settings reaches the right edge of the navigation",
       );
       assert.equal(
         await page.locator("#coachTab").getAttribute("aria-pressed"),
@@ -508,6 +530,18 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       await page.locator("#diagnosticsTab").focus();
       await page.keyboard.press("Enter");
       await capture("diagnostics");
+      assert.equal(
+        await page.locator("#diagnostics h2").innerText(),
+        "Activity",
+      );
+      assert.equal(
+        await page.locator("#diagnostics-logs-tab").innerText(),
+        "Logs",
+      );
+      assert.equal(
+        await page.locator("#logRows").getAttribute("aria-label"),
+        "Activity entries",
+      );
       assert.equal(new URL(page.url()).pathname, "/diagnostics");
       assert.equal(
         await page.locator("#diagnosticsTab").getAttribute("aria-pressed"),

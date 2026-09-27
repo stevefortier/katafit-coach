@@ -149,7 +149,7 @@ try {
   assert.equal(await page.locator("#settingsPanel").isVisible(), false);
   await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#katafit").isVisible(), true);
-  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.waitForTimeout(200);
   let logs = 0;
   page.on("request", (r) => {
@@ -460,7 +460,7 @@ try {
     .click();
   assert.equal(
     await page.locator("#memberStatus").innerText(),
-    "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh members. Category sharing controls activity records, not Coach messages.",
+    "Conversation unavailable. Check current dojo membership, chief authority and credential access in Kata.fit, then Refresh Roster. Category sharing controls activity records, not Coach messages.",
   );
   await page.screenshot({
     path: evidence + "/chief-sharing-unavailable.png",

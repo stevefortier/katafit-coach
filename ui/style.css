@@ -877,6 +877,9 @@ header {
 .studio-tabs button:focus-visible {
   outline-offset: -5px;
 }
+.studio-tabs #settingsTab {
+  margin-left: auto;
+}
 #coachPanel,
 #settingsPanel,
 #diagnostics {
@@ -894,7 +897,7 @@ header {
     padding: 16px;
   }
   .studio-tabs button {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     padding-inline: 6px;
     font-size: 12px;
   }
@@ -912,15 +915,11 @@ header {
   min-width: 0;
 }
 .conversation-toolbar #membersRefresh {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 44px;
-  width: 44px;
-  height: 44px;
+  flex: 0 0 auto;
+  min-height: 44px;
   margin: 0;
-  padding: 0;
-  border-color: transparent;
+  padding: 0 12px;
+  white-space: nowrap;
 }
 .conversation-toolbar #membersRefresh:focus-visible {
   outline-offset: -3px;

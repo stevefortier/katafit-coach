@@ -92,6 +92,10 @@ test("Diagnostics tabs default to Logs and retain one pending snapshot across ke
   assert.equal(await page.locator("#logsView").isVisible(), false);
   assert.equal(await page.locator("#backendPerformance").isVisible(), true);
   assert.equal(
+    await page.locator("#performanceWindow").innerText(),
+    "Loading activity snapshot…",
+  );
+  assert.equal(
     await page.evaluate(() => (window as any).pendingLogs.length),
     1,
   );
