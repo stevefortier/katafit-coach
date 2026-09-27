@@ -22,6 +22,7 @@ test("large legitimate history fits every stable-owner backup cap and immutable 
       backup.set(name, await managedFile(dir + "/" + name, 4 * 1024 * 1024));
     assert.deepEqual(rootNames.sort(), [
       "config.json",
+      "memories.json",
       "secrets.json",
       "skills.json",
     ]);

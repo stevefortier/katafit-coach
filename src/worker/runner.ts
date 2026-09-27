@@ -30,6 +30,8 @@ import {
   skillsForRequest,
   type SkillRuntime,
 } from "../config/skills.js";
+import type { MemoryRuntime } from "../memory/store.js";
+import { formatMemoryRecall, memoryRecallTool } from "../memory/prompt.js";
 export async function bounded<T>(
   action: () => Promise<T>,
   signal: AbortSignal,
@@ -68,6 +70,8 @@ export interface WorkerOptions {
   isolationMs?: number;
   /** Immutable snapshot captured when this Worker instance is constructed. */
   skills?: SkillRuntime;
+  /** Host-owned memory runtime captured for this Worker; member recall fails closed without backend authority. */
+  memories?: MemoryRuntime;
   archiveTaskInvalidation?: (record: {
     protocol: typeof TASK_PROTOCOL;
     attempted_result_sha256: string;
@@ -467,11 +471,25 @@ export class Worker {
       const selectedSkills = this.options.skills
         ? skillsForRequest(this.options.skills, current.message)
         : [];
+      const memoryRecall = this.options.memories?.recall({
+        audience: "member-private",
+        query: current.message,
+        scopes: ["member", "dojo", "coach"],
+      });
+      const localMemoryTools = this.options.memories
+        ? [memoryRecallTool(this.options.memories, "member-private")]
+        : [];
       stage("inference", {
         ...(this.options.skills
           ? { skillRevision: this.options.skills.revision }
           : {}),
         enabledSkills: selectedSkills.length,
+        ...(memoryRecall
+          ? {
+              memoryRevision: memoryRecall.revision,
+              memoryItems: memoryRecall.items.length,
+            }
+          : {}),
       });
       inferenceStarted = true;
       const text = await bounded(
@@ -486,9 +504,12 @@ export class Worker {
               this.options.token,
               ...(this.options.secrets ?? []),
             ]) +
+              (memoryRecall?.status === "ok" && memoryRecall.items.length
+                ? formatMemoryRecall(memoryRecall, "worker")
+                : "") +
               formatSkillBodies(selectedSkills, "worker") +
               photoReviewGuidance(current.message, current.created_at),
-            reads.tools,
+            [...reads.tools, ...localMemoryTools],
             ref,
             { deadlineAt, readBudget: reads.readBudget },
           ),
@@ -511,6 +532,12 @@ export class Worker {
       // Read canonical state back; never claim persistence from transport success alone.
       await verifyRequestReceipt(c, fence, budget);
       this.unresolvedRequests.delete(JSON.stringify(fence));
+      await this.options.memories
+        ?.retainWorkerInteraction({
+          request: current,
+          assistant: text,
+        })
+        .catch(() => {});
       this.update("reply-persisted");
       stage("reply-persisted");
     } catch (error) {
@@ -707,6 +734,15 @@ export class Worker {
       const selectedSkills = this.options.skills
         ? skillForTask(this.options.skills, task.kind)
         : [];
+      const memoryRecall = this.options.memories?.recall({
+        audience: "member-private",
+        query: JSON.stringify({
+          kind: task.kind,
+          requester_id: task.requester_id,
+          owner_type: task.owner_type,
+        }),
+        scopes: ["member", "dojo", "coach"],
+      });
       this.diagnostic({
         source: "worker",
         stage: "inference",
@@ -716,10 +752,19 @@ export class Worker {
             ? { skillRevision: this.options.skills.revision }
             : {}),
           enabledSkills: selectedSkills.length,
+          ...(memoryRecall
+            ? {
+                memoryRevision: memoryRecall.revision,
+                memoryItems: memoryRecall.items.length,
+              }
+            : {}),
         },
       });
       const system =
         effectivePrompt(this.options.system, context.instructions, secrets) +
+        (memoryRecall?.status === "ok" && memoryRecall.items.length
+          ? formatMemoryRecall(memoryRecall, "worker")
+          : "") +
         formatSkillBodies(selectedSkills, "worker") +
         "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON as an object, with no prose or Markdown code fences, matching this local result schema: " +
         JSON.stringify(taskSchema(task.kind)) +

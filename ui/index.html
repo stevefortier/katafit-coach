@@ -311,6 +311,17 @@
             </button>
             <button
               type="button"
+              id="settings-memories-tab"
+              role="tab"
+              aria-controls="memories"
+              aria-selected="false"
+              tabindex="-1"
+              class="secondary"
+            >
+              Memories
+            </button>
+            <button
+              type="button"
               id="settings-updates-tab"
               role="tab"
               aria-controls="updates"
@@ -570,6 +581,124 @@
                 <dl id="skillHistorySnapshot" class="skill-snapshot"></dl>
               </section>
             </details>
+          </section>
+          <section
+            class="card"
+            id="memories"
+            role="tabpanel"
+            aria-labelledby="settings-memories-tab"
+            tabindex="0"
+            hidden
+          >
+            <h2>Memories</h2>
+            <p id="memoryStatus" class="hint" role="status"></p>
+            <div class="memory-controls">
+              <label
+                >Search<input id="memorySearch" type="search" maxlength="200"
+              /></label>
+              <label
+                >Scope<select id="memoryScopeFilter">
+                  <option value="">All</option>
+                  <option value="coach">Coach</option>
+                  <option value="boss">Boss</option>
+                  <option value="member">Member</option>
+                  <option value="dojo">Dojo</option>
+                </select></label
+              >
+              <label
+                >Kind<select id="memoryKindFilter">
+                  <option value="">All</option>
+                  <option value="fact">Fact</option>
+                  <option value="preference">Preference</option>
+                  <option value="commitment">Commitment</option>
+                  <option value="goal">Goal</option>
+                  <option value="lesson">Lesson</option>
+                  <option value="hypothesis">Hypothesis</option>
+                </select></label
+              >
+              <label class="toggle-label"
+                ><input id="memoryArchivedFilter" type="checkbox" /> Show
+                archived</label
+              >
+              <button id="memoryRefresh" type="button" class="secondary">
+                Refresh memories
+              </button>
+            </div>
+            <div id="memoryList" class="memory-list"></div>
+            <section id="memoryEditor" aria-label="Memory editor">
+              <h3 id="memoryEditorTitle">Add boss-private memory</h3>
+              <label
+                >Scope<select id="memoryScope">
+                  <option value="boss">Boss</option>
+                  <option value="coach">Coach</option>
+                  <option value="member">
+                    Member (requires backend authority)
+                  </option>
+                  <option value="dojo">
+                    Dojo (requires backend authority)
+                  </option>
+                </select></label
+              >
+              <label
+                >Kind<select id="memoryKind">
+                  <option value="preference">Preference</option>
+                  <option value="fact">Fact</option>
+                  <option value="commitment">Commitment</option>
+                  <option value="goal">Goal</option>
+                  <option value="lesson">Lesson</option>
+                  <option value="hypothesis">Hypothesis</option>
+                </select></label
+              >
+              <label
+                >Memory text<textarea
+                  id="memoryText"
+                  rows="3"
+                  maxlength="2000"
+                ></textarea>
+              </label>
+              <div class="split">
+                <label
+                  >Importance<input
+                    id="memoryImportance"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value="0.85"
+                /></label>
+                <label
+                  >Relevance<input
+                    id="memoryRelevance"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value="0.85"
+                /></label>
+              </div>
+              <label
+                >Source note<input id="memorySourceNote" maxlength="500"
+              /></label>
+              <label class="toggle-label"
+                ><input id="memoryPinned" type="checkbox" checked /> Pinned
+                correction</label
+              >
+              <div class="actions">
+                <button id="memorySave" type="button">Save memory</button>
+                <button id="memoryNew" type="button" class="secondary">
+                  New memory
+                </button>
+              </div>
+              <p class="hint">
+                Member and dojo memories require a backend durable memory
+                authority contract. Studio admin access alone is not source
+                authority.
+              </p>
+              <details id="memoryHistory">
+                <summary>Selected memory history</summary>
+                <div id="memoryHistoryList" class="history-list"></div>
+              </details>
+            </section>
           </section>
           <section
             class="card"

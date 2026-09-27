@@ -23,6 +23,7 @@ export const backendTools = [
   "coach_read_record",
   "coach_read_task_context",
   "coach_read_task_receipt",
+  "coach_recall_memory",
   "coach_reconcile_task",
   "coach_report_worker_presence",
   "coach_respond",

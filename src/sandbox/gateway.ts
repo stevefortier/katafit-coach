@@ -12,6 +12,7 @@ import {
   openOperatorTools,
 } from "../katafit/operatorTools.js";
 import { providerFailure } from "../runtime/errors.js";
+import { formatMemoryRecall, memoryRecallTool } from "../memory/prompt.js";
 import {
   PROVIDER_TEXT_LIMIT,
   canonicalImages,
@@ -206,6 +207,7 @@ export async function openNativeGateway(
 ) {
   const config = store.publicConfig();
   const skills = store.skills.runtime();
+  const memories = store.memories.runtime({ host: config.origin });
   const secrets = { ...store.secrets };
   const abort = new AbortController();
   const lifetime = signal
@@ -593,6 +595,12 @@ export async function openNativeGateway(
     )
       throw new Error("NATIVE_REQUEST_REJECTED");
     if (request.kind === "catalog") {
+      const recallTool = memoryRecallTool(memories, "operator-private");
+      const recallAvailable =
+        memories.recall({
+          audience: "operator-private",
+          scopes: ["boss", "coach"],
+        }).items.length > 0;
       const catalog = {
         model: config.provider.model,
         vision: config.provider.vision === true,
@@ -611,6 +619,15 @@ export async function openNativeGateway(
             description: t.description,
             parameters: t.parameters,
           })),
+          ...(recallAvailable
+            ? [
+                {
+                  name: recallTool.name,
+                  description: recallTool.description,
+                  parameters: recallTool.parameters,
+                },
+              ]
+            : []),
           ...(owner ? [attachmentTool()] : []),
         ],
       };
@@ -724,6 +741,11 @@ export async function openNativeGateway(
           request.args,
           requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
         );
+      if (request.name === "coach_recall_memory") {
+        const tool = memoryRecallTool(memories, "operator-private");
+        const args = tool.prepareArguments?.(request.args) ?? request.args;
+        return tool.execute(randomUUID(), args, abort.signal);
+      }
       const tool = session.tools.find((t) => t.name === request.name);
       if (!tool) throw new Error("NATIVE_TOOL_REJECTED");
       lastImage = undefined;
@@ -765,8 +787,10 @@ export async function openNativeGateway(
       !Array.isArray(request.body.messages)
     )
       throw new Error("NATIVE_MODEL_REJECTED");
-    // Fully validated before any turn transition or authorization side effect.
-    const wire = nativeProviderEnvelope(request.body);
+    // Fully validate the unmodified provider body before any turn transition or
+    // authorization side effect. Memory is injected only after fresh authority
+    // checks, then the final envelope is rebuilt and revalidated.
+    nativeProviderEnvelope(request.body);
     try {
       // A pending human turn is consumed here, once, before any disclosure.
       // A journaled transition is resumed (identically) before anything else.
@@ -780,6 +804,23 @@ export async function openNativeGateway(
     } catch (error) {
       throw authority(error);
     }
+    const recall = memories.recall({
+      audience: "operator-private",
+      query: JSON.stringify(request.body.messages.slice(-4)),
+      scopes: ["boss", "coach"],
+    });
+    const memoryNotice =
+      recall.status === "ok" && recall.items.length
+        ? formatMemoryRecall(recall, "operator")
+        : "";
+    const body = {
+      ...request.body,
+      messages: memoryNotice
+        ? [{ role: "system", content: memoryNotice }, ...request.body.messages]
+        : request.body.messages,
+    };
+    assertNoSecrets(body, Object.values(secrets));
+    const wire = nativeProviderEnvelope(body);
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const timeout = AbortSignal.timeout(120000);
     // Transport failures are classified by cause only; never by error text.
@@ -844,17 +885,28 @@ export async function openNativeGateway(
     } catch (error) {
       throw authority(error, true);
     }
-    const body = Buffer.concat(chunks).toString("utf8");
+    const responseBody = Buffer.concat(chunks).toString("utf8");
     try {
-      assertNoSecrets(body, Object.values(secrets));
+      assertNoSecrets(responseBody, Object.values(secrets));
     } catch (error) {
       throw new NativeFailure(
         "NATIVE_PROVIDER_OUTPUT_REJECTED",
         (error as Error).message,
       );
     }
+    await memories
+      .retainNativeBossTurn({
+        text: request.body.messages
+          .slice(-2)
+          .map((message: any) =>
+            typeof message?.content === "string" ? message.content : "",
+          )
+          .join("\n"),
+        source_id: "native-turn:" + randomUUID(),
+      })
+      .catch(() => {});
     return {
-      body,
+      body: responseBody,
       type: response.headers.get("content-type")?.includes("text/event-stream")
         ? "text/event-stream"
         : "application/json",

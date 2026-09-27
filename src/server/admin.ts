@@ -124,6 +124,7 @@ export async function admin(
         secrets: Object.values(store.secrets),
         vision: c.provider.vision === true,
         skills,
+        memories: store.memories.runtime({ host: c.origin }),
         onDiagnostic: (event) => logs.record(event),
         archiveTaskInvalidation: (record) =>
           archiveTaskInvalidation(store.dir, record),
@@ -520,6 +521,40 @@ export async function admin(
       }
       if (
         req.method === "GET" &&
+        (path === "/api/memories" || path.startsWith("/api/memories?"))
+      ) {
+        const params = new URL(path, origin).searchParams;
+        if (
+          [...params.keys()].some(
+            (key) =>
+              ![
+                "scope",
+                "kind",
+                "q",
+                "subject_ref",
+                "include_archived",
+              ].includes(key) || params.getAll(key).length !== 1,
+          )
+        )
+          throw new Error("INVALID_MEMORY");
+        return send(
+          200,
+          store.memories.list({
+            scope: (params.get("scope") || undefined) as any,
+            kind: (params.get("kind") || undefined) as any,
+            q: params.get("q") || undefined,
+            subject_ref: params.get("subject_ref") || undefined,
+            include_archived: params.get("include_archived") === "true",
+          }),
+        );
+      }
+      if (req.method === "GET" && path.startsWith("/api/memories/history/")) {
+        const id = path.slice("/api/memories/history/".length);
+        if (!/^[a-f0-9]{32}$/.test(id)) throw new Error("MEMORY_NOT_FOUND");
+        return send(200, store.memories.history(id));
+      }
+      if (
+        req.method === "GET" &&
         (path === "/api/persona-history" ||
           path.startsWith("/api/persona-history?"))
       ) {
@@ -772,6 +807,73 @@ export async function admin(
           });
         } finally {
           busy = false;
+        }
+      }
+      const memoryMutation =
+        /^\/api\/memories(?:\/([a-f0-9]{32})(?:\/(archive|forget))?)?$/.exec(
+          path,
+        );
+      if (memoryMutation) {
+        if (updates.applying || updates.recovering)
+          return send(409, { error: "UPDATE_IN_PROGRESS" });
+        const [, id, action] = memoryMutation;
+        try {
+          if (!id) {
+            const entry = await store.memories.add({
+              host: store.publicConfig().origin,
+              subject: { scope: body.scope },
+              kind: body.kind,
+              text: body.text,
+              confidence: body.confidence,
+              importance: body.importance,
+              relevance: body.relevance,
+              review_after: body.review_after ?? null,
+              pinned: body.pinned !== false,
+              source: {
+                type: "operator_correction",
+                id: "studio-operator:" + randomUUID(),
+                note: body.source_note,
+              },
+            });
+            return send(200, {
+              revision: store.memories.list().revision,
+              entry,
+            });
+          }
+          if (action === "archive") {
+            await store.memories.archive(id);
+            return send(200, {
+              ok: true,
+              revision: store.memories.list().revision,
+            });
+          }
+          if (action === "forget") {
+            await store.memories.forget(id);
+            return send(200, {
+              ok: true,
+              revision: store.memories.list().revision,
+            });
+          }
+          const entry = await store.memories.update(id, {
+            text: body.text,
+            kind: body.kind,
+            confidence: body.confidence,
+            importance: body.importance,
+            relevance: body.relevance,
+            review_after: body.review_after ?? null,
+            pinned: body.pinned !== false,
+            operator_note: body.source_note,
+          });
+          return send(200, { revision: store.memories.list().revision, entry });
+        } catch (error: any) {
+          const code = error?.message;
+          return send(code === "MEMORY_AUTHORITY_UNAVAILABLE" ? 409 : 400, {
+            error: code || "INVALID_MEMORY",
+            hint:
+              code === "MEMORY_AUTHORITY_UNAVAILABLE"
+                ? "Member or dojo memories require a backend durable memory authority contract. Studio admin access is not source authority."
+                : undefined,
+          });
         }
       }
       if (path === "/api/update/check") {

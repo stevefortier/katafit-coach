@@ -11,6 +11,7 @@ import {
 import { constants } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { SkillStore } from "./skills.js";
+import { MemoryStore } from "../memory/store.js";
 
 // Bounded even for maximal JSON escaping; below the stable owner's 4MiB cap.
 const snapshotLimit = 1024 * 1024;
@@ -393,8 +394,10 @@ export class Store {
     admin: randomBytes(32).toString("hex"),
   };
   readonly skills: SkillStore;
+  readonly memories: MemoryStore;
   constructor(readonly dir: string) {
     this.skills = new SkillStore(dir, () => Object.values(this.secrets));
+    this.memories = new MemoryStore(dir, () => Object.values(this.secrets));
   }
   private get snapshotDir() {
     return this.dir + "/persona-history";
@@ -489,6 +492,7 @@ export class Store {
       [...loaded, ...Object.values(this.secrets)],
     );
     await this.skills.init();
+    await this.memories.init();
   }
   private resolve(c: Config) {
     return (
@@ -931,6 +935,10 @@ export class Store {
     // A credential added in the future must also be absent from every current
     // and immutable historical skill snapshot before it can be committed.
     this.skills.assertSafe([
+      ...Object.values(this.secrets),
+      ...Object.values(secrets),
+    ]);
+    this.memories.assertSafe([
       ...Object.values(this.secrets),
       ...Object.values(secrets),
     ]);

@@ -55,6 +55,15 @@ Save or Restore default applies only the selected skill; drafts for other skills
 
 Keep only reusable guidance in Skills, never member evidence or credentials. Saves and restores append immutable revisions. Credential changes are checked against current and historical skill text; restoring clean defaults does not erase a credential from history.
 
+### Memories
+
+**Settings → Memories** manages protected local boss/coach-private memories with
+search, filters, sources, history, Archive and Forget. Native Operator Pi receives
+current boss-private memory on each provider turn, so saved edits are visible
+without restarting Pi. Member/dojo source-derived recall is disabled until the
+backend negotiates durable memory authority and source-proof import; Studio admin
+access is not source authority. See [Coach long-term memory](docs/coach-long-term-memory.md).
+
 ### Persona revision history
 
 Open **Settings → Persona → Persona revision history** to browse saved snapshots. Every successful save creates a revision, even if only Kata.fit or Models settings changed or the persona fields stayed the same. Select a revision to read all eight persona fields without changing the editor; use **Older revisions** and **Latest revisions** to navigate the paginated list.

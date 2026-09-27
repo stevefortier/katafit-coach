@@ -393,8 +393,40 @@ header {
   font-size: 12px;
   text-transform: capitalize;
 }
+.memory-controls {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) repeat(3, max-content);
+  gap: 12px;
+  align-items: end;
+}
+.memory-list {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 24px;
+}
+.memory-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--panel);
+}
+.memory-card h3 {
+  margin-top: 0;
+  font-size: 16px;
+}
+.memory-card[data-status="archived"] {
+  opacity: 0.72;
+}
+.memory-card pre,
+#memoryHistoryList pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 680px) {
   .skill-list {
+    grid-template-columns: 1fr;
+  }
+  .memory-controls {
     grid-template-columns: 1fr;
   }
   .skill-heading {

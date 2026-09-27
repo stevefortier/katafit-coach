@@ -1425,6 +1425,7 @@ const settingsSections = [
   "persona",
   "preview",
   "skills",
+  "memories",
   "updates",
   "worker",
 ];
@@ -1451,6 +1452,7 @@ function selectSettingsSection(section, navigate = true) {
     void loadSkills().catch((error) => {
       if (!error.stale) $("skillsRevision").textContent = error.message;
     });
+  if (settingsSection === "memories" && key) void loadMemories();
   if (historyVisible()) void loadPersonaHistory();
   if (skillHistoryVisible()) void loadSkillHistory();
   logVisibility();
@@ -1512,6 +1514,152 @@ for (const [index, section] of diagnosticsSections.entries()) {
     });
   };
 }
+let memoriesData = { revision: 0, items: [] },
+  selectedMemoryId = "";
+function memoryNumber(id, fallback) {
+  const value = Number($(id).value);
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback;
+}
+function memoryDraft(entry) {
+  selectedMemoryId = entry?.id || "";
+  $("memoryEditorTitle").textContent = entry
+    ? "Edit protected memory"
+    : "Add boss-private memory";
+  $("memoryScope").value = entry?.subject?.scope || "boss";
+  $("memoryKind").value = entry?.kind || "preference";
+  $("memoryText").value = entry?.text || "";
+  $("memoryImportance").value = entry?.importance ?? 0.85;
+  $("memoryRelevance").value = entry?.relevance ?? 0.85;
+  $("memorySourceNote").value = "";
+  $("memoryPinned").checked = entry ? entry.pinned !== false : true;
+  $("memoryHistoryList").replaceChildren();
+}
+async function loadMemoryHistory(id) {
+  const history = await api("memories/history/" + id);
+  $("memoryHistoryList").replaceChildren();
+  for (const record of history.items.slice().reverse()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary history-item";
+    button.textContent =
+      "Revision " +
+      record.revision +
+      " · " +
+      record.action.type +
+      " · " +
+      formatTimestamp(record.savedAt);
+    button.onclick = () => {
+      $("memoryHistoryList").replaceChildren(
+        detailText("pre", JSON.stringify(record.action, null, 2)),
+      );
+    };
+    $("memoryHistoryList").append(button);
+  }
+}
+function renderMemories() {
+  $("memoryList").replaceChildren();
+  $("memoryStatus").textContent =
+    memoriesData.items.length +
+    " memories · store revision " +
+    memoriesData.revision;
+  for (const entry of memoriesData.items) {
+    const card = document.createElement("section");
+    card.className = "memory-card";
+    if (entry.status !== "active") card.dataset.status = entry.status;
+    const title = detailText(
+      "h3",
+      `${entry.kind} · ${entry.subject.scope}${entry.subject.ref ? " · " + entry.subject.ref : ""}`,
+    );
+    const text = detailText("p", entry.text);
+    const meta = detailText(
+      "p",
+      `Importance ${entry.importance} · relevance ${entry.relevance} · confidence ${entry.confidence}${entry.pinned ? " · pinned" : ""}`,
+    );
+    meta.className = "hint";
+    const sources = document.createElement("details");
+    sources.append(detailText("summary", "Sources"));
+    const sourceList = document.createElement("ul");
+    for (const source of entry.sources)
+      sourceList.append(
+        detailText(
+          "li",
+          `${source.type} · ${source.id} · ${formatTimestamp(source.at)}${source.note ? " · " + source.note : ""}`,
+        ),
+      );
+    sources.append(sourceList);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const edit = detailText("button", "Edit");
+    edit.type = "button";
+    edit.onclick = async () => {
+      memoryDraft(entry);
+      await loadMemoryHistory(entry.id).catch(() => {});
+    };
+    const archive = detailText("button", "Archive");
+    archive.type = "button";
+    archive.className = "secondary";
+    archive.onclick = async () => {
+      await api("memories/" + entry.id + "/archive", {});
+      await loadMemories();
+      notice("Memory archived.", "success");
+    };
+    const forget = detailText("button", "Forget");
+    forget.type = "button";
+    forget.className = "secondary";
+    forget.onclick = async () => {
+      if (!confirm("Forget this memory and fence stale recreation?")) return;
+      await api("memories/" + entry.id + "/forget", {});
+      if (selectedMemoryId === entry.id) memoryDraft();
+      await loadMemories();
+      notice(
+        "Memory forgotten. Matching stale extraction is fenced.",
+        "success",
+      );
+    };
+    actions.append(edit, archive, forget);
+    card.append(title, text, meta, sources, actions);
+    $("memoryList").append(card);
+  }
+}
+async function loadMemories() {
+  const params = new URLSearchParams();
+  if ($("memorySearch").value) params.set("q", $("memorySearch").value);
+  if ($("memoryScopeFilter").value)
+    params.set("scope", $("memoryScopeFilter").value);
+  if ($("memoryKindFilter").value)
+    params.set("kind", $("memoryKindFilter").value);
+  if ($("memoryArchivedFilter").checked) params.set("include_archived", "true");
+  memoriesData = await api("memories" + (params.size ? "?" + params : ""));
+  renderMemories();
+}
+for (const id of [
+  "memorySearch",
+  "memoryScopeFilter",
+  "memoryKindFilter",
+  "memoryArchivedFilter",
+])
+  $(id).addEventListener("input", () => void loadMemories());
+action("memoryRefresh", loadMemories);
+action("memoryNew", async () => memoryDraft());
+action("memorySave", async () => {
+  const body = {
+    scope: $("memoryScope").value,
+    kind: $("memoryKind").value,
+    text: $("memoryText").value,
+    importance: memoryNumber("memoryImportance", 0.85),
+    relevance: memoryNumber("memoryRelevance", 0.85),
+    pinned: $("memoryPinned").checked,
+    source_note: $("memorySourceNote").value,
+  };
+  const result = await api(
+    selectedMemoryId ? "memories/" + selectedMemoryId : "memories",
+    body,
+  );
+  memoryDraft(result.entry);
+  await loadMemoryHistory(result.entry.id).catch(() => {});
+  await loadMemories();
+  notice("Memory saved.", "success");
+});
 function studioRoute() {
   if (location.pathname === "/diagnostics")
     return {
