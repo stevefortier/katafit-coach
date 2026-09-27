@@ -8,7 +8,8 @@ import { Store } from "../src/config/store.js";
 import { AutoUpdateSetting } from "../src/update/auto.js";
 import { supervise } from "./helpers/legacy-supervisor.js";
 
-test("source check reports in-flight state and retains error until real success", async () => {
+test("source check reports in-flight state and retains error until real success", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1700000000000 });
   let respond!: (response: Response) => void;
   const updates = new Updates(
     "a".repeat(40),
@@ -25,7 +26,7 @@ test("source check reports in-flight state and retains error until real success"
   assert.equal(updates.snapshot().checkError, "RATE_LIMITED");
   await updates.check(); // A throttled call is not success.
   assert.equal(updates.snapshot().checkError, "RATE_LIMITED");
-  updates.checkedAt = 0;
+  t.mock.timers.tick(900001);
   const next = updates.check();
   assert.equal(updates.snapshot().checking, true);
   assert.equal(updates.snapshot().checkError, "RATE_LIMITED");
@@ -64,7 +65,42 @@ test("403 requires rate-limit evidence; network and HTTP errors are visible", as
   }
 });
 
-test("stable scheduler publishes actual deadline through runtime IPC and API", async () => {
+test("manual rate limit replaces the earlier armed source timer", async () => {
+  const home = await mkdtemp(join(tmpdir(), "coach-manual-cooldown-"));
+  const store = new Store(home);
+  await store.init();
+  const timers: { delay: number; timer: ReturnType<typeof setTimeout> }[] = [];
+  const owner = await supervise(store, 0, undefined, {
+    request: async () =>
+      new Response("", { status: 429, headers: { "retry-after": "3600" } }),
+    autoTimer: ((_fn: () => void, delay: number) => {
+      const timer = setTimeout(() => {}, 2 ** 30);
+      timers.push({ delay, timer });
+      return timer;
+    }) as typeof setTimeout,
+  });
+  try {
+    const old = owner.updates.snapshot().autoSchedule!.nextAttemptAt!;
+    await owner.updates.check();
+    const state = owner.updates.snapshot();
+    assert.ok(state.autoSchedule!.nextAttemptAt! > old);
+    assert.equal(state.autoSchedule!.nextAttemptAt, state.sourceRetryAt);
+    assert.equal(state.autoSchedule!.reason, "check-failed");
+    assert.equal(timers.length, 2);
+    assert.ok(timers[1].delay <= 3600000 && timers[1].delay > 3599000);
+    await owner.updates.check();
+    assert.equal(timers.length, 2);
+  } finally {
+    await owner.close();
+    timers.forEach(({ timer }) => clearTimeout(timer));
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("stable scheduler publishes actual deadline through runtime IPC and API", async (t) => {
+  const realNow = Date.now;
+  let elapsed = 0;
+  t.mock.method(Date, "now", () => realNow() + elapsed);
   const home = await mkdtemp(join(tmpdir(), "coach-schedule-status-"));
   const store = new Store(home);
   await store.init();
@@ -101,7 +137,7 @@ test("stable scheduler publishes actual deadline through runtime IPC and API", a
     }
   };
   try {
-    assert.equal(delay, 90000);
+    assert.equal(delay, 900000);
     const initial = owner.updates.snapshot().autoSchedule;
     assert.equal(initial?.reason, "poll");
     assert.ok(initial!.nextAttemptAt! > Date.now());
@@ -138,7 +174,7 @@ test("stable scheduler publishes actual deadline through runtime IPC and API", a
       "consent does not cancel the timer",
     );
     await new AutoUpdateSetting(home).write(true);
-    owner.updates.checkedAt = 0;
+    elapsed += 900001; // Cooldown expires; manual success leaves the armed timer intact.
     const manual = owner.updates.check();
     respond(
       new Response(
@@ -158,7 +194,7 @@ test("stable scheduler publishes actual deadline through runtime IPC and API", a
     );
     callback();
     await wait(async () => (await read()).autoSchedule?.reason === "poll");
-    assert.equal(delay, 90000);
+    assert.equal(delay, 900000);
   } finally {
     await owner.close();
     await rm(home, { recursive: true, force: true });
@@ -166,7 +202,10 @@ test("stable scheduler publishes actual deadline through runtime IPC and API", a
 });
 
 for (const reason of ["readiness", "recovery"] as const) {
-  test(`stable scheduler reports ${reason} deadline without claiming a source request`, async () => {
+  test(`stable scheduler reports ${reason} deadline without claiming a source request`, async (t) => {
+    const realNow = Date.now;
+    let elapsed = 0;
+    t.mock.method(Date, "now", () => realNow() + elapsed);
     const home = await mkdtemp(join(tmpdir(), "coach-schedule-reason-"));
     const store = new Store(home);
     await store.init();
@@ -206,7 +245,7 @@ for (const reason of ["readiness", "recovery"] as const) {
       }) as typeof setTimeout,
     });
     try {
-      assert.equal(delay, reason === "recovery" ? 1 : 90000);
+      assert.equal(delay, reason === "recovery" ? 1 : 900000);
       callback();
       const end = Date.now() + 10000;
       while (
@@ -228,6 +267,24 @@ for (const reason of ["readiness", "recovery"] as const) {
           owner.updates.snapshot().autoOutcome?.reason,
           "ARTIFACT_NOT_READY",
         );
+        assert.equal(requests, 2, "one ref plus one comparison");
+        for (let minute = 1; minute < 15; minute++) {
+          elapsed += 60000;
+          await owner.auto.tick();
+          assert.equal(
+            requests,
+            2,
+            "local readiness retries reuse remote evidence",
+          );
+        }
+        elapsed += 60000;
+        await owner.auto.tick();
+        assert.equal(
+          requests,
+          3,
+          "new ref after fifteen minutes; immutable ancestry reused",
+        );
+        assert.equal(await new AutoUpdateSetting(home).failedTarget(), null);
       }
     } finally {
       await owner.close();

@@ -13,7 +13,7 @@ This is a launcher prerequisite change, not a data migration.
 
 **Automatic upgrades are opt-in and off by default.** In Settings → Updates,
 enable the checkbox to have the stable Linux supervisor check the fixed public
-`main` about every 90 seconds (longer after failed/rate-limited checks). It
+`main` about every 15 minutes (longer when GitHub requests a cooldown). It
 only installs a SHA verified as ahead of the known installed Git revision;
 unknown/dirty, divergent and behind revisions are skipped. It waits for
 the stable owner to reserve the target, stage and validate its exact metadata,
@@ -47,11 +47,42 @@ The owner publishes the actual armed timer: normal polling, failed-check backoff
 An automatic cycle is not necessarily a GitHub request: consent, admission and
 recovery still apply. Disabling automatic updates gates the next cycle; it does
 not cancel the timer. Studio hides the automatic countdown while disabled.
-Manual checks retain their one-minute throttle and do not rearm that timer, even
-after a successful check. `checking` and `checkError` describe the source check
+Manual checks retain their one-minute throttle so the five-minute approval window
+can be refreshed independently of automatic polling. They cannot bypass an active
+server cooldown. A manual rate-limit response extends an earlier armed source
+timer; a successful manual check does not rearm it. `checking` and `checkError` describe the source check
 separately from historical upgrade outcomes; only a successful source response
 clears the error. HTTP 429 and HTTP 403 with rate-limit headers report rate
 limiting; an unqualified 403 reports access denied without claiming a rate limit.
+
+Main-ref and ancestry comparison requests share the same cooldown. Confirmed
+rate limiting clears source approval and sets optional `sourceRetryAt` to at least
+15 minutes after the response, honoring the later valid `Retry-After` (integer
+seconds or an HTTP date) and `X-RateLimit-Reset` (epoch seconds). Malformed, past,
+non-finite and timer-overflow values are ignored; deadlines beyond Node's maximum
+signed 32-bit timer delay are rejected rather than causing a rapid timer loop.
+The deadline is not reset by repeated manual checks, and a late success from a
+request started before a newer rate limit cannot clear it. Only a subsequent
+successful source check clears the error/cooldown.
+
+Rapid local worker recovery (10 seconds) and native-readiness retries (normally
+one minute) remain separate from remote polling. Readiness cycles reuse the main
+ref until its 15-minute interval expires and cache proven ancestry for the exact
+immutable SHA pair. Recovery performs no source request. If readiness finishes
+after approval expires, activation waits for fresh source verification without
+marking that revision failed. The owner rechecks source approval around quiescence;
+a concurrent manual rate limit cannot turn a valid target into a failed upgrade.
+`autoSchedule` continues to describe the actual armed cycle, including local-only
+retries; `sourceRetryAt` describes the independent remote cooldown. Missing new
+fields on older owners mean unknown, not an inferred deadline.
+
+**This cadence/cooldown fix requires a stable launcher/package or outer-image
+upgrade.** Installing application source through Studio does not replace the
+running owner or its loaded scheduler. Replace the reviewed launcher using the
+existing protected home/volume and the installation's normal service procedure;
+merely restarting an old package/image will retain its old polling behavior. Wait
+for native sessions and worker/publication safety before any cutover. Do not patch
+an old owner's loaded closure or weaken upgrade/quiesce fences.
 
 The countdown uses `serverNow` to account for browser/host clock differences and
 shows a local retry time. A passed deadline means awaiting launcher status, not
@@ -113,8 +144,17 @@ Managed directory ancestors cannot be symlinks; metadata/lockfile reads require 
 
 An isolated child loads the candidate's **own Store and admin code**, with a disposable home and no real secrets. It must serve authenticated stopped-worker health. Only then does the owner snapshot existing JSON records, stop the old runtime, launch the candidate against the real home, wait through startup probation, and require authenticated health at the original port. The active pointer is atomically renamed only after health. Startup errors, hangs and early exits cause old-runtime restart and JSON restoration. Confirmed manual upgrades and opt-in automatic upgrades restore a previously running worker only after healthy activation or rollback. This certifies startup health, not every future request.
 
-The stable owner removes a prepared candidate when readiness or post-preparation
-admission defers, consent is revoked, preparation fails, or shutdown cancels it.
+The stable owner retains at most one successfully prepared automatic candidate
+when only source approval expires or a source check becomes unavailable. It
+waits without stopping Coach, then reuses that exact SHA after a fresh,
+cadence-compliant source check and all normal ancestry/consent/admission fences.
+On the next owner cycle, revoked or unreadable consent, an installed target, or
+a different confirmed source target releases the retained reservation. Manual
+preparation can take ownership of the same candidate or release it before
+preparing a different confirmed target; automatic cycles cannot consume a
+manual reservation. Shutdown also releases retained preparation.
+Other readiness or post-preparation admission deferrals and preparation failures
+remove the candidate as before.
 It never treats the active application directory as preparation-owned cleanup.
 An error while re-reading automatic-update consent after preparation releases
 the reservation before it escapes. Initial active-image preflight failure also
