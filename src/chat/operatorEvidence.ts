@@ -14,6 +14,7 @@ const domains: Record<string, OperatorEvidenceDomain> = {
   studio_operator_read_activity: "activity",
   studio_operator_list_dojo_checkins: "checkins",
   studio_operator_read_dojo_checkin_image: "image",
+  studio_operator_read_activity_image: "image",
 };
 export function operatorEvidenceDomain(
   tool: string,

@@ -23,7 +23,7 @@ export function attachmentTool() {
   return {
     name: ATTACHMENT_TOOL,
     description:
-      "Show one image or file to the human operator in the attachments panel beside this terminal on the same page. Provide exactly one source: image_receipt (the value returned by a successful check-in image read in this native session) or workspace_path (a regular file you created under /workspace; symlinks, directories, special files and paths outside /workspace are refused). Optional filename and caption are sanitized plain text. Limits: 8 MiB per file, 16 attachments and 32 MiB per session. Only PNG, JPEG, WebP and GIF images get a preview; every other file is download-only. Success means accepted into the panel; it does not confirm that the operator opened or saw it. Send one attachment at a time and never claim the operator has viewed it.",
+      "Show one image or file to the human operator in the attachments panel beside this terminal on the same page. Provide exactly one source: image_receipt (the value returned by a successful check-in or activity image read in this native session) or workspace_path (a regular file you created under /workspace; symlinks, directories, special files and paths outside /workspace are refused). Optional filename and caption are sanitized plain text. Limits: 8 MiB per file, 16 attachments and 32 MiB per session. Only PNG, JPEG, WebP and GIF images get a preview; every other file is download-only. Success means accepted into the panel; it does not confirm that the operator opened or saw it. Send one attachment at a time and never claim the operator has viewed it.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -309,16 +309,35 @@ export class OperatorAttachments {
 export class ImageReceipts {
   #receipts = new Map<
     string,
-    { bytes: Buffer; mime_type: string; sha256: string }
+    {
+      bytes: Buffer;
+      mime_type: string;
+      sha256: string;
+      kind: "checkin" | "activity";
+    }
   >();
   #closed = false;
-  add(bytes: Buffer, mime_type: string, sha256: string): string {
+  add(
+    bytes: Buffer,
+    mime_type: string,
+    sha256: string,
+    kind: "checkin" | "activity" = "checkin",
+  ): string {
     if (this.#closed) return fail("ATTACHMENT_UNAVAILABLE");
     for (const [id, receipt] of this.#receipts)
-      if (receipt.sha256 === sha256 && receipt.mime_type === mime_type)
+      if (
+        receipt.sha256 === sha256 &&
+        receipt.mime_type === mime_type &&
+        receipt.kind === kind
+      )
         return id;
     const id = "ir_" + randomBytes(16).toString("hex");
-    this.#receipts.set(id, { bytes: Buffer.from(bytes), mime_type, sha256 });
+    this.#receipts.set(id, {
+      bytes: Buffer.from(bytes),
+      mime_type,
+      sha256,
+      kind,
+    });
     const total = () =>
       [...this.#receipts.values()].reduce((n, r) => n + r.bytes.length, 0);
     while (

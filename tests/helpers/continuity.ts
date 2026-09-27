@@ -17,6 +17,9 @@ const ADVANCE = "studio_operator_advance_turn";
 export const GENERIC = "studio_operator_read_synthetic_generic";
 export const CHECKINS = "studio_operator_list_dojo_checkins";
 export const IMAGE = "studio_operator_read_dojo_checkin_image";
+export const DETAIL = "studio_operator_read_activity";
+export const ACTIVITIES = "studio_operator_list_activities";
+export const ACTIVITY_IMAGE = "studio_operator_read_activity_image";
 const digest = (v: unknown) =>
   createHash("sha256").update(JSON.stringify(v)).digest("hex");
 const generation = {
@@ -115,6 +118,34 @@ export const schemas: Record<string, any> = {
     additionalProperties: true,
     patternProperties: { "^x_": { type: "string" } },
   },
+  [DETAIL]: strict(
+    {
+      session_id: sid,
+      turn_generation: generation,
+      member_ref: { type: "string" },
+      activity_ref: { type: "string" },
+      section: { type: "string" },
+    },
+    ["session_id", "member_ref", "activity_ref"],
+  ),
+  [ACTIVITIES]: strict(
+    {
+      session_id: sid,
+      turn_generation: generation,
+      member_ref: { type: "string" },
+    },
+    ["session_id", "member_ref"],
+  ),
+  [ACTIVITY_IMAGE]: strict(
+    {
+      session_id: sid,
+      turn_generation: generation,
+      member_ref: { type: "string" },
+      activity_ref: { type: "string" },
+      media_ref: { type: "string" },
+    },
+    ["session_id", "member_ref", "activity_ref", "media_ref"],
+  ),
 };
 const capability = (
   name: string,
@@ -181,6 +212,10 @@ export interface ContinuityOptions {
   closeGate?: Promise<void>;
   // Negotiate check-in listing and original image reads.
   images?: boolean;
+  activityImages?: boolean;
+  activityCorruption?: "hash" | "mime" | "bytes" | "dimensions" | "size";
+  activityDeny?: boolean;
+  detailFailure?: string;
   imageCount?: number;
   imageGate?: Promise<void>;
   // Runs after each successful authorize_context (1-based count).
@@ -342,6 +377,8 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         SEND,
         GET,
         GENERIC,
+        ...(options.detailFailure || options.activityImages ? [DETAIL] : []),
+        ...(options.activityImages ? [ACTIVITIES, ACTIVITY_IMAGE] : []),
         ...(options.images ? [CHECKINS, IMAGE] : []),
       ];
       return {
@@ -374,6 +411,20 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
               "delivered_or_not_found",
             ),
             capability(GENERIC, "read", "dojo", "synthetic_generic"),
+            ...(options.detailFailure || options.activityImages
+              ? [capability(DETAIL, "read", "member_ref", "activity_detail")]
+              : []),
+            ...(options.activityImages
+              ? [
+                  capability(ACTIVITIES, "read", "member_ref", "activities"),
+                  capability(
+                    ACTIVITY_IMAGE,
+                    "read",
+                    "member_ref",
+                    "activity_image",
+                  ),
+                ]
+              : []),
             ...(options.images
               ? [
                   capability(CHECKINS, "read", "dojo", "checkin_media"),
@@ -492,6 +543,8 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         : value;
     }
     if (state.calls >= 12) return deny("READ_LIMIT");
+    if (name === DETAIL && options.detailFailure)
+      return deny(options.detailFailure);
     // Ordinary invalid model argument: a per-call denial that rolls back and
     // neither consumes budget nor revokes retained authority.
     if (name === GENERIC && args.topic === "invalid") return deny();
@@ -527,6 +580,66 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         private_context: "SYNTHETIC GENERIC RETAINED SOURCE",
       };
     if (name === SEND) return send(args);
+    if (name === ACTIVITIES && options.activityImages)
+      return {
+        schema_version: 1,
+        member_ref: args.member_ref,
+        items: [
+          { activity_ref: "activity-1", type: "media", status: "complete" },
+        ],
+        has_more: false,
+        next_cursor: null,
+      };
+    if (name === DETAIL && options.activityImages)
+      return {
+        schema_version: 1,
+        member_ref: args.member_ref,
+        activity: {
+          activity_ref: args.activity_ref,
+          type: "media",
+          status: "complete",
+        },
+        section: args.section ?? "overview",
+        items:
+          args.section === "media_files"
+            ? [{ type: "image/png", media_ref: "activity-media-1" }]
+            : [],
+        has_more: false,
+        next_cursor: null,
+      };
+    if (name === ACTIVITY_IMAGE && options.activityImages) {
+      if (options.activityDeny) return deny();
+      if (
+        args.member_ref !== "fixture-member" ||
+        args.activity_ref !== "activity-1" ||
+        args.media_ref !== "activity-media-1"
+      )
+        return deny();
+      const m = {
+        schema_version: 1,
+        representation: "original",
+        mime_type:
+          options.activityCorruption === "mime" ? "image/jpeg" : "image/png",
+        byte_count:
+          png!.length +
+          (options.activityCorruption === "size" ? 9 * 1024 * 1024 : 0),
+        sha256: createHash("sha256").update(png!).digest("hex"),
+        width: 3,
+        height: options.activityCorruption === "dimensions" ? 9 : 2,
+      };
+      if (options.activityCorruption === "hash") m.sha256 = "0".repeat(64);
+      const data =
+        options.activityCorruption === "bytes"
+          ? Buffer.from("invalid").toString("base64")
+          : png!.toString("base64");
+      return {
+        structuredContent: m,
+        content: [
+          { type: "text", text: JSON.stringify(m) },
+          { type: "image", mimeType: m.mime_type, data },
+        ],
+      };
+    }
     if (name === CHECKINS && options.images)
       return {
         schema_version: 1,
@@ -720,7 +833,9 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
         return;
       }
       result =
-        value.isError || (name === IMAGE && options.images)
+        value.isError ||
+        (name === IMAGE && options.images) ||
+        (name === ACTIVITY_IMAGE && options.activityImages)
           ? value
           : { structuredContent: value };
     }
@@ -762,6 +877,7 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
   return {
     store,
     state,
+    activityBytes: png,
     calls,
     named,
     providerCalls: () =>

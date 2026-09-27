@@ -41,6 +41,7 @@ export const backendTools = [
   "studio_operator_list_members",
   "studio_operator_open_session",
   "studio_operator_read_activity",
+  "studio_operator_read_activity_image",
   "studio_operator_read_dojo_checkin_image",
   "studio_operator_read_member_coach_feed",
   "studio_operator_send_message",
