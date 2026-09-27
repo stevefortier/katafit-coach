@@ -52,9 +52,12 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
         ?.textContent?.includes("4999 receipts"),
     );
     assert.equal(await page.locator("#logLevel").inputValue(), "info");
+    await page.locator("#diagnostics-performance-tab").click();
     const summaryText = await page.locator("#performanceRows").innerText();
     assert.match(summaryText, /4999 calls/);
+    await page.locator("#diagnostics-logs-tab").click();
     await page.locator("#logLevel").selectOption("warn");
+    await page.locator("#diagnostics-performance-tab").click();
     assert.equal(
       await page.locator("#performanceRows").innerText(),
       summaryText,
@@ -68,6 +71,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     );
     await page.locator("#logLevel").selectOption("warn");
     assert.equal(await page.locator("#logRows article").count(), 1);
+    await page.locator("#diagnostics-performance-tab").click();
     assert.equal(
       await page.locator("#performanceRows").innerText(),
       summaryText,
@@ -87,6 +91,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     assert.equal(aggregate.groups[0].timeouts, 1);
     assert.equal(aggregate.entries, undefined);
     assert.equal(aggregate.metrics.durationUnit, "ms");
+    await page.locator("#diagnostics-logs-tab").click();
     await page.locator("#performanceClear").click();
     assert.equal(await page.locator("#logLevel").inputValue(), "warn");
     assert.equal(await page.locator("#performanceClear").isVisible(), false);
@@ -151,21 +156,24 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
       document.querySelector("#diagnostics")!.prepend(label);
     });
     await page.evaluate("notice('')");
-    for (const width of [1440, 390, 320]) {
-      await page.setViewportSize({ width, height: 1000 });
-      await page.evaluate(() => {
-        scrollTo(0, 0);
-        document.querySelector("#logRows")!.scrollTop = 0;
-      });
-      assert.ok(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-      );
-      await page.screenshot({
-        path: `${evidence}/synthetic-backend-diagnostics-${width}.png`,
-        fullPage: true,
-      });
+    for (const section of ["performance", "logs"]) {
+      await page.locator("#diagnostics-" + section + "-tab").click();
+      for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page.evaluate(() => {
+          scrollTo(0, 0);
+          document.querySelector("#logRows")!.scrollTop = 0;
+        });
+        assert.ok(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        );
+        await page.screenshot({
+          path: `${evidence}/synthetic-backend-diagnostics-${section}-${width}.png`,
+          fullPage: true,
+        });
+      }
     }
     assert.deepEqual(errors, []);
     await page.route("**/api/logs", async (route) => {
@@ -187,6 +195,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
       });
       await route.fulfill({ json: data });
     });
+    await page.locator("#diagnostics-performance-tab").click();
     await page.locator("#performanceRows button").focus();
     await page.evaluate(() =>
       (document.querySelector("#logRefresh") as HTMLButtonElement).click(),
@@ -203,6 +212,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
       true,
     );
     await page.locator("#performanceRows button").click();
+    await page.locator("#diagnostics-logs-tab").click();
     await page.locator("#performanceClear").click();
     assert.equal(
       await page

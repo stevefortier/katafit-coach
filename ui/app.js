@@ -317,7 +317,7 @@ action("unlock", async () => {
   $("login").hidden = true;
   $("studio").hidden = false;
   $("lockStudio").hidden = false;
-  restoreStudioRoute();
+  restoreStudioRoute(true);
   void loadOperator();
   await status();
   await refreshUpdate(true);
@@ -1089,8 +1089,47 @@ for (const [index, section] of settingsSections.entries()) {
     });
   };
 }
+const diagnosticsSections = ["performance", "logs"];
+let diagnosticsSection = "logs";
+function selectDiagnosticsSection(section, navigate = true) {
+  diagnosticsSection = diagnosticsSections.includes(section) ? section : "logs";
+  for (const name of diagnosticsSections) {
+    const selected = name === diagnosticsSection;
+    $(name === "performance" ? "backendPerformance" : "logsView").hidden =
+      !selected;
+    const tab = $("diagnostics-" + name + "-tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    tab.classList.toggle("secondary", !selected);
+  }
+  if (navigate) navigateStudio("/diagnostics?section=" + diagnosticsSection);
+}
+for (const [index, section] of diagnosticsSections.entries()) {
+  const tab = $("diagnostics-" + section + "-tab");
+  tab.onclick = () => selectDiagnosticsSection(section);
+  tab.onkeydown = (event) => {
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? 1
+          : event.key === "ArrowRight" || event.key === "ArrowLeft"
+            ? 1 - index
+            : null;
+    if (next === null || event.altKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    selectDiagnosticsSection(diagnosticsSections[next]);
+    $("diagnostics-" + diagnosticsSections[next] + "-tab").focus({
+      preventScroll: true,
+    });
+  };
+}
 function studioRoute() {
-  if (location.pathname === "/diagnostics") return { tab: "diagnostics" };
+  if (location.pathname === "/diagnostics")
+    return {
+      tab: "diagnostics",
+      section: new URLSearchParams(location.search).get("section"),
+    };
   if (location.pathname === "/settings") {
     const section =
       new URLSearchParams(location.search).get("section") ??
@@ -1113,11 +1152,18 @@ function navigateStudio(path) {
   if (location.pathname + location.search + location.hash !== path)
     history.pushState(null, "", path);
 }
-function restoreStudioRoute() {
+function restoreStudioRoute(restartDiagnostics = false) {
   const route = studioRoute();
   if (route.legacy) history.replaceState(null, "", "/diagnostics");
   if (route.tab === "settings") selectSettingsSection(route.section, false);
-  selectStudioTab(route.tab, false);
+  if (route.tab === "diagnostics")
+    selectDiagnosticsSection(route.section, false);
+  if (
+    restartDiagnostics ||
+    route.tab !== "diagnostics" ||
+    $("diagnostics").hidden
+  )
+    selectStudioTab(route.tab, false);
   if (route.tab === "coach") {
     const member = route.member
       ? members.find((m) => m.member_ref === route.member)
@@ -1161,7 +1207,7 @@ function selectStudioTab(tab, navigate = true) {
           ? "/chat/member/" + encodeURIComponent(selectedMember.member_ref)
           : "/chat/operator"
         : tab === "diagnostics"
-          ? "/diagnostics"
+          ? "/diagnostics?section=" + diagnosticsSection
           : settingsPath(),
     );
 }
@@ -1236,6 +1282,7 @@ function renderPerformance() {
         performanceSelection = { key: r.key, name: r.name };
         $("logLevel").value = "all";
         renderLogs();
+        selectDiagnosticsSection("logs");
         $("performanceClear").focus({ preventScroll: true });
       };
       const primary = document.createElement("strong");
@@ -1260,7 +1307,7 @@ function renderPerformance() {
   $("performanceClear").hidden = !performanceSelection;
   $("performanceSelection").textContent = performanceSelection
     ? `Call: ${performanceSelection.name}. Level: ${$("logLevel").selectedOptions[0].textContent}. Selecting a call switches to All levels; changing Level narrows its receipts. Clear keeps the current level. Raw exports contain only shown rows.`
-    : "Select a call above to inspect its receipts across All levels. Raw exports contain only shown rows.";
+    : "Select a call in Performance to inspect its receipts across All levels. Raw exports contain only shown rows.";
 }
 $("performanceSort").onchange = renderPerformance;
 $("performanceClear").onclick = () => {

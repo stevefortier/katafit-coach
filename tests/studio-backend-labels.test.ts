@@ -89,6 +89,7 @@ test("Client receipts survive disk and HTTP into named browser rows with exact I
         "Backend call — name unavailable · INFO",
       ),
     );
+    await page.locator("#diagnostics-performance-tab").click();
     assert.match(
       await page
         .locator("#performanceRows article")
@@ -113,6 +114,7 @@ test("Client receipts survive disk and HTTP into named browser rows with exact I
           "studio_operator_list_members",
         );
     }
+    await page.locator("#diagnostics-logs-tab").click();
     await page.locator("#logLevel").selectOption("verbose");
     assert.equal(await page.locator("#logRows article").count(), 6);
     assert.equal(

@@ -6,7 +6,7 @@ import { chromium, type Page } from "playwright-core";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, section = "performance") {
   const dir = await mkdtemp(tmpdir() + "/performance-loading-");
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new Store(dir);
@@ -40,10 +40,158 @@ async function setup(t: TestContext) {
     };
     HTMLAnchorElement.prototype.click = () => {};
   });
-  await page.goto(app.origin + "/diagnostics#" + store.secrets.admin);
+  await page.goto(
+    app.origin +
+      "/diagnostics" +
+      (section ? "?section=" + section : "") +
+      "#" +
+      store.secrets.admin,
+  );
   await page.waitForFunction(() => (window as any).pendingLogs.length === 1);
   return { page, adminKey: store.secrets.admin };
 }
+test("Diagnostics tabs default to Logs and retain one pending snapshot across keyboard and history navigation", async (t) => {
+  const { page } = await setup(t, "");
+  assert.equal(await page.locator("#logsView").isVisible(), true);
+  assert.equal(await page.locator("#backendPerformance").isVisible(), false);
+  assert.equal(await page.locator("#logLevel").inputValue(), "info");
+  await page.evaluate(() => {
+    (window as any).originalLogs = document.querySelector("#logsView");
+  });
+  const logs = page.locator("#diagnostics-logs-tab");
+  const performance = page.locator("#diagnostics-performance-tab");
+  await logs.focus();
+  for (const [key, section] of [
+    ["Home", "performance"],
+    ["End", "logs"],
+    ["ArrowRight", "performance"],
+    ["ArrowLeft", "logs"],
+  ]) {
+    await page.keyboard.press(key);
+    assert.equal(new URL(page.url()).search, "?section=" + section);
+    assert.equal(
+      await page
+        .locator("#diagnostics-" + section + "-tab")
+        .getAttribute("aria-selected"),
+      "true",
+    );
+    assert.equal(
+      await page
+        .locator("#diagnostics-" + section + "-tab")
+        .evaluate(
+          (el) =>
+            el === document.activeElement && (el as HTMLElement).tabIndex === 0,
+        ),
+      true,
+    );
+    assert.equal(await page.locator("#logRefresh").isVisible(), true);
+    assert.equal(await page.locator("#logPause").isVisible(), true);
+  }
+  await performance.click();
+  assert.equal(await page.locator("#logsView").isVisible(), false);
+  assert.equal(await page.locator("#backendPerformance").isVisible(), true);
+  assert.equal(
+    await page.evaluate(() => (window as any).pendingLogs.length),
+    1,
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        (window as any).originalLogs === document.querySelector("#logsView"),
+    ),
+    true,
+  );
+  await page.goBack();
+  assert.equal(await logs.getAttribute("aria-selected"), "true");
+  assert.equal(
+    await page.evaluate(() => (window as any).pendingLogs.length),
+    1,
+  );
+  await page.goForward();
+  assert.equal(await performance.getAttribute("aria-selected"), "true");
+  assert.equal(
+    await page.evaluate(() => (window as any).pendingLogs.length),
+    1,
+  );
+  await page.reload();
+  await page.waitForFunction(() => (window as any).pendingLogs.length === 1);
+  assert.equal(await performance.getAttribute("aria-selected"), "true");
+  await logs.click();
+  await page.reload();
+  await page.waitForFunction(() => (window as any).pendingLogs.length === 1);
+  assert.equal(await logs.getAttribute("aria-selected"), "true");
+});
+
+test("performance drilldown opens Logs across levels and preserves filters and panels", async (t) => {
+  const { page } = await setup(t);
+  await settle(page, snapshot);
+  await page.locator("#performanceRows button").click();
+  assert.equal(new URL(page.url()).search, "?section=logs");
+  assert.equal(await page.locator("#logsView").isVisible(), true);
+  assert.equal(await page.locator("#performanceClear").isVisible(), true);
+  assert.equal(
+    await page
+      .locator("#performanceClear")
+      .evaluate((el) => el === document.activeElement),
+    true,
+  );
+  assert.equal(await page.locator("#logLevel").inputValue(), "all");
+  assert.equal(await page.locator("#logRows article").count(), 1);
+  await page.locator("#logLevel").selectOption("warn");
+  await page.locator("#diagnostics-performance-tab").click();
+  await page.locator("#performanceSort").selectOption("timeouts");
+  await page.locator("#diagnostics-logs-tab").click();
+  assert.equal(await page.locator("#logLevel").inputValue(), "warn");
+  assert.equal(await page.locator("#performanceClear").isVisible(), true);
+  assert.equal(await page.locator("#logRows article").count(), 0);
+  await page.locator("#performanceClear").click();
+  assert.equal(await page.locator("#performanceClear").isVisible(), false);
+  assert.equal(await page.locator("#logLevel").inputValue(), "warn");
+  await page.locator("#diagnostics-performance-tab").click();
+  assert.equal(await page.locator("#performanceSort").inputValue(), "timeouts");
+});
+
+test("invalid Diagnostics section falls back to Logs and locked Performance deep link restores", async (t) => {
+  const { page, adminKey } = await setup(t, "invalid");
+  assert.equal(await page.locator("#logsView").isVisible(), true);
+  assert.equal(await page.locator("#backendPerformance").isVisible(), false);
+  await page.locator("#lockStudio").click();
+  await page.goto(new URL("/diagnostics?section=performance", page.url()).href);
+  assert.equal(await page.locator("#diagnostics").isVisible(), false);
+  await page.locator("#adminKey").fill(adminKey);
+  await page.locator("#unlock").click();
+  await page.waitForFunction(() => (window as any).pendingLogs.length === 1);
+  assert.equal(await page.locator("#backendPerformance").isVisible(), true);
+  assert.equal(await page.locator("#logsView").isVisible(), false);
+  assert.equal(new URL(page.url()).search, "?section=performance");
+});
+
+for (const section of ["performance", "logs"]) {
+  test(`same-document unlock restarts live Diagnostics in ${section}`, async (t) => {
+    const { page, adminKey } = await setup(t, section);
+    await settle(page, snapshot);
+    await page.locator("#lockStudio").click();
+    assert.equal(await page.locator("#performanceExport").isDisabled(), true);
+    await page.locator("#adminKey").fill(adminKey);
+    await page.locator("#unlock").click();
+    await page.locator("#studio").waitFor({ state: "visible" });
+    await page.waitForFunction(
+      () => (window as any).pendingLogs.length === 1,
+      undefined,
+      { timeout: 2000 },
+    );
+    assert.equal(
+      await page
+        .locator("#diagnostics-" + section + "-tab")
+        .getAttribute("aria-selected"),
+      "true",
+    );
+    await settle(page, snapshot);
+    assert.equal(await page.locator("#performanceExport").isDisabled(), false);
+    assert.equal(await page.locator("#logRows article").count(), 1);
+  });
+}
+
 async function settle(page: Page, body: any, status = 200) {
   await page.evaluate(
     ({ body, status }) => {
@@ -57,8 +205,11 @@ async function settle(page: Page, body: any, status = 200) {
   });
 }
 async function controls(page: Page) {
+  await page.locator("#diagnostics-performance-tab").click();
   await page.locator("#performanceSort").selectOption("calls");
+  await page.locator("#diagnostics-logs-tab").click();
   await page.locator("#logLevel").selectOption("all");
+  await page.locator("#diagnostics-performance-tab").click();
 }
 async function blocked(page: Page) {
   assert.equal(await page.locator("#performanceExport").isDisabled(), true);

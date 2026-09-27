@@ -499,7 +499,44 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
         >
           <h2>Diagnostics</h2>
           <p id="lastError" role="status">No retained error.</p>
-          <section id="backendPerformance" aria-labelledby="performanceHeading">
+          <div
+            class="settings-tabs"
+            role="tablist"
+            aria-label="Diagnostics sections"
+          >
+            <button
+              id="diagnostics-performance-tab"
+              class="secondary"
+              role="tab"
+              aria-selected="false"
+              aria-controls="backendPerformance"
+              tabindex="-1"
+            >
+              Performance
+            </button>
+            <button
+              id="diagnostics-logs-tab"
+              role="tab"
+              aria-selected="true"
+              aria-controls="logsView"
+              tabindex="0"
+            >
+              Logs
+            </button>
+          </div>
+          <div class="log-controls">
+            <button id="logRefresh" class="secondary">Refresh</button>
+            <button id="logPause" class="secondary" aria-pressed="false">
+              Pause live
+            </button>
+          </div>
+          <section
+            id="backendPerformance"
+            role="tabpanel"
+            aria-labelledby="diagnostics-performance-tab"
+            tabindex="0"
+            hidden
+          >
             <h3 id="performanceHeading">Backend performance</h3>
             <p class="hint">
               All retained backend receipts, independent of log level.
@@ -542,7 +579,12 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               aria-label="Backend call breakdown"
             ></div>
           </section>
-          <div id="logsView">
+          <div
+            id="logsView"
+            role="tabpanel"
+            aria-labelledby="diagnostics-logs-tab"
+            tabindex="0"
+          >
             <h3>Raw diagnostic logs</h3>
             <p id="performanceSelection" role="status"></p>
             <button id="performanceClear" class="secondary" hidden>
@@ -553,10 +595,6 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               or downloaded JSON before sharing it.
             </p>
             <div class="log-controls">
-              <button id="logRefresh" class="secondary">Refresh</button>
-              <button id="logPause" class="secondary" aria-pressed="false">
-                Pause live
-              </button>
               <label
                 >Level<select id="logLevel">
                   <option value="all">All levels</option>
