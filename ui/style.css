@@ -3,6 +3,92 @@
   display: none;
 }
 
+.native-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+.native-toolbar button {
+  flex: 0 0 auto;
+  min-height: 44px;
+  margin: 0;
+  white-space: nowrap;
+}
+.native-toolbar .native-icon {
+  width: 44px;
+  padding: 0;
+  font-size: 20px;
+  color: var(--muted);
+}
+.native-toolbar #nativeConnection[data-state="connected"] {
+  color: #86efac;
+}
+.native-toolbar #nativeConnection[data-state="starting"],
+.native-toolbar #nativeConnection[data-state="stopping"] {
+  color: #93c5fd;
+}
+.native-toolbar #nativeConnection[data-state="disconnected"],
+.native-toolbar #nativeConnection[data-state="stop-unconfirmed"] {
+  color: #fcd34d;
+}
+.native-toolbar #nativeConnection[data-state="error"],
+.native-toolbar #nativeConnection[data-state="unavailable"],
+.native-toolbar #nativeConnection[data-state="overflow"] {
+  color: #fca5a5;
+}
+.native-label-compact {
+  display: none;
+}
+.native-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.native-tooltip {
+  position: fixed;
+  z-index: 20;
+  width: 360px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0008;
+  font-size: 13px;
+}
+.native-tooltip p {
+  margin: 0;
+  color: inherit;
+}
+.native-tooltip p + p {
+  margin-top: 8px;
+}
+@media (max-width: 600px) {
+  .native-toolbar {
+    gap: 4px;
+  }
+  .native-toolbar button {
+    padding: 8px;
+    font-size: 12px;
+  }
+  .native-label-full {
+    display: none;
+  }
+  .native-label-compact {
+    display: inline;
+  }
+}
+
 #nativeTerminal {
   height: 540px;
   max-width: 100%;
@@ -473,17 +559,107 @@ pre {
   margin: 0;
   font-size: 13px;
 }
-#notice {
-  position: sticky;
-  bottom: 15px;
-  background: #242424;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  padding: 12px 18px;
-  min-height: 0;
+/* Shared Studio notice: directly beneath the sticky header, above the
+   primary tabs. Collapses to nothing when empty. */
+html {
+  scroll-padding-top: var(--notice-offset, 0px);
 }
-#notice:empty {
+#noticeBar {
+  position: sticky;
+  top: var(--header-offset, 0px);
+  z-index: 9;
+  margin: 0;
+}
+#noticeBar[data-severity] {
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 0;
+  padding: 10px 14px;
+  --notice-fg: var(--accent);
+  --notice-edge: var(--line);
+  --notice-bg: #242424;
+  color: var(--notice-fg);
+  border-color: var(--notice-edge);
+  background: var(--notice-bg);
+}
+#noticeBar[data-severity="success"] {
+  --notice-fg: #9ee3ae;
+  --notice-edge: #3f8a5c;
+  --notice-bg: #13291c;
+}
+#noticeBar[data-severity="error"] {
+  --notice-fg: #ffb3ac;
+  --notice-edge: #c85c57;
+  --notice-bg: #361b1a;
+}
+#noticeBar[data-severity="warning"] {
+  --notice-fg: #ffda8b;
+  --notice-edge: #b08638;
+  --notice-bg: #2f2616;
+}
+#noticeBar[data-severity="info"],
+#noticeBar[data-severity="progress"] {
+  --notice-fg: #a8d8ff;
+  --notice-edge: #4f8bbb;
+  --notice-bg: #13283a;
+}
+/* An empty notice must stay a plain block so surrounding margins collapse. */
+#noticeBar[data-severity] #noticeRegion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+#noticeIcon {
   display: none;
+}
+#noticeBar[data-severity] #noticeIcon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  align-self: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid currentColor;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+#noticeBar[data-severity="success"] #noticeIcon::before {
+  content: "✓" / "";
+}
+#noticeBar[data-severity="error"] #noticeIcon::before {
+  content: "✕" / "";
+}
+#noticeBar[data-severity="warning"] #noticeIcon::before {
+  content: "!" / "";
+}
+#noticeBar[data-severity="info"] #noticeIcon::before {
+  content: "i" / "";
+}
+#noticeBar[data-severity="progress"] #noticeIcon::before {
+  content: "…" / "";
+}
+#noticeLabel {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+#notice {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+/* A sticky notice must never cover the page; long text scrolls inside. */
+#noticeBar[data-severity] #notice {
+  max-height: 35vh;
+  overflow-y: auto;
 }
 @media (max-width: 760px) {
   #settingsPanel [id] {

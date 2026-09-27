@@ -1,3 +1,4 @@
+import { isMainDescendant } from "./auto.js";
 import { randomUUID } from "node:crypto";
 import { failureReason, type FailureReason } from "./failure.js";
 export interface LastOperation {
@@ -15,6 +16,55 @@ export class Updates {
   latest: string | null = null;
   checkedAt = 0;
   checking = false;
+  sourceRetryAt?: number | null;
+  private cooldownGeneration = 0;
+  onSourceCooldown?: () => void;
+  readonly sourceRequest: typeof fetch = async (input, init) => {
+    if (this.sourceRetryAt && Date.now() < this.sourceRetryAt)
+      throw new Error("RATE_LIMITED");
+    const response = await this.request(input, init);
+    if ([403, 429].includes(response.status)) {
+      const limited =
+        response.status === 429 ||
+        response.headers.get("x-ratelimit-remaining") === "0" ||
+        response.headers.has("retry-after");
+      if (limited) {
+        const now = Date.now();
+        let deadline = now + 900000;
+        const accept = (value: number) => {
+          // Reject deadlines that would overflow Node's signed 32-bit timer.
+          if (
+            Number.isSafeInteger(value) &&
+            value - now <= 2147483647 &&
+            value > deadline
+          )
+            deadline = value;
+        };
+        const retry = response.headers.get("retry-after") ?? "";
+        if (/^\d+$/.test(retry)) accept(now + Number(retry) * 1000);
+        else if (
+          /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(
+            retry,
+          )
+        ) {
+          const date = Date.parse(retry);
+          if (Number.isFinite(date) && new Date(date).toUTCString() === retry)
+            accept(date);
+        }
+        const reset = response.headers.get("x-ratelimit-reset") ?? "";
+        if (/^\d+$/.test(reset)) accept(Number(reset) * 1000);
+        this.cooldownGeneration++;
+        this.sourceRetryAt = Math.max(this.sourceRetryAt ?? 0, deadline);
+        this.latest = null;
+        this.checkError = "RATE_LIMITED";
+        this.guidance = "GitHub rate limit. Source check failed.";
+        this.onSourceCooldown?.();
+      }
+      await response.body?.cancel();
+      throw new Error(limited ? "RATE_LIMITED" : "FORBIDDEN");
+    }
+    return response;
+  };
   checkError: "RATE_LIMITED" | "FORBIDDEN" | "UNAVAILABLE" | null = null;
   // Only the stable owner sets this, at the point it arms its actual timer.
   // Missing means an older owner, not a deadline inferred from checkedAt.
@@ -42,6 +92,21 @@ export class Updates {
   accepted: Promise<void> = Promise.resolve();
   lastOperation: LastOperation | undefined;
   guidance = "Use a managed Linux launcher to enable upgrades.";
+  private comparison?: { key: string; result: Promise<boolean> };
+  async isDescendant(installed: string, latest: string): Promise<boolean> {
+    if (this.sourceRetryAt && Date.now() < this.sourceRetryAt) return false;
+    const key = `${installed}...${latest}`;
+    if (this.comparison?.key === key) return this.comparison.result;
+    const entry = {
+      key,
+      result: isMainDescendant(installed, latest, this.sourceRequest),
+    };
+    this.comparison = entry;
+    const result = await entry.result;
+    // Keep only proven ancestry, never cache a transport denial as eligibility.
+    if (!result && this.comparison === entry) this.comparison = undefined;
+    return result;
+  }
   private pending?: Promise<ReturnType<Updates["snapshot"]>>;
   constructor(
     public installed: string | null,
@@ -62,6 +127,7 @@ export class Updates {
       checkedAt: this.checkedAt,
       checking: this.checking,
       checkError: this.checkError,
+      sourceRetryAt: this.sourceRetryAt,
       autoSchedule: this.autoSchedule,
       supported: !!this.applyTarget,
       applying: this.applying,
@@ -199,16 +265,22 @@ export class Updates {
       this.applying = false;
     }
   }
-  async check() {
+  async check(automatic = false) {
     if (this.pending) return this.pending;
-    if (this.checkedAt && Date.now() - this.checkedAt < 60000)
+    if (this.sourceRetryAt && Date.now() < this.sourceRetryAt)
+      return this.snapshot();
+    if (
+      this.checkedAt &&
+      Date.now() - this.checkedAt < (automatic ? 900000 : 60000)
+    )
       return this.snapshot();
     this.checkedAt = Date.now();
     this.latest = null;
     this.checking = true;
+    const generation = this.cooldownGeneration;
     this.pending = (async () => {
       try {
-        const response = await this.request(
+        const response = await this.sourceRequest(
           "https://api.github.com/repos/stevefortier/katafit-coach/git/ref/heads/main",
           {
             headers: {
@@ -219,16 +291,6 @@ export class Updates {
             redirect: "error",
           },
         );
-        if ([403, 429].includes(response.status)) {
-          await response.body?.cancel();
-          throw new Error(
-            response.status === 429 ||
-            response.headers.get("x-ratelimit-remaining") === "0" ||
-            response.headers.has("retry-after")
-              ? "RATE_LIMITED"
-              : "FORBIDDEN",
-          );
-        }
         const chunks: Uint8Array[] = [];
         let size = 0;
         if (!response.body) throw new Error();
@@ -247,7 +309,10 @@ export class Updates {
         const text = Buffer.concat(chunks).toString("utf8");
         const data = JSON.parse(text) as { object?: { sha: unknown } };
         if (!response.ok || !validSha(data.object?.sha)) throw new Error();
+        if (generation !== this.cooldownGeneration)
+          throw new Error("RATE_LIMITED");
         this.latest = data.object.sha;
+        this.sourceRetryAt = null;
         this.checkError = null;
         this.guidance = this.applyTarget
           ? this.installed === this.latest
@@ -255,6 +320,8 @@ export class Updates {
             : "New source available. Pause worker and finish preview before upgrading."
           : "Use a managed Linux launcher to enable upgrades.";
       } catch (error) {
+        if (generation !== this.cooldownGeneration)
+          error = new Error("RATE_LIMITED");
         this.checkError =
           error instanceof Error &&
           (error.message === "RATE_LIMITED" || error.message === "FORBIDDEN")

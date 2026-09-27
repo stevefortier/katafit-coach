@@ -9,8 +9,105 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     lose;
   // The server heartbeats every 10 s; longer silence means the link is dead.
   const SILENCE_MS = 25000;
-  const status = (text) => ($("nativeStatus").textContent = text);
   const attachments = operatorAttachments($, fetchAttachment);
+  let openTooltip,
+    pinned = false;
+  const closeTooltip = () => {
+    if (!openTooltip) return;
+    openTooltip.tip.hidden = true;
+    openTooltip.button.setAttribute("aria-expanded", "false");
+    openTooltip = undefined;
+    pinned = false;
+  };
+  const positionTooltip = () => {
+    if (!openTooltip) return;
+    const { button, tip } = openTooltip;
+    const viewport = window.visualViewport;
+    const left = viewport?.offsetLeft ?? 0;
+    const top = viewport?.offsetTop ?? 0;
+    const width = viewport?.width ?? innerWidth;
+    const height = viewport?.height ?? innerHeight;
+    tip.style.maxWidth = `${width - 16}px`;
+    tip.style.maxHeight = `${height - 16}px`;
+    const anchor = button.getBoundingClientRect();
+    const box = tip.getBoundingClientRect();
+    tip.style.left = `${Math.max(left + 8, Math.min(anchor.right - box.width, left + width - box.width - 8))}px`;
+    tip.style.top = `${Math.max(top + 8, Math.min(anchor.bottom, top + height - box.height - 8))}px`;
+  };
+  for (const id of ["nativeConnection", "nativeInfo"]) {
+    const button = $(id),
+      tip = $(id + "Tooltip");
+    const show = () => {
+      if (openTooltip?.button !== button) closeTooltip();
+      openTooltip = { button, tip };
+      tip.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      positionTooltip();
+    };
+    button.addEventListener("pointerenter", (event) => {
+      if (event.pointerType !== "touch") show();
+    });
+    button.addEventListener("focus", show);
+    button.addEventListener("click", () => {
+      if (openTooltip?.button === button && pinned) closeTooltip();
+      else {
+        show();
+        pinned = true;
+      }
+    });
+    const leave = (event) => {
+      if (openTooltip?.button !== button) return;
+      if (
+        button.contains(event.relatedTarget) ||
+        tip.contains(event.relatedTarget)
+      )
+        return;
+      if (
+        event.type === "pointerleave" &&
+        (pinned || document.activeElement === button)
+      )
+        return;
+      closeTooltip();
+    };
+    button.addEventListener("pointerleave", leave);
+    button.addEventListener("focusout", leave);
+    tip.addEventListener("pointerleave", leave);
+  }
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeTooltip();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (
+      openTooltip &&
+      !openTooltip.button.contains(event.target) &&
+      !openTooltip.tip.contains(event.target)
+    )
+      closeTooltip();
+  });
+  window.addEventListener("resize", positionTooltip);
+  window.addEventListener("scroll", positionTooltip, true);
+  window.visualViewport?.addEventListener("resize", positionTooltip);
+  window.visualViewport?.addEventListener("scroll", positionTooltip);
+  const status = (state, text) => {
+    const labels = {
+      stopped: ["Stopped", "■"],
+      starting: ["Starting", "◷"],
+      connected: ["Connected", "✓"],
+      disconnected: ["Disconnected", "○"],
+      error: ["Error", "!"],
+      unavailable: ["Unavailable", "×"],
+      overflow: ["Overflow", "!"],
+      stopping: ["Stopping", "◷"],
+      "stop-unconfirmed": ["Stop unconfirmed", "?"],
+    };
+    const [label, icon] = labels[state];
+    $("nativeStatus").textContent = text;
+    $("nativeConnectionTooltip").textContent = text;
+    $("nativeConnection").dataset.state = state;
+    $("nativeConnection").setAttribute("aria-label", "Pi connection: " + label);
+    $("nativeStateIcon").textContent = icon;
+    positionTooltip();
+  };
   function reset() {
     resetTerminal();
     attachments.clear();
@@ -21,6 +118,16 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     // snapshot of the same session (after reconnecting) cancels it.
     if (socket) attachments.detached();
     lose = undefined;
+    closeTooltip();
+    if (
+      ["connected", "starting", "disconnected"].includes(
+        $("nativeConnection").dataset.state,
+      )
+    )
+      status(
+        "disconnected",
+        "Disconnected from this terminal. Start or reconnect Pi to check session availability. No input is replayed.",
+      );
     socket?.close();
     socket = undefined;
     terminal?.dispose();
@@ -52,7 +159,7 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     pending = true;
     $("nativeStart").disabled = true;
     const generation = epoch;
-    status("Starting isolated Pi…");
+    status("starting", "Starting isolated Pi…");
     try {
       const ticket = await api("terminal/ticket", {});
       if (generation !== epoch || !authorized()) return;
@@ -71,6 +178,7 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
         location.origin.replace(/^http/, "ws") + ticket.path,
       );
       const ws = socket;
+      let failed = false;
       let lost = false,
         watchdog;
       const heard = () => {
@@ -94,7 +202,7 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
         if (generation === epoch) {
           pending = false;
           $("nativeStart").disabled = false;
-          status(message);
+          if (!failed) status("disconnected", message);
         }
       };
       lose = markLost;
@@ -113,8 +221,10 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
         if (message.type === "output") {
           queued += message.data.length;
           if (queued > 256 * 1024) {
+            failed = true;
             ws.close();
             status(
+              "overflow",
               "Terminal output overflow. Reconnect; input is never replayed.",
             );
             return;
@@ -123,7 +233,8 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
             queued -= message.data.length;
           });
         } else if (message.type === "ready") {
-          status("Connected · ephemeral workspace · /model · /mcp");
+          failed = false;
+          status("connected", "Connected to isolated Pi.");
           pending = false;
           $("nativeStart").disabled = false;
           resize();
@@ -147,7 +258,10 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
             message.context_expires_in_ms,
           );
         else if (message.type === "attachments-cleared") attachments.clear();
-        else if (message.type === "error") status(message.message);
+        else if (message.type === "error") {
+          failed = true;
+          status("error", message.message);
+        }
       };
       ws.onclose = (event) => {
         // Policy close means the session ended; its attachments are gone.
@@ -157,13 +271,17 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
         );
       };
       ws.onerror = () => {
-        if (generation === epoch) status("Native terminal connection failed.");
+        if (generation === epoch) {
+          failed = true;
+          status("error", "Native terminal connection failed.");
+        }
       };
     } catch {
       if (generation === epoch) {
         pending = false;
         $("nativeStart").disabled = false;
         status(
+          "unavailable",
           "Native Pi unavailable. Docker and the pinned sandbox image are required.",
         );
       }
@@ -171,14 +289,18 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
   };
   $("nativeStop").onclick = async () => {
     reset();
-    status("Stopping…");
+    status("stopping", "Stopping…");
     try {
       await api("terminal/stop", {});
       status(
+        "stopped",
         "Stopped · ephemeral workspace erased. Committed backend actions are not undone.",
       );
     } catch {
-      status("Stop unconfirmed. Do not retry a possibly committed action.");
+      status(
+        "stop-unconfirmed",
+        "Stop unconfirmed. Do not retry a possibly committed action.",
+      );
     }
   };
   window.addEventListener("offline", () =>

@@ -110,9 +110,10 @@ test("Settings preview composer retains Enter, Shift+Enter and IME behavior", as
     await page.locator("#adminKey").fill("synthetic-admin");
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
-    assert.match(
-      await page.locator("#operatorView h2").innerText(),
-      /^Operator · Native Pi$/,
+    assert.equal(await page.locator("#operatorView h2").count(), 0);
+    assert.equal(
+      await page.getByRole("group", { name: "Native Pi controls" }).isVisible(),
+      true,
     );
     assert.doesNotMatch(
       await page.locator("#operatorView").innerText(),
