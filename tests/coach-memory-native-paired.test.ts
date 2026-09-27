@@ -57,8 +57,11 @@ test(
       const toolResults = body.messages
         .slice(userIndex + 1)
         .filter((m: any) => m.role === "tool");
-      const second = JSON.stringify(body.messages[userIndex]).includes(
-        "second synthetic",
+      const second = /second synthetic|resumed synthetic/.test(
+        JSON.stringify(body.messages[userIndex]),
+      );
+      const resumed = JSON.stringify(body.messages[userIndex]).includes(
+        "resumed synthetic",
       );
       if (!second && !toolResults.length)
         return res.end(
@@ -66,7 +69,11 @@ test(
         );
       res.end(
         answer(
-          second ? "MEMORY_PAIRED_SECOND_DONE" : "MEMORY_PAIRED_FIRST_DONE",
+          resumed
+            ? "MEMORY_PAIRED_RESUMED_DONE"
+            : second
+              ? "MEMORY_PAIRED_SECOND_DONE"
+              : "MEMORY_PAIRED_FIRST_DONE",
         ),
       );
     });
@@ -227,7 +234,7 @@ test(
         .toArray();
       // Verify the actual runtime sandbox configuration by its task-owned name,
       // never requiring other users' native containers to be absent.
-      const containerIds = execFileSync(
+      let containerIds = execFileSync(
         "docker",
         [
           "ps",
@@ -279,6 +286,112 @@ test(
             .countDocuments({ status: "committed" })) === 2,
         "second delivered turn retention settles before correction",
       );
+      // Stop retains an authorized archive; a new exact-image Pi resumes its
+      // host-observed prefix under a fresh backend successor without replay.
+      assert.equal(
+        (
+          await fetch(app.origin + "/api/terminal/stop", {
+            method: "POST",
+            headers,
+            body: "{}",
+          })
+        ).status,
+        200,
+      );
+      const history = (await (
+        await fetch(app.origin + "/api/terminal/history", { headers })
+      ).json()) as any;
+      const historyId = history.sessions[0].id;
+      const archiveRead = await fetch(
+        app.origin + "/api/terminal/history/" + historyId,
+        { headers },
+      );
+      assert.equal(archiveRead.status, 200);
+      assert.match(
+        JSON.stringify(await archiveRead.json()),
+        /MEMORY_PAIRED_SECOND_DONE/,
+      );
+      const resumedTicket = (await (
+        await fetch(app.origin + "/api/terminal/ticket", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).json()) as any;
+      closed = undefined;
+      output = "";
+      ws = new WebSocket(
+        app.origin.replace("http:", "ws:") + resumedTicket.path,
+        { origin: app.origin },
+      );
+      ws.on("message", (raw) => {
+        const message = JSON.parse(raw.toString());
+        if (message.type === "output")
+          output = (output + message.data).slice(-150000);
+        if (message.type === "error") errors.push(message.message);
+      });
+      ws.on("close", (code) => {
+        closed = code;
+      });
+      await new Promise<void>((resolve, reject) => {
+        ws!.once("open", resolve);
+        ws!.once("error", reject);
+      });
+      ws.send(JSON.stringify({ ticket: resumedTicket.ticket }));
+      await waitFor(() => output.includes(PI_READY), "resumed Pi ready");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      ws.send(
+        JSON.stringify({
+          type: "input",
+          data: "Perform a resumed synthetic turn using the original context.\r",
+        }),
+      );
+      await waitFor(
+        () => output.includes("MEMORY_PAIRED_RESUMED_DONE"),
+        "resumed turn",
+      );
+      const resumedBody = bodies.find(
+        (body) =>
+          !isExtraction(body) &&
+          JSON.stringify(
+            body.messages.findLast((m: any) => m.role === "user"),
+          ).includes("resumed synthetic"),
+      );
+      assert.match(JSON.stringify(resumedBody), /MEMORY_PAIRED_SECOND_DONE/);
+      assert.match(
+        systemOf(resumedBody),
+        /Operator prefers brief morning reports/,
+      );
+      await waitFor(
+        async () =>
+          (await db
+            .collection("coach_memory_captures")
+            .countDocuments({ status: "committed" })) === 3,
+        "resumed retention",
+      );
+      assert.equal(
+        (
+          await db
+            .collection("studio_operator_sessions")
+            .findOne({ status: "active" })
+        ).retained_memories[0].id,
+        String(record._id),
+      );
+      containerIds = execFileSync(
+        "docker",
+        [
+          "ps",
+          "--filter",
+          "ancestor=" + process.env.NATIVE_TEST_IMAGE!,
+          "--format",
+          "{{.ID}}",
+        ],
+        { encoding: "utf8" },
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      assert.equal(containerIds.length, 1);
       const auth = await service.authenticateCredential(token);
       await backend
         .require("./core/coachMemory")
@@ -319,11 +432,19 @@ test(
         .toArray();
       assert.equal(
         sessionsAfter.length,
-        sessionsBefore.length,
-        "no fresh session over retained Pi context",
+        sessionsBefore.length + 1,
+        "one authorized successor only; no fresh session after revocation",
       );
       assert.ok(
         sessionsAfter.every((session: any) => session.status !== "active"),
+      );
+      const revokedArchive = await fetch(
+        app.origin + "/api/terminal/history/" + historyId,
+        { headers },
+      );
+      assert.doesNotMatch(
+        JSON.stringify(await revokedArchive.json()),
+        /MEMORY_PAIRED_SECOND_DONE|MEMORY_PAIRED_RESUMED_DONE/,
       );
       assert.equal(
         await db.collection("studio_operator_actions").countDocuments(),

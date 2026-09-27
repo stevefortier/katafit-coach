@@ -156,7 +156,19 @@ function providerAssistantText(type: string, body: string): string {
           .filter((line) => line.startsWith("data:"))
           .map((line) => line.slice(5).trim())
           .filter((line) => line && line !== "[DONE]")
-          .map((line) => JSON.parse(line)?.choices?.[0])
+          .map((line) => JSON.parse(line))
+          // A usage trailer is metadata, not an assistant choice. Malformed
+          // events still fail completion admission below.
+          .filter(
+            (event) =>
+              !(
+                Array.isArray(event?.choices) &&
+                event.choices.length === 0 &&
+                event.usage &&
+                typeof event.usage === "object"
+              ),
+          )
+          .map((event) => event?.choices?.[0])
       : [JSON.parse(body)?.choices?.[0]];
     if (
       !chunks.length ||
@@ -1169,7 +1181,11 @@ export async function openNativeGateway(
     } catch (error) {
       throw authority(error);
     }
-    const memoryNotice = formatRecall(recalledMemories, "operator");
+    const memoryNotice =
+      formatRecall(recalledMemories, "operator") +
+      (session.memoryPartial()
+        ? "\nMemory recall covered a bounded page. Use coach_memory_search and continuation for deeper recall.\n"
+        : "");
     const bodyWithMemory = memoryNotice
       ? {
           ...request.body,
@@ -1408,16 +1424,6 @@ export async function openNativeGateway(
         },
       };
     }
-    try {
-      requestSignal?.throwIfAborted();
-      lifetime.throwIfAborted();
-      check();
-      await authorizeNative();
-      requestSignal?.throwIfAborted();
-      check();
-    } catch (error) {
-      throw authority(error, true);
-    }
     if (session.archive && hooks.onExchange) {
       const capture = await canonical(() =>
         historyLog.response(
@@ -1428,6 +1434,16 @@ export async function openNativeGateway(
       );
       if (capture && !historyMismatch) await hooks.onExchange(capture);
       check();
+    }
+    try {
+      requestSignal?.throwIfAborted();
+      lifetime.throwIfAborted();
+      check();
+      await authorizeNative();
+      requestSignal?.throwIfAborted();
+      check();
+    } catch (error) {
+      throw authority(error, true);
     }
     return {
       body,

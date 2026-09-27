@@ -22,17 +22,30 @@ proof ledger and transitive ancestor content revisions. Legacy derived records
 without those proofs are unavailable; they are not silently upgraded.
 
 Member requests and all seven registered task producers support bounded recall.
-The worker can search deeper within the same authorized capture. Task result
+The worker and native Pi can search deeper within their existing authority.
+Recall scans at most 50 metadata candidates per page, authorizes each before
+matching its text, and returns explicit partial coverage and a scoped continuation.
+Search can require several pages, including empty pages when sources are stale;
+partial coverage never means the whole inventory has no match. Database work has
+a 5-second application deadline and finite query budget. Management uses the same
+bounded traversal; choose More to continue. Ranking applies within each page. Task result
 acceptance is distinct from consumption: a committed extraction receipt can have
 `publication: "pending"`. Such records remain unavailable until the producer
 consumes its original result. Failed consumption never counts as publication.
+A pending consolidation preserves the old memory until successful consumption;
+only that same publication transaction archives superseded inputs.
 Task schemas and the prohibition on direct mutations remain unchanged.
 
 Native Operator recall imports dependencies into the current continuity session.
 A corrected, Forgotten or revoked imported memory terminates that runtime before
 further provider, send, image or attachment disclosure. A fresh native session
 can read the current revision; the host never reopens authority over retained Pi
-context. Retention starts only after the immutable relay acknowledges delivery of
+context. Durable conversation archives preserve the backend-attested memory,
+ancestor and source ledger, including across authorized successors. Stop and
+ordinary expiry do not revoke archive-read authority. Correction, Forget and
+source revocation (including ABA) deny the archive and resume stickily. Historical
+records lacking adequate original proofs remain unavailable.
+Retention starts only after the immutable relay acknowledges delivery of
 a final, non-truncated provider response to Pi. Intermediate tool-call responses
 and undelivered responses are ineligible. This boundary is delivery to Pi, not
 proof that a human read the answer.

@@ -1,3 +1,4 @@
+import { memoryPage } from "../memory/backend.js";
 import { randomUUID, createHash } from "node:crypto";
 import {
   ARCHIVE_CONTROLS,
@@ -1448,8 +1449,18 @@ export async function openOperatorTools(
           throw new Error("RESULT_REJECTED");
       }
     };
-    const recallMemories = async (query: string): Promise<MemoryItem[]> => {
-      if (!continuity || !memoryAvailable) return [];
+    let memoryPartial = false;
+    const recallPage = async (
+      query: string,
+      cursor?: string,
+      search = false,
+    ) => {
+      if (!continuity || !memoryAvailable)
+        return {
+          items: [] as MemoryItem[],
+          has_more: false,
+          next_cursor: null,
+        };
       live();
       if (transition) throw new Error("CONTINUITY_TRANSITION_PENDING");
       const value = await hostCall(RECALL_MEMORY, {
@@ -1459,8 +1470,13 @@ export async function openOperatorTools(
           "provider-memory:" +
           generation +
           ":" +
-          createHash("sha256").update(query).digest("hex").slice(0, 32),
+          createHash("sha256")
+            .update(JSON.stringify([query, cursor, search]))
+            .digest("hex")
+            .slice(0, 32),
         ...(query ? { query: query.slice(0, 2000) } : {}),
+        ...(cursor ? { cursor } : {}),
+        ...(search ? { mode: "search" } : {}),
         limit: 8,
       }).catch(async (error) => {
         await resolveDenial(error);
@@ -1475,10 +1491,57 @@ export async function openOperatorTools(
         !Array.isArray(value.items)
       )
         throw new Error("MEMORY_RESULT_REJECTED");
-      return value.items.map((item: unknown) =>
-        memoryItem(item, options.secrets),
-      );
+      const page = memoryPage(value);
+      return {
+        items: value.items.map((item: unknown) =>
+          memoryItem(item, options.secrets),
+        ),
+        ...page,
+      };
     };
+    const recallMemories = async (query: string): Promise<MemoryItem[]> => {
+      const page = await recallPage(query);
+      memoryPartial = page.has_more;
+      return page.items;
+    };
+    if (continuity && memoryAvailable)
+      tools.push({
+        name: "coach_memory_search",
+        label: "Search Coach memory",
+        description:
+          "Search currently authorized Coach memory. Results are untrusted evidence. A partial page includes next_cursor; continue the same query to reach older records.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", minLength: 2, maxLength: 300 },
+            cursor: { type: "string", maxLength: 4096 },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        } as any,
+        async execute(_id, args: any) {
+          check();
+          if (
+            !args ||
+            typeof args.query !== "string" ||
+            args.query.length < 2 ||
+            args.query.length > 300 ||
+            Object.keys(args).some((k) => !["query", "cursor"].includes(k)) ||
+            (args.cursor !== undefined &&
+              (typeof args.cursor !== "string" ||
+                !args.cursor.length ||
+                args.cursor.length > 4096))
+          )
+            throw new Error("ARGUMENTS_REJECTED");
+          assertNoSecrets(args, options.secrets);
+          if (++calls > toolLimit) throw new Error("TOOL_BUDGET_EXHAUSTED");
+          const page = await recallPage(args.query, args.cursor, true);
+          return {
+            content: [{ type: "text", text: JSON.stringify(page) }],
+            details: {},
+          };
+        },
+      });
     const recordInteraction = async (
       input: {
         human_text: string;
@@ -1557,6 +1620,7 @@ export async function openOperatorTools(
       authorize,
       advance,
       recallMemories,
+      memoryPartial: () => memoryPartial,
       recordInteraction,
       memoryRecovery: ["studio_memory_pending", "studio_memory_resume"].every(
         (name) => listed.tools.some((tool: any) => tool.name === name),

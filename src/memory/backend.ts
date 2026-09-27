@@ -339,7 +339,12 @@ export async function beginMemory(
 export async function recallMemory(
   client: Transport,
   capture: MemoryCapture,
-  input: { query?: string; limit?: number; mode?: "core" | "search" },
+  input: {
+    query?: string;
+    limit?: number;
+    mode?: "core" | "search";
+    cursor?: string;
+  },
   secrets: string[],
   budget?: number,
 ) {
@@ -350,10 +355,19 @@ export async function recallMemory(
       ...(input.query ? { query: input.query.slice(0, 2000) } : {}),
       ...(input.limit ? { limit: input.limit } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
+      ...(input.cursor ? { cursor: input.cursor } : {}),
     },
     budget,
   );
-  keys(value, ["protocol", "capture_id", "memory_epoch", "items", "coverage"]);
+  keys(value, [
+    "protocol",
+    "capture_id",
+    "memory_epoch",
+    "items",
+    "coverage",
+    "has_more",
+    "next_cursor",
+  ]);
   if (
     value.protocol !== MEMORY_PROTOCOL ||
     value.capture_id !== capture.capture_id
@@ -371,7 +385,12 @@ export async function recallMemory(
   )
     reject();
   if (Buffer.byteLength(JSON.stringify(recalled)) > 64 * 1024) reject();
-  return { items: recalled, memory_epoch: value.memory_epoch as number };
+  const page = memoryPage(value);
+  return {
+    items: recalled,
+    memory_epoch: value.memory_epoch as number,
+    ...page,
+  };
 }
 export async function commitMemory(
   client: Transport,
@@ -598,4 +617,23 @@ export async function resumeOperatorMemory(
     origin: value.origin as "operator_turn",
     evidence: value.evidence as Record<string, unknown>,
   };
+}
+
+/** Legacy peers have complete bounded replies; new peers explicitly paginate. */
+export function memoryPage(value: any): {
+  has_more: boolean;
+  next_cursor: string | null;
+} {
+  if (value.has_more === undefined && value.next_cursor === undefined)
+    return { has_more: false, next_cursor: null };
+  if (
+    typeof value.has_more !== "boolean" ||
+    (value.has_more
+      ? typeof value.next_cursor !== "string" ||
+        !value.next_cursor.length ||
+        value.next_cursor.length > 4096
+      : value.next_cursor !== null)
+  )
+    reject();
+  return { has_more: value.has_more, next_cursor: value.next_cursor };
 }

@@ -425,3 +425,111 @@ test(
     }
   },
 );
+
+for (const invalidation of ["forget", "correct", "archive"])
+  test(
+    `real backend deeper recall ${invalidation} prevents the next PiAdapter inference`,
+    { skip: !memoryBackendEnabled, timeout: 60000 },
+    async () => {
+      const { createServer } = await import("node:http");
+      const { answer, toolCall } = await import("./helpers/continuity.js");
+      const backend = await startBackend();
+      const { db, ObjectId, service } = backend;
+      const user = new ObjectId();
+      await db.collection("users").insertOne({
+        _id: user,
+        display_name: "Recall race",
+        timezone: "UTC",
+        external_coach_agent: { enabled: true },
+      });
+      const token = (await service.createCredential(String(user), {})).token;
+      const auth = await service.authenticateCredential(token),
+        memory = backend.require("./core/coachMemory");
+      const old = (
+        await memory.execute(auth, "studio_memory_create", {
+          audience: "member_private",
+          idempotency_key: "prior",
+          kind: "fact",
+          text: "Private morning observation.",
+          importance: 0.9,
+        })
+      ).item;
+      let calls = 0;
+      const server = createServer(async (req, res) => {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        const body = JSON.parse(raw);
+        calls++;
+        res.setHeader("content-type", "text/event-stream");
+        if (calls === 1) {
+          assert.match(systemOf(body), /Private morning observation/);
+          if (invalidation === "forget")
+            await memory.execute(auth, "studio_memory_forget", {
+              memory_id: old.id,
+            });
+          else
+            await memory.execute(auth, "studio_memory_update", {
+              memory_id: old.id,
+              expected_revision: old.revision,
+              ...(invalidation === "archive"
+                ? { status: "archived" }
+                : { text: "Corrected observation." }),
+            });
+          return res.end(
+            toolCall(
+              "coach_memory_search",
+              { query: "unrelatedquery" },
+              "deeper_exact_call",
+            ),
+          );
+        }
+        res.end(answer("Must never be inferred."));
+      });
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve),
+      );
+      const worker = new Worker({
+        origin: backend.origin,
+        token,
+        system: PERSONA,
+        complete: (context, signal, system, tools, _ref, budget) =>
+          complete(
+            {
+              baseUrl: `http://127.0.0.1:${(server.address() as any).port}/v1`,
+              model: "synthetic",
+              apiKey: "synthetic-deeper-probe-key",
+            },
+            system,
+            context,
+            signal,
+            tools,
+            budget,
+          ),
+      });
+      try {
+        await service.enqueueExternalCoachRequest(
+          String(user),
+          "Remember morning",
+          [],
+          { client_request_id: "recall-race" },
+        );
+        await assert.rejects(worker.pollOnce());
+        assert.equal(
+          calls,
+          1,
+          "no provider continuation after a stale deeper recall",
+        );
+        assert.equal(
+          await db
+            .collection("external_coach_requests")
+            .countDocuments({ status: "completed" }),
+          0,
+        );
+      } finally {
+        await worker.stop();
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+        await backend.close();
+      }
+    },
+  );

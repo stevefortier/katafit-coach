@@ -12,7 +12,15 @@ import {
   startProvider,
 } from "./helpers/memory-backend.js";
 
-for (const boundary of ["provider", "send", "image", "attachment"])
+for (const boundary of [
+  "provider",
+  "send",
+  "image",
+  "attachment",
+  "activity_image",
+  "activity_attachment",
+  "archive_response",
+])
   test(
     `paired native imported memory revocation blocks actual ${boundary} disclosure`,
     { skip: !memoryBackendEnabled, timeout: 60000 },
@@ -113,6 +121,16 @@ for (const boundary of ["provider", "send", "image", "attachment"])
           };
         };
         gateway = await openNativeGateway(store, undefined, {
+          ...(boundary === "archive_response"
+            ? {
+                onExchange: async (capture: any) => {
+                  if (capture.complete)
+                    await memory.execute(auth, "studio_memory_forget", {
+                      memory_id: remembered.id,
+                    });
+                },
+              }
+            : {}),
           onTerminate: () => {
             terminated++;
           },
@@ -129,7 +147,7 @@ for (const boundary of ["provider", "send", "image", "attachment"])
         const tool = (name: string, args: any) =>
           gateway!.handle({ kind: "tool", name, args });
         const text = (result: any) => JSON.parse(result.content[0].text);
-        await gateway.handle({
+        const firstDisclosure = gateway.handle({
           kind: "provider",
           body: {
             model: "synthetic",
@@ -138,6 +156,13 @@ for (const boundary of ["provider", "send", "image", "attachment"])
             ],
           },
         });
+        if (boundary === "archive_response") {
+          await assert.rejects(firstDisclosure);
+          assert.equal(provider.bodies.length, 1);
+          assert.equal(terminated, 1);
+          return;
+        }
+        await firstDisclosure;
         const session = await db
           .collection("studio_operator_sessions")
           .findOne({ status: "active" });
@@ -149,13 +174,33 @@ for (const boundary of ["provider", "send", "image", "attachment"])
           (item: any) => item.display_name === "Synthetic image member",
         );
         assert.ok(entry.images[0].media_ref);
-        const args = {
+        let args: any = {
           member_ref: entry.member_ref,
           media_ref: entry.images[0].media_ref,
         };
-        const image = text(
-          await tool("studio_operator_read_dojo_checkin_image", args),
-        );
+        let imageTool = "studio_operator_read_dojo_checkin_image";
+        if (boundary.startsWith("activity_")) {
+          const listing = text(
+            await tool("studio_operator_list_activities", {
+              member_ref: entry.member_ref,
+            }),
+          );
+          const activityRef = listing.items[0].activity_ref;
+          const detail = text(
+            await tool("studio_operator_read_activity", {
+              member_ref: entry.member_ref,
+              activity_ref: activityRef,
+              section: "media_files",
+            }),
+          );
+          args = {
+            member_ref: entry.member_ref,
+            activity_ref: activityRef,
+            media_ref: detail.items[0].media_ref,
+          };
+          imageTool = "studio_operator_read_activity_image";
+        }
+        const image = text(await tool(imageTool, args));
         assert.equal(imageReads, 1);
         const attachment = text(
           await tool("send_to_operator", {
@@ -189,10 +234,8 @@ for (const boundary of ["provider", "send", "image", "attachment"])
               text: "Must not publish stale advice.",
             }),
           );
-        else if (boundary === "image")
-          await assert.rejects(
-            tool("studio_operator_read_dojo_checkin_image", args),
-          );
+        else if (boundary === "image" || boundary === "activity_image")
+          await assert.rejects(tool(imageTool, args));
         else
           await assert.rejects(
             gateway.readAttachment(attachment.attachment_id),
