@@ -877,6 +877,9 @@ header {
 .studio-tabs button:focus-visible {
   outline-offset: -5px;
 }
+.studio-tabs #settingsTab {
+  margin-left: auto;
+}
 #coachPanel,
 #settingsPanel,
 #diagnostics {
@@ -894,7 +897,7 @@ header {
     padding: 16px;
   }
   .studio-tabs button {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     padding-inline: 6px;
     font-size: 12px;
   }

@@ -296,7 +296,7 @@ try {
   page.on("request", (r) => {
     if (r.url().endsWith("/api/logs")) logRequests++;
   });
-  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
   assert.equal(await page.locator("#logLevel").inputValue(), "info");
   await page.locator("#logLevel").selectOption("all");
   await page.waitForFunction(() =>
@@ -453,7 +453,7 @@ try {
   await page.getByRole("tab", { name: "Models", exact: true }).click();
   await entry("vision").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-vision-mobile.png" });
-  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.locator("#logsView").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/studio-logs-mobile.png" });
   assert.equal(
