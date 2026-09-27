@@ -623,6 +623,7 @@ export async function admin(
           if (
             typeof input.title !== "string" ||
             Buffer.byteLength(input.title) > 120 ||
+            /[\u0000-\u001f\u007f]/.test(input.title) ||
             !input.title.trim()
           )
             return send(400, { error: "INVALID_HISTORY_TITLE" });
@@ -1195,6 +1196,11 @@ export async function admin(
         busy = false;
       }
     } catch (e: any) {
+      if ((e as Error)?.message === "NATIVE_HISTORY_BUSY")
+        return send(409, {
+          error: "NATIVE_HISTORY_BUSY",
+          hint: "Stop Pi explicitly before selecting, creating or deleting a conversation.",
+        });
       const failure = safeError(e);
       logs.record({
         source: "studio",

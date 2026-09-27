@@ -51,6 +51,29 @@ function nativeEntries() {
   );
 }
 
+test("L2 confirmed delete removes its tombstone while stale writers still fail", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "history-tombstone-"));
+  try {
+    const store = new history.NativeSessionHistory(dir, scope);
+    const row = await store.create(snapshot);
+    await store.delete(row.id);
+    await store.confirmDelete(row.id);
+    const manifest = JSON.parse(
+      await readFile(
+        join(dir, "operator-sessions", `native-history-${scope}.json`),
+        "utf8",
+      ),
+    );
+    assert.deepEqual(manifest.tombstones, []);
+    await assert.rejects(
+      store.checkpoint(row.id, nativeEntries()),
+      /NATIVE_HISTORY_NOT_FOUND/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("host history checkpoint survives a new store instance with native structured entries and frozen snapshot", async () => {
   assert.equal(typeof history.NativeSessionHistory, "function");
   const dir = await mkdtemp(join(tmpdir(), "native-history-"));

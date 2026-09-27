@@ -7,6 +7,118 @@ import { attachmentHarness } from "./helpers/attachments.js";
 import { archiveFixture } from "./helpers/archive.js";
 import { NativeConversations } from "../src/sandbox/conversations.js";
 import sharp from "sharp";
+import { answer, toolCall } from "./helpers/continuity.js";
+
+test(
+  "served live history freeze notice preserves Pi connection and read-only archive",
+  { timeout: 30000 },
+  async () => {
+    let rounds = 0;
+    const h = await attachmentHarness(
+      {
+        provider: () =>
+          rounds++ === 0
+            ? toolCall("read", {}, "local")
+            : answer("Synthetic answer after sandbox output"),
+      },
+      archiveFixture,
+    );
+    const browser = await chromium.launch({
+      executablePath: chromePath(),
+      headless: true,
+      args: ["--no-sandbox"],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.goto(h.app.origin + "/chat/operator");
+      await page.locator("#adminKey").fill(h.f.store.secrets.admin);
+      await page.locator("#unlock").click();
+      await page.locator("#nativeStart").click();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector("#nativeConnection")
+            ?.getAttribute("data-state") === "connected",
+      );
+      const gateway = h.runtimes.at(-1).gateway;
+      const body = {
+        model: "approved-custom-model",
+        messages: [{ role: "user", content: "original" }],
+        stream: true,
+      };
+      await gateway.handle({ kind: "provider", body });
+      await gateway.handle({
+        kind: "provider",
+        body: {
+          ...body,
+          messages: [
+            ...body.messages,
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "local",
+                  type: "function",
+                  function: { name: "read", arguments: "{}" },
+                },
+              ],
+            },
+            {
+              role: "tool",
+              tool_call_id: "local",
+              content: "Synthetic untrusted sandbox output",
+            },
+          ],
+        },
+      });
+      await gateway.handle({
+        kind: "provider",
+        body: {
+          ...body,
+          messages: [{ role: "user", content: "rewritten compacted context" }],
+        },
+      });
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector("#nativeStatus")
+            ?.textContent?.includes("History is now read-only"),
+        null,
+        { timeout: 1500 },
+      );
+      assert.equal(
+        await page.locator("#nativeConnection").getAttribute("data-state"),
+        "connected",
+      );
+      await page.locator("#nativeHistoryToggle").click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#nativeHistoryNotice")
+          ?.textContent?.includes("history_mismatch"),
+      );
+      assert.doesNotMatch(
+        (await page.locator("#nativeHistoryLog").textContent())!,
+        /rewritten compacted/,
+      );
+      assert.match(
+        (await page.locator("#nativeHistoryLog").textContent())!,
+        /read · unverified sandbox output/,
+      );
+      if (process.env.HISTORY_SCREENSHOT_DIR) {
+        await mkdir(process.env.HISTORY_SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({
+          path: process.env.HISTORY_SCREENSHOT_DIR + "/live-freeze-notice.png",
+          fullPage: true,
+        });
+      }
+      await page.locator("#nativeStop").click();
+    } finally {
+      await browser.close();
+      await h.close();
+    }
+  },
+);
 
 test(
   "served history is current-authorized, inert and usable on desktop/mobile: Stop, rename, refresh/deep link, new, select and delete",
@@ -34,6 +146,23 @@ test(
           stream: true,
         },
       });
+      const activeId = (
+        (await (await h.get("/api/terminal/history")).json()) as any
+      ).sessions[0].id;
+      for (const [action, payload] of [
+        ["select", { id: null }],
+        ["delete", { id: activeId, confirm: true }],
+      ] as const) {
+        const response = await fetch(
+          h.app.origin + "/api/terminal/history/" + action,
+          { method: "POST", headers: h.headers, body: JSON.stringify(payload) },
+        );
+        assert.equal(
+          response.status,
+          409,
+          action + " must require explicit Stop",
+        );
+      }
       initial.ws.close();
       await fetch(h.app.origin + "/api/terminal/stop", {
         method: "POST",
@@ -100,6 +229,19 @@ test(
             .querySelector("#nativeConnection")
             ?.getAttribute("data-state") === "stopped",
       );
+      const invalidTitle = await fetch(
+        h.app.origin + "/api/terminal/history/rename",
+        {
+          method: "POST",
+          headers: h.headers,
+          body: JSON.stringify({ id, title: "bad\u0001title" }),
+        },
+      );
+      assert.equal(invalidTitle.status, 400);
+      assert.equal(
+        ((await invalidTitle.json()) as any).error,
+        "INVALID_HISTORY_TITLE",
+      );
       await page.locator("#nativeHistoryTitle").fill("Synthetic renamed");
       await page.locator("#nativeHistoryRename").click();
       await page.waitForFunction(() =>
@@ -149,6 +291,30 @@ test(
         () =>
           (document.querySelector("#nativeHistoryTitle") as HTMLInputElement)
             ?.value === "Synthetic renamed",
+      );
+      await controller.storage.change(id, (row) => {
+        row.blocked = "interrupted_turn";
+      });
+      await page.unroute("**/api/terminal/ticket");
+      await page.evaluate(() => {
+        (document.querySelector("#nativeHistoryPanel") as HTMLElement).hidden =
+          true;
+      });
+      await page.locator("#nativeStart").click();
+      await page.waitForFunction(
+        () =>
+          !(document.querySelector("#nativeHistoryPanel") as HTMLElement)
+            .hidden &&
+          document
+            .querySelector("#nativeHistoryNotice")
+            ?.textContent?.includes("interrupted_turn"),
+        null,
+        { timeout: 1500 },
+      );
+      assert.equal(
+        (await controller.list()).sessions.length,
+        1,
+        "unsafe default never silently replaced",
       );
       await page.locator("#nativeHistoryNew").click();
       assert.equal(await page.locator("#nativeHistoryLog").textContent(), "");

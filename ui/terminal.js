@@ -260,7 +260,11 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
             message.context_expires_in_ms,
           );
         else if (message.type === "attachments-cleared") attachments.clear();
-        else if (message.type === "error") {
+        else if (message.type === "history-notice") {
+          status("connected", message.message);
+          terminal.write("\r\n" + message.message + "\r\n");
+        } else if (message.type === "error") {
+          if (message.historyReadOnly) void history.refresh();
           failed = true;
           status("error", message.message);
         }
@@ -400,6 +404,9 @@ function operatorHistory($, api, authorized, resetTerminal) {
         const message = entry.message;
         node.textContent = text(
           message.role +
+            (message.details?.provenance === "sandbox_local"
+              ? " · " + message.toolName + " · unverified sandbox output"
+              : "") +
             "\n" +
             (typeof message.content === "string"
               ? message.content
@@ -435,9 +442,9 @@ function operatorHistory($, api, authorized, resetTerminal) {
   }
   async function choose(id) {
     clear();
-    resetTerminal();
     try {
       await api("terminal/history/select", { id });
+      resetTerminal();
       selected = id || "";
       const url = new URL(location.href);
       if (id) url.searchParams.set("conversation", id);

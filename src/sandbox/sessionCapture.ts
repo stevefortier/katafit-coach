@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   SessionManager,
   type FileEntry,
@@ -104,7 +106,7 @@ export function captureNativeExchange(
         toolCallId: message.tool_call_id,
         toolName: message.name ?? "archived_tool",
         content: [{ type: "text", text: content }],
-        isError: false,
+        isError: message.isError === true,
         timestamp: Date.now(),
       });
     } else throw new Error("NATIVE_HISTORY_FORMAT");
@@ -126,4 +128,268 @@ export function captureNativeExchange(
   if (Buffer.byteLength(JSON.stringify(entries)) > 2 * 1024 * 1024)
     throw new Error("NATIVE_HISTORY_LIMIT");
   return { entries, imagesOmitted, complete: finish === "stop" };
+}
+
+// Pinned Pi 0.86.1 core/tools/index.js. These are sandbox tools, never backend
+// proofs. Extension/backend names are deliberately not inferred from the wire.
+const localTools = new Set([
+  "read",
+  "bash",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+  "powershell",
+]);
+/** Append-only host journal. Sandbox local results are explicitly untrusted;
+ * only an outstanding host-observed provider selection grants a result slot. */
+export class CanonicalNativeHistory {
+  entries: FileEntry[];
+  private imagesOmitted = false;
+  private complete = false;
+  constructor(seed?: FileEntry[]) {
+    this.entries = structuredClone(
+      seed ?? [SessionManager.inMemory("/workspace").getHeader()!],
+    );
+  }
+  private messages(): any[] {
+    return this.entries
+      .filter((e: any) => e.type === "message")
+      .map((e: any) => e.message);
+  }
+  private comparable(message: any) {
+    const text = (value: any) =>
+      typeof value === "string"
+        ? value
+        : (value ?? [])
+            .filter((p: any) => p.type === "text")
+            .map((p: any) => p.text)
+            .join("\n");
+    if (message.role === "toolResult")
+      return {
+        role: message.role,
+        id: message.toolCallId,
+        text: text(message.content),
+      };
+    if (message.role === "assistant")
+      return {
+        role: message.role,
+        text: text(message.content),
+        calls: (message.content ?? []).filter(
+          (p: any) => p.type === "toolCall",
+        ),
+      };
+    return { role: message.role, text: text(message.content) };
+  }
+  private append(message: any) {
+    const last: any = this.entries.at(-1);
+    this.entries.push({
+      type: "message",
+      id: randomBytes(4).toString("hex"),
+      parentId: last?.type === "session" ? null : (last?.id ?? null),
+      timestamp: new Date().toISOString(),
+      message: structuredClone(message),
+    } as FileEntry);
+    if (Buffer.byteLength(JSON.stringify(this.entries)) > 2 * 1024 * 1024)
+      throw new Error("NATIVE_HISTORY_LIMIT");
+  }
+  snapshot() {
+    return {
+      entries: structuredClone(this.entries),
+      imagesOmitted: this.imagesOmitted,
+      complete: this.complete,
+    };
+  }
+  /** Also runs after capture freezes. A compacted context cannot launder a
+   * fabricated backend receipt or an unknown tool call into provider traffic. */
+  validateResultClaims(wire: any) {
+    const messages = this.messages();
+    const calls = messages
+      .filter((m) => m.role === "assistant")
+      .flatMap((m) => m.content.filter((p: any) => p.type === "toolCall"));
+    const results = messages.filter((m) => m.role === "toolResult");
+    const candidate = captureNativeExchange(wire, "", "", true)!;
+    for (const entry of candidate.entries as any[]) {
+      const message = entry.message;
+      if (message?.role !== "toolResult") continue;
+      const matching = calls
+        .slice()
+        .reverse()
+        .find((c) => c.id === message.toolCallId);
+      if (
+        matching &&
+        localTools.has(matching.name) &&
+        (message.toolName === "archived_tool" ||
+          message.toolName === matching.name)
+      )
+        continue;
+      if (
+        !results.some(
+          (r) =>
+            !localTools.has(r.toolName) &&
+            r.toolCallId === message.toolCallId &&
+            (message.toolName === "archived_tool" ||
+              message.toolName === r.toolName) &&
+            isDeepStrictEqual(this.comparable(r), this.comparable(message)),
+        )
+      )
+        throw new Error("NATIVE_HISTORY_UNTRUSTED_RESULT");
+    }
+  }
+  request(wire: any) {
+    const candidate = captureNativeExchange(wire, "", "", true)!;
+    const incoming = candidate.entries
+      .filter((e: any) => e.type === "message")
+      .map((e: any) => e.message);
+    const existing = this.messages();
+    if (
+      incoming.length < existing.length ||
+      existing.some(
+        (m, i) =>
+          !isDeepStrictEqual(this.comparable(m), this.comparable(incoming[i])),
+      )
+    )
+      throw new Error("NATIVE_HISTORY_MISMATCH");
+    const added = incoming.slice(existing.length);
+    const pending = new Map<string, any>();
+    for (const message of existing) {
+      if (message.role === "user") pending.clear();
+      if (message.role === "assistant")
+        for (const call of message.content.filter(
+          (p: any) => p.type === "toolCall",
+        ))
+          pending.set(call.id, call);
+      if (message.role === "toolResult") pending.delete(message.toolCallId);
+    }
+    // Validate the whole suffix before changing the immutable journal.
+    for (const message of added) {
+      if (message.role === "user") {
+        pending.clear();
+        continue;
+      }
+      const call = pending.get(message.toolCallId);
+      if (
+        message.role !== "toolResult" ||
+        !call ||
+        !localTools.has(call.name) ||
+        (message.toolName !== "archived_tool" && message.toolName !== call.name)
+      )
+        throw new Error("NATIVE_HISTORY_MISMATCH");
+      pending.delete(call.id);
+      message.toolName = call.name;
+      message.details = { provenance: "sandbox_local" };
+    }
+    for (const message of added) this.append(message);
+    this.imagesOmitted ||= candidate.imagesOmitted;
+    this.complete = false;
+    return this.snapshot();
+  }
+  response(wire: any, body: string, contentType: string) {
+    let content = "",
+      finish: unknown;
+    const calls: any[] = [];
+    if (contentType.includes("text/event-stream")) {
+      for (const event of body.split(/\r?\n\r?\n/)) {
+        const data = event
+          .split(/\r?\n/)
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => l.slice(5).trim())
+          .join("\n");
+        if (!data || data === "[DONE]") continue;
+        const choice = JSON.parse(data).choices?.find(
+          (c: any) => c.index === 0,
+        );
+        if (typeof choice?.delta?.content === "string")
+          content += choice.delta.content;
+        for (const part of choice?.delta?.tool_calls ?? []) {
+          if (
+            !Number.isInteger(part.index) ||
+            part.index < 0 ||
+            part.index > 63
+          )
+            throw new Error("NATIVE_HISTORY_FORMAT");
+          const call = (calls[part.index] ??= {
+            id: "",
+            function: { name: "", arguments: "" },
+          });
+          if (part.id) call.id += part.id;
+          if (part.function?.name) call.function.name += part.function.name;
+          if (part.function?.arguments)
+            call.function.arguments += part.function.arguments;
+        }
+        if (choice?.finish_reason) finish = choice.finish_reason;
+      }
+    } else {
+      const choice = JSON.parse(body).choices?.[0];
+      content = choice?.message?.content ?? "";
+      calls.push(...(choice?.message?.tool_calls ?? []));
+      finish = choice?.finish_reason;
+    }
+    const parts: any[] = content
+      ? [{ type: "text", text: clean(content) }]
+      : [];
+    for (const call of calls) {
+      if (!call?.id || !call.function?.name)
+        throw new Error("NATIVE_HISTORY_FORMAT");
+      parts.push({
+        type: "toolCall",
+        id: call.id,
+        name: call.function.name,
+        arguments: JSON.parse(clean(call.function.arguments)),
+      });
+    }
+    if (parts.length)
+      this.append({
+        role: "assistant",
+        content: parts,
+        api: "openai-completions",
+        provider: "katafit",
+        model: wire.model,
+        usage,
+        stopReason:
+          finish === "stop" ? "stop" : calls.length ? "toolUse" : "error",
+        timestamp: Date.now(),
+      });
+    this.complete = finish === "stop";
+    return this.snapshot();
+  }
+  dispatch(name: string, args: unknown, result: any) {
+    const messages = this.messages();
+    const pending: any[] = [];
+    for (const message of messages) {
+      if (message.role === "assistant")
+        pending.push(
+          ...message.content.filter((p: any) => p.type === "toolCall"),
+        );
+      if (message.role === "toolResult") {
+        const index = pending.findIndex((p) => p.id === message.toolCallId);
+        if (index >= 0) pending.splice(index, 1);
+      }
+    }
+    const call = pending.find(
+      (p) => p.name === name && isDeepStrictEqual(p.arguments, args),
+    );
+    // Direct host dispatch may reconcile/test execution independently of a
+    // provider selection. It grants no transcript slot: a later sandbox claim
+    // containing an unobserved assistant/tool message is still rejected.
+    if (!call) return false;
+    if (
+      !Array.isArray(result?.content) ||
+      result.content.some((p: any) => p.type !== "text")
+    )
+      throw new Error("NATIVE_HISTORY_MISMATCH");
+    this.append({
+      role: "toolResult",
+      toolCallId: call.id,
+      toolName: name,
+      content: result.content.map((p: any) => ({
+        type: "text",
+        text: clean(p.text),
+      })),
+      isError: result.isError === true,
+      timestamp: Date.now(),
+    });
+    return true;
+  }
 }

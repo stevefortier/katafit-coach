@@ -46,7 +46,16 @@ export interface NativeHistoryRecord {
 interface Manifest {
   version: 1;
   sessions: NativeHistoryRecord[];
-  tombstones?: { id: string; archiveId?: string }[];
+  tombstones?: {
+    id: string;
+    archiveId?: string;
+    seal?: {
+      session_id: string;
+      turn_generation: number;
+      archive_revision: number;
+      transcript_digest: string;
+    };
+  }[];
 }
 export const historyDigest = (
   entries: FileEntry[],
@@ -136,6 +145,7 @@ export function nativeResumeBlocker(
   | "malformed_history"
   | "unsupported_format"
   | "unsupported_entry"
+  | "history_mismatch"
   | "interrupted_turn"
   | "image_content"
   | null {
@@ -282,6 +292,7 @@ function validateManifest(value: any): asserts value is Manifest {
       ![
         "authority_revoked",
         "images_not_retained",
+        "history_mismatch",
         "interrupted_turn",
         "resume_unavailable",
       ].includes(row.blocked)
@@ -364,10 +375,27 @@ function validateManifest(value: any): asserts value is Manifest {
   for (const row of value.tombstones ?? []) {
     if (
       !row ||
-      Object.keys(row).some((k) => !["id", "archiveId"].includes(k)) ||
+      Object.keys(row).some((k) => !["id", "archiveId", "seal"].includes(k)) ||
       !identity.test(row.id) ||
       ids.has(row.id) ||
       (row.archiveId !== undefined && !identity.test(row.archiveId))
+    )
+      fail();
+    if (
+      row.seal &&
+      (!exact(row.seal, [
+        "session_id",
+        "turn_generation",
+        "archive_revision",
+        "transcript_digest",
+      ]) ||
+        !identity.test(row.seal.session_id) ||
+        !identity.test(row.seal.transcript_digest) ||
+        !Number.isSafeInteger(row.seal.turn_generation) ||
+        row.seal.turn_generation < 0 ||
+        row.seal.turn_generation > 63 ||
+        !Number.isSafeInteger(row.seal.archive_revision) ||
+        row.seal.archive_revision < 1)
     )
       fail();
     ids.add(row.id);
@@ -563,6 +591,16 @@ export class NativeSessionHistory {
       (value.tombstones ??= []).push({
         id,
         ...(record.archive ? { archiveId: record.archive.archive_id } : {}),
+        ...(!record.archive && record.pendingSeal
+          ? {
+              seal: {
+                session_id: record.pendingSeal.sessionId,
+                turn_generation: record.pendingSeal.generation,
+                archive_revision: record.pendingSeal.revision,
+                transcript_digest: record.pendingSeal.digest,
+              },
+            }
+          : {}),
       });
       value.sessions = value.sessions.filter((record) => record.id !== id);
       await this.write(root, value);
@@ -586,10 +624,7 @@ export class NativeSessionHistory {
   }
   pendingDeletes() {
     return this.operation(
-      async (root) =>
-        (await this.read(root)).tombstones
-          ?.filter((row) => row.archiveId)
-          .map((row) => ({ id: row.id, archiveId: row.archiveId! })) ?? [],
+      async (root) => (await this.read(root)).tombstones ?? [],
     );
   }
   confirmDelete(id: string) {
@@ -597,7 +632,7 @@ export class NativeSessionHistory {
       const value = await this.read(root);
       const row = value.tombstones?.find((row) => row.id === id);
       if (row) {
-        delete row.archiveId;
+        value.tombstones = value.tombstones!.filter((row) => row.id !== id);
         await this.write(root, value);
       }
     });

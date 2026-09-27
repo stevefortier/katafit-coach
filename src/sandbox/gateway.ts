@@ -179,14 +179,20 @@ class NativeClient extends Client {
 }
 
 import type { ArchiveResume } from "../katafit/operatorArchive.js";
-import { captureNativeExchange } from "./sessionCapture.js";
+import {
+  captureNativeExchange,
+  CanonicalNativeHistory,
+} from "./sessionCapture.js";
 import type { FileEntry } from "@earendil-works/pi-coding-agent";
 export interface NativeGatewayHooks {
   resume?: ArchiveResume;
+  resumeSessionId?: string;
   seed?: FileEntry[];
   onExchange?: (
     capture: NonNullable<ReturnType<typeof captureNativeExchange>>,
   ) => Promise<void>;
+  onHistoryMismatch?: () => Promise<void>;
+  onBeforeDispatch?: () => Promise<void>;
   onDiagnostic?: BackendLogger;
   /**
    * Continuity was denied, expired or became unknown. The gateway is already
@@ -212,6 +218,29 @@ export async function openNativeGateway(
   signal?: AbortSignal,
   hooks: NativeGatewayHooks = {},
 ) {
+  const historyLog = new CanonicalNativeHistory(hooks.seed);
+  let historyMismatch = false;
+  let historyUnsafe = false;
+  const canonical = async <T>(
+    operation: () => T,
+    freezeOnly = false,
+  ): Promise<T | undefined> => {
+    try {
+      return operation();
+    } catch (error) {
+      const first = !historyMismatch;
+      historyMismatch = true;
+      if (!freezeOnly) historyUnsafe = true;
+      try {
+        if (first) await hooks.onHistoryMismatch?.();
+      } catch (persistenceError) {
+        historyUnsafe = true;
+        throw persistenceError;
+      }
+      if (freezeOnly) return undefined;
+      throw error;
+    }
+  };
   const config = store.publicConfig();
   const skills = store.skills.runtime();
   const secrets = { ...store.secrets };
@@ -248,7 +277,15 @@ export async function openNativeGateway(
   let hostSeq = 0;
   let hostWorkSeq = 0;
   const actions = new Actions(store, hooks.onDiagnostic);
-  if (actions.snapshot().some((a) => ["pending", "unknown"].includes(a.status)))
+  if (
+    actions
+      .snapshot()
+      .some(
+        (a) =>
+          (!hooks.resume || a.session_id === hooks.resumeSessionId) &&
+          ["pending", "unknown"].includes(a.status),
+      )
+  )
     throw new Error("DELIVERY_UNVERIFIED");
   const client = new NativeClient(
     config.origin,
@@ -528,7 +565,10 @@ export async function openNativeGateway(
       generation: session.continuity()?.turn_generation ?? 0,
       action: session.currentAction(),
     }),
-    sealHistory: session.seal,
+    sealHistory: async (revision: number, digest: string) => {
+      if (historyMismatch) throw new Error("NATIVE_HISTORY_MISMATCH");
+      return session.seal(revision, digest);
+    },
     authorizeTranscript: authorizeDisclosure,
     attachments: () => (closed ? [] : attachments.list()),
     /**
@@ -738,6 +778,8 @@ export async function openNativeGateway(
     return new NativeFailure("NATIVE_AUTHORIZATION_FAILED", message);
   }
   async function dispatch(request: any, requestSignal?: AbortSignal) {
+    if (historyUnsafe) throw new Error("NATIVE_HISTORY_MISMATCH");
+    if (session.archive) await hooks.onBeforeDispatch?.();
     if (request.kind === "tool") {
       if (owner && request.name === ATTACHMENT_TOOL)
         return sendAttachment(
@@ -769,6 +811,13 @@ export async function openNativeGateway(
           image.sha256,
         );
         text.text = JSON.stringify(summary);
+      }
+      if (session.archive && hooks.onExchange) {
+        const recorded = await canonical(() =>
+          historyLog.dispatch(request.name, request.args, result),
+        );
+        if (recorded && !historyMismatch)
+          await hooks.onExchange(historyLog.snapshot());
       }
       return result;
     }
@@ -803,7 +852,10 @@ export async function openNativeGateway(
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const timeout = AbortSignal.timeout(120000);
     if (session.archive && hooks.onExchange) {
-      const capture = captureNativeExchange(JSON.parse(wire), "", "", true);
+      await canonical(() => historyLog.validateResultClaims(JSON.parse(wire)));
+      const capture = !historyMismatch
+        ? await canonical(() => historyLog.request(JSON.parse(wire)), true)
+        : undefined;
       if (capture) await hooks.onExchange(capture);
       check();
     }
@@ -879,12 +931,14 @@ export async function openNativeGateway(
       );
     }
     if (session.archive && hooks.onExchange) {
-      const capture = captureNativeExchange(
-        JSON.parse(wire),
-        body,
-        response.headers.get("content-type") ?? "",
+      const capture = await canonical(() =>
+        historyLog.response(
+          JSON.parse(wire),
+          body,
+          response.headers.get("content-type") ?? "",
+        ),
       );
-      if (capture) await hooks.onExchange(capture);
+      if (capture && !historyMismatch) await hooks.onExchange(capture);
       check();
     }
     return {

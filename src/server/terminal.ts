@@ -28,6 +28,7 @@ export class NativeTerminal {
   private generation = 0;
   private controller?: AbortController;
   private output = "";
+  private historyNotice?: string;
   // Random per runtime; scopes the private attachment endpoint to it.
   private session?: string;
   private sessionAuthority?: string;
@@ -163,6 +164,11 @@ export class NativeTerminal {
           await this.start();
           if (this.ws === ws && this.session) {
             this.send(ws, { type: "ready" });
+            if (this.historyNotice)
+              this.send(ws, {
+                type: "history-notice",
+                message: this.historyNotice,
+              });
             void this.replay(ws, this.session, replayOutput);
           }
           return;
@@ -179,11 +185,16 @@ export class NativeTerminal {
         } else if (message.type === "resize")
           await this.runtime?.resize(message.cols, message.rows);
         else throw new Error("FRAME");
-      } catch {
+      } catch (error) {
+        const historyReadOnly = /^NATIVE_(?:HISTORY|ARCHIVE)_/.test(
+          (error as Error)?.message ?? "",
+        );
         this.send(ws, {
           type: "error",
-          message:
-            "Native Pi unavailable or session revoked. Stop before retrying; actions are never replayed.",
+          historyReadOnly,
+          message: historyReadOnly
+            ? "Saved conversation cannot safely resume. Open History for its current authorized read-only view and reason; choose New explicitly to continue."
+            : "Native Pi unavailable or session revoked. Stop before retrying; actions are never replayed.",
         });
         ws.close(1008, "Session rejected");
       }
@@ -202,10 +213,26 @@ export class NativeTerminal {
       const session = randomBytes(16).toString("hex");
       const authority = this.authority();
       let owned: NativeRuntime | undefined;
-      const prepared = await this.history.prepare();
+      const prepared = await this.history.prepare(controller.signal);
+      this.historyNotice = undefined;
       const gateway = await openNativeGateway(this.store, controller.signal, {
         resume: prepared.resume,
+        resumeSessionId: prepared.record?.execution?.sessionId,
         seed: prepared.seed,
+        onBeforeDispatch: () => this.history.flush(),
+        onHistoryMismatch: async () => {
+          const id = this.history.active?.id;
+          if (id)
+            await this.history.storage.change(id, (row) => {
+              row.blocked = "history_mismatch";
+            });
+          const notice =
+            "History is now read-only. Live Pi may continue under current permissions, but further output is not saved. After Stop, use New; this archive cannot resume.";
+          this.historyNotice = notice;
+          this.output += "\r\n" + notice + "\r\n";
+          if (this.ws)
+            this.send(this.ws, { type: "history-notice", message: notice });
+        },
         onExchange: async (capture) => {
           if (generation !== this.generation) return;
           await this.history.capture(gateway, capture);
@@ -447,14 +474,16 @@ export class NativeTerminal {
     return this.history.read(id);
   }
   async historySelect(id: string | null) {
-    await this.stop();
+    if (this.runtime || this.starting || this.stopping || this.gateway)
+      throw new Error("NATIVE_HISTORY_BUSY");
     await this.history.select(id);
   }
   historyRename(id: string, title: string) {
     return this.history.rename(id, title);
   }
   async historyDelete(id: string) {
-    await this.stop();
+    if (this.runtime || this.starting || this.stopping || this.gateway)
+      throw new Error("NATIVE_HISTORY_BUSY");
     await this.history.delete(id);
   }
 }

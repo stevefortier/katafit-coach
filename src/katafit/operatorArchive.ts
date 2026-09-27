@@ -66,6 +66,30 @@ export function archiveReceipt(
 /** Current credentials only; no saved credential or cached disclosure allow. */
 export class OperatorArchive {
   constructor(private store: Store) {}
+  async available(signal?: AbortSignal) {
+    const config = this.store.publicConfig();
+    const token = this.store.secrets.token;
+    const client = new Client(
+      config.origin,
+      token,
+      signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
+        : AbortSignal.timeout(15000),
+    );
+    await client.connect();
+    const value = await client.rpc("tools/list", {});
+    if (
+      token !== this.store.secrets.token ||
+      config.origin !== this.store.publicConfig().origin
+    )
+      throw new Error("NATIVE_ARCHIVE_AUTHORITY_CHANGED");
+    return (
+      Array.isArray(value?.tools) &&
+      ARCHIVE_CONTROLS.every((name) =>
+        value.tools.some((tool: any) => tool.name === name),
+      )
+    );
+  }
   async call(name: string, args: Record<string, unknown>) {
     if (
       !ARCHIVE_CONTROLS.includes(name) &&

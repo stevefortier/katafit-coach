@@ -134,6 +134,7 @@ function assertCallerArguments(args: unknown, memberScoped: boolean) {
 const domainFor = (name: string) => operatorEvidenceDomain(name)!;
 export interface OperatorAction {
   session_id: string;
+  turn_generation?: number;
   idempotency_key: string;
   member_ref?: string;
   status: "pending" | "delivered" | "completed" | "unknown" | "not_found";
@@ -329,6 +330,10 @@ export async function openOperatorTools(
     const imageReads = new Map<string, Record<string, any>>();
     const control = options.control ?? client;
     const emit = (next: OperatorAction) => {
+      next = {
+        ...next,
+        ...(continuity ? { turn_generation: generation } : {}),
+      };
       options.onAction({ ...next });
       action = next;
     };
