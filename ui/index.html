@@ -17,6 +17,18 @@
         ><span class="pill" id="state" data-tone="neutral">LOCKED</span>
         <button id="lockStudio" class="secondary" hidden>Lock studio</button>
       </header>
+      <div id="noticeBar">
+        <div
+          id="noticeRegion"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span id="noticeIcon" aria-hidden="true"></span
+          ><strong id="noticeLabel" hidden></strong>
+          <p id="notice"></p>
+        </div>
+      </div>
       <section id="login" class="card">
         <h2>Unlock Coach</h2>
         <p>Enter your admin key. Lock studio clears it from this tab.</p>
@@ -709,7 +721,6 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
           </div>
         </section>
       </div>
-      <p id="notice" role="status" aria-live="polite"></p>
       <p id="restartStatus" role="status" aria-live="polite"></p>
       <button id="restartRetry" class="secondary" hidden>
         Retry Coach restart

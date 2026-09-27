@@ -83,7 +83,52 @@ const fields = [
   "verbosity",
   "markdown",
 ];
-const notice = (t) => ($("notice").textContent = t);
+const noticeLabels = {
+  success: "Success",
+  error: "Error",
+  warning: "Warning",
+  info: "Info",
+  progress: "In progress",
+};
+// The single Studio notice surface. Every caller classifies its message
+// explicitly; message text is never inspected to guess a severity.
+function notice(message, severity) {
+  const tone = !message
+    ? ""
+    : Object.hasOwn(noticeLabels, severity)
+      ? severity
+      : "info";
+  const region = $("noticeRegion");
+  region.setAttribute("role", tone === "error" ? "alert" : "status");
+  region.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+  if (tone) $("noticeBar").dataset.severity = tone;
+  else delete $("noticeBar").dataset.severity;
+  $("noticeLabel").textContent = tone ? noticeLabels[tone] : "";
+  $("noticeLabel").hidden = !tone;
+  $("notice").textContent = tone ? message : "";
+  syncStickyOffsets();
+}
+// The header wraps on narrow screens; the notice sticks directly beneath it
+// and anchored scrolling clears both.
+function syncStickyOffsets() {
+  const root = document.documentElement.style;
+  root.setProperty(
+    "--header-offset",
+    document.querySelector("header").offsetHeight + "px",
+  );
+  root.setProperty(
+    "--notice-offset",
+    $("noticeBar").dataset.severity
+      ? $("noticeBar").offsetHeight + 8 + "px"
+      : "0px",
+  );
+}
+if (typeof ResizeObserver === "function") {
+  const stickyObserver = new ResizeObserver(syncStickyOffsets);
+  stickyObserver.observe(document.querySelector("header"));
+  stickyObserver.observe($("noticeBar"));
+}
+syncStickyOffsets();
 let lifecycleBusy = false;
 let lifecycleUncertain = false;
 let lifecycleOperation;
@@ -146,6 +191,7 @@ async function lifecycleApi(
       if (!confirm(restartExplanation + " Apply now?")) {
         notice(
           "Operation cancelled. No settings changed and Coach was not stopped.",
+          "info",
         );
         return null;
       }
@@ -172,6 +218,7 @@ async function lifecycleApi(
       $("restartCheck").hidden = false;
       notice(
         "Connection lost. The server may still apply and restart Coach. Your draft is retained; check operation status before saving again.",
+        "warning",
       );
       return null;
     }
@@ -248,6 +295,7 @@ async function api(path, body, signal) {
     if (r.status === 401) {
       lockSession(
         "Studio authorization expired. Unlock again with the current admin key.",
+        "error",
       );
       const error = new Error(
         "Studio authorization expired. Unlock again with the current admin key.",
@@ -289,7 +337,7 @@ function action(id, fn) {
     try {
       await fn();
     } catch (e) {
-      if (!e.stale) notice(e.message);
+      if (!e.stale) notice(e.message, "error");
     }
   };
 }
@@ -314,6 +362,7 @@ action("save", async () => {
   if (!draftActive(draft)) {
     notice(
       "Choose the active model to use after Save. The active model cannot be removed without choosing another.",
+      "warning",
     );
     return;
   }
@@ -321,6 +370,7 @@ action("save", async () => {
   if (moved) {
     notice(
       `Base URL changed for ${moved.name || "a provider"}: re-enter its API key or tick Remove saved key, then save.`,
+      "warning",
     );
     return;
   }
@@ -351,6 +401,7 @@ action("save", async () => {
     result.lifecycle?.resumed
       ? "Saved. Coach restarted with the new revision."
       : "Saved. Check Coach status below.",
+    "success",
   );
 });
 // Models registry editor. The draft lives in memory and in hidden-not-removed
@@ -770,6 +821,7 @@ action("resetPersona", async () => {
   for (const f of fields) $(f).value = persona[f];
   notice(
     "Restored stock persona in the editor. Save a new revision to apply it.",
+    "info",
   );
 });
 let skillsData,
@@ -897,6 +949,7 @@ action("refreshSkills", async () => {
   $("skillSavedReview").open = true;
   notice(
     "Latest saved Skills loaded. Your drafts are retained. Review the saved values before choosing Save skill; no write was retried.",
+    "info",
   );
 });
 action("saveSkill", async () => {
@@ -917,6 +970,7 @@ action("saveSkill", async () => {
     result.lifecycle?.resumed
       ? "Skill saved. Coach restarted with the new Skills revision."
       : "Skill saved as a new immutable revision.",
+    "success",
   );
 });
 action("restoreSkill", async () => {
@@ -928,7 +982,7 @@ action("restoreSkill", async () => {
       `Restore the current default for ${skill.name} as a new Skills revision? Your current draft for this skill will be replaced. ${restartExplanation}`,
     )
   ) {
-    notice("Restore cancelled. No skill changed.");
+    notice("Restore cancelled. No skill changed.", "info");
     return;
   }
   const result = await lifecycleApi(
@@ -940,7 +994,7 @@ action("restoreSkill", async () => {
   if (!result) return;
   skillDrafts.delete(id);
   await loadSkills(true);
-  notice("Default restored as a new immutable Skills revision.");
+  notice("Default restored as a new immutable Skills revision.", "success");
 });
 function skillHistoryVisible() {
   return (
@@ -1114,7 +1168,7 @@ action("restorePersona", async () => {
       `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Kata.fit and Models settings and credentials will not change. Unsaved Kata.fit and Models drafts will remain unsaved. History is kept. ${restartExplanation}`,
     )
   ) {
-    notice("Restore cancelled. No settings changed.");
+    notice("Restore cancelled. No settings changed.", "info");
     return;
   }
   historyBusy = true;
@@ -1125,6 +1179,7 @@ action("restorePersona", async () => {
     $("personaHistory").querySelector("summary").focus({ preventScroll: true });
     notice(
       "Persona restored as a new revision. Kata.fit and Models drafts remain unsaved; saved settings and credentials are unchanged.",
+      "success",
     );
   } finally {
     if (generation === authGeneration) {
@@ -1133,7 +1188,9 @@ action("restorePersona", async () => {
     }
   }
 });
-action("connect", async () => notice((await api("connect", {})).message));
+action("connect", async () =>
+  notice((await api("connect", {})).message, "success"),
+);
 function hasUnsavedEdits() {
   return (
     fields.some((f) => $(f).value !== config.persona[f]) ||
@@ -1178,13 +1235,14 @@ action("previewButton", async () => {
   if (hasUnsavedEdits()) {
     notice(
       "Unsaved edits: save a new revision or revert edits before previewing.",
+      "warning",
     );
     return;
   }
   $("answer").textContent = "Preview pending.";
   $("prompt").textContent =
     "Fetching backend instructions; exact preview not yet available.";
-  notice("Preview running with your saved provider…");
+  notice("Preview running with your saved provider…", "progress");
   previewBusy = true;
   const controller = (previewController = new AbortController());
   $("previewButton").disabled = true;
@@ -1198,21 +1256,23 @@ action("previewButton", async () => {
     if (generation !== authGeneration || controller.signal.aborted) return;
     $("answer").textContent = r.text;
     $("prompt").textContent = r.prompt;
-    notice("Preview complete · revision " + r.revision);
+    notice("Preview complete · revision " + r.revision, "success");
   } catch (error) {
     if (generation !== authGeneration) return;
     $("answer").textContent = "No preview.";
     $("prompt").textContent =
       "Preview the saved revision with freshly fetched backend instructions. Unsaved edits are not previewed.";
-    notice(
-      controller.signal.aborted || error.code === "CANCELLED"
-        ? "Preview cancelled. " + previewUnaffected
-        : !error.status
+    if (controller.signal.aborted || error.code === "CANCELLED")
+      notice("Preview cancelled. " + previewUnaffected, "info");
+    else
+      notice(
+        !error.status
           ? "Preview connection lost or timed out; the server cancels a disconnected preview. " +
-            previewUnaffected +
-            " Retry when ready."
+              previewUnaffected +
+              " Retry when ready."
           : error.message,
-    );
+        "error",
+      );
   } finally {
     if (previewController === controller) previewController = undefined;
     if (generation === authGeneration) {
@@ -1245,7 +1305,7 @@ action("cancel", async () => {
       renderUpdate();
     }
   }
-  if (!local) notice("Cancellation requested.");
+  if (!local) notice("Cancellation requested.", "info");
 });
 for (const cmd of ["run", "stop"])
   action(cmd, async () => {
@@ -1253,15 +1313,24 @@ for (const cmd of ["run", "stop"])
     const result = await api(cmd, {});
     await status();
     if (generation !== authGeneration) return;
-    notice(
-      cmd === "run"
-        ? result.presence === "reported"
-          ? "Worker started and presence reported. Wait for persisted-reply status to confirm delivery."
-          : "Worker started; this backend does not support explicit presence. Connectivity is not confirmed by a heartbeat."
-        : result.presence === "reported"
-          ? "Worker stopped; backend stop reported."
-          : "Worker stopped locally; backend stop unconfirmed. Chat may not fail immediately while the backend still considers this worker online.",
-    );
+    const reported = result.presence === "reported";
+    if (cmd === "run" && reported)
+      notice(
+        "Worker started and presence reported. Wait for persisted-reply status to confirm delivery.",
+        "success",
+      );
+    else if (cmd === "run")
+      notice(
+        "Worker started; this backend does not support explicit presence. Connectivity is not confirmed by a heartbeat.",
+        "warning",
+      );
+    else if (reported)
+      notice("Worker stopped; backend stop reported.", "success");
+    else
+      notice(
+        "Worker stopped locally; backend stop unconfirmed. Chat may not fail immediately while the backend still considers this worker online.",
+        "warning",
+      );
   });
 action("export", async () => {
   const c = await api("config");
@@ -1296,6 +1365,7 @@ async function status() {
       $("restartCheck").hidden = true;
       notice(
         "Operation status recovered. Your draft is retained. Check the saved revision before applying further edits.",
+        "info",
       );
       if (s.lifecycle.applied) config.revision = s.revision;
     }
@@ -1851,6 +1921,7 @@ action("logCopy", async () => {
   await navigator.clipboard.writeText(logJSON());
   notice(
     "Diagnostic JSON copied. Model-visible health and meal text may remain even after screening; inspect and redact before sharing.",
+    "warning",
   );
 });
 action("logDownload", async () => {
@@ -2272,7 +2343,10 @@ $("updateAuto").addEventListener("change", async () => {
     await refreshUpdate();
   } catch {
     $("updateAuto").checked = !enabled;
-    notice("Could not save automatic update setting. Check Studio connection.");
+    notice(
+      "Could not save automatic update setting. Check Studio connection.",
+      "error",
+    );
   } finally {
     renderUpdate();
   }
@@ -2280,7 +2354,10 @@ $("updateAuto").addEventListener("change", async () => {
 action("updateApply", async () => {
   const generation = authGeneration;
   if (hasUnsavedEdits()) {
-    notice("Unsaved edits: save or revert changes before upgrading.");
+    notice(
+      "Unsaved edits: save or revert changes before upgrading.",
+      "warning",
+    );
     return;
   }
   await status();
@@ -2291,12 +2368,14 @@ action("updateApply", async () => {
   ) {
     notice(
       "Launcher upgrade required: this older launcher cannot restart running Coach after a manual upgrade. Nothing was stopped or applied. Replace the stable launcher using the same Coach home. Settings and preview restarts are available without it.",
+      "warning",
     );
     return;
   }
   if (updateWorkerBlocked) {
     notice(
       "Finish or cancel preview and stop native Pi before upgrading. Coach will be restarted automatically after confirmation.",
+      "warning",
     );
     return;
   }
@@ -2318,7 +2397,10 @@ action("updateCancel", async () => {
 });
 action("updateReload", async () => {
   if (hasUnsavedEdits()) {
-    notice("Unsaved edits: save or revert changes before reloading.");
+    notice(
+      "Unsaved edits: save or revert changes before reloading.",
+      "warning",
+    );
     return;
   }
   location.reload();
@@ -2334,7 +2416,10 @@ action("updateConfirmApply", async () => {
   )
     return;
   if (hasUnsavedEdits()) {
-    notice("Unsaved edits: save or revert changes before upgrading.");
+    notice(
+      "Unsaved edits: save or revert changes before upgrading.",
+      "warning",
+    );
     return;
   }
   updatePending = true;
@@ -2351,7 +2436,7 @@ action("updateConfirmApply", async () => {
     if (generation !== authGeneration) return;
     if (error.status) {
       updatePending = false;
-      notice(error.message);
+      notice(error.message, "error");
     } else
       updateError =
         "Studio is unavailable. The upgrade may have been accepted; reconnecting to verify.";
@@ -2367,7 +2452,7 @@ window.addEventListener("pagehide", () => {
   clearTimeout(updateTimer);
   updateController?.abort();
 });
-function lockSession(message) {
+function lockSession(message, severity) {
   if (key)
     void fetch("/api/terminal/stop", {
       method: "POST",
@@ -2450,11 +2535,12 @@ function lockSession(message) {
   $("lockStudio").hidden = true;
   $("state").textContent = "LOCKED";
   $("state").dataset.tone = "neutral";
-  notice(message);
+  notice(message, severity);
 }
 action("lockStudio", async () =>
   lockSession(
     "Studio locked. This does not stop the worker or an accepted upgrade.",
+    "info",
   ),
 );
 
@@ -3068,6 +3154,7 @@ async function loadMemberImage(body, media_ref, scope) {
   ) {
     lockSession(
       "Studio authorization expired. Unlock again with the current admin key.",
+      "error",
     );
     return;
   }
