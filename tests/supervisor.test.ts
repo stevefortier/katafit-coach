@@ -176,7 +176,10 @@ test("owner shutdown aborts and awaits in-flight candidate preparation", async (
   try {
     owner.updates.latest = "a".repeat(40);
     owner.updates.checkedAt = Date.now();
-    const applying = owner.updates.apply(owner.updates.latest);
+    const applying = assert.rejects(
+      owner.updates.apply(owner.updates.latest),
+      /UPGRADE_FAILED/,
+    );
     await started;
     let closed = false;
     const closing = owner.close().then(() => {
@@ -187,7 +190,7 @@ test("owner shutdown aborts and awaits in-flight candidate preparation", async (
     assert.equal(closed, false, "shutdown awaits stable-owner preparation");
     finish();
     await closing;
-    await assert.rejects(applying, /UPGRADE_FAILED/);
+    await applying;
   } finally {
     finish();
     await owner.close();
