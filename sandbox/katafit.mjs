@@ -44,9 +44,13 @@ export function nativeToolOutcome(name, result, code) {
         ? "Check-in listing failed. This does not establish that no photos exist. Image reads require references from a successful check-in listing; activity-detail metadata is not a substitute."
         : name === "studio_operator_read_dojo_checkin_image"
           ? "Check-in image read failed; no image was delivered. Use the matching member_ref and media_ref from a successful check-in listing. Activity-detail media references are not sufficient. The per-turn quota is four images and 16 MiB total. Do not repeat the same failed call or claim to have inspected pixels."
-          : name === "send_to_operator"
-            ? "Sending to the operator failed. Nothing was added to the operator panel; do not claim the operator received or saw it."
-            : "Kata.fit tool failed; do not replay uncertain actions.";
+          : name === "studio_operator_read_activity_image"
+            ? "Activity image read failed; no image was delivered. Use the matching member_ref/activity_ref from a successful activity listing and media_ref from its media_files detail. Do not substitute a check-in reference, repeat the unchanged failed read, or claim to have inspected pixels."
+            : name === "studio_operator_read_activity"
+              ? "Activity detail read failed. The requested section was not verified; this does not establish whether photos exist. Do not replay the unchanged failed read or infer inaccessible evidence."
+              : name === "send_to_operator"
+                ? "Sending to the operator failed. Nothing was added to the operator panel; do not claim the operator received or saw it."
+                : "Kata.fit tool failed; do not replay uncertain actions.";
     if (code !== undefined) {
       throw new Error(
         typeof code === "string" && Object.hasOwn(relayGuidance, code)
@@ -54,13 +58,34 @@ export function nativeToolOutcome(name, result, code) {
           : fallback,
       );
     }
+    if (name === "studio_operator_read_activity" && result?.operatorReadError) {
+      const error = result.operatorReadError;
+      const guidance = {
+        OPERATOR_NOT_AUTHORIZED:
+          "The backend denied this activity detail read. Check that member_ref and activity_ref match a successful authorized activity listing or source-linked feed read; an old or mismatched reference may be invalid. This does not prove there are no photos or that sharing is disabled. Do not guess references, expand scope, or repeat the unchanged failed read.",
+        READ_LIMIT:
+          "The backend refused this read at a bounded read limit. Use only successful receipts from the current turn and state the unverified section; do not repeat the unchanged failed read or bypass session limits.",
+        HISTORY_CHANGED:
+          "The activity history changed since the reference was issued. Do not infer the old section or replay this stale read; request an authorized current listing in a later human turn if still needed.",
+      };
+      if (
+        Object.keys(result).join() !== "operatorReadError" ||
+        !error ||
+        typeof error !== "object" ||
+        Object.keys(error).join() !== "code" ||
+        typeof error.code !== "string" ||
+        !Object.hasOwn(guidance, error.code)
+      )
+        throw new Error(fallback);
+      throw new Error(`${error.code}: ${guidance[error.code]}`);
+    }
     if (name === "send_to_operator" && result?.attachmentError) {
       const error = result.attachmentError;
       const guidance = {
         ATTACHMENT_ARGUMENTS_REJECTED:
           "Arguments did not match the schema. Supply exactly one of image_receipt or workspace_path, plus optional filename and caption, and nothing else.",
         ATTACHMENT_RECEIPT_UNKNOWN:
-          "That image_receipt is not known to this session. Copy the exact image_receipt from a successful check-in image read in this session; receipts cannot be invented or reused across sessions.",
+          "That image_receipt is not known to this session. Copy the exact image_receipt from a successful image read in this session; receipts cannot be invented or reused across sessions.",
         ATTACHMENT_PATH_REJECTED:
           "workspace_path must be a relative path (or /workspace/...) to a regular file inside /workspace, without '.' or '..' components, control characters, or symbolic links; at most 8 components.",
         ATTACHMENT_FILE_NOT_FOUND:
@@ -104,7 +129,10 @@ export function nativeToolOutcome(name, result, code) {
     if (result?.imageReadError) {
       const error = result.imageReadError;
       if (
-        name === "studio_operator_read_dojo_checkin_image" &&
+        [
+          "studio_operator_read_dojo_checkin_image",
+          "studio_operator_read_activity_image",
+        ].includes(name) &&
         Object.keys(result).join() === "imageReadError" &&
         Object.keys(error).join() === "code" &&
         error.code === "IMAGE_READ_BUSY"
@@ -115,8 +143,12 @@ export function nativeToolOutcome(name, result, code) {
       const guidance = {
         CHECKIN_LIST_REQUIRED:
           "First call studio_operator_list_dojo_checkins successfully, then copy the exact matching member_ref and media_ref from one shared row. Activity-detail media references and member roster entries are not sufficient.",
+        ACTIVITY_PROOF_REQUIRED:
+          "First list activities for the member and read media_files for the exact completed media activity; use only its matching member_ref, activity_ref and media_ref. Check-in references are not interchangeable.",
         IMAGE_ARGUMENTS_REJECTED:
-          "Correct the arguments to match the advertised schema; supply the exact listed member_ref and media_ref pair, without host-owned fields.",
+          name === "studio_operator_read_activity_image"
+            ? "Correct the arguments to match the advertised schema; supply the exact listed member_ref, activity_ref and media_ref, without host-owned fields."
+            : "Correct the arguments to match the advertised schema; supply the exact listed member_ref and media_ref pair, without host-owned fields.",
         IMAGE_BUDGET_EXHAUSTED:
           "Image delivery budget exceeded (4 images / 16 MiB per turn; 8 MiB per image). Use already delivered images and state the uninspected coverage. Only select a different listed image if it fits the remaining capacity. Never reset or reopen a session to bypass quotas.",
         IMAGE_TOOL_BUDGET_EXHAUSTED:
@@ -127,11 +159,18 @@ export function nativeToolOutcome(name, result, code) {
           "Returned image failed integrity or format validation and was not delivered. Do not inspect rejected bytes; use other verified evidence and report the gap.",
       };
       if (
-        name !== "studio_operator_read_dojo_checkin_image" ||
+        ![
+          "studio_operator_read_dojo_checkin_image",
+          "studio_operator_read_activity_image",
+        ].includes(name) ||
         Object.keys(result).join() !== "imageReadError" ||
         Object.keys(error).sort().join() !==
           "code,remainingBytes,remainingImages" ||
         !Object.hasOwn(guidance, error.code) ||
+        (error.code === "CHECKIN_LIST_REQUIRED" &&
+          name !== "studio_operator_read_dojo_checkin_image") ||
+        (error.code === "ACTIVITY_PROOF_REQUIRED" &&
+          name !== "studio_operator_read_activity_image") ||
         !Number.isInteger(error.remainingImages) ||
         error.remainingImages < 0 ||
         error.remainingImages > 4 ||

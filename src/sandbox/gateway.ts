@@ -45,6 +45,8 @@ import {
 } from "./failures.js";
 
 const IMAGE = "studio_operator_read_dojo_checkin_image";
+const ACTIVITY_IMAGE = "studio_operator_read_activity_image";
+const DETAIL = "studio_operator_read_activity";
 
 /**
  * Authoritative admission of the untrusted sandbox provider body, strictly on
@@ -395,7 +397,7 @@ export async function openNativeGateway(
       if (!receipt) return reject("ATTACHMENT_RECEIPT_UNKNOWN");
       bytes = receipt.bytes;
       source = "image_receipt";
-      fallback = `checkin-${receipt.sha256.slice(0, 12)}.${receipt.mime_type === "image/jpeg" ? "jpg" : receipt.mime_type.slice(6)}`;
+      fallback = `${receipt.kind === "activity" ? "activity" : "checkin"}-${receipt.sha256.slice(0, 12)}.${receipt.mime_type === "image/jpeg" ? "jpg" : receipt.mime_type.slice(6)}`;
     } else {
       const parts = workspacePathParts(args.workspace_path);
       let read: unknown;
@@ -731,7 +733,7 @@ export async function openNativeGateway(
       // deliberately omitted: the pending request may still consume it.
       if (
         request.kind === "tool" &&
-        request.name === IMAGE &&
+        [IMAGE, ACTIVITY_IMAGE].includes(request.name) &&
         session.tools.some((tool) => tool.name === request.name)
       ) {
         settle(undefined);
@@ -751,6 +753,19 @@ export async function openNativeGateway(
       if (error instanceof ImageReadFailure) {
         check();
         return { imageReadError: error.safe };
+      }
+      // Only a classified backend read refusal on this exact read may become
+      // actionable native guidance. settle() above preserves revocation teardown.
+      if (
+        request.kind === "tool" &&
+        request.name === DETAIL &&
+        error instanceof ToolFailure &&
+        ["READ_LIMIT", "HISTORY_CHANGED", "OPERATOR_NOT_AUTHORIZED"].includes(
+          error.code ?? "",
+        )
+      ) {
+        check();
+        return { operatorReadError: { code: error.code } };
       }
       if (owner && error instanceof AttachmentFailure) {
         check();
@@ -910,7 +925,7 @@ export async function openNativeGateway(
         | undefined;
       lastImage = undefined;
       // Mint an opaque host receipt for pixels this validated read delivered.
-      if (owner && request.name === IMAGE && image) {
+      if (owner && [IMAGE, ACTIVITY_IMAGE].includes(request.name) && image) {
         const text = result?.content?.[0];
         if (text?.type !== "text") throw new Error("RESULT_REJECTED");
         const summary = JSON.parse(text.text);
@@ -918,6 +933,7 @@ export async function openNativeGateway(
           image.bytes,
           image.mime_type,
           image.sha256,
+          request.name === ACTIVITY_IMAGE ? "activity" : "checkin",
         );
         text.text = JSON.stringify(summary);
       }
