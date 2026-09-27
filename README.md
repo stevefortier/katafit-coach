@@ -1,0 +1,1 @@
+Synthetic local browser fixtures. Source ed0886c9fde16cd59e5c4a581abd722a7b0ed9fc. Not production failures.
