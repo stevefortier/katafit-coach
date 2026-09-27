@@ -1,11 +1,19 @@
 # Confirmed Coach stop / apply / restart
 
-Settings Save, persona-history Restore, legacy `POST /api/rollback`, and saved-revision Preview share one server-owned transition. The browser never races separate Stop, Save and Run calls.
+Settings Save, persona-history Restore and legacy `POST /api/rollback` share one server-owned transition. The browser never races separate Stop, Save and Run calls. Saved-revision Preview is not a transition: see [non-disruptive preview](#non-disruptive-preview).
 
 - Running Coach or active native Pi requires explicit acceptance (`confirmRestart: true`). Missing/false consent returns `RESTART_CONFIRMATION_REQUIRED` without stopping or writing. Native browser confirmations are keyboard/screen-reader accessible; Cancel retains drafts. Restore also discloses which persona drafts are replaced and which connection drafts remain unsaved.
 - Capture running intent at server admission, not from a stale browser status. An intentionally stopped Coach stays stopped. Stop aborts polling and awaits active work plus presence-generation acknowledgement. Native terminal teardown is awaited before configuration publication. A new Worker captures the resulting endpoint, model, vision flag and credential together.
-- The server gate excludes concurrent Run, Stop, settings/restore/rollback, preview, manual upgrade, automatic quiesce and native-ticket/WebSocket admission until recovery completes. Read-only status remains available. Preview Cancel aborts inference and then resumes prior running intent; no user chat, action, or terminal input is replayed.
+- The server gate excludes concurrent Run, Stop, settings/restore/rollback, preview, manual upgrade, automatic quiesce and native-ticket/WebSocket admission until recovery completes. Read-only status remains available. No user chat, action, or terminal input is replayed.
 - Persona restore copies only persona fields into a new revision. Legacy rollback retains Store's configuration/credential binding rules; it is an API compatibility path, not an extra Studio editor.
+
+## Non-disruptive preview
+
+`POST /api/preview` never stops, starts or restarts the worker and never closes native sessions, on success, failure, Cancel, disconnect or timeout. It needs no confirmation (a legacy `confirmRestart` is accepted and ignored), records no `lifecycle`, and a lost reply leaves no lifecycle uncertainty in Studio. It remains a read-only, tool-free inference over the saved revision with freshly fetched backend instructions.
+
+- Admission is synchronous with the shutdown, configuration-uncertainty, update apply/recovery, automatic-quiesce and transition checks. At most one preview runs; a duplicate gets `OPERATION_IN_PROGRESS`. A preview requested while another operation holds the gate is refused with a retry hint, without side effects.
+- While a preview runs, settings/restore/rollback/skill changes return `OPERATION_IN_PROGRESS` (drafts are retained), and manual upgrade and automatic quiesce defer as before. Run, Stop and native Operator admission stay available and neither cancel the preview nor are undone by it.
+- The endpoint, model, credentials and redaction set are captured together at admission. Output is discarded (`CANCELLED`) after Cancel, disconnect, the 60-second deadline, shutdown, an update lock, configuration uncertainty or a changed saved revision/credential; known secrets are rejected. Cancel, disconnect, the deadline and shutdown release the single preview slot within about a second even if a provider ignores abort, and shutdown awaits that release. Studio re-enables Preview only after its own Cancel request settles, so a delayed Cancel cannot abort or refuse the retry.
 
 ## Results and recovery
 
@@ -25,4 +33,4 @@ See [source updates](source-updates.md). The stable owner, not the browser, owns
 
 ## Synthetic evidence
 
-`model-registry-api`, `presence`, `apply-restart-browser`, `manual-update-restart`, `native-only-operator`, `native-terminal`, existing auto-update/quiesce suites, and the three Studio smokes exercise the real Store/admin/browser/owner paths with synthetic provider/backend boundaries. Native Docker and exact packed-artifact tests still require their documented immutable artifact and source-identity prerequisites. No synthetic result is evidence of a production deployment or live model quality.
+`model-registry-api`, `preview-nondisruptive`, `presence`, `apply-restart-browser`, `manual-update-restart`, `native-only-operator`, `native-terminal`, existing auto-update/quiesce suites, the three Studio smokes and `scripts/preview-browser-smoke.ts` exercise the real Store/admin/browser/owner paths with synthetic provider/backend boundaries. Native Docker and exact packed-artifact tests still require their documented immutable artifact and source-identity prerequisites. No synthetic result is evidence of a production deployment or live model quality.

@@ -493,7 +493,7 @@ test("server shutdown settles an accepted save without restarting after close", 
   }
 });
 
-test("cancelled preview resumes prior running Coach without a config revision", async () => {
+test("cancelled preview leaves a running Coach untouched without a config revision", async () => {
   let entered!: () => void;
   const started = new Promise<void>((r) => (entered = r));
   const h = await harness(async (_provider, _system, _text, signal) => {
@@ -509,16 +509,22 @@ test("cancelled preview resumes prior running Coach without a config revision", 
     await h.save(h.registry());
     await h.call("run", {});
     const revision = h.store.publicConfig().revision;
+    const prior = (await (await h.call("status")).json()).lifecycle;
     const preview = h.call("preview", {
       text: "Synthetic cancelled preview",
       confirmRestart: true,
     });
     await started;
-    assert.equal((await h.call("run", {})).status, 409);
+    // Preview holds no lifecycle gate: Run stays available and is a no-op.
+    assert.equal((await h.call("run", {})).status, 200);
     assert.equal((await h.call("cancel", {})).status, 200);
     const result = await preview;
     assert.equal(result.status, 400);
-    assert.equal((await result.json()).lifecycle.resumed, true);
+    const body = await result.json();
+    assert.equal(body.error, "CANCELLED");
+    assert.equal(body.lifecycle, undefined);
+    // The prior save outcome is retained; preview records no lifecycle.
+    assert.deepEqual((await (await h.call("status")).json()).lifecycle, prior);
     assert.equal(h.store.publicConfig().revision, revision);
     assert.notEqual((await (await h.call("status")).json()).state, "stopped");
   } finally {
