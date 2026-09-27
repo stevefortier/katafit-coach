@@ -75,7 +75,7 @@ test("member threads retain both canonical directions in chronological chat orde
           ),
         };
       if (url.pathname === "/api/status") body = { state: "stopped" };
-      if (url.pathname === "/api/operator/chat") body = { messages: [] };
+      if (url.pathname === "/api/terminal/receipts") body = { actions: [] };
       if (url.pathname === "/api/members")
         body = {
           members: url.searchParams.has("cursor")

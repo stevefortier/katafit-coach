@@ -2,29 +2,21 @@
 
 Studio has two top-level tabs: **Coach** first and **Settings** second. Settings retains connection, persona, preview, diagnostics, worker controls and source upgrades.
 
-## Keyboard
+## Native Operator Pi: direct the Coach as its boss
 
-In chat composers, **Enter sends** through the same guarded action as the Send button. **Shift+Enter adds a line**. IME composition and held-key repeats do not send accidentally. Persona and other configuration editors retain normal editing behavior.
+`/chat/operator` is exclusively the isolated native Pi terminal. Start/reconnect Pi, use its native controls, and Stop to destroy its ephemeral process, transcript and workspace. Docker isolation is required; there is no host or legacy-chat fallback. Settings preview remains the separate worker-style preview, not Operator inference.
 
-## Operator chat: direct the Coach as its manager
+The primary system prompt contains all eight saved persona fields and their revision. The Coach keeps its name, voice, principles and expertise. The operator is its manager and boss, **not a trainee**; that relationship takes precedence over trainee-facing discipline, refusal rules and examples. It never grants additional backend permissions. The configured model provider receives authorized request/tool context; browsing member tabs does not add their content to Pi.
 
-The Operator tab addresses the Coach as its manager, not as a trainee. It uses saved persona and freshly fetched backend instructions, with an explicit operator-role boundary. The request worker can remain running; operator inference has an independent lifecycle and never fabricates or consumes a member request/lease.
+The backend supplies the scoped catalog and owns all membership, sharing, target and mutation authority. Native Pi chooses and calls the advertised tools; the host supplies session and action identity. See [native continuity](native-continuity.md) for retained-context reauthorization and generation fencing. A configuration save/restore/rollback closes native sessions; a new runtime receives the new revision rather than retaining the previous persona or transcript.
 
-Without an explicit recipient, operator chat is private discussion without member tools. Select a current member from the authorized recipient selector to issue a single-member command. The backend opens a short-lived, chief-authorized session. Its finite tool catalog permits reading that member's retained Coach conversation, querying shared activity inventory/details when technical scopes allow, and sending one explicitly requested Coach message to that member. Other mutations—such as changing plans or bypassing proposal approval—are not supported. Browsing a member tab does not implicitly select an action recipient.
+### Receipts, Stop and retired history
 
-Only the explicit recipient message is appended to the member's canonical Coach conversation, with chief-directed provenance. Operator instructions, reasoning and private replies are not copied into member threads. A tool failure must not be represented as a successful query or action. Old backends without the operator contract fail closed before command inference.
+Receipts remain separate from transcripts. The UI reads `/api/terminal/receipts`; completed/delivered and pending/unknown outcomes remain distinct. Stop cannot retract a committed write. Neither reconnect nor config changes replay input or uncertain actions. A receipt refresh is not permission to retry, and generic unknown writes without an explicit backend readback contract remain unknown.
 
-Targeted commands and their member-derived results are ephemeral, not retained in the local discussion history. They are reauthorized at command boundaries; changing the selected target, view or authentication state clears displayed command results. The configured model provider receives the authorized tool data needed for the command. Merely opening member tabs does not send their content to the model.
+The old Operator service, composer/history renderer, image-card endpoint and `/api/operator/chat`, `/api/operator/cancel`, `/api/operator/clear` APIs are removed. Saved `operator-chat.json`, configuration/persona revisions and action journals remain on disk; this release does not delete or migrate customer history. Archived chat is not served or sent to Pi. Credential saves still screen current/retained configuration and action receipts for secrets; retired archives are never loaded and cannot block recovery. Keep protected-home backups private.
 
-### Delivery receipts and cancellation
-
-Each send uses a stable action key, with the delivery receipt stored separately from chat history. If delivery is uncertain, use **Refresh receipts** to reconcile the original action; this reads its outcome and does not resend it. Never assume a failed model follow-up means the message was not delivered.
-
-Cancel and Clear stop future command work but **cannot undo an already delivered message**. Clear removes local discussion history, not delivery receipts or member messages. The local journal retains up to 20 receipts, evicting the oldest resolved outcome when space is needed. Pending or unknown outcomes are never evicted; if all slots are unresolved, new actions fail closed until outcomes can be reconciled. Backend canonical messages/action records remain separate from this bounded local recent-receipt view.
-
-Operator messages are private installation data. Anyone with Studio admin access can see the retained local discussion. Protect installation and provider credentials as delegated chief access; do not share them with unauthorized operators.
-
-Chat does not silently rewrite permanent Coach behavior. Edit the Settings persona directly, pause the worker and explicitly save. Source upgrades require active inference to finish or be cancelled.
+Permanent persona changes require explicit Settings edits and Save. The request worker and read-only member threads retain their separate lifecycles and authority.
 
 ## Read-only member threads
 

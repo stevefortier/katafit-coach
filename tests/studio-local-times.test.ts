@@ -156,16 +156,8 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
                                 ],
                                 has_more: false,
                               }
-                            : path === "/api/operator/chat"
-                              ? {
-                                  messages: [
-                                    {
-                                      role: "assistant",
-                                      text: "Synthetic legacy message",
-                                      created_at: instants[0],
-                                    },
-                                  ],
-                                }
+                            : path === "/api/terminal/receipts"
+                              ? { actions: [] }
                               : {};
         await route.fulfill({ json: body });
       });
@@ -312,11 +304,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
           "Time unavailable",
         ],
       );
-      // Legacy Operator history has no timestamp UI; don't alter its persisted prose.
-      assert.equal(
-        await page.locator("#operatorMessages").textContent(),
-        "assistant: Synthetic legacy message",
-      );
+      assert.equal(await page.locator("#operatorMessages").count(), 0);
       assert.deepEqual(errors, []);
     } finally {
       await browser?.close();

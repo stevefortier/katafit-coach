@@ -4,10 +4,7 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { Client } from "../src/katafit/client.js";
-import {
-  openOperatorTools,
-  modelOperatorTools,
-} from "../src/katafit/operatorTools.js";
+import { openOperatorTools } from "../src/katafit/operatorTools.js";
 
 const LIST = "studio_operator_list_dojo_checkins";
 const IMAGE = "studio_operator_read_dojo_checkin_image";

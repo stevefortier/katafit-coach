@@ -50,6 +50,7 @@ test(
         "xterm runtime style must render monospace, not an unstyled transcript",
       );
       assert.equal(await page.locator("#operatorText").count(), 0);
+      assert.equal(await page.locator("#operatorMessages").count(), 0);
       await page.locator(".xterm-helper-textarea").focus();
       await page.keyboard.type("List the authorized members.");
       await page.keyboard.press("Enter");
@@ -74,7 +75,8 @@ test(
         f.calls.filter((c) => c.path === "/v1/chat/completions").length,
         2,
       );
-      const evidence = "/home/kai/operator-native-pi-evidence";
+      const evidence =
+        process.env.COACH_EVIDENCE_DIR ?? "/tmp/operator-native-pi-evidence";
       await mkdir(evidence, { recursive: true });
       await page.screenshot({
         path: evidence + "/native-desktop.png",

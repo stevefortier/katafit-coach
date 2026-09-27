@@ -27,7 +27,7 @@ for (const operation of ["writeFileSync", "fsyncSync"] as const) {
       code: "ENOSPC",
     });
     try {
-      const history = new History(dir);
+      const history = new History(dir, "operator-actions.json");
       history.save([]);
       Object.assign(fs, {
         [operation]: (fd: number) => {
@@ -49,10 +49,10 @@ for (const operation of ["writeFileSync", "fsyncSync"] as const) {
       assert.deepEqual(history.load(), []);
       history.save([]);
       assert.deepEqual(history.load(), []);
-      assert.deepEqual(fs.readdirSync(dir), ["operator-chat.json"]);
-      assert.deepEqual(afterFailure, ["operator-chat.json"]);
+      assert.deepEqual(fs.readdirSync(dir), ["operator-actions.json"]);
+      assert.deepEqual(afterFailure, ["operator-actions.json"]);
       assert.equal(
-        fs.statSync(dir + "/operator-chat.json").mode & 0o777,
+        fs.statSync(dir + "/operator-actions.json").mode & 0o777,
         0o600,
       );
     } finally {
@@ -78,7 +78,7 @@ test("history preserves the persistence exception when close and unlink also fai
   let closed = false;
   let unlinked = false;
   try {
-    const history = new History(dir);
+    const history = new History(dir, "operator-actions.json");
     history.save([]);
     fs.fsyncSync = (fd) => {
       failedFd = fd;
@@ -112,14 +112,14 @@ test("history preserves the persistence exception when close and unlink also fai
       (e) => e === cleanupFailure,
     );
     assert.throws(
-      () => new History(dir).load(),
+      () => new History(dir, "operator-actions.json").load(),
       (e) => e === cleanupFailure,
     );
     Object.assign(fs, originals);
     syncBuiltinESMExports();
     history.save([]);
     assert.deepEqual(history.load(), []);
-    assert.deepEqual(fs.readdirSync(dir), ["operator-chat.json"]);
+    assert.deepEqual(fs.readdirSync(dir), ["operator-actions.json"]);
   } finally {
     Object.assign(fs, originals);
     syncBuiltinESMExports();
@@ -132,7 +132,7 @@ test("history cleans temporary data if rename fails without replacing canonical 
   const original = fs.renameSync;
   const failure = new Error("synthetic rename failure");
   try {
-    const history = new History(dir);
+    const history = new History(dir, "operator-actions.json");
     history.save([]);
     fs.renameSync = () => {
       throw failure;
@@ -142,7 +142,7 @@ test("history cleans temporary data if rename fails without replacing canonical 
       () => history.save(privateTurn),
       (e) => e === failure,
     );
-    assert.deepEqual(fs.readdirSync(dir), ["operator-chat.json"]);
+    assert.deepEqual(fs.readdirSync(dir), ["operator-actions.json"]);
     assert.deepEqual(history.load(), []);
   } finally {
     fs.renameSync = original;
@@ -152,30 +152,34 @@ test("history cleans temporary data if rename fails without replacing canonical 
 });
 
 const originalWrite = fs.writeFileSync;
-const abandonedName = "operator-chat.json.12345678-1234-4123-8123-123456789abc";
+const abandonedName =
+  "operator-actions.json.12345678-1234-4123-8123-123456789abc";
 
 for (const action of ["load", "clear"] as const) {
   test(`history ${action} removes only recognized abandoned regular temp files`, () => {
     const dir = mkdtempSync(tmpdir() + "/operator-history-stale-");
     try {
-      const history = new History(dir);
+      const history = new History(dir, "operator-actions.json");
       history.save(privateTurn);
       writeFileSync(dir + "/" + abandonedName, JSON.stringify(privateTurn), {
         mode: 0o600,
       });
       const unrelated = [
-        "operator-chat.json.backup",
+        "operator-actions.json.backup",
         abandonedName + ".backup",
         "other.12345678-1234-4123-8123-123456789abc",
       ];
       for (const name of unrelated)
         writeFileSync(dir + "/" + name, "unrelated");
       if (action === "load")
-        assert.deepEqual(new History(dir).load(), privateTurn);
+        assert.deepEqual(
+          new History(dir, "operator-actions.json").load(),
+          privateTurn,
+        );
       else history.save([]);
       assert.deepEqual(
         fs.readdirSync(dir).sort(),
-        ["operator-chat.json", ...unrelated].sort(),
+        ["operator-actions.json", ...unrelated].sort(),
       );
       assert.deepEqual(history.load(), action === "load" ? privateTurn : []);
       for (const name of unrelated)
@@ -190,7 +194,7 @@ for (const kind of ["symlink", "directory", "fifo", "hardlink"] as const) {
   test(`history fails closed on recognized ${kind} temp paths`, () => {
     const dir = mkdtempSync(tmpdir() + "/operator-history-unsafe-temp-");
     try {
-      const history = new History(dir);
+      const history = new History(dir, "operator-actions.json");
       history.save(privateTurn);
       const target = dir + "/private";
       const stale = dir + "/" + abandonedName;
@@ -199,13 +203,16 @@ for (const kind of ["symlink", "directory", "fifo", "hardlink"] as const) {
       if (kind === "directory") mkdirSync(stale);
       if (kind === "fifo") execFileSync("mkfifo", [stale]);
       if (kind === "hardlink") fs.linkSync(target, stale);
-      assert.throws(() => new History(dir).load(), /UNSAFE_STORAGE/);
+      assert.throws(
+        () => new History(dir, "operator-actions.json").load(),
+        /UNSAFE_STORAGE/,
+      );
       assert.throws(() => history.save([]), /UNSAFE_STORAGE/);
       assert.ok(fs.lstatSync(stale));
       assert.equal(readFileSync(target, "utf8"), "do not touch");
       assert.equal(fs.statSync(target).mode & 0o777, 0o640);
       assert.deepEqual(
-        JSON.parse(readFileSync(dir + "/operator-chat.json", "utf8")),
+        JSON.parse(readFileSync(dir + "/operator-actions.json", "utf8")),
         privateTurn,
       );
     } finally {
@@ -216,9 +223,9 @@ for (const kind of ["symlink", "directory", "fifo", "hardlink"] as const) {
 
 test("history rejects symlinks, nonregular targets, malformed and oversized records without touching targets", () => {
   const dir = mkdtempSync(tmpdir() + "/operator-history-");
-  const path = dir + "/operator-chat.json";
+  const path = dir + "/operator-actions.json";
   try {
-    const history = new History(dir);
+    const history = new History(dir, "operator-actions.json");
     const target = dir + "/private";
     writeFileSync(target, "do not touch");
     symlinkSync(target, path);
@@ -246,7 +253,9 @@ test("history rejects symlinks, nonregular targets, malformed and oversized reco
     }
     rmSync(path);
     symlinkSync(dir, dir + "/alias");
-    assert.throws(() => new History(dir + "/alias").save([]));
+    assert.throws(() =>
+      new History(dir + "/alias", "operator-actions.json").save([]),
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

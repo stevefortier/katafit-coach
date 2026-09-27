@@ -58,8 +58,8 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
             ? { members: [], has_more: false }
             : path === "/api/status"
               ? { state: "stopped" }
-              : path === "/api/operator/chat"
-                ? { messages: [] }
+              : path === "/api/terminal/receipts"
+                ? { actions: [] }
                 : {};
       await route.fulfill({ json: body });
     });

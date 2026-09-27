@@ -105,10 +105,6 @@
               Stopped. Docker isolation is required; there is no host fallback.
             </p>
             <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
-            <details>
-              <summary>Saved legacy chat · read-only · not sent to Pi</summary>
-              <div id="operatorMessages" class="chat-messages"></div>
-            </details>
             <p id="operatorStatus" role="status"></p>
             <div id="operatorActions" role="status" aria-live="polite"></div>
             <button
@@ -248,7 +244,7 @@
               does not discover, list or verify models; enter model IDs exactly
               as your provider documents them. Browsing and editing here
               contacts nobody. Save applies the selected model; Preview, the
-              worker and Operator chat use the saved active model.
+              worker and native Operator Pi use the saved active model.
             </p>
             <div id="providerList"></div>
             <div class="provider-add">
@@ -440,7 +436,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             <p class="hint">
               Confirming an upgrade stops Coach safely and restarts it if it was
               running. A stopped Coach stays stopped. Finish or cancel previews
-              and Operator chat first. Native sessions close; actions are never
+              and native Pi first. Native sessions close; actions are never
               replayed.
             </p>
             <div id="updateConfirm" class="update-confirm" hidden>

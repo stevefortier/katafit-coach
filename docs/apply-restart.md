@@ -25,4 +25,4 @@ See [source updates](source-updates.md). The stable owner, not the browser, owns
 
 ## Synthetic evidence
 
-`model-registry-api`, `presence`, `apply-restart-browser`, `manual-update-restart`, `operator-chat`, `native-terminal`, existing auto-update/quiesce suites, and the three Studio smokes exercise the real Store/admin/browser/owner paths with synthetic provider/backend boundaries. Native Docker and exact packed-artifact tests still require their documented immutable artifact and source-identity prerequisites. No synthetic result is evidence of a production deployment or live model quality.
+`model-registry-api`, `presence`, `apply-restart-browser`, `manual-update-restart`, `native-only-operator`, `native-terminal`, existing auto-update/quiesce suites, and the three Studio smokes exercise the real Store/admin/browser/owner paths with synthetic provider/backend boundaries. Native Docker and exact packed-artifact tests still require their documented immutable artifact and source-identity prerequisites. No synthetic result is evidence of a production deployment or live model quality.

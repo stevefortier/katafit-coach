@@ -109,63 +109,7 @@ function assertCallerArguments(args: unknown, memberScoped: boolean) {
   )
     throw new Error("ARGUMENTS_REJECTED");
 }
-const textOnlyImageTools = new WeakSet<AgentTool>();
-const imageReceipts = new WeakMap<
-  AgentTool,
-  (receipt: OperatorReadReceipt) => void
->();
 const domainFor = (name: string) => operatorEvidenceDomain(name)!;
-export function isTextOnlyOperatorImage(tool: AgentTool) {
-  return textOnlyImageTools.has(tool);
-}
-export function modelOperatorTools(
-  tools: AgentTool[],
-  vision: boolean,
-): AgentTool[] {
-  return tools.map((tool) => {
-    if (tool.name !== IMAGE) return tool;
-    const wrapped: AgentTool = {
-      ...tool,
-      description: vision
-        ? tool.description
-        : "Deliver an authorized original image as a transient Studio card. Text-only model receives metadata, never pixels; do not visually assess it.",
-      async execute(id, args) {
-        const result = await tool.execute(id, args);
-        const metadata = result.content.find((part) => part.type === "text");
-        if (
-          !metadata ||
-          metadata.type !== "text" ||
-          !result.content.some((part) => part.type === "image")
-        )
-          throw new Error("RESULT_REJECTED");
-        if (vision)
-          imageReceipts.get(tool)?.({
-            tool: IMAGE,
-            domain: "image",
-            member_ref: (args as any).member_ref,
-            media_ref: (args as any).media_ref,
-            cursor: null,
-            status: "success",
-            image_to_model: vision,
-          });
-        if (vision) return result;
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text:
-                metadata.text +
-                "\nImage delivered to Studio; not visually assessed by this text-only model.",
-            },
-          ],
-          details: {},
-        };
-      },
-    };
-    if (!vision) textOnlyImageTools.add(wrapped);
-    return wrapped;
-  });
-}
 export interface OperatorAction {
   session_id: string;
   idempotency_key: string;
@@ -930,10 +874,6 @@ export async function openOperatorTools(
             }
           },
         };
-        if (tool.name === IMAGE)
-          imageReceipts.set(wrapped, (receipt) =>
-            options.onRead?.(tool.name, [receipt.member_ref!], receipt),
-          );
         return wrapped;
       });
     // New session capabilities are dispatched from the backend's tools/list schema,

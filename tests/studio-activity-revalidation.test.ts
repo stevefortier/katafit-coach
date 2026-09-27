@@ -107,7 +107,7 @@ for (const mode of ["refresh", "timed"] as const)
             ),
           };
         if (p === "/api/status") body = { state: "stopped" };
-        if (p === "/api/operator/chat") body = { messages: [] };
+        if (p === "/api/terminal/receipts") body = { actions: [] };
         if (p === "/api/members")
           body = {
             members: [

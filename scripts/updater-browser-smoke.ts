@@ -116,14 +116,14 @@ try {
   await page.route("**/api/status", (route) =>
     route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ state: "stopped", operatorChat: true }),
+      body: JSON.stringify({ state: "stopped", nativeActive: true }),
     }),
   );
   await page.waitForTimeout(4300);
   assert.equal(
-    await page.locator("#updateApply").isDisabled(),
+    await page.locator("#updateApply").isEnabled(),
     true,
-    "active operator turn blocks source upgrades",
+    "an open native terminal does not block manual update; apply closes it",
   );
   await page.unroute("**/api/status");
   await page.waitForFunction(

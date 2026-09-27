@@ -16,7 +16,7 @@ enable the checkbox to have the stable Linux supervisor check the fixed public
 `main` about every 90 seconds (longer after failed/rate-limited checks). It
 only installs a SHA verified as ahead of the known installed Git revision;
 unknown/dirty, divergent and behind revisions are skipped. It waits for
-preview, Operator chat and worker actions to finish, then quiesces and stops
+preview, native Operator Pi and worker actions to finish, then quiesces and stops
 an idle worker before applying. A previously running worker is started again
 after a healthy upgrade or restored previous runtime; a previously stopped
 worker stays stopped. A successful local start is not proof of ongoing backend

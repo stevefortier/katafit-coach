@@ -700,19 +700,6 @@ header {
   object-fit: contain;
   margin: 12px 0;
 }
-#operatorCommandResult .operator-image-card {
-  margin: 12px 0;
-}
-#operatorCommandResult .operator-image-card img {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  max-height: 420px;
-  object-fit: contain;
-}
-#operatorTarget {
-  max-width: 100%;
-}
 .member-item small {
   display: block;
   color: var(--muted);

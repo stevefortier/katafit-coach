@@ -72,8 +72,8 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
               ? { state, lastError: null }
               : path === "/api/update" || path === "/api/update/check"
                 ? { supported: true, applying }
-                : path === "/api/operator/chat"
-                  ? { messages: [] }
+                : path === "/api/terminal/receipts"
+                  ? { actions: [] }
                   : path === "/api/members"
                     ? { members: [], has_more: false }
                     : {};

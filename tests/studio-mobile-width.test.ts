@@ -32,21 +32,19 @@ for (const width of [320, 390]) {
       await page.evaluate(() => {
         document.querySelector<HTMLElement>("#login")!.hidden = true;
         document.querySelector<HTMLElement>("#studio")!.hidden = false;
-        const messages =
-          document.querySelector<HTMLElement>("#operatorMessages")!;
-        messages.innerHTML =
-          '<article class="chat-message chat-assistant"><strong>Coach</strong><p>What do you wish to build? What weakness do you need corrected? Speak,</p></article>' +
-          '<article class="chat-message chat-user"><strong>You · Manager</strong><p>Hello!</p></article>';
+        const terminal =
+          document.querySelector<HTMLElement>("#nativeTerminal")!;
+        terminal.textContent = "Native Pi terminal";
         document.querySelector<HTMLElement>("#operatorStatus")!.textContent =
           "Receipt " + "a".repeat(150);
       });
       const measured = await page.evaluate(() => ({
         viewport: document.documentElement.clientWidth,
         page: document.documentElement.scrollWidth,
-        chat: document.querySelector<HTMLElement>("#operatorMessages")!
+        chat: document.querySelector<HTMLElement>("#nativeTerminal")!
           .scrollWidth,
         chatClient:
-          document.querySelector<HTMLElement>("#operatorMessages")!.clientWidth,
+          document.querySelector<HTMLElement>("#nativeTerminal")!.clientWidth,
         status:
           document.querySelector<HTMLElement>("#operatorStatus")!.scrollWidth,
         statusClient:

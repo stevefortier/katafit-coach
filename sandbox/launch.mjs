@@ -15,7 +15,9 @@ if (process.env.NATIVE_GATEWAY === "1") {
     config.model,
     "-e",
     "/opt/coach/sandbox/katafit.mjs",
-    "--append-system-prompt",
+    // Coach is the primary identity. Appending leaves Pi's coding-assistant
+    // preamble in authority alongside the saved persona.
+    "--system-prompt",
     config.prompt,
   );
 }

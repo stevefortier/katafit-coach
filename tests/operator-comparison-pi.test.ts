@@ -2,10 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { Client } from "../src/katafit/client.js";
-import {
-  openOperatorTools,
-  modelOperatorTools,
-} from "../src/katafit/operatorTools.js";
+import { openOperatorTools } from "../src/katafit/operatorTools.js";
 import { complete } from "../src/runtime/piAdapter.js";
 import { fixture } from "./operator-checkins.test.js";
 
@@ -72,14 +69,14 @@ test("real Pi selects roster then both authorized member feeds for a comparison"
         baseUrl: `http://127.0.0.1:${(provider.address() as any).port}/v1`,
         model: "operator-synthetic",
         apiKey: "synthetic-key",
-        vision: false,
+        vision: true,
         secrets: ["synthetic-token"],
         authorize: s.authorize,
       },
       "Manager: compare only retrieved evidence",
       "Compare Alex and Morgan",
       signal,
-      modelOperatorTools(s.tools, false),
+      s.tools,
     );
     assert.match(reply, /Both feeds were read/);
     assert.equal(

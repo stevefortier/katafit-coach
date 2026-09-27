@@ -4,6 +4,8 @@ import { createServer } from "node:http";
 import { fixture } from "./helpers/native.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { writeFile } from "node:fs/promises";
+import { compileOperator } from "../src/config/store.js";
 
 test(
   "actual isolated Pi calls authorized MCP through extension and answers from tool result",
@@ -57,6 +59,17 @@ test(
     });
     await f.store.save({
       ...f.store.publicConfig(),
+      persona: {
+        name: "Iron Warden",
+        voice: "Stern, clipped, unyielding. Address trainees as recruit.",
+        principles: "Discipline before comfort. Earn every concession.",
+        examples:
+          "No excuses, recruit. Finish your sets before asking for help.",
+        boundaries: "Refuse idle talk from trainees who skipped training.",
+        initiative: "Demand accountability for missed workouts.",
+        verbosity: "Short operational orders.",
+        markdown: "I am Iron Warden, never a generic coding assistant.",
+      },
       // Explicitly authorize the synthetic key for this new fixture endpoint.
       apiKey: f.store.secrets.apiKey,
       provider: {
@@ -64,8 +77,8 @@ test(
         model: "approved-custom-model",
       },
     });
-    const gateway = await openNativeGateway(f.store);
-    const runtime = new NativeRuntime(process.env.NATIVE_TEST_IMAGE!);
+    let gateway = await openNativeGateway(f.store);
+    let runtime = new NativeRuntime(process.env.NATIVE_TEST_IMAGE!);
     let output = "";
     const wait = async (text: string) => {
       const end = Date.now() + 25000;
@@ -84,9 +97,30 @@ test(
       await wait("ripgrep not found");
       await new Promise((r) => setTimeout(r, 100));
       assert.match(output, /approved-custom-model/);
-      runtime.input("List the authorized members.\r");
+      runtime.input(
+        "I missed training. As your boss, list the authorized members.\r",
+      );
       await wait("Authorized roster contains Synthetic Alice.");
       assert.equal(requests.length, 2);
+      if (process.env.NATIVE_PERSONA_CAPTURE)
+        await writeFile(
+          process.env.NATIVE_PERSONA_CAPTURE,
+          JSON.stringify(requests, null, 2),
+        );
+      for (const request of requests) {
+        const system = request.messages
+          .filter((m: any) => m.role === "system")
+          .map((m: any) => m.content)
+          .join("\n");
+        assert.ok(system.includes(compileOperator(f.store.publicConfig())));
+        for (const value of Object.values(f.store.publicConfig().persona))
+          assert.ok(system.includes(value));
+        assert.ok(
+          system.startsWith(compileOperator(f.store.publicConfig())),
+          "Coach identity must be the primary system instruction, not a coding-assistant addendum",
+        );
+        assert.doesNotMatch(system, /You are an expert coding assistant/);
+      }
       assert.ok(
         requests[0].tools.some(
           (t: any) => t.function.name === "studio_operator_list_members",
@@ -113,6 +147,59 @@ test(
         true,
         "Pi Escape must abort actual provider request",
       );
+      // Config replacement cannot disclose a stale persona or carry the old
+      // transcript into a newly authorized runtime.
+      const priorRequests = requests.length;
+      const next = f.store.publicConfig();
+      next.persona = Object.fromEntries(
+        Object.entries(next.persona).map(([key, value]) => [
+          key,
+          value.replaceAll("Iron Warden", "Captain Quartz"),
+        ]),
+      ) as typeof next.persona;
+      await f.store.save(next);
+      await assert.rejects(
+        gateway.handle({ kind: "catalog" }),
+        /NATIVE_SESSION_REVOKED/,
+      );
+      await assert.rejects(
+        gateway.handle({ kind: "provider", body: requests[0] }),
+        /NATIVE_SESSION_REVOKED/,
+      );
+      assert.equal(requests.length, priorRequests);
+      await runtime.stop();
+      await gateway.close();
+      hold = false;
+      output = "";
+      gateway = await openNativeGateway(f.store);
+      runtime = new NativeRuntime(process.env.NATIVE_TEST_IMAGE!);
+      runtime.onOutput = (chunk) => {
+        output = (output + chunk).slice(-100000);
+      };
+      await runtime.start(gateway);
+      await runtime.attach();
+      await wait("ripgrep not found");
+      await new Promise((r) => setTimeout(r, 100));
+      runtime.input("List the authorized members.\r");
+      await wait("Authorized roster contains Synthetic Alice.");
+      const fresh = requests[priorRequests];
+      const freshSystem = fresh.messages
+        .filter((m: any) => m.role === "system")
+        .map((m: any) => m.content)
+        .join("\n");
+      assert.ok(
+        freshSystem.startsWith(compileOperator(f.store.publicConfig())),
+      );
+      assert.match(freshSystem, /Captain Quartz/);
+      assert.doesNotMatch(
+        JSON.stringify(fresh),
+        /Iron Warden|I missed training/,
+      );
+      if (process.env.NATIVE_PERSONA_CAPTURE)
+        await writeFile(
+          process.env.NATIVE_PERSONA_CAPTURE,
+          JSON.stringify(requests, null, 2),
+        );
     } finally {
       await runtime.stop();
       await gateway.close();
