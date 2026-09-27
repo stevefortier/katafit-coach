@@ -4,13 +4,12 @@ import {
   lstat,
   mkdir,
   open,
-  readFile,
   rename,
-  rm,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
+import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { assertNoSecrets } from "../config/store.js";
 
@@ -113,6 +112,7 @@ export interface MemoryRecall {
 
 const manifestLimit = 16 * 1024;
 const recordLimit = 128 * 1024;
+const lockWaitMs = 5000;
 const maxRecords = 10000;
 const recordPattern = /^memory-[a-f0-9]{64}\.json$/;
 const iso = (value: string) =>
@@ -418,70 +418,100 @@ export class MemoryStore {
     this.pending = result.catch(() => {});
     return result;
   }
-  private async withLock<T>(work: () => Promise<T>): Promise<T> {
-    const deadline = Date.now() + 5000;
-    let locked = false;
-    for (;;) {
-      try {
-        const lock = await open(
-          this.lockPath,
-          constants.O_WRONLY |
-            constants.O_CREAT |
-            constants.O_EXCL |
-            constants.O_NOFOLLOW,
-          0o600,
-        );
-        try {
-          await lock.writeFile(
-            JSON.stringify({
-              pid: process.pid,
-              created_at: new Date().toISOString(),
-            }),
-          );
-          await lock.sync();
-        } finally {
-          await lock.close();
-        }
-        locked = true;
-        break;
-      } catch (error: any) {
-        if (error.code !== "EEXIST" || Date.now() > deadline)
-          throw new Error("MEMORY_LOCK_UNAVAILABLE");
-        await this.recoverLock().catch(() => {});
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
+  private async acquireLock() {
+    if (process.platform !== "linux")
+      throw new Error("MEMORY_LOCK_UNAVAILABLE");
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      handle = await open(
+        this.lockPath,
+        constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW,
+        0o600,
+      );
+      const [opened, linked] = await Promise.all([
+        handle.stat(),
+        lstat(this.lockPath),
+      ]);
+      if (
+        !opened.isFile() ||
+        !linked.isFile() ||
+        linked.isSymbolicLink() ||
+        opened.dev !== linked.dev ||
+        opened.ino !== linked.ino ||
+        opened.nlink !== 1 ||
+        opened.size !== 0 ||
+        (opened.mode & 0o777) !== 0o600 ||
+        (process.getuid !== undefined && opened.uid !== process.getuid())
+      )
+        throw new Error("MEMORY_LOCK_INVALID");
+    } catch {
+      await handle?.close().catch(() => {});
+      throw new Error("MEMORY_LOCK_UNAVAILABLE");
     }
+
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn("/usr/bin/flock", ["--exclusive", "3"], {
+        env: {},
+        stdio: ["ignore", "ignore", "ignore", handle.fd],
+      });
+    } catch {
+      await handle.close();
+      throw new Error("MEMORY_LOCK_UNAVAILABLE");
+    }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          child.kill("SIGTERM");
+          settle(new Error("MEMORY_LOCK_UNAVAILABLE"));
+        }, lockWaitMs);
+        timer.unref();
+        const settle = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.removeListener("error", failed);
+          child.removeListener("close", closed);
+          if (error) reject(error);
+          else resolve();
+        };
+        const failed = () => settle(new Error("MEMORY_LOCK_UNAVAILABLE"));
+        const closed = (code: number | null) =>
+          settle(code === 0 ? undefined : new Error("MEMORY_LOCK_UNAVAILABLE"));
+        child.once("error", failed);
+        child.once("close", closed);
+      });
+      const [opened, linked] = await Promise.all([
+        handle.stat(),
+        lstat(this.lockPath),
+      ]);
+      if (
+        !linked.isFile() ||
+        linked.isSymbolicLink() ||
+        opened.dev !== linked.dev ||
+        opened.ino !== linked.ino
+      )
+        throw new Error("MEMORY_LOCK_UNAVAILABLE");
+    } catch (error) {
+      child.kill("SIGTERM");
+      await handle.close().catch(() => {});
+      throw error;
+    }
+
+    let released: Promise<void> | undefined;
+    return {
+      release() {
+        return (released ??= handle.close());
+      },
+    };
+  }
+  private async withLock<T>(work: () => Promise<T>): Promise<T> {
+    const lock = await this.acquireLock();
     try {
       return await work();
     } finally {
-      if (locked) await unlink(this.lockPath).catch(() => {});
-    }
-  }
-  private async recoverLock() {
-    const info = await lstat(this.lockPath);
-    if (info.isDirectory()) {
-      if (Date.now() - info.mtimeMs > 30000)
-        await rm(this.lockPath, { recursive: true, force: true });
-      return;
-    }
-    if (!info.isFile()) throw new Error("MEMORY_LOCK_UNAVAILABLE");
-    let pid: unknown;
-    try {
-      pid = JSON.parse(
-        (await regularBytes(this.lockPath, 4096)).toString(),
-      ).pid;
-    } catch {
-      if (Date.now() - info.mtimeMs > 30000) await unlink(this.lockPath);
-      return;
-    }
-    if (!Number.isSafeInteger(pid) || (pid as number) <= 0) {
-      if (Date.now() - info.mtimeMs > 30000) await unlink(this.lockPath);
-      return;
-    }
-    try {
-      process.kill(pid as number, 0);
-    } catch (error: any) {
-      if (error.code === "ESRCH") await unlink(this.lockPath);
+      await lock.release();
     }
   }
   private async snapshot(record: MemoryRecord) {

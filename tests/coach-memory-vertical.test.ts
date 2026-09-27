@@ -1,13 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { Store } from "../src/config/store.js";
 import { Worker } from "../src/worker/runner.js";
 import { fixture as workerFixture } from "./worker.test.js";
 import { fixture as nativeFixture } from "./helpers/native.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
+
+const exec = promisify(execFile);
 
 function memoryHost(store: Store) {
   const method = (store as any).memoryAuthority;
@@ -16,19 +21,124 @@ function memoryHost(store: Store) {
     : store.publicConfig().origin;
 }
 
-test("memory store recovers an abandoned pid lock instead of deadlocking", async () => {
+const lockHolderScript = String.raw`
+const { spawn } = require("node:child_process");
+const { constants } = require("node:fs");
+const { lstat, open } = require("node:fs/promises");
+
+(async () => {
+  const path = process.argv[1];
+  const handle = await open(
+    path,
+    constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW,
+    0o600,
+  );
+  const [opened, linked] = await Promise.all([handle.stat(), lstat(path)]);
+  if (
+    !opened.isFile() ||
+    !linked.isFile() ||
+    linked.isSymbolicLink() ||
+    opened.dev !== linked.dev ||
+    opened.ino !== linked.ino ||
+    opened.nlink !== 1 ||
+    opened.size !== 0 ||
+    (opened.mode & 0o777) !== 0o600 ||
+    (process.getuid !== undefined && opened.uid !== process.getuid())
+  ) {
+    throw new Error("LOCK_INVALID");
+  }
+  const flock = spawn("/usr/bin/flock", ["--exclusive", "3"], {
+    env: {},
+    stdio: ["ignore", "ignore", "ignore", handle.fd],
+  });
+  flock.once("error", (error) => {
+    throw error;
+  });
+  flock.once("close", (code) => {
+    if (code !== 0) throw new Error("LOCK_UNAVAILABLE");
+    process.send?.({ status: "locked" });
+    setInterval(() => {}, 1000);
+  });
+  process.once("SIGTERM", async () => {
+    await handle.close().catch(() => {});
+    process.exit(0);
+  });
+})().catch((error) => {
+  process.send?.({ status: "error", message: error?.message || String(error) });
+  process.exit(1);
+});
+`;
+
+async function spawnLockHolder(lockPath: string) {
+  const child = spawn(process.execPath, ["-e", lockHolderScript, lockPath], {
+    stdio: ["ignore", "ignore", "pipe", "ipc"],
+  });
+  const stderr: Buffer[] = [];
+  child.stderr?.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("LOCK_HOLDER_TIMEOUT"));
+    }, 5000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off("message", message);
+      child.off("error", failed);
+      child.off("exit", exited);
+    };
+    const failed = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const exited = () => {
+      cleanup();
+      reject(
+        new Error(
+          "LOCK_HOLDER_EXITED " + Buffer.concat(stderr).toString("utf8"),
+        ),
+      );
+    };
+    const message = (value: any) => {
+      if (value?.status === "locked") {
+        cleanup();
+        resolve();
+      } else if (value?.status === "error") {
+        cleanup();
+        reject(new Error(value.message || "LOCK_HOLDER_FAILED"));
+      }
+    };
+    child.once("error", failed);
+    child.once("exit", exited);
+    child.on("message", message);
+  });
+  return child;
+}
+
+async function closeChild(child: ChildProcess | undefined) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  await once(child, "close").catch(() => {});
+}
+
+test("memory store recovers after a SIGKILLed descriptor flock holder", async (t) => {
+  if (process.platform !== "linux") {
+    t.skip("descriptor flock lock is Linux-only");
+    return;
+  }
   const dir = await mkdtemp(tmpdir() + "/coach-memory-lock-");
   const store = new Store(dir);
+  let holder: ChildProcess | undefined;
   try {
     await store.init();
-    await writeFile(
-      join(dir, "memories.lock"),
-      JSON.stringify({
-        pid: 2147483646,
-        created_at: new Date(Date.now() - 60000).toISOString(),
-      }),
-      { mode: 0o600 },
+    const lockPath = join(dir, "memories.lock");
+    holder = await spawnLockHolder(lockPath);
+    await assert.rejects(
+      exec("/usr/bin/flock", ["--nonblock", lockPath, "true"]),
+      /flock/,
     );
+    holder.kill("SIGKILL");
+    await once(holder, "close");
+    holder = undefined;
     const entry = await store.memories.add({
       host: "synthetic-authority",
       subject: { scope: "boss" },
@@ -37,6 +147,75 @@ test("memory store recovers an abandoned pid lock instead of deadlocking", async
       source: { type: "operator_correction", id: "synthetic-lock" },
     });
     assert.equal(entry.text, "Prefers lock recovery checks.");
+  } finally {
+    await closeChild(holder);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("memory store serializes concurrent cross-process writers", async (t) => {
+  if (process.platform !== "linux") {
+    t.skip("descriptor flock lock is Linux-only");
+    return;
+  }
+  const dir = await mkdtemp(tmpdir() + "/coach-memory-concurrent-");
+  const store = new Store(dir);
+  try {
+    await store.init();
+    const writer = String.raw`
+      import { Store } from "./src/config/store.js";
+      const store = new Store(process.argv[1]);
+      await store.init();
+      await store.memories.add({
+        host: "synthetic-authority",
+        subject: { scope: "boss" },
+        kind: "fact",
+        text: "Concurrent writer " + process.argv[2] + ".",
+        source: { type: "operator_correction", id: "writer:" + process.argv[2] },
+      });
+    `;
+    const children = Array.from({ length: 6 }, (_, index) =>
+      spawn(
+        process.execPath,
+        [...process.execArgv, "-e", writer, dir, String(index)],
+        {
+          cwd: process.cwd(),
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      ),
+    );
+    try {
+      const results = await Promise.all(
+        children.map(
+          (child) =>
+            new Promise<{ code: number | null; stderr: string }>((resolve) => {
+              const stderr: Buffer[] = [];
+              child.stderr?.on("data", (chunk) =>
+                stderr.push(Buffer.from(chunk)),
+              );
+              child.once("close", (code) =>
+                resolve({
+                  code,
+                  stderr: Buffer.concat(stderr).toString("utf8"),
+                }),
+              );
+            }),
+        ),
+      );
+      assert.deepEqual(
+        results.map((result) => result.code),
+        [0, 0, 0, 0, 0, 0],
+        results.map((result) => result.stderr).join("\n"),
+      );
+    } finally {
+      await Promise.all(children.map(closeChild));
+    }
+    const restarted = new Store(dir);
+    await restarted.init();
+    assert.equal(
+      restarted.memories.list({ host: "synthetic-authority" }).total,
+      6,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
