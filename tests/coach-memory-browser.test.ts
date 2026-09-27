@@ -231,9 +231,7 @@ async function startMemoryBackend() {
 
 test("served Memories UI proxies canonical backend CRUD, history, filters and screenshots", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-memory-browser-");
-  const evidence =
-    process.env.COACH_MEMORY_EVIDENCE ||
-    "/home/kai/task-evidence/coach-long-term-memory/browser";
+  const evidence = process.env.COACH_MEMORY_EVIDENCE || `${dir}/evidence`;
   const store = new Store(dir);
   const backend = await startMemoryBackend();
   let app: Awaited<ReturnType<typeof admin>> | undefined;
