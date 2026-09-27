@@ -46,6 +46,13 @@ test(
       runtime.onOutput = (chunk) => (output += chunk);
       await runtime.attach();
       await waitForPiReady(() => output);
+      // The OSC title enables input before Pi flushes its buffered header.
+      // Wait for the version's own rendered bytes before asserting them.
+      const versionDeadline = Date.now() + 15000;
+      while (!output.includes("0.86.1")) {
+        assert.ok(Date.now() < versionDeadline, "Pi version not rendered");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
       assert.match(output, /0\.86\.1/);
       const info = await runtime.inspect();
       assert.equal(info.HostConfig.NetworkMode, "none");
