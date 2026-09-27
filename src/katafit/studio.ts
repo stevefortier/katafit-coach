@@ -232,7 +232,7 @@ export class StudioReads {
       display_name: string;
       media: "shared" | "not_shared";
       stats: "shared" | "not_shared";
-      photo: { media_ref: string; captured_at: string } | null;
+      photos: { media_ref: string; captured_at: string }[];
       charts: {
         training: {
           date: string;
@@ -381,7 +381,7 @@ export class StudioReads {
           display_name: text(m.display_name, 200),
           media: m.photo_access,
           stats: m.stats_access,
-          photo: photoRows[0] ?? null,
+          photos: photoRows,
           charts,
         });
       }

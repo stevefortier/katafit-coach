@@ -436,8 +436,8 @@ export async function admin(
             new Client(c.origin, token, signal, onBackendDiagnostic),
             Object.values(store.secrets),
           );
-          const snapshot = await reads.dashboard();
           if (!photo) {
+            const snapshot = await reads.dashboard();
             signal.throwIfAborted();
             if (
               store.publicConfig().revision !== c.revision ||
@@ -449,19 +449,19 @@ export async function admin(
           }
           const member_ref = params.get("member_ref")!;
           const media_ref = params.get("media_ref")!;
-          if (
-            !snapshot.members.some(
-              (m) =>
-                m.member_ref === member_ref &&
-                m.media === "shared" &&
-                m.photo?.media_ref === media_ref,
-            )
-          )
-            return send(404, { error: "NOT_FOUND" });
-          const image = await reads.media(
-            { member_ref, media_ref },
-            "studio_dashboard_read_photo",
-          );
+          let image;
+          try {
+            // The backend reauthorizes this exact pair against the current chief,
+            // grant, media audience and latest check-in; no roster snapshot here.
+            image = await reads.media(
+              { member_ref, media_ref },
+              "studio_dashboard_read_photo",
+            );
+          } catch (error) {
+            if (error instanceof SafeError && error.code === "MCP_TOOL_FAILED")
+              return send(404, { error: "NOT_FOUND" });
+            throw error;
+          }
           signal.throwIfAborted();
           if (
             store.publicConfig().revision !== c.revision ||

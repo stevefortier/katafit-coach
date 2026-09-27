@@ -904,6 +904,12 @@ header {
   margin: 0 0 10px;
   overflow-wrap: anywhere;
 }
+.dashboard-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 8px;
+  min-width: 0;
+}
 .dashboard-photo {
   aspect-ratio: 4 / 3;
   background: #0c0c0c;

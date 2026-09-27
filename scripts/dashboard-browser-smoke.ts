@@ -65,6 +65,10 @@ const backend = createServer(async (req, res) => {
                       media_ref: "synthetic-photo",
                       checkin_at: "2026-09-20T12:00:00Z",
                     },
+                    {
+                      media_ref: "synthetic-photo-two",
+                      checkin_at: "2026-09-20T12:00:00Z",
+                    },
                   ],
                   charts: {
                     training: [
@@ -166,6 +170,14 @@ try {
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
+      await page.addInitScript(() => {
+        const revoke = URL.revokeObjectURL.bind(URL);
+        (window as any).dashboardRevoked = [];
+        URL.revokeObjectURL = (url) => {
+          (window as any).dashboardRevoked.push(url);
+          revoke(url);
+        };
+      });
       await page.goto(app.origin + "/dashboard");
       if (await page.locator("#studio").isVisible())
         throw Error("Dashboard visible before unlock");
@@ -187,7 +199,21 @@ try {
           .isVisible())
       )
         throw Error("Readable per-point values and contributor counts missing");
-      await page.locator("#dashboardRoster img").waitFor();
+      await page.waitForFunction(
+        () =>
+          [
+            ...document.querySelectorAll(
+              "#dashboardRoster .dashboard-tile:first-child img",
+            ),
+          ].filter((img) => (img as HTMLImageElement).naturalWidth === 120)
+            .length === 2,
+      );
+      if (
+        (await page
+          .locator("#dashboardRoster .dashboard-tile:first-child img")
+          .count()) !== 2
+      )
+        throw Error("Latest check-in gallery dropped a photo");
       await page.waitForFunction(() =>
         [...document.querySelectorAll("#dashboardRoster img")].some(
           (img) => (img as HTMLImageElement).naturalWidth === 120,
@@ -223,6 +249,10 @@ try {
         fullPage: true,
       });
       await page.locator("#diagnosticsTab").click();
+      if (
+        (await page.evaluate(() => (window as any).dashboardRevoked.length)) < 2
+      )
+        throw Error("Photo blob URLs not revoked on navigation");
       if (!page.url().includes("/diagnostics"))
         throw Error("Activity route broken");
       await page.locator("#settingsTab").click();

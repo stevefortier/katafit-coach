@@ -94,7 +94,8 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
   };
   let shared = true,
     denied = false,
-    slow = false;
+    slow = false,
+    largeRoster = false;
   let release: (() => void) | undefined, entered: (() => void) | undefined;
   const calls: string[] = [];
   const backend = createServer(async (req, res) => {
@@ -126,57 +127,83 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
           content: [{ type: "text", text: "PRIVATE BACKEND DATA" }],
         };
       else if (name === "studio_dashboard_overview") {
-        const first = !args.cursor;
-        result = {
-          structuredContent: {
-            schema_version: 1,
-            owner_type: "dojo",
-            period_days: 30,
-            members: first
-              ? [
-                  {
-                    member_ref: "one",
-                    display_name: "Synthetic Ada",
-                    stats_access: "shared",
-                    charts: charts(80, "kg"),
-                    photo_access: shared ? "shared" : "not_shared",
-                    photos: shared
-                      ? [
-                          {
-                            media_ref: "media-one",
-                            checkin_at: "2026-09-20T12:00:00Z",
-                          },
-                        ]
-                      : [],
-                  },
-                  {
-                    member_ref: "two",
-                    display_name: "Synthetic Bea",
-                    stats_access: "not_shared",
-                    charts: null,
-                    photo_access: "not_shared",
-                    photos: [],
-                  },
-                ]
-              : [
-                  {
-                    member_ref: "three",
-                    display_name: "Synthetic Cy",
-                    stats_access: "shared",
-                    charts: charts(180, "lb"),
-                    photo_access: "shared",
-                    photos: [],
-                  },
-                ],
-            has_more: first,
-            next_cursor: first ? "second-page" : null,
-          },
-        };
+        if (largeRoster) {
+          const page = Number(args.cursor ?? 0);
+          result = {
+            structuredContent: {
+              schema_version: 1,
+              owner_type: "dojo",
+              period_days: 30,
+              members: Array.from({ length: 10 }, (_, i) => ({
+                member_ref: `member-${page * 10 + i}`,
+                display_name: "Synthetic",
+                stats_access: "not_shared",
+                charts: null,
+                photo_access: "not_shared",
+                photos: [],
+              })),
+              has_more: true,
+              next_cursor: String(page + 1),
+            },
+          };
+        } else {
+          const first = !args.cursor;
+          result = {
+            structuredContent: {
+              schema_version: 1,
+              owner_type: "dojo",
+              period_days: 30,
+              members: first
+                ? [
+                    {
+                      member_ref: "one",
+                      display_name: "Synthetic Ada",
+                      stats_access: "shared",
+                      charts: charts(80, "kg"),
+                      photo_access: shared ? "shared" : "not_shared",
+                      photos: shared
+                        ? [
+                            {
+                              media_ref: "media-one",
+                              checkin_at: "2026-09-20T12:00:00Z",
+                            },
+                            {
+                              media_ref: "media-two",
+                              checkin_at: "2026-09-20T12:00:00Z",
+                            },
+                          ]
+                        : [],
+                    },
+                    {
+                      member_ref: "two",
+                      display_name: "Synthetic Bea",
+                      stats_access: "not_shared",
+                      charts: null,
+                      photo_access: "not_shared",
+                      photos: [],
+                    },
+                  ]
+                : [
+                    {
+                      member_ref: "three",
+                      display_name: "Synthetic Cy",
+                      stats_access: "shared",
+                      charts: charts(180, "lb"),
+                      photo_access: "shared",
+                      photos: [],
+                    },
+                  ],
+              has_more: first,
+              next_cursor: first ? "second-page" : null,
+            },
+          };
+        }
       } else if (
         name === "studio_dashboard_read_photo" &&
         shared &&
-        args.member_ref === "one" &&
-        args.media_ref === "media-one"
+        (args.member_ref === "one" ||
+          (largeRoster && args.member_ref === "member-100")) &&
+        ["media-one", "media-two"].includes(args.media_ref)
       )
         result = {
           structuredContent: metadata,
@@ -233,7 +260,11 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
     });
     assert.equal(data.members[1].media, "not_shared");
     assert.equal(data.members[1].stats, "not_shared");
-    assert.equal(data.members[2].photo, null);
+    assert.deepEqual(data.members[0].photos, [
+      { media_ref: "media-one", captured_at: "2026-09-20T12:00:00Z" },
+      { media_ref: "media-two", captured_at: "2026-09-20T12:00:00Z" },
+    ]);
+    assert.deepEqual(data.members[2].photos, []);
     assert.deepEqual(
       data.series.body_measurements.map((s: any) => s.unit).sort(),
       ["kg", "lb"],
@@ -292,7 +323,31 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
     assert.equal((await photo("two", "media-one")).status, 404);
     const image = await photo("one", "media-one");
     assert.equal(image.status, 200);
+    assert.equal(image.headers.get("cache-control"), "no-store");
+    assert.equal(image.headers.get("content-type"), "image/png");
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), bytes);
+    const second = await photo("one", "media-two");
+    assert.equal(second.status, 200);
+    assert.deepEqual(Buffer.from(await second.arrayBuffer()), bytes);
+    largeRoster = true;
+    const capped = await fetch(origin + "/api/dashboard", { headers });
+    assert.equal(capped.status, 200);
+    const partial = await capped.json();
+    assert.equal(partial.members.length, 100);
+    assert.equal(partial.coverage.complete, false);
+    assert.ok(!partial.members.some((m: any) => m.member_ref === "member-100"));
+    const beforeLarge = calls.filter(
+      (name) => name === "studio_dashboard_overview",
+    ).length;
+    const beyondSnapshot = await photo("member-100", "media-two");
+    assert.equal(beyondSnapshot.status, 200);
+    assert.deepEqual(Buffer.from(await beyondSnapshot.arrayBuffer()), bytes);
+    assert.equal(
+      calls.filter((name) => name === "studio_dashboard_overview").length,
+      beforeLarge,
+      "photo bytes must not trigger roster paging even when roster exceeds 100",
+    );
+    largeRoster = false;
     assert.ok(calls.includes("studio_dashboard_read_photo"));
     shared = false;
     assert.equal((await photo("one", "media-one")).status, 404);

@@ -138,11 +138,11 @@ window.CoachDashboard = (() => {
         if (fetching || !pendingPhotos.length || id !== epoch || signal.aborted)
           return;
         fetching = true;
-        const { member, frame, img } = pendingPhotos.shift();
+        const { member, photo, frame, img } = pendingPhotos.shift();
         try {
           const query = new URLSearchParams({
             member_ref: member.member_ref,
-            media_ref: member.photo.media_ref,
+            media_ref: photo.media_ref,
           });
           const response = await fetch(`/api/dashboard/photo?${query}`, {
             headers: { Authorization: "Bearer " + adminKey },
@@ -186,24 +186,39 @@ window.CoachDashboard = (() => {
       for (const member of members) {
         const tile = text("article", "", "dashboard-tile");
         tile.append(text("h4", member.display_name));
-        const frame = text("div", "", "dashboard-photo");
+        const gallery = text("div", "", "dashboard-gallery");
         if (member.media === "not_shared")
-          frame.append(text("p", "Photo not shared"));
-        else if (!member.photo)
-          frame.append(text("p", "No progress photo available"));
+          gallery.append(text("p", "Photo not shared"));
+        else if (!member.photos.length)
+          gallery.append(text("p", "No progress photo available"));
         else {
-          const img = document.createElement("img");
-          img.alt = `Latest shared progress photo for ${member.display_name}`;
-          img.addEventListener("error", () => {
-            if (id === epoch)
-              frame.replaceChildren(text("p", "Photo unavailable"));
+          gallery.setAttribute(
+            "aria-label",
+            `Latest shared progress check-in for ${member.display_name}`,
+          );
+          member.photos.forEach((photo, index) => {
+            const frame = text("div", "", "dashboard-photo");
+            const img = document.createElement("img");
+            img.loading = "lazy";
+            img.alt = `Progress photo ${index + 1} of ${member.photos.length} for ${member.display_name}`;
+            img.addEventListener("error", () => {
+              if (id === epoch) {
+                if (img.src.startsWith("blob:")) {
+                  URL.revokeObjectURL(img.src);
+                  const at = urls.indexOf(img.src);
+                  if (at !== -1) urls.splice(at, 1);
+                }
+                frame.replaceChildren(text("p", "Photo unavailable"));
+              }
+            });
+            frame.append(img);
+            frame.dashboardPhoto = { member, photo, frame, img };
+            observer.observe(frame);
+            gallery.append(frame);
           });
-          frame.append(img);
-          frame.dashboardPhoto = { member, frame, img };
-          observer.observe(frame);
         }
         tile.append(
-          frame,
+          gallery,
           text(
             "p",
             member.stats === "shared"
