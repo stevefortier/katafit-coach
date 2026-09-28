@@ -1031,7 +1031,9 @@ export async function openOperatorTools(
                 const message = error instanceof Error ? error.message : "";
                 const code =
                   error instanceof ToolFailure
-                    ? "IMAGE_BACKEND_FAILED"
+                    ? error.code === "READ_LIMIT"
+                      ? "IMAGE_READ_LIMIT"
+                      : "IMAGE_BACKEND_FAILED"
                     : message === "ARGUMENTS_REJECTED" ||
                         message === "SECRET_IN_CONFIG"
                       ? "IMAGE_ARGUMENTS_REJECTED"

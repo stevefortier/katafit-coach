@@ -78,6 +78,7 @@ test("native extension renders only bounded host image error codes with actionab
     IMAGE_BUDGET_EXHAUSTED: /Image delivery budget exceeded/,
     IMAGE_TOOL_BUDGET_EXHAUSTED: /Tool-call budget exhausted/,
     IMAGE_BACKEND_FAILED: /Backend did not deliver/,
+    IMAGE_READ_LIMIT: /Backend read limit/,
     IMAGE_RESULT_REJECTED: /failed integrity or format validation/,
   };
   for (const [code, pattern] of Object.entries(checks)) {
