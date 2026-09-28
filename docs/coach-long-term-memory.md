@@ -40,15 +40,7 @@ by their own live session are skipped rather than invalidating that session and
 its archive. Manual correction/Forget still revokes stale sessions.
 Task schemas and the prohibition on direct mutations remain unchanged.
 
-Native Operator recall imports dependencies into the current continuity session.
-A corrected, Forgotten or revoked imported memory terminates that runtime before
-further provider, send, image or attachment disclosure. A fresh native session
-can read the current revision; the host never reopens authority over retained Pi
-context. Durable conversation archives preserve the backend-attested memory,
-ancestor and source ledger, including across authorized successors. Stop and
-ordinary expiry do not revoke archive-read authority. Correction, Forget and
-source revocation (including ABA) deny the archive and resume stickily. Historical
-records lacking adequate original proofs remain unavailable.
+For native Operator memory, the backend checks the audience and permission when the memory is initially fetched into Coach; its later use within the same authorized Coach context does not require rechecking every ancestor source. Other worker/member memory audiences retain their independent backend policy. A forgotten memory is unavailable on a new read, and an old local recall is not a new source acquisition. A corrected, Forgotten or revoked imported memory may still be in a live Pi transcript; Stop clears its runtime, and explicit Delete clears its archive. A fresh native session can read the current revision; the host never reopens authority over retained Pi context. Durable Operator conversation archives are bound to original backend credential and exact sealed transcript identity. Ordinary source edits no longer deny archive read or resume when the backend advertises `authorized_at_acquisition`; old-policy backends retain their historical proof checks during rolling deployment.
 Retention starts only after the immutable relay acknowledges delivery of
 a final, non-truncated provider response to Pi. Intermediate tool-call responses
 and undelivered responses are ineligible. This boundary is delivery to Pi, not

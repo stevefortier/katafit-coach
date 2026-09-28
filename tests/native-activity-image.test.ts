@@ -86,9 +86,12 @@ test("negotiated completed activity image requires exact list and media detail; 
     const item = await g.gateway.readAttachment(sent.attachment_id);
     assert.equal(item.bytes.equals(g.f.activityBytes!), true);
     assert.equal(item.item.source, "image_receipt");
-    assert.ok(
+    // Sending retained pixels to this authenticated panel must not replay
+    // source authorization; the image read itself was backend-authorized.
+    assert.equal(
       g.f.calls.filter((c) => c.name === "studio_operator_authorize_context")
-        .length >= 2,
+        .length,
+      0,
     );
   } finally {
     await g.close();
@@ -155,7 +158,7 @@ test("generic image rejects forged or changed multipart and does not mint receip
   }
 });
 
-test("ordinary backend image denial is read-only, while definite revocation tears down", async () => {
+test("ordinary backend image denial is read-only, while explicit session revocation tears down", async () => {
   const denied = await gatewayHarness({
     activityImages: true,
     activityDeny: true,
@@ -173,7 +176,10 @@ test("ordinary backend image denial is read-only, while definite revocation tear
   } finally {
     await denied.close();
   }
-  const revoked = await gatewayHarness({ activityImages: true });
+  const revoked = await gatewayHarness({
+    activityImages: true,
+    revocationMarker: true,
+  });
   try {
     await list(revoked);
     await detail(revoked);
@@ -186,18 +192,33 @@ test("ordinary backend image denial is read-only, while definite revocation tear
   }
 });
 
-test("revoked source after proof prevents generic pixels and attachment disclosure", async () => {
+test("source loss after image acquisition retains pixels and panel attachment", async () => {
   const g = await gatewayHarness({ activityImages: true });
   try {
     await list(g);
     await detail(g);
     const receipt = g.text(await g.tool(ACTIVITY_IMAGE, pair)).image_receipt;
     g.f.state.revoked = true;
-    await assert.rejects(
-      g.tool("send_to_operator", { image_receipt: receipt }),
+    const sent = g.text(
+      await g.tool("send_to_operator", { image_receipt: receipt }),
     );
-    assert.equal(g.published.length, 0);
-    assert.deepEqual(g.gateway.attachments(), []);
+    assert.equal(sent.status, "accepted_to_operator_panel");
+    assert.equal(g.published.length, 1);
+    const item = await g.gateway.readAttachment(sent.attachment_id);
+    assert.equal(item.bytes.equals(g.f.activityBytes!), true);
+    // The receipt remains readable, but a new pixel fetch is still decided
+    // by the backend after the source disappears.
+    assert.equal(
+      (await g.tool(ACTIVITY_IMAGE, pair)).imageReadError.code,
+      "IMAGE_BACKEND_FAILED",
+    );
+    assert.equal(g.f.calls.filter((c) => c.name === ACTIVITY_IMAGE).length, 2);
+    assert.equal(g.terminated.length, 0);
+    assert.equal(
+      g.f.calls.filter((c) => c.name === "studio_operator_authorize_context")
+        .length,
+      0,
+    );
   } finally {
     await g.close();
   }

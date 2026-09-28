@@ -4,30 +4,62 @@ import { fixture } from "./helpers/native.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { Actions } from "../src/chat/actions.js";
 
-test("native provider result is withheld after backend authorization changes during inference", async () => {
+test("native provider retains acquired data when source authorization changes during inference", async () => {
   let revoked = false;
-  const f = await fixture((name, result) => {
-    if (name === "provider") revoked = true;
+  const f = await fixture((name, result, body) => {
+    if (name === "provider") {
+      revoked = true;
+      assert.match(JSON.stringify(body.messages), /Synthetic Alice/);
+      return `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "Previously acquired roster remains internal Coach data." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    }
     if (name === "studio_operator_list_members" && revoked)
-      return { schema_version: 1, error: "not_authorized" };
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ code: "OPERATOR_NOT_AUTHORIZED" }),
+          },
+        ],
+      };
     return result;
   });
   const gateway = await openNativeGateway(f.store);
   try {
-    await gateway.handle({
+    const acquired = await gateway.handle({
       kind: "tool",
       name: "studio_operator_list_members",
       args: {},
     });
-    await assert.rejects(
-      gateway.handle({
-        kind: "provider",
-        body: { model: "approved-custom-model", messages: [] },
-      }),
+    assert.match(JSON.stringify(acquired), /Synthetic Alice/);
+    const completion = await gateway.handle({
+      kind: "provider",
+      body: {
+        model: "approved-custom-model",
+        messages: [{ role: "user", content: JSON.stringify(acquired) }],
+      },
+    });
+    assert.match(
+      JSON.stringify(completion),
+      /Previously acquired roster remains internal Coach data/,
     );
     assert.equal(
       f.calls.filter((c) => c.path === "/v1/chat/completions").length,
       1,
+    );
+    await assert.rejects(
+      gateway.handle({
+        kind: "tool",
+        name: "studio_operator_list_members",
+        args: {},
+      }),
+      /MCP_TOOL_FAILED/,
+    );
+    assert.equal(
+      f.calls.filter(
+        (c) => c.body.params?.name === "studio_operator_list_members",
+      ).length,
+      2,
     );
   } finally {
     await gateway.close();
@@ -524,15 +556,30 @@ for (const scenario of [
         if (scenario === "recall_denied") await assert.rejects(pending);
         else {
           const delivered = await pending;
-          await assert.rejects(
-            gateway.confirmDelivery(delivered.completion_id),
-          );
-          await assert.rejects(
-            gateway.handle({
+          if (scenario === "extraction_revoked") {
+            await gateway.confirmDelivery(delivered.completion_id);
+            assert.equal(
+              f.calls.filter(
+                (c) => c.body.params?.name === "coach_memory_commit",
+              ).length,
+              1,
+              "source change does not discard acquired Coach memory evidence",
+            );
+            await gateway.handle({
               kind: "provider",
               body: { model: "approved-custom-model", messages: [] },
-            }),
-          );
+            });
+          } else {
+            await assert.rejects(
+              gateway.confirmDelivery(delivered.completion_id),
+            );
+            await assert.rejects(
+              gateway.handle({
+                kind: "provider",
+                body: { model: "approved-custom-model", messages: [] },
+              }),
+            );
+          }
         }
         if (scenario === "recall_denied")
           assert.equal(

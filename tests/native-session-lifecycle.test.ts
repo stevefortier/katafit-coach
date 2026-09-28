@@ -389,36 +389,46 @@ for (const guard of [
         gateway.noteHumanInput!("next human turn\r");
       }
       const request =
-        guard === "tool"
-          ? { kind: "tool", name: "not_authorized", args: {} }
-          : {
-              kind: "provider",
-              body: {
-                ...body,
-                ...(guard === "model" ? { model: "not-approved" } : {}),
-                ...(guard === "image"
-                  ? {
-                      messages: [
-                        {
-                          role: "user",
-                          content: [
-                            {
-                              type: "image_url",
-                              image_url: {
-                                url: "https://not-allowed.invalid/image",
+        guard === "revoked"
+          ? { kind: "tool", name: "studio_operator_list_members", args: {} }
+          : guard === "tool"
+            ? { kind: "tool", name: "not_authorized", args: {} }
+            : {
+                kind: "provider",
+                body: {
+                  ...body,
+                  ...(guard === "model" ? { model: "not-approved" } : {}),
+                  ...(guard === "image"
+                    ? {
+                        messages: [
+                          {
+                            role: "user",
+                            content: [
+                              {
+                                type: "image_url",
+                                image_url: {
+                                  url: "https://not-allowed.invalid/image",
+                                },
                               },
-                            },
-                          ],
-                        },
-                      ],
-                    }
-                  : {}),
-              },
-            };
+                            ],
+                          },
+                        ],
+                      }
+                    : {}),
+                },
+              };
       await assert.rejects(gateway.handle(request));
+      if (guard === "revoked") {
+        assert.equal(
+          f.named("studio_operator_list_members").length,
+          1,
+          "a new read reached backend and was denied at acquisition",
+        );
+        await gateway.handle({ kind: "provider", body });
+      }
       assert.equal(
         f.calls.filter((c) => c.path === "/v1/chat/completions").length,
-        providers,
+        providers + (guard === "revoked" ? 1 : 0),
       );
     } finally {
       await terminal.close();

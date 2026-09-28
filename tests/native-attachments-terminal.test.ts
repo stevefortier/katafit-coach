@@ -129,7 +129,7 @@ test("attachments are private, exact-session scoped, safely typed, snapshotted o
   }
 });
 
-test("configuration authority change and backend revocation stop serving and destroy the runtime", async () => {
+test("configuration authority change destroys runtime; changed source leaves acquired bytes available", async () => {
   const h = await attachmentHarness();
   try {
     h.files.set("a.txt", Buffer.from("synthetic"));
@@ -160,19 +160,17 @@ test("configuration authority change and backend revocation stop serving and des
       (await r.send({ workspace_path: "a.txt" })).content[0].text,
     ).attachment_id;
     const url = `/api/terminal/attachments/${session}/${id}`;
-    assert.equal((await r.get(url)).status, 200, "fresh backend authorization");
+    assert.equal((await r.get(url)).status, 200);
     r.f.state.revoked = true;
-    assert.equal((await r.get(url)).status, 410);
-    await c.until(() => c.closed() === 1008, "revocation teardown");
-    assert.ok(c.frames.some((m) => m.type === "attachments-cleared"));
-    assert.ok(r.runtimes[0].stopped > 0);
-    assert.equal((await r.get(url)).status, 404);
+    assert.equal((await r.get(url)).status, 200);
+    assert.equal(c.closed(), undefined);
+    assert.equal(r.runtimes[0].stopped, 0);
   } finally {
     await r.close();
   }
 });
 
-test("serving is a retryable 503 while Pi has a request in flight and any disclosure needs fresh authorization", async () => {
+test("serving is a retryable 503 while Pi has a request in flight", async () => {
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   const h = await attachmentHarness({
@@ -241,7 +239,7 @@ test("tab takeover clears the previous tab's panel before closing it", async () 
   }
 });
 
-test("snapshots carry the context expiry and are authorized before replay; a revoked replay discloses nothing", async () => {
+test("snapshots carry context expiry and replay acquired metadata without source recheck", async () => {
   const h = await attachmentHarness();
   try {
     h.files.set("a.txt", Buffer.from("synthetic secret-ish caption source"));
@@ -262,28 +260,22 @@ test("snapshots carry the context expiry and are authorized before replay; a rev
     assert.equal(replay.items.length, 1);
     assert.equal(
       h.f.named("studio_operator_authorize_context").length,
-      before + 1,
-      "replay freshly authorized",
+      before,
+      "replay does not reacquire the source",
     );
     h.f.state.revoked = true;
-    const third = await h.connect(false);
-    await third.until(() => third.closed() === 1008, "revoked replay teardown");
+    const third = await h.connect();
     assert.equal(
-      third.frames.some((m) => m.type === "attachments" && m.items.length),
-      false,
+      third.frames.find((m) => m.type === "attachments").items[0].caption,
+      "Member-derived caption",
     );
-    assert.equal(
-      JSON.stringify(third.frames).includes("Member-derived caption"),
-      false,
-    );
-    assert.ok(third.frames.some((m) => m.type === "attachments-cleared"));
-    assert.ok(h.runtimes[0].stopped > 0);
+    assert.equal(h.runtimes[0].stopped, 0);
   } finally {
     await h.close();
   }
 });
 
-test("a replay while Pi is busy is pending, then delivered once freshly authorized", async () => {
+test("a replay while Pi is busy is pending, then delivered from acquired metadata", async () => {
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   const h = await attachmentHarness({
@@ -312,7 +304,7 @@ test("a replay while Pi is busy is pending, then delivered once freshly authoriz
     assert.equal(
       second.frames.some((m) => m.type === "attachments"),
       false,
-      "no metadata before authorization",
+      "no metadata during an active provider request",
     );
     release();
     await pending;
@@ -321,7 +313,7 @@ test("a replay while Pi is busy is pending, then delivered once freshly authoriz
         second.frames.some(
           (m) => m.type === "attachments" && m.items.length === 1,
         ),
-      "authorized replay",
+      "acquired replay",
     );
   } finally {
     release();
@@ -329,7 +321,7 @@ test("a replay while Pi is busy is pending, then delivered once freshly authoriz
   }
 });
 
-test("HTTP distinguishes transient outage and turn-required from revocation without tearing down", async () => {
+test("HTTP serves acquired bytes through backend outage but requires a live command turn", async () => {
   let flaky = false;
   const h = await attachmentHarness({
     commandTtlMs: 2500,
@@ -346,11 +338,7 @@ test("HTTP distinguishes transient outage and turn-required from revocation with
     const url = `/api/terminal/attachments/${session}/${id}`;
     flaky = true;
     const outage = await h.get(url);
-    assert.equal(outage.status, 503);
-    assert.ok(Number(outage.headers.get("retry-after")) >= 2);
-    assert.deepEqual(await outage.json(), {
-      error: "ATTACHMENT_AUTHORIZATION_UNAVAILABLE",
-    });
+    assert.equal(outage.status, 200);
     flaky = false;
     assert.equal((await h.get(url)).status, 200);
     await new Promise((r) => setTimeout(r, 2600));

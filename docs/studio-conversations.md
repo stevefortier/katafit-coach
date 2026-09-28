@@ -8,7 +8,7 @@ Studio has two top-level tabs: **Coach** first and **Settings** second. Settings
 
 The primary system prompt contains all eight saved persona fields and their revision. The Coach keeps its name, voice, principles and expertise. The operator is its manager and boss, **not a trainee**; that relationship takes precedence over trainee-facing discipline, refusal rules and examples. It never grants additional backend permissions. The configured model provider receives authorized request/tool context; browsing member tabs does not add their content to Pi.
 
-The backend supplies the scoped catalog and owns all membership, sharing, target and mutation authority. Native Pi chooses and calls the advertised tools; the host supplies session and action identity. See [native continuity](native-continuity.md) for retained-context reauthorization and generation fencing. A configuration save/restore/rollback closes native sessions; a new runtime receives the new revision rather than retaining the previous persona or transcript.
+The backend supplies the scoped catalog and owns initial read permissions, target and mutation authority. Native Pi chooses and calls the advertised tools; the host supplies session and action identity. See [native continuity](native-continuity.md) for acquisition-time authorization, local reuse and generation fencing. A configuration save/restore/rollback closes native sessions; a new runtime receives the new revision rather than retaining the previous persona or transcript.
 
 ### Attachments from Pi
 

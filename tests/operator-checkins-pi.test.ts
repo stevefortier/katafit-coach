@@ -86,7 +86,7 @@ test("real Pi tool selections deliver verified photo as image content in provide
     assert.equal(
       f.calls.filter((n) => n === "studio_operator_read_dojo_checkin_image")
         .length,
-      2, // Original retrieval plus backend reauthorization before synthesis.
+      1, // Backend authorizes the original retrieval; synthesis reuses acquired pixels.
     );
     const wire = JSON.stringify(bodies[2]);
     assert.match(wire, /image_url/);

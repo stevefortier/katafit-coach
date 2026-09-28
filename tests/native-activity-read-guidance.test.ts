@@ -78,7 +78,8 @@ test("bad or stale activity reference is a read denial, not proof of missing med
         operatorReadError: { code: "OPERATOR_NOT_AUTHORIZED" },
       });
       assert.equal(f.state.status, "active");
-      assert.equal(f.named("studio_operator_authorize_context").length, 1);
+      assert.equal(f.named("studio_operator_authorize_context").length, 0);
+      assert.equal(f.named(DETAIL).length, 1);
     } finally {
       await gateway.close();
     }

@@ -9,10 +9,8 @@ import {
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { Actions } from "../src/chat/actions.js";
 
-// Terminal retained-context denials observed on ORDINARY tools, images and
-// SEND must tear the runtime down at once, without waiting for another
-// provider request or for the backend tombstone. Ordinary invalid-argument
-// failures must not, while retained authority remains valid.
+// Only explicit session/credential revocation tears down the runtime. An
+// unmarked denial of a newly requested read cannot invalidate retained data.
 const SEND = "studio_operator_send_message";
 const AUTHORIZE = "studio_operator_authorize_context";
 const provider = {
@@ -82,25 +80,26 @@ for (const tombstoneFails of [false, true])
   });
 
 for (const tombstoneFails of [false, true])
-  test(`an unmarked denial is resolved content-free and a genuine revocation tears down (tombstone ${tombstoneFails ? "write fails" : "persisted"})`, async () => {
+  test(`an unmarked new-read denial preserves internally retained context (tombstone ${tombstoneFails ? "write fails" : "persisted"})`, async () => {
     const h = await open({ tombstoneFails });
     try {
       await h.gateway.handle(tool(GENERIC, { topic: "retained" }));
       h.f.state.revoked = true;
       await assert.rejects(
         h.gateway.handle(tool(GENERIC, { topic: "next" })),
-        /CONTINUITY_REVOKED/,
+        /MCP_TOOL_FAILED/,
       );
-      assert.deepEqual(h.terminated, ["AUTHORIZATION_DENIED"]);
-      const resolution = h.f.named(AUTHORIZE);
-      assert.equal(resolution.length, 1);
-      assert.deepEqual(Object.keys(resolution[0].args), [
-        "session_id",
-        "turn_generation",
-      ]);
+      assert.deepEqual(h.terminated, []);
+      assert.equal(h.f.named(AUTHORIZE).length, 0);
       assert.equal(h.f.named(GENERIC).length, 2, "no read replay");
-      assert.equal(h.f.providerCalls(), 0);
-      await assertTornDown(h);
+      await h.gateway.handle(provider);
+      assert.equal(
+        h.f.providerCalls(),
+        1,
+        "prior data remains usable internally",
+      );
+      assert.equal(h.f.named(GENERIC).length, 2);
+      assert.equal(h.f.named("studio_operator_open_session").length, 1);
     } finally {
       await h.close();
     }
@@ -116,7 +115,7 @@ for (const revocationMarker of [true, false])
         /^Error: MCP_TOOL_FAILED$/,
       );
       assert.deepEqual(h.terminated, []);
-      assert.equal(h.f.named(AUTHORIZE).length, 1, "content-free check only");
+      assert.equal(h.f.named(AUTHORIZE).length, 0, "no source recheck");
       assert.equal(h.f.state.status, "active");
       await h.gateway.handle(tool(GENERIC, { topic: "still usable" }));
       await h.gateway.handle(provider);
@@ -182,16 +181,17 @@ test("a retained denial on an original image read tears down immediately", async
   }
 });
 
-test("an unresolvable ambiguous denial is torn down conservatively", async () => {
+test("an ambiguous new-read denial does not trigger a source recheck or teardown", async () => {
   const h = await open({ unavailable: { authorize: 10 } });
   try {
     await assert.rejects(
       h.gateway.handle(tool(GENERIC, { topic: "invalid" })),
-      /CONTINUITY_REVOKED/,
+      /MCP_TOOL_FAILED/,
     );
-    assert.deepEqual(h.terminated, ["AUTHORITY_UNRESOLVED"]);
-    assert.equal(h.f.named(AUTHORIZE).length, 3);
-    assert.equal(h.f.providerCalls(), 0);
+    assert.deepEqual(h.terminated, []);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
+    await h.gateway.handle(provider);
+    assert.equal(h.f.providerCalls(), 1);
   } finally {
     await h.close();
   }
@@ -212,9 +212,9 @@ test("error payloads are never surfaced; only an exact boolean marker is termina
       JSON.stringify(error, Object.getOwnPropertyNames(error)),
       /PRIVATE|Synthetic Alice|detail/,
     );
-    // "true" (string) is not the marker: resolution ran and authority is valid.
+    // "true" (string) is not a terminal revocation marker.
     assert.deepEqual(h.terminated, []);
-    assert.equal(h.f.named(AUTHORIZE).length, 1);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
   } finally {
     await h.close();
   }

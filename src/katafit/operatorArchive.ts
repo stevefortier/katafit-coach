@@ -23,7 +23,9 @@ export function archiveSupported(value: any): boolean {
     JSON.stringify(value.host_controls) === JSON.stringify(ARCHIVE_CONTROLS) &&
     value.max_chain_turns === 64 &&
     value.resume_ttl_ms === 2592000000 &&
-    value.source_policy === "unchanged_original_proofs" &&
+    ["unchanged_original_proofs", "authorized_at_acquisition"].includes(
+      value.source_policy,
+    ) &&
     value.credential_policy === "original_credential_only" &&
     (value.chain_generation_offset === undefined ||
       (Number.isSafeInteger(value.chain_generation_offset) &&

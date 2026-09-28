@@ -136,14 +136,8 @@ test("more than twelve tool calls succeed only across authenticated human turns;
       h.f.named(ROSTER).map((c) => c.args.turn_generation),
       [...Array(12).fill(0), ...Array(12).fill(1)],
     );
-    // Authorization is explicit and content-free: before and after every
-    // provider request, plus immediately before final response disclosure;
-    // never a read replay.
-    assert.equal(h.f.named(AUTHORIZE).length, 3 * h.f.providerCalls());
-    assert.deepEqual(Object.keys(h.f.named(AUTHORIZE)[0].args), [
-      "session_id",
-      "turn_generation",
-    ]);
+    // Existing context is internal Coach data; no source recheck or read replay.
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
     assert.equal(h.f.named("studio_operator_open_session").length, 1);
     assert.deepEqual(h.terminated, []);
   } finally {
@@ -151,7 +145,7 @@ test("more than twelve tool calls succeed only across authenticated human turns;
   }
 });
 
-test("an expired command renews only through a human turn on the same session and retained proofs", async () => {
+test("an expired command renews only through a human turn on the same session without replaying retained reads", async () => {
   const h = await open({ commandTtlMs: 1000 });
   try {
     await h.gateway.handle(tool(GENERIC, { topic: "retained" }));
@@ -177,10 +171,7 @@ test("an expired command renews only through a human turn on the same session an
     ]);
     assert.equal(advance.args.session_id, h.f.state.session_id);
     assert.equal(advance.args.turn_generation, 0);
-    assert.deepEqual(
-      h.f.named(AUTHORIZE).map((c) => c.args.turn_generation),
-      [1, 1, 1],
-    );
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
     assert.equal(h.f.named("studio_operator_open_session").length, 1);
     assert.equal(h.f.named(GENERIC).length, 1, "no read replay as authority");
     await h.gateway.handle(tool(ROSTER));
@@ -360,19 +351,17 @@ test("a failed receipt lookup keeps the send unknown and mints no transition", a
   }
 });
 
-test("OPERATOR_UNAVAILABLE authorization is retried boundedly and never discloses or terminates", async () => {
+test("an unavailable legacy source recheck is not consulted for internal Coach context", async () => {
   const h = await open({ unavailable: { authorize: 4 } });
   try {
-    await assert.rejects(
-      h.gateway.handle(provider("unavailable")),
-      /OPERATOR_UNAVAILABLE/,
-    );
-    assert.equal(h.f.providerCalls(), 0);
-    assert.equal(h.f.named(AUTHORIZE).length, 3);
+    await h.gateway.handle(tool(GENERIC, { topic: "retained" }));
+    await h.gateway.handle(provider("unavailable"));
+    assert.equal(h.f.providerCalls(), 1);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
     assert.deepEqual(h.terminated, []);
     await h.gateway.handle(provider("recovered"));
-    assert.equal(h.f.providerCalls(), 1);
-    assert.equal(h.f.named(AUTHORIZE).length, 7);
+    assert.equal(h.f.providerCalls(), 2);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
   } finally {
     await h.close();
   }
@@ -388,7 +377,7 @@ test("OPERATOR_UNAVAILABLE after an unobserved transition commit reconciles the 
     assert.equal(advances.length, 2);
     assert.deepEqual(advances[1].args, advances[0].args);
     assert.equal(h.f.state.transitions.length, 1);
-    assert.equal(h.f.named(AUTHORIZE)[0].args.turn_generation, 1);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
     assert.deepEqual(h.terminated, []);
   } finally {
     await h.close();
@@ -448,10 +437,7 @@ test("a reconciled transition receipt past its command deadline is renewed befor
       advances[0].args.idempotency_key,
     );
     assert.equal(h.f.state.generation, 2);
-    assert.deepEqual(
-      h.f.named(AUTHORIZE).map((c) => c.args.turn_generation),
-      [2, 2, 2],
-    );
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
     assert.equal(h.f.providerCalls(), 1);
   } finally {
     await h.close();
@@ -496,7 +482,7 @@ test("a lost transition acknowledgement retries only the identical transition id
     assert.deepEqual(advances[1].args, advances[0].args);
     assert.equal(h.f.state.generation, 1);
     assert.equal(h.f.state.transitions.length, 1);
-    assert.equal(h.f.named(AUTHORIZE)[0].args.turn_generation, 1);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
     assert.deepEqual(h.terminated, []);
   } finally {
     await h.close();
@@ -532,47 +518,52 @@ test("an unreconciled transition fails closed after a bounded number of identica
   }
 });
 
-test("an observed denial is terminal even if the source is restored", async () => {
+test("a denied new source read does not erase retained Coach context even if source is restored", async () => {
   const h = await open();
   try {
     await h.gateway.handle(tool(GENERIC, { topic: "private" }));
     h.f.state.revoked = true;
-    await assert.rejects(h.gateway.handle(provider("denied")));
+    await assert.rejects(
+      h.gateway.handle(tool(GENERIC, { topic: "new" })),
+      /MCP_TOOL_FAILED/,
+    );
+    await h.gateway.handle(provider("retained"));
     h.f.state.revoked = false;
-    assert.notEqual(h.f.state.status, "active", "backend tombstone persists");
-    await assert.rejects(h.gateway.handle(provider("restored")));
-    assert.deepEqual(h.terminated, ["AUTHORIZATION_DENIED"]);
-    assert.equal(h.f.providerCalls(), 0);
+    await h.gateway.handle(provider("restored"));
+    assert.deepEqual(h.terminated, []);
+    assert.equal(h.f.providerCalls(), 2);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
   } finally {
     await h.close();
   }
 });
 
-test("revoked retained generic source blocks provider disclosure, terminates, and is never replayed or reopened", async () => {
+test("a changed source blocks new reads but retains acquired data internally without replay", async () => {
   const h = await open();
   try {
     const read = await h.gateway.handle(tool(GENERIC, { topic: "private" }));
     assert.match(JSON.stringify(read), /SYNTHETIC GENERIC RETAINED SOURCE/);
     h.f.state.revoked = true;
-    await assert.rejects(h.gateway.handle(provider("disclose")));
-    assert.equal(h.f.providerCalls(), 0);
-    assert.equal(h.terminated.length, 1);
-    await assert.rejects(h.gateway.handle(provider("again")));
+    await h.gateway.handle(provider("disclose"));
+    await assert.rejects(
+      h.gateway.handle(tool(GENERIC, { topic: "new" })),
+      /MCP_TOOL_FAILED/,
+    );
+    assert.equal(h.f.providerCalls(), 1);
+    assert.equal(h.terminated.length, 0);
+    await h.gateway.handle(provider("again"));
     h.gateway.noteHumanInput("\r");
-    await assert.rejects(h.gateway.handle(provider("after human input")));
-    assert.equal(h.f.named(GENERIC).length, 1);
+    // The synthetic backend also rejects advances after its broad revoked
+    // flag; do not model a source-only change as a session-level revocation.
+    assert.equal(h.f.named(GENERIC).length, 2, "original never replayed");
     assert.equal(h.f.named(ADVANCE).length, 0);
     assert.equal(h.f.named("studio_operator_open_session").length, 1);
-    // Termination already started disposal; owner close joins it (idempotent).
-    await h.gateway.close();
-    assert.equal(h.f.named("studio_operator_close_session").length, 1);
-    assert.equal(h.f.state.status, "closed");
   } finally {
     await h.close();
   }
 });
 
-test("revocation during inference withholds the provider result and terminates", async () => {
+test("a source changing during inference does not revoke already acquired internal context", async () => {
   const h = await open({
     provider: (_body, state) => {
       state.revoked = true;
@@ -581,9 +572,14 @@ test("revocation during inference withholds the provider result and terminates",
   });
   try {
     await h.gateway.handle(tool(GENERIC, { topic: "private" }));
-    await assert.rejects(h.gateway.handle(provider("disclose")));
+    await h.gateway.handle(provider("disclose"));
     assert.equal(h.f.providerCalls(), 1);
-    assert.equal(h.terminated.length, 1);
+    assert.equal(h.terminated.length, 0);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
+    await assert.rejects(
+      h.gateway.handle(tool(GENERIC, { topic: "fresh" })),
+      /MCP_TOOL_FAILED/,
+    );
   } finally {
     await h.close();
   }
@@ -621,14 +617,15 @@ test("an idle runtime is terminated at the absolute retained deadline without an
   }
 });
 
-test("malformed authorization receipt carrying content is a denial", async () => {
+test("malformed obsolete source-recheck receipt cannot affect internal retained context", async () => {
   const h = await open({
     authorizeResponse: (value) => ({ ...value, items: ["private"] }),
   });
   try {
-    await assert.rejects(h.gateway.handle(provider("x")));
-    assert.equal(h.f.providerCalls(), 0);
-    assert.equal(h.terminated.length, 1);
+    await h.gateway.handle(provider("x"));
+    assert.equal(h.f.providerCalls(), 1);
+    assert.equal(h.f.named(AUTHORIZE).length, 0);
+    assert.equal(h.terminated.length, 0);
   } finally {
     await h.close();
   }
@@ -735,10 +732,8 @@ test("a legacy backend without advertised continuity is unchanged and human inpu
       f.named("studio_operator_open_session")[0].args.continuity_version,
       undefined,
     );
-    await assert.rejects(
-      gateway.handle(tool(GENERIC, { topic: "x" })),
-      /SOURCE_AUTHORIZATION_UNSUPPORTED/,
-    );
+    await gateway.handle(tool(GENERIC, { topic: "x" }));
+    assert.equal(f.named(GENERIC).length, 1, "backend authorizes the new read");
     gateway.noteHumanInput("\r");
     await gateway.handle(provider("x"));
     assert.equal(f.named(ADVANCE).length + f.named(AUTHORIZE).length, 0);

@@ -41,7 +41,7 @@ const descriptor = (
   },
 });
 
-test("roster reauthorization starts fresh pagination rather than replaying stale snapshot cursors", async () => {
+test("retained roster is not replayed at authorization; a new listing starts fresh pagination", async () => {
   let version = "original";
   const f = await operatorBackend((name, result, body) => {
     if (name === "tools/list")
@@ -76,6 +76,12 @@ test("roster reauthorization starts fresh pagination rather than replaying stale
       version = "refreshed";
       const before = f.calls.length;
       await session.authorize();
+      assert.deepEqual(
+        f.calls.slice(before).filter((c) => c.params?.name === roster.name),
+        [],
+      );
+      await roster.execute("fresh", {});
+      await roster.execute("fresh-next", { cursor: "refreshed-next" });
       assert.deepEqual(
         f.calls
           .slice(before)
@@ -306,13 +312,11 @@ for (const kind of ["read", "write"] as const)
           /ARGUMENTS_REJECTED/,
         );
         if (kind === "read") {
-          // A schema is not a source-reauthorization contract. Fail closed until
-          // the backend exposes a transactional retained-source check.
-          await assert.rejects(
-            tool.execute("valid", { value: 7 }),
-            /SOURCE_AUTHORIZATION_UNSUPPORTED/,
-          );
-          assert.equal(attempts, 0);
+          // New backend-advertised reads are authorized by that exact backend
+          // dispatch, not by a replay of retained source context.
+          const output = await tool.execute("valid", { value: 7 });
+          assert.match((output.content[0] as any).text, /"value":7/);
+          assert.equal(attempts, 1);
         } else {
           const output = await tool.execute("valid", { value: 7 });
           assert.match((output.content[0] as any).text, /completed/);
@@ -470,7 +474,7 @@ test("known tools use backend schemas and pagination defaults, not a stale clien
   }
 });
 
-test("fresh backend authorization does not veto honest results for historical roster churn", async () => {
+test("historical roster survives churn without source replay at authorization", async () => {
   let changed = false;
   const f = await operatorBackend((called, result) => {
     if (called === "tools/list")
@@ -501,7 +505,14 @@ test("fresh backend authorization does not veto honest results for historical ro
     try {
       await session.tools[0].execute("roster", {});
       changed = true;
+      const before = f.calls.length;
       await session.authorize();
+      assert.deepEqual(
+        f.calls
+          .slice(before)
+          .filter((c) => c.params?.name === "studio_operator_list_members"),
+        [],
+      );
     } finally {
       await session.dispose();
     }

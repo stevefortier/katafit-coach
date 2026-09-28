@@ -23,7 +23,7 @@ test("manager persona retains identity and delegates capability permissions to b
   assert.doesNotMatch(prompt, /do not otherwise mutate records/);
 });
 
-test("image reauthorization asks backend again rather than inferring sharing from roster equality", async () => {
+test("image acquisition is backend-authorized but retained pixels are not refetched", async () => {
   const f = await fixture();
   try {
     const session = await openOperatorTools(
@@ -42,12 +42,21 @@ test("image reauthorization asks backend again rather than inferring sharing fro
           media_ref: "media-photo",
         });
       f.revokeSharing();
-      await assert.rejects(session.authorize(), /MCP_TOOL_FAILED/);
+      await session.authorize();
       assert.equal(
         f.calls.filter(
           (name) => name === "studio_operator_read_dojo_checkin_image",
         ).length,
-        2,
+        1,
+      );
+      await assert.rejects(
+        session.tools
+          .find((t) => t.name === "studio_operator_read_dojo_checkin_image")!
+          .execute("new-image", {
+            member_ref: "member-photo",
+            media_ref: "media-photo",
+          }),
+        /MCP_TOOL_FAILED/,
       );
     } finally {
       await session.dispose();

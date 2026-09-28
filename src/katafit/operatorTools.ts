@@ -298,10 +298,8 @@ export async function openOperatorTools(
       return new Error("CONTINUITY_REVOKED");
     };
     // A retained-context denial first observed on an ordinary tool, image or
-    // SEND is terminal at once; no later provider call or backend tombstone is
-    // awaited. An unmarked authorization failure is ambiguous (an older backend
-    // or an ordinary invalid argument): resolve it with the content-free
-    // authorize_context, never a replay, and tear down unless it is ruled out.
+    // SEND is terminal at once. A new-read denial is not permission to use
+    // that read, but cannot retroactively revoke context already acquired.
     const resolveDenial = async (error: unknown) => {
       if (!continuity || revoked) return;
       // Transport HTTP 401/403 is a definite credential denial; outages and
@@ -310,14 +308,8 @@ export async function openOperatorTools(
         throw revoke("CREDENTIAL_REJECTED");
       if (!(error instanceof ToolFailure)) return;
       if (error.contextRevoked) throw revoke("CONTEXT_REVOKED");
-      if (error.code !== undefined && error.code !== "OPERATOR_NOT_AUTHORIZED")
-        return;
-      try {
-        await authorizeContext();
-      } catch (resolution) {
-        if (revoked || closed || client.signal.aborted) throw resolution;
-        throw revoke("AUTHORITY_UNRESOLVED");
-      }
+      // The backend marks a genuinely revoked session explicitly. An ordinary
+      // OPERATOR_NOT_AUTHORIZED concerns only the attempted new acquisition.
     };
     const hostFields = () =>
       continuity ? { session_id, turn_generation: generation } : { session_id };
@@ -337,7 +329,7 @@ export async function openOperatorTools(
       args: Record<string, any>;
       items: string[];
     }[] = [];
-    const imageReads = new Map<string, Record<string, any>>();
+
     const control = options.control ?? client;
     const emit = (next: OperatorAction) => {
       next = {
@@ -765,12 +757,7 @@ export async function openOperatorTools(
               imageCount++;
               imageBytes += decoded.length;
               if (imageCount === 4) options.onImageLimit?.();
-              // Continuity authorizes retained images server-side without refetch.
-              if (!continuity)
-                imageReads.set(
-                  JSON.stringify([name, args.member_ref, args.media_ref]),
-                  { name, args: structuredClone(args) },
-                );
+
               options.onRead?.(name, [args.member_ref], {
                 tool: name,
                 domain: "image",
@@ -1102,12 +1089,9 @@ export async function openOperatorTools(
           assertCallerArguments(args, member_ref !== undefined);
           if (!validate(args)) throw new Error("ARGUMENTS_REJECTED");
           assertNoSecrets(args, options.secrets);
-          // Discovery alone is not a retained-source authorization contract.
-          // Only a negotiated continuity session has an explicit content-free
-          // authorize_context covering every backend-retained read proof; never
-          // hydrate uncheckable private context or replay tools as authority.
-          if (capability.kind === "read" && !continuity)
-            throw new Error("SOURCE_AUTHORIZATION_UNSUPPORTED");
+          // Every new read is dispatched under the current authenticated
+          // backend session; retaining its returned context needs no further
+          // source-proof contract or replay of the tool.
           // Continuity v1 negotiates no generic mutation or its receipts.
           if (capability.kind === "write" && continuity)
             throw new Error("CONTINUITY_WRITE_UNSUPPORTED");
@@ -1240,36 +1224,7 @@ export async function openOperatorTools(
         Date.parse(value.expires_at) <= Date.parse(contextExpires!)
       );
     };
-    // Explicit, content-free backend reauthorization of every retained proof.
-    // A refusal or malformed receipt is terminal: destroy the runtime. A
-    // bounded unavailable outcome discloses nothing but keeps the runtime.
-    const authorizeContext = async () => {
-      live();
-      if (transition) throw new Error("CONTINUITY_TRANSITION_PENDING");
-      if (Date.parse(commandExpires) <= Date.now())
-        throw new Error("CONTINUITY_TURN_REQUIRED");
-      let value: any;
-      for (let attempt = 0; attempt < 3 && value === undefined; attempt++) {
-        if (attempt) await pause(attempt);
-        live();
-        try {
-          value = await hostCall(AUTHORIZE, {
-            session_id,
-            turn_generation: generation,
-          });
-        } catch (error) {
-          if (closed || client.signal.aborted) throw new Error("CANCELLED");
-          if (!retryable(error)) throw revoke("AUTHORIZATION_DENIED");
-        }
-      }
-      if (value === undefined) throw new Error("OPERATOR_UNAVAILABLE");
-      if (
-        !turnReceipt(value, "authorized", generation) ||
-        value.expires_at !== commandExpires
-      )
-        throw revoke("AUTHORIZATION_REJECTED");
-      live();
-    };
+
     // The original receipt lookup. not_found is only an observation; it never
     // clears an uncertain send by itself.
     const lookup = async (): Promise<"delivered" | "not_found" | "unknown"> => {
@@ -1330,7 +1285,7 @@ export async function openOperatorTools(
         commandExpires = value.expires_at;
         calls = bytes = imageCount = imageBytes = 0;
         reads.length = 0;
-        imageReads.clear();
+
         action = sentText = sentMember = receipt = undefined;
         uncertainWrite = false;
         transition = undefined;
@@ -1394,62 +1349,16 @@ export async function openOperatorTools(
       }
       return "advanced";
     };
+    // This is a local runtime/lifetime admission, never a replay or a
+    // backend source-proof check. Backend policy still governs each NEW read
+    // and every outgoing SEND at their respective tool dispatch boundaries.
     const authorize = async () => {
-      if (continuity) return authorizeContext();
-      check();
-      for (const { name, args } of imageReads.values()) {
-        const current = await client.rpc(
-          "tools/call",
-          { name, arguments: { ...args, session_id } },
-          false,
-          10000,
-          12 * 1024 * 1024,
-        );
-        check();
-        // Same MCP_TOOL_FAILED message; keeps the bounded backend code.
-        if (current?.isError) throw toolFailure(current);
-        if (!current?.structuredContent || !Array.isArray(current.content))
-          throw new Error("RESULT_REJECTED");
-      }
-      // Ask the backend to reauthorize previously successful reads. A changed
-      // roster/page is not an authorization denial: never replace backend policy
-      // with a client-side historical row-equality test. Failed reads are not
-      // replayed here, so the model can report honest partial/denied results.
-      const checks = reads.length
-        ? reads
-        : member_ref === undefined
-          ? []
-          : [{ name: READ, args: { limit: 1 }, items: [] }];
-      // Roster cursors bind a snapshot; refresh that chain instead of replaying
-      // cursors from a now-changed membership snapshot. Backend retained-source
-      // guards still authorize the evidence used by this turn.
-      let rosterStarted = false;
-      let rosterCursor: unknown;
-      for (const read of checks) {
-        let args = read.args;
-        if (read.name === ROSTER) {
-          if (rosterStarted && !rosterCursor) continue;
-          args = { ...read.args };
-          delete args.cursor;
-          if (rosterStarted) args.cursor = rosterCursor;
-          rosterStarted = true;
-        }
-        const value = await client.call(read.name, {
-          ...args,
-          session_id,
-        });
-        if (read.name === ROSTER)
-          rosterCursor = value.has_more ? value.next_cursor : undefined;
-        check();
-        assertNoSecrets(value, options.secrets);
-        if (
-          value.schema_version !== 1 ||
-          (![CHECKINS, ROSTER].includes(read.name) &&
-            value.member_ref !== (member_ref ?? read.args.member_ref)) ||
-          !Array.isArray(read.name === ROSTER ? value.members : value.items)
-        )
-          throw new Error("RESULT_REJECTED");
-      }
+      if (continuity) {
+        live();
+        if (transition) throw new Error("CONTINUITY_TRANSITION_PENDING");
+        if (Date.parse(commandExpires) <= Date.now())
+          throw new Error("CONTINUITY_TURN_REQUIRED");
+      } else check();
     };
     let memoryPartial = false;
     const recallPage = async (
