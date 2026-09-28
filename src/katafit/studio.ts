@@ -231,22 +231,31 @@ export class StudioReads {
       member_ref: string;
       display_name: string;
       media: "shared" | "not_shared";
-      stats: "shared" | "not_shared";
+      category_access: Record<
+        "training" | "nutrition" | "body",
+        "shared" | "not_shared"
+      >;
       photos: { media_ref: string; captured_at: string }[];
       charts: {
-        training: {
-          date: string;
-          completed_workouts: number;
-          completed_sets: number;
-        }[];
-        nutrition: {
-          date: string;
-          logged_meals: number;
-          recorded_calories?: number;
-          recorded_protein_g?: number;
-        }[];
-        body: { date: string; type_id: string; value: number; unit: string }[];
-      } | null;
+        training:
+          | {
+              date: string;
+              completed_workouts: number;
+              completed_sets: number;
+            }[]
+          | null;
+        nutrition:
+          | {
+              date: string;
+              logged_meals: number;
+              recorded_calories?: number;
+              recorded_protein_g?: number;
+            }[]
+          | null;
+        body:
+          | { date: string; type_id: string; value: number; unit: string }[]
+          | null;
+      };
     };
     const members: Member[] = [];
     let cursor: string | undefined;
@@ -280,17 +289,23 @@ export class StudioReads {
         const m = strict(v, [
           "member_ref",
           "display_name",
-          "stats_access",
+          "category_access",
           "charts",
           "photo_access",
           "photos",
         ]);
+        const category_access = strict(m.category_access, [
+          "training",
+          "nutrition",
+          "body",
+        ]);
         if (
-          !["shared", "not_shared"].includes(m.stats_access) ||
+          ["training", "nutrition", "body"].some(
+            (key) => !["shared", "not_shared"].includes(category_access[key]),
+          ) ||
           !["shared", "not_shared"].includes(m.photo_access) ||
           !Array.isArray(m.photos) ||
           m.photos.length > 16 ||
-          (m.stats_access === "not_shared" && m.charts !== null) ||
           (m.photo_access === "not_shared" && m.photos.length)
         )
           reject();
@@ -300,87 +315,94 @@ export class StudioReads {
           if (!Number.isFinite(Date.parse(captured_at))) reject();
           return { media_ref: text(p.media_ref, 4096), captured_at };
         });
-        let charts: Member["charts"] = null;
-        if (m.stats_access === "shared") {
-          const c = strict(m.charts, [
-            "training",
-            "nutrition",
-            "body",
-            "limitations",
-          ]);
+        const c = strict(m.charts, [
+          "training",
+          "nutrition",
+          "body",
+          "limitations",
+        ]);
+        let charts: Member["charts"];
+        const anyShared = ["training", "nutrition", "body"].some(
+          (key) => category_access[key] === "shared",
+        );
+        if (anyShared) {
           text(c.limitations, 500);
-          const rows = (
-            name: "training" | "nutrition" | "body",
-            valueKey: string,
-          ) => {
-            if (!Array.isArray(c[name]) || c[name].length > 500) reject();
-            return c[name].map((v: unknown) => {
-              const p = strict(
-                v,
-                name === "body"
-                  ? ["date", "type_id", "value", "unit", "unit_provenance"]
-                  : name === "training"
-                    ? ["date", "completed_workouts", "completed_sets"]
-                    : [
-                        "date",
-                        "logged_meals",
-                        "recorded_calories",
-                        "recorded_protein_g",
-                      ],
-              );
-              if (
-                typeof p.date !== "string" ||
-                !/^\d{4}-\d{2}-\d{2}$/.test(p.date) ||
-                !Number.isFinite(p[valueKey]) ||
-                Math.abs(p[valueKey]) > 1000000 ||
-                (name === "training" &&
-                  (!Number.isSafeInteger(p.completed_sets) ||
-                    p.completed_sets < 0 ||
-                    p.completed_sets > 1000000)) ||
-                (name === "nutrition" &&
-                  ["recorded_calories", "recorded_protein_g"].some(
-                    (field) =>
-                      p[field] !== undefined &&
-                      (!Number.isFinite(p[field]) ||
-                        p[field] < 0 ||
-                        p[field] > 1000000),
-                  ))
-              )
-                reject();
-              return p;
-            });
-          };
-          charts = {
-            training: rows(
-              "training",
-              "completed_workouts",
-            ) as Member["charts"] & any,
-            nutrition: rows("nutrition", "logged_meals") as any,
-            body: rows("body", "value").map((p) => {
-              if (
-                !(
-                  ["weight", "fat_percentage"].includes(p.type_id) &&
-                  ["kg", "lb", "lbs", "%"].includes(p.unit)
-                ) ||
-                (p.unit_provenance !== undefined &&
-                  !(
-                    p.type_id === "weight" &&
-                    ((p.unit_provenance === "measurement_unit" &&
-                      ["kg", "lb", "lbs"].includes(p.unit)) ||
-                      (p.unit_provenance === "health_connect_kg_to_lb" &&
-                        p.unit === "lb"))
-                  ))
-              )
-                reject();
-              return p;
-            }) as any,
-          };
+        } else if (c.limitations !== null) {
+          reject();
         }
+        const rows = (
+          name: "training" | "nutrition" | "body",
+          valueKey: string,
+        ) => {
+          if (category_access[name] === "not_shared") {
+            if (c[name] !== null) reject();
+            return null;
+          }
+          if (!Array.isArray(c[name]) || c[name].length > 500) reject();
+          return c[name].map((v: unknown) => {
+            const p = strict(
+              v,
+              name === "body"
+                ? ["date", "type_id", "value", "unit", "unit_provenance"]
+                : name === "training"
+                  ? ["date", "completed_workouts", "completed_sets"]
+                  : [
+                      "date",
+                      "logged_meals",
+                      "recorded_calories",
+                      "recorded_protein_g",
+                    ],
+            );
+            if (
+              typeof p.date !== "string" ||
+              !/^\d{4}-\d{2}-\d{2}$/.test(p.date) ||
+              !Number.isFinite(p[valueKey]) ||
+              Math.abs(p[valueKey]) > 1000000 ||
+              (name === "training" &&
+                (!Number.isSafeInteger(p.completed_sets) ||
+                  p.completed_sets < 0 ||
+                  p.completed_sets > 1000000)) ||
+              (name === "nutrition" &&
+                ["recorded_calories", "recorded_protein_g"].some(
+                  (field) =>
+                    p[field] !== undefined &&
+                    (!Number.isFinite(p[field]) ||
+                      p[field] < 0 ||
+                      p[field] > 1000000),
+                ))
+            )
+              reject();
+            return p;
+          });
+        };
+        charts = {
+          training: rows("training", "completed_workouts") as Member["charts"] &
+            any,
+          nutrition: rows("nutrition", "logged_meals") as any,
+          body: rows("body", "value")?.map((p) => {
+            if (
+              !(
+                ["weight", "fat_percentage"].includes(p.type_id) &&
+                ["kg", "lb", "lbs", "%"].includes(p.unit)
+              ) ||
+              (p.unit_provenance !== undefined &&
+                !(
+                  p.type_id === "weight" &&
+                  ((p.unit_provenance === "measurement_unit" &&
+                    ["kg", "lb", "lbs"].includes(p.unit)) ||
+                    (p.unit_provenance === "health_connect_kg_to_lb" &&
+                      p.unit === "lb"))
+                ))
+            )
+              reject();
+            return p;
+          }) as any,
+        };
         members.push({
           member_ref: text(m.member_ref, 256),
           display_name: text(m.display_name, 200),
           media: m.photo_access,
-          stats: m.stats_access,
+          category_access: category_access as Member["category_access"],
           photos: photoRows,
           charts,
         });
@@ -433,7 +455,7 @@ export class StudioReads {
     };
     for (const m of members)
       if (m.charts) {
-        for (const row of m.charts.training)
+        for (const row of m.charts.training ?? [])
           add(
             "training",
             "Completed workouts",
@@ -442,7 +464,7 @@ export class StudioReads {
             m.member_ref,
             row.completed_workouts,
           );
-        for (const row of m.charts.training)
+        for (const row of m.charts.training ?? [])
           add(
             "training",
             "Completed sets",
@@ -451,7 +473,7 @@ export class StudioReads {
             m.member_ref,
             row.completed_sets,
           );
-        for (const row of m.charts.nutrition)
+        for (const row of m.charts.nutrition ?? [])
           add(
             "nutrition",
             "Logged meals",
@@ -460,7 +482,7 @@ export class StudioReads {
             m.member_ref,
             row.logged_meals,
           );
-        for (const row of m.charts.nutrition) {
+        for (const row of m.charts.nutrition ?? []) {
           if (row.recorded_calories !== undefined)
             add(
               "nutrition",
@@ -480,7 +502,7 @@ export class StudioReads {
               row.recorded_protein_g,
             );
         }
-        for (const row of m.charts.body)
+        for (const row of m.charts.body ?? [])
           add(
             "body_measurements",
             row.type_id === "weight" ? "Weight" : "Body fat",
@@ -522,7 +544,12 @@ export class StudioReads {
       coverage: {
         roster_total: members.length,
         media_shared: members.filter((m) => m.media === "shared").length,
-        stats_shared: members.filter((m) => m.stats === "shared").length,
+        category_shared: Object.fromEntries(
+          (["training", "nutrition", "body"] as const).map((key) => [
+            key,
+            members.filter((m) => m.category_access[key] === "shared").length,
+          ]),
+        ),
         complete,
       },
     };

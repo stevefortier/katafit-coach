@@ -58,7 +58,11 @@ const backend = createServer(async (req, res) => {
                 {
                   member_ref: "one",
                   display_name: "Synthetic Ada",
-                  stats_access: "shared",
+                  category_access: {
+                    training: "shared",
+                    nutrition: "shared",
+                    body: "shared",
+                  },
                   photo_access: "shared",
                   photos: [
                     {
@@ -105,25 +109,32 @@ const backend = createServer(async (req, res) => {
                 {
                   member_ref: "two",
                   display_name: "Synthetic Bea",
-                  stats_access: "not_shared",
-                  charts: null,
+                  category_access: {
+                    training: "not_shared",
+                    nutrition: "not_shared",
+                    body: "not_shared",
+                  },
+                  charts: {
+                    training: null,
+                    nutrition: null,
+                    body: null,
+                    limitations: null,
+                  },
                   photo_access: "not_shared",
                   photos: [],
                 },
                 {
                   member_ref: "three",
                   display_name: "Synthetic Cy",
-                  stats_access: "shared",
+                  category_access: {
+                    training: "not_shared",
+                    nutrition: "shared",
+                    body: "shared",
+                  },
                   photo_access: "shared",
                   photos: [],
                   charts: {
-                    training: [
-                      {
-                        date: "2026-09-20",
-                        completed_workouts: 1,
-                        completed_sets: 1,
-                      },
-                    ],
+                    training: null,
                     nutrition: [],
                     body: [
                       {
@@ -183,7 +194,33 @@ try {
         throw Error("Dashboard visible before unlock");
       await page.locator("#adminKey").fill(store.secrets.admin);
       await page.locator("#unlock").click();
-      await page.getByText("Shared dashboard loaded.").waitFor();
+      await page
+        .getByText("Shared dashboard loaded.")
+        .waitFor({ timeout: 5000 })
+        .catch(async (error) => {
+          const apiStatus = await page.evaluate(
+            async (key) =>
+              (
+                await fetch("/api/dashboard", {
+                  headers: { Authorization: "Bearer " + key },
+                })
+              ).status,
+            store.secrets.admin,
+          );
+          throw Error(
+            `${error.message}; api=${apiStatus}; status=${await page.locator("#dashboardStatus").innerText()}; pageErrors=${errors.join(";")}`,
+          );
+        });
+      if (
+        !(await page.getByText("1 training-shared among shown").isVisible()) ||
+        !(await page.getByText("2 body-shared among shown").isVisible()) ||
+        !(await page
+          .getByText("Training not shared", { exact: true })
+          .first()
+          .isVisible()) ||
+        (await page.getByText("Statistics shared").count())
+      )
+        throw Error("Category authorization not reflected in dashboard");
       if (
         (await page.locator("#dashboardRoster .dashboard-tile").count()) !== 3
       )
@@ -195,7 +232,7 @@ try {
           .getByText("2026-09-20 · 0 kcal · 1 contributor")
           .isVisible()) ||
         !(await page
-          .getByText("2026-09-20 · 7 sets · 2 contributors")
+          .getByText("2026-09-20 · 6 sets · 1 contributor")
           .isVisible())
       )
         throw Error("Readable per-point values and contributor counts missing");
@@ -234,6 +271,45 @@ try {
       )
         throw Error("Horizontal overflow");
       if (errors.length) throw Error(`Browser errors: ${errors.join(";")}`);
+      const snapshot = (await (
+        await fetch(app.origin + "/api/dashboard", {
+          headers: { Authorization: `Bearer ${store.secrets.admin}` },
+        })
+      ).json()) as any;
+      const empty = structuredClone(snapshot);
+      empty.series.nutrition = [];
+      await page.route("**/api/dashboard", (route) =>
+        route.fulfill({ json: empty }),
+      );
+      await page.locator("#dashboardRefresh").click();
+      await page
+        .getByText("No shared data in this category for this period.")
+        .waitFor();
+      const unavailable = structuredClone(empty);
+      unavailable.coverage.category_shared.training = 0;
+      unavailable.series.training = [];
+      for (const member of unavailable.members)
+        member.category_access.training = "not_shared";
+      await page.unroute("**/api/dashboard");
+      await page.route("**/api/dashboard", (route) =>
+        route.fulfill({ json: unavailable }),
+      );
+      await page.locator("#dashboardRefresh").click();
+      await page.getByText("No shown members share this category.").waitFor();
+      if ((await page.locator("#dashboardCharts svg").count()) !== 2)
+        throw Error("Unavailable training category leaked graphs");
+      await page.unroute("**/api/dashboard");
+      await page.locator("#dashboardRefresh").click();
+      await page.getByText("2026-09-20 · 6 sets · 1 contributor").waitFor();
+      await page.waitForFunction(
+        () =>
+          [
+            ...document.querySelectorAll(
+              "#dashboardRoster .dashboard-tile:first-child img",
+            ),
+          ].filter((img) => (img as HTMLImageElement).naturalWidth === 120)
+            .length === 2,
+      );
       await page.evaluate(() => {
         const label = document.createElement("p");
         label.textContent =

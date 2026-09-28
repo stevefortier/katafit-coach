@@ -123,7 +123,18 @@ window.CoachDashboard = (() => {
             : `${members.length} shown · more members not loaded`,
         ),
         text("span", `${coverage.media_shared} media-shared among shown`),
-        text("span", `${coverage.stats_shared} stats-shared among shown`),
+        text(
+          "span",
+          `${coverage.category_shared.training} training-shared among shown`,
+        ),
+        text(
+          "span",
+          `${coverage.category_shared.nutrition} nutrition-shared among shown`,
+        ),
+        text(
+          "span",
+          `${coverage.category_shared.body} body-shared among shown`,
+        ),
         text(
           "span",
           coverage.complete
@@ -217,16 +228,19 @@ window.CoachDashboard = (() => {
             gallery.append(frame);
           });
         }
-        tile.append(
-          gallery,
-          text(
-            "p",
-            member.stats === "shared"
-              ? "Statistics shared"
-              : "Statistics not shared",
-            "hint",
-          ),
-        );
+        tile.append(gallery);
+        for (const [key, label] of [
+          ["training", "Training"],
+          ["nutrition", "Nutrition"],
+          ["body", "Body"],
+        ])
+          tile.append(
+            text(
+              "p",
+              `${label} ${member.category_access[key] === "shared" ? "shared" : "not shared"}`,
+              "hint",
+            ),
+          );
         roster.append(tile);
       }
       if (!members.length)
@@ -240,23 +254,33 @@ window.CoachDashboard = (() => {
           ),
         );
       const graphs = $("dashboardCharts");
-      for (const [key, label] of [
-        ["training", "Training"],
-        ["nutrition", "Nutrition"],
-        ["body_measurements", "Body measurements"],
+      for (const [key, label, category] of [
+        ["training", "Training", "training"],
+        ["nutrition", "Nutrition", "nutrition"],
+        ["body_measurements", "Body measurements", "body"],
       ]) {
         const section = text("section", "", "dashboard-domain");
         section.append(
           text("h3", label),
           text(
             "p",
-            `${coverage.stats_shared} of ${coverage.roster_total} shown members share statistics${coverage.complete ? "" : " · partial roster coverage"}. ${key === "body_measurements" ? "Logged metric points only; same-unit daily average, not inferred from photos." : key === "training" ? "Completed workouts and sets by UTC completion day (creation-date fallback); not lifting volume or adherence." : "Logged meals and available recorded nutrition totals by UTC completion day (creation-date fallback); no food lookup or adherence."} Missing days and unavailable nutrition totals are not zero.`,
+            `${coverage.category_shared[category]} of ${coverage.roster_total} shown members share ${label.toLowerCase()} activity${coverage.complete ? "" : " · partial roster coverage"}. ${key === "body_measurements" ? "Logged metric points only; same-unit daily average, not inferred from photos." : key === "training" ? "Completed workouts and sets by UTC completion day (creation-date fallback); not lifting volume or adherence." : "Logged meals and available recorded nutrition totals by UTC completion day (creation-date fallback); no food lookup or adherence."} Missing days and unavailable nutrition totals are not zero.`,
             "hint",
           ),
         );
         const grid = text("div", "", "dashboard-graphs");
-        if (!series[key].length)
-          grid.append(text("p", "No shared data in this category.", "hint"));
+        if (!coverage.category_shared[category])
+          grid.append(
+            text("p", "No shown members share this category.", "hint"),
+          );
+        else if (!series[key].length)
+          grid.append(
+            text(
+              "p",
+              "No shared data in this category for this period.",
+              "hint",
+            ),
+          );
         else for (const item of series[key]) grid.append(chart(item));
         section.append(grid);
         graphs.append(section);
