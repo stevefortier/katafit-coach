@@ -190,13 +190,13 @@ for (const parallel of [false, true])
           JSON.stringify(requests[0].messages),
           /fetch-checkin-images/,
         );
-        assert.doesNotMatch(
-          JSON.stringify(requests[0].messages),
-          new RegExp(sentinel),
+        assert.equal(
+          JSON.stringify(requests[0].messages).includes(sentinel),
+          false,
         );
-        assert.match(
-          JSON.stringify(requests[1].messages),
-          new RegExp(sentinel),
+        assert.equal(
+          JSON.stringify(requests[1].messages).includes(sentinel),
+          true,
         );
         const listing = results.find((r) => r.name === CHECKINS).result;
         assert.equal(
