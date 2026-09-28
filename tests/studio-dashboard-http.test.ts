@@ -48,8 +48,17 @@ test("bounded pages report partial roster rather than inventing a total", async 
           members: Array.from({ length: 10 }, (_, i) => ({
             member_ref: `opaque-${page}-${i}`,
             display_name: `Synthetic ${page}-${i}`,
-            stats_access: "not_shared",
-            charts: null,
+            category_access: {
+              training: "not_shared",
+              nutrition: "not_shared",
+              body: "not_shared",
+            },
+            charts: {
+              training: null,
+              nutrition: null,
+              body: null,
+              limitations: null,
+            },
             photo_access: "not_shared",
             photos: [],
           })),
@@ -66,7 +75,7 @@ test("bounded pages report partial roster rather than inventing a total", async 
   assert.deepEqual(snapshot.coverage, {
     roster_total: 100,
     media_shared: 0,
-    stats_shared: 0,
+    category_shared: { training: 0, nutrition: 0, body: 0 },
     complete: false,
   });
   assert.deepEqual(snapshot.series, {
@@ -137,8 +146,17 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
               members: Array.from({ length: 10 }, (_, i) => ({
                 member_ref: `member-${page * 10 + i}`,
                 display_name: "Synthetic",
-                stats_access: "not_shared",
-                charts: null,
+                category_access: {
+                  training: "not_shared",
+                  nutrition: "not_shared",
+                  body: "not_shared",
+                },
+                charts: {
+                  training: null,
+                  nutrition: null,
+                  body: null,
+                  limitations: null,
+                },
                 photo_access: "not_shared",
                 photos: [],
               })),
@@ -158,7 +176,11 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
                     {
                       member_ref: "one",
                       display_name: "Synthetic Ada",
-                      stats_access: "shared",
+                      category_access: {
+                        training: "shared",
+                        nutrition: "shared",
+                        body: "shared",
+                      },
                       charts: charts(80, "kg"),
                       photo_access: shared ? "shared" : "not_shared",
                       photos: shared
@@ -177,8 +199,17 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
                     {
                       member_ref: "two",
                       display_name: "Synthetic Bea",
-                      stats_access: "not_shared",
-                      charts: null,
+                      category_access: {
+                        training: "not_shared",
+                        nutrition: "not_shared",
+                        body: "not_shared",
+                      },
+                      charts: {
+                        training: null,
+                        nutrition: null,
+                        body: null,
+                        limitations: null,
+                      },
                       photo_access: "not_shared",
                       photos: [],
                     },
@@ -187,7 +218,11 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
                     {
                       member_ref: "three",
                       display_name: "Synthetic Cy",
-                      stats_access: "shared",
+                      category_access: {
+                        training: "shared",
+                        nutrition: "shared",
+                        body: "shared",
+                      },
                       charts: charts(180, "lb"),
                       photo_access: "shared",
                       photos: [],
@@ -255,11 +290,15 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
     assert.deepEqual(data.coverage, {
       roster_total: 3,
       media_shared: 2,
-      stats_shared: 2,
+      category_shared: { training: 2, nutrition: 2, body: 2 },
       complete: true,
     });
     assert.equal(data.members[1].media, "not_shared");
-    assert.equal(data.members[1].stats, "not_shared");
+    assert.deepEqual(data.members[1].category_access, {
+      training: "not_shared",
+      nutrition: "not_shared",
+      body: "not_shared",
+    });
     assert.deepEqual(data.members[0].photos, [
       { media_ref: "media-one", captured_at: "2026-09-20T12:00:00Z" },
       { media_ref: "media-two", captured_at: "2026-09-20T12:00:00Z" },
@@ -385,5 +424,89 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
     await app?.close();
     await new Promise<void>((resolve) => backend.close(() => resolve()));
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("category authorization keeps partial graphs and independent media", async () => {
+  const member = {
+    member_ref: "partial",
+    display_name: "Partial member",
+    category_access: {
+      training: "shared",
+      nutrition: "not_shared",
+      body: "shared",
+    },
+    charts: { ...charts(74, "kg"), nutrition: null },
+    photo_access: "not_shared",
+    photos: [],
+  };
+  const reads = new StudioReads(
+    {
+      connect: async () => {},
+      call: async () => ({
+        schema_version: 1,
+        owner_type: "dojo",
+        period_days: 30,
+        members: [member],
+        has_more: false,
+        next_cursor: null,
+      }),
+    },
+    [],
+  );
+  const data = await reads.dashboard();
+  assert.deepEqual(data.coverage.category_shared, {
+    training: 1,
+    nutrition: 0,
+    body: 1,
+  });
+  assert.deepEqual(data.members[0].category_access, member.category_access);
+  assert.equal(data.members[0].media, "not_shared");
+  assert.equal(data.series.training[0].points[0].contributor_count, 1);
+  assert.equal(data.series.nutrition.length, 0);
+  assert.equal(data.series.body_measurements.length, 1);
+});
+
+test("category access cannot disagree with individual chart availability", async () => {
+  const member = {
+    member_ref: "partial",
+    display_name: "Partial member",
+    category_access: {
+      training: "shared",
+      nutrition: "not_shared",
+      body: "shared",
+    },
+    charts: { ...charts(74, "kg"), nutrition: null },
+    photo_access: "shared",
+    photos: [],
+  };
+  for (const invalid of [
+    { ...member, charts: { ...member.charts, training: null } },
+    { ...member, charts: { ...member.charts, nutrition: [] } },
+    {
+      ...member,
+      category_access: { ...member.category_access, body: "not_shared" },
+    },
+    {
+      ...member,
+      category_access: { ...member.category_access, training: "unknown" },
+    },
+    { ...member, stats_access: "shared" },
+  ]) {
+    const reads = new StudioReads(
+      {
+        connect: async () => {},
+        call: async () => ({
+          schema_version: 1,
+          owner_type: "dojo",
+          period_days: 30,
+          members: [invalid],
+          has_more: false,
+          next_cursor: null,
+        }),
+      },
+      [],
+    );
+    await assert.rejects(() => reads.dashboard(), { code: "RESULT_REJECTED" });
   }
 });
