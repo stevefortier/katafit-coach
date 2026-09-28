@@ -23,12 +23,12 @@ const content = (skill: any) => ({
   instructions: skill.instructions,
 });
 
-test("day closure maps to understand-progress without a stock version bump", () => {
+test("day closure maps to the updated ordinary REST progress skill", () => {
   const progress = stockSkills.find(
     (skill) => skill.id === "understand-progress",
   )!;
-  assert.equal(progress.defaultVersion, 1);
-  assert.equal(progress.basedOnDefaultVersion, 1);
+  assert.equal(progress.defaultVersion, 2);
+  assert.equal(progress.basedOnDefaultVersion, 2);
   assert.deepEqual(
     skillForTask(
       {

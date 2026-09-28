@@ -1,4 +1,11 @@
-import { access, cp, mkdir, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  cp,
+  mkdir,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { supervise as realSupervise } from "../../src/update/supervisor.js";
@@ -23,6 +30,15 @@ async function legacyRoot(home: string) {
     await writeFile(join(root, "package.json"), '{"type":"module"}');
   }
   return root;
+}
+/** A compiled child has a separate module/prototype from the source test process.
+ * Opt this lifecycle fixture into its deliberately held legacy startup seam. */
+export async function prepareLegacyNativeGateway(home: string) {
+  const root = await legacyRoot(home);
+  await appendFile(
+    join(root, "dist/server/terminal.js"),
+    "\nNativeTerminal.prototype.openGateway = (store, signal, hooks = {}) => openNativeGateway(store, signal, {...hooks, backendHistory: true});\n",
+  );
 }
 export async function activateLegacyFixture(home: string) {
   const root = await legacyRoot(home),

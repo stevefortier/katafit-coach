@@ -1,4 +1,6 @@
 import test from "node:test";
+import { NativeTerminal } from "../src/server/terminal.js";
+import { openNativeGateway as legacyGateway } from "./helpers/legacy-gateway.js";
 import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { WebSocket } from "ws";
@@ -20,6 +22,9 @@ test(
   "Stop aborts a pending MCP startup rather than waiting for its backend",
   { timeout: 10000 },
   async () => {
+    const proto = NativeTerminal.prototype as any;
+    const originalOpen = proto.openGateway;
+    proto.openGateway = legacyGateway;
     let entered!: () => void, release!: () => void;
     const started = new Promise<void>((r) => (entered = r)),
       gate = new Promise<void>((r) => (release = r));
@@ -65,6 +70,7 @@ test(
       );
     } finally {
       release();
+      proto.openGateway = originalOpen;
       ws?.terminate();
       await app.close();
       await f.close();

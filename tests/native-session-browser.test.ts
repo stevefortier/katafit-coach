@@ -126,7 +126,7 @@ test(
 );
 
 test(
-  "served history is current-authorized, inert and usable on desktop/mobile: Stop, rename, refresh/deep link, new, select and delete",
+  "served installation-owned history is inert and usable on desktop/mobile: Stop, rename, refresh/deep link, new, select and delete",
   { timeout: 60000 },
   async () => {
     const h = await attachmentHarness({}, archiveFixture);
@@ -329,18 +329,27 @@ test(
         .getByText("Synthetic archived answer", { exact: false })
         .waitFor();
       (h.f as Awaited<ReturnType<typeof archiveFixture>>).revoke();
-      await page.locator("#nativeHistoryToggle").click();
-      await page.waitForFunction(() =>
-        document
-          .querySelector("#nativeHistoryNotice")
-          ?.textContent?.includes("withheld"),
+      const callsBeforeLocalRead = h.f.calls.length;
+      const refreshed = page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/terminal/history") &&
+          response.status() === 200,
       );
-      assert.equal(await page.locator("#nativeHistoryLog").textContent(), "");
+      await page.locator("#nativeHistoryToggle").click();
+      await refreshed;
+      await page
+        .locator("#nativeHistoryLog")
+        .getByText("Synthetic archived answer", { exact: false })
+        .waitFor();
       assert.equal(
-        await page.locator("#nativeHistorySnapshot").textContent(),
+        h.f.calls.length,
+        callsBeforeLocalRead,
+        "local history refresh does not reauthorize already acquired data",
+      );
+      assert.notEqual(
+        await page.locator("#nativeHistoryTitle").inputValue(),
         "",
       );
-      assert.equal(await page.locator("#nativeHistoryTitle").inputValue(), "");
       page.once("dialog", (dialog) => dialog.accept());
       const deleted = page.waitForResponse(
         (response) =>

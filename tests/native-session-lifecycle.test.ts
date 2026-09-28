@@ -136,10 +136,15 @@ test("real host gateway seals structured history, Stop and service restart prese
     assert.equal(f.named("studio_operator_resume_archive").length, 1);
     await terminal.stop();
     f.revoke();
-    const denied = await terminal.historyRead(id);
-    assert.equal(denied.status, "locked");
-    assert.equal(denied.entries, undefined);
-    assert.equal(JSON.stringify(denied).includes("Synthetic"), false);
+    const callsBeforeLocalRead = f.calls.length;
+    const retained = await terminal.historyRead(id);
+    assert.equal(retained.status, "authorized");
+    assert.match(JSON.stringify(retained.entries), /Synthetic archived answer/);
+    assert.equal(
+      f.calls.length,
+      callsBeforeLocalRead,
+      "saved data needs no backend permission refresh",
+    );
     await terminal.historyDelete(id);
     assert.equal((await terminal.historyList()).sessions.length, 0);
   } finally {
