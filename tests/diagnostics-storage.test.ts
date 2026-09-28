@@ -25,7 +25,7 @@ test("bounded structured history rotates, strips arbitrary data and retains last
       stage: "request-failed",
       error: new Error("MODEL_FAILED"),
     });
-    for (let i = 0; i < 60000; i++)
+    for (let i = 0; i < 180000; i++)
       log.record({
         source: "worker",
         stage: "idle",
@@ -42,7 +42,7 @@ test("bounded structured history rotates, strips arbitrary data and retains last
     const result = log.snapshot();
     assert.equal(result.entries.length, LOG_ENTRIES);
     assert.ok(!JSON.stringify(result).includes("PRIVATE"));
-    assert.deepEqual(result.entries.at(-1)?.metadata, { elapsedMs: 59999 });
+    assert.deepEqual(result.entries.at(-1)?.metadata, { elapsedMs: 179999 });
     for (const suffix of ["", ".1"]) {
       assert.ok(
         (await stat(dir + "/diagnostics.jsonl" + suffix)).size <=
@@ -55,11 +55,59 @@ test("bounded structured history rotates, strips arbitrary data and retains last
     }
     const restored = new Diagnostics(dir);
     assert.equal(restored.snapshot().entries.length, LOG_ENTRIES);
-    assert.equal(restored.snapshot().entries.at(-1)?.metadata.elapsedMs, 59999);
+    assert.equal(
+      restored.snapshot().entries.at(-1)?.metadata.elapsedMs,
+      179999,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("extended diagnostic window stays bounded in memory and on protected disk", async () => {
+  assert.ok(LOG_ENTRIES >= 20000);
+  const dir = await mkdtemp(tmpdir() + "/coach-extended-ring-");
+  try {
+    const log = new Diagnostics(dir);
+    const text = '{"text":"' + "x".repeat(22000) + '"}';
+    for (let i = 0; i < 1200; i++)
+      log.record({
+        source: "worker",
+        stage: "task-output-correction",
+        level: "warn",
+        error: new Error("TASK_OUTPUT_SCHEMA"),
+        rejection: {
+          kind: "daily_insight",
+          attempt: 1,
+          reason: "schema rejected",
+          text,
+        },
+      });
+    const snapshot = log.snapshot();
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(snapshot.entries)) <= 16 * 1024 * 1024,
+    );
+    assert.ok(snapshot.entries.length < 1200);
+    assert.ok(!JSON.stringify(snapshot).includes("Bearer synthetic-secret"));
+    const restored = new Diagnostics(dir);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(restored.snapshot().entries)) <=
+        16 * 1024 * 1024,
+    );
+    for (const suffix of ["", ".1"]) {
+      assert.ok(
+        (await stat(dir + "/diagnostics.jsonl" + suffix)).size <=
+          LOG_FILE_BYTES,
+      );
+      assert.equal(
+        (await stat(dir + "/diagnostics.jsonl" + suffix)).mode & 0o777,
+        0o600,
+      );
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("provider diagnostic preview and shape survive protected restart but unsafe input is omitted", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-payload-");
   try {

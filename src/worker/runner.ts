@@ -1161,13 +1161,32 @@ export class Worker {
               ? "TASK_INVALID_OUTPUT"
               : "TASK_PROVIDER_FAILED";
         try {
-          await c.call("coach_fail_task", { ...fence, code }, budget());
+          // The backend must accept the optional subtype before this worker is
+          // deployed. Unknown-field refusals are not safely distinguishable from
+          // lost writes/lease failures; do not retry a mutation on guesswork.
+          const detailCode =
+            code === "TASK_INVALID_OUTPUT" &&
+            error instanceof TaskOutputError &&
+            (
+              ["JSON", "SCHEMA", "SEMANTIC", "SECURITY", "SIZE"] as const
+            ).includes(error.category)
+              ? `TASK_OUTPUT_${error.category}`
+              : undefined;
+          await c.call(
+            "coach_fail_task",
+            {
+              ...fence,
+              code,
+              ...(detailCode ? { detail_code: detailCode } : {}),
+            },
+            budget(),
+          );
           const checked = await c.call(
             "coach_read_task_receipt",
             fence,
             budget(),
           );
-          verifyTaskFailure(task, checked, code);
+          verifyTaskFailure(task, checked, code, detailCode);
           this.update("task-failure-reported");
         } catch {
           this.update("task-failure-unverified");

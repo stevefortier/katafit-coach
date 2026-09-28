@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { Client } from "../src/katafit/client.js";
-import { Diagnostics, type LogInput } from "../src/diagnostics/log.js";
+import {
+  Diagnostics,
+  LOG_ENTRIES,
+  type LogInput,
+} from "../src/diagnostics/log.js";
 import { fixture } from "./helpers/native.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -106,11 +110,11 @@ test("native gateway logs every physical attempt including clones and close cont
   }
 });
 
-test("retains newest 5000 ordinary call rows through rotation and restart", async () => {
+test("retains newest ordinary call rows through restart", async () => {
   const dir = await mkdtemp(tmpdir() + "/backend-retention-");
   try {
     const log = new Diagnostics(dir);
-    for (let i = 0; i < 18000; i++)
+    for (let i = 0; i < LOG_ENTRIES + 1000; i++)
       log.record({
         source: "backend",
         stage: "backend-call",
@@ -130,9 +134,9 @@ test("retains newest 5000 ordinary call rows through rotation and restart", asyn
         },
       });
     for (const snapshot of [log.snapshot(), new Diagnostics(dir).snapshot()]) {
-      assert.equal(snapshot.capacity, 5000);
-      assert.equal(snapshot.entries.length, 5000);
-      assert.equal(snapshot.entries[0].metadata.elapsedMs, 13000);
+      assert.equal(snapshot.capacity, LOG_ENTRIES);
+      assert.equal(snapshot.entries.length, LOG_ENTRIES);
+      assert.equal(snapshot.entries[0].metadata.elapsedMs, 1000);
       assert.equal(snapshot.entries.at(-1)?.level, "verbose");
       assert.equal(
         snapshot.entries.at(-1)?.backendCall?.tool,

@@ -376,10 +376,26 @@ export function verifyTaskResolution(task: any, response: any, digest: string) {
       "consumed_at",
       "failure_code",
       "resolution",
+      ...(Object.hasOwn(response ?? {}, "failure_detail_code")
+        ? ["failure_detail_code"]
+        : []),
     ])
   )
     throw new Error("DELIVERY_UNVERIFIED");
   const { resolution, ...receipt } = response;
+  if (
+    Object.hasOwn(receipt, "failure_detail_code") &&
+    (receipt.status !== "failed" ||
+      receipt.failure_code !== "TASK_INVALID_OUTPUT" ||
+      ![
+        "TASK_OUTPUT_JSON",
+        "TASK_OUTPUT_SCHEMA",
+        "TASK_OUTPUT_SEMANTIC",
+        "TASK_OUTPUT_SECURITY",
+        "TASK_OUTPUT_SIZE",
+      ].includes(receipt.failure_detail_code))
+  )
+    throw new Error("DELIVERY_UNVERIFIED");
   if (["completed", "consumed"].includes(receipt.status)) {
     if (resolution !== "observed") throw new Error("DELIVERY_UNVERIFIED");
     return verifyTaskReceipt(task, receipt, digest);
@@ -409,7 +425,12 @@ export function verifyTaskResolution(task: any, response: any, digest: string) {
     throw new Error("DELIVERY_UNVERIFIED");
   return receipt.status;
 }
-export function verifyTaskFailure(task: any, receipt: any, code: string) {
+export function verifyTaskFailure(
+  task: any,
+  receipt: any,
+  code: string,
+  detailCode?: string,
+) {
   if (
     !exactKeys(receipt, [
       "task",
@@ -418,10 +439,20 @@ export function verifyTaskFailure(task: any, receipt: any, code: string) {
       "completed_at",
       "consumed_at",
       "failure_code",
+      ...(detailCode ? ["failure_detail_code"] : []),
     ]) ||
     !isDeepStrictEqual(receipt.task, { ...task, status: "failed" }) ||
     receipt.status !== "failed" ||
     receipt.failure_code !== code ||
+    (detailCode &&
+      (![
+        "TASK_OUTPUT_JSON",
+        "TASK_OUTPUT_SCHEMA",
+        "TASK_OUTPUT_SEMANTIC",
+        "TASK_OUTPUT_SECURITY",
+        "TASK_OUTPUT_SIZE",
+      ].includes(detailCode) ||
+        receipt.failure_detail_code !== detailCode)) ||
     receipt.result_sha256 !== null ||
     receipt.completed_at !== null ||
     receipt.consumed_at !== null
