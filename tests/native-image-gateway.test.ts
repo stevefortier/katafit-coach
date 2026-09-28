@@ -10,7 +10,7 @@ import sharp from "sharp";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { Store } from "../src/config/store.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { fixture as checkinBackend } from "./operator-checkins.test.js";
 import {
   assistantText,

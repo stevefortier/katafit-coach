@@ -6,7 +6,7 @@ import {
   answer,
   toolCall,
 } from "./helpers/continuity.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { Actions } from "../src/chat/actions.js";
 
 const ROSTER = "studio_operator_list_members";
@@ -58,6 +58,7 @@ test("continuity negotiation hides host controls and reserved identity; host ses
     );
     const catalog = await h.gateway.handle({ kind: "catalog" });
     assert.deepEqual(catalog.tools.map((t: any) => t.name).sort(), [
+      "katafit_rest_get",
       ROSTER,
       GENERIC,
       SEND,

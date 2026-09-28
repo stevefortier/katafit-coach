@@ -26,22 +26,46 @@ the actual intended control-plane identity. Rootless/remote Docker endpoints are
 not a supported deployment recipe; this release standardizes
 `/var/run/docker.sock` for the CLI and Docker API.
 
-### Ordinary user REST reads (opt-in)
+### Ordinary user REST reads
 
-The native `katafit_rest_get` tool appears only when the trusted host's private
-`secrets.json` contains a nonempty `restToken` string. Provision this separately
-from the existing MCP `token`, with a revocable backend-issued credential that
-resolves to the same ordinary user principal as the human client. Do not use a
-Clerk interactive token or an installation-wide/operator-only MCP token. The
-backend credential issuance and production provisioning are separate work; absent
-this credential, the new tool is not advertised. The host uses the configured
-`origin` and sends the bearer only on bounded `/api/` GETs without redirects.
-Non-loopback origins must use HTTPS; plaintext is limited to literal localhost,
-127.0.0.1 or [::1] for local development.
-Pi receives neither the bearer nor arbitrary destinations. The route's existing
-backend user permissions govern access; this tool introduces no route catalogue
-or write capability. Restart a stopped native session after provisioning or
-rotation; do not change a live session's credentials.
+New native conversations use `katafit_rest_get` with the existing private saved
+`token`. Human onboarding opts the installation credential into ordinary REST
+with `rest_user_access: true`; no second bearer or host identity introspection is
+needed. Replace older credentials in Settings with a newly opted-in credential.
+A denied REST request displays its HTTP status and never falls back to MCP reads.
+
+The host sends this bearer only to the configured origin on bounded `/api/` GETs,
+without redirects, caller headers or arbitrary methods. Non-loopback origins
+require HTTPS. Pi never receives credentials. Existing backend route authorization
+alone governs each new fetch; newly added GET routes need no host registration.
+Use `/api/friends/feed/dojo`, `/api/friends/activity/:id` and
+`/api/media/:id/files/:fileId` for cross-member feed, full media inventory and
+pixels. `/api/activities/:id` remains owner-only. Dashboard uses the same routes,
+retains chart presentation from available records, and labels bounded coverage.
+
+New native history belongs to the private installation/admin, is digest checked,
+and survives backend-token rotation. Separate tenants must use separate private
+Coach homes; replacing the token is not a local-data deletion or account switch.
+Read/reopen of acquired local history makes no permission calls.
+Stop preserves text history; the existing image/unsupported-history read-only
+limitations remain (raw image bytes and workspace attachments are not persisted).
+Old host-saved archives remain locally readable without source reauthorization.
+Their legacy execution-resume contract still uses backend archive endpoints and
+may become read-only after credential replacement; no unsafe action replay is
+attempted. This legacy resume migration is not yet complete.
+
+Legacy recipient resolution and sends open their MCP session only when invoked;
+that backend's action policy and durable uncertain-action/no-replay receipts still
+apply. Workers and older member views retain their existing adapters. Generic
+REST is **GET-only**, not generic write support. Stop before rotating credentials.
+
+Memory: one optional initial legacy memory acquisition is cached for the whole
+conversation; provider continuation and local reopen do not recheck acquired
+memory. Explicit `coach_memory_search` is a new backend fetch. Legacy refusal
+does not block ordinary REST. **REST-derived automatic memory persistence remains
+unsupported**: native guidance discloses this and retention emits
+`memory-retention-skipped` / `MEMORY_UNAVAILABLE`, never a successful no-op.
+Existing Memory screen/manual management and worker memory are unchanged.
 
 ## Build from one reviewed clean source revision
 

@@ -215,7 +215,7 @@ export class NativeTerminal {
       let owned: NativeRuntime | undefined;
       const prepared = await this.history.prepare(controller.signal);
       this.historyNotice = undefined;
-      const gateway = await openNativeGateway(this.store, controller.signal, {
+      const gateway = await this.openGateway(this.store, controller.signal, {
         resume: prepared.resume,
         resumeSessionId: prepared.record?.execution?.sessionId,
         seed: prepared.seed,
@@ -393,6 +393,9 @@ export class NativeTerminal {
     }
   }
   /** Test seam: the Docker-backed runtime for one generation. */
+  protected openGateway(...args: Parameters<typeof openNativeGateway>) {
+    return openNativeGateway(...args);
+  }
   protected createRuntime(image: string) {
     return new NativeRuntime(image);
   }

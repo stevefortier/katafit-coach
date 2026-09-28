@@ -7,7 +7,7 @@ import {
   IMAGE,
   answer,
 } from "./helpers/continuity.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { AttachmentFailure } from "../src/sandbox/attachments.js";
 import { gatewayHarness as open } from "./helpers/attachments.js";
 

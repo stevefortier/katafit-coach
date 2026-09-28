@@ -3,7 +3,7 @@ import { admin } from "../../src/server/admin.js";
 import { NativeTerminal } from "../../src/server/terminal.js";
 import { AttachmentFailure } from "../../src/sandbox/attachments.js";
 import assert from "node:assert/strict";
-import { openNativeGateway } from "../../src/sandbox/gateway.js";
+import { openNativeGateway } from "./legacy-gateway.js";
 import { continuityFixture, CHECKINS, IMAGE } from "./continuity.js";
 
 // Real admin server, ticketed WebSocket, gateway and synthetic continuity
@@ -20,8 +20,10 @@ export async function attachmentHarness(
   const proto: any = NativeTerminal.prototype;
   const original = {
     createRuntime: proto.createRuntime,
+    openGateway: proto.openGateway,
     resolveImage: proto.resolveImage,
   };
+  proto.openGateway = openNativeGateway;
   proto.resolveImage = async () => "sha256:" + "b".repeat(64);
   const terminals = new Set<any>();
   proto.createRuntime = function (this: any) {

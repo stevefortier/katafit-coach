@@ -4,6 +4,7 @@ import { Actions } from "../chat/actions.js";
 import { NativeTerminal } from "./terminal.js";
 import { contentDisposition } from "../sandbox/attachments.js";
 import { StudioReads } from "../katafit/studio.js";
+import { restGet } from "../katafit/restGet.js";
 import { Updates } from "../update/updates.js";
 import { AutoUpdateSetting } from "../update/auto.js";
 import { Diagnostics } from "../diagnostics/log.js";
@@ -396,30 +397,50 @@ export async function admin(
         return send(403, { error: "ORIGIN_REJECTED" });
       if (req.method === "POST" && req.headers.origin !== origin)
         return send(403, { error: "ORIGIN_REQUIRED" });
-      if (
-        req.method === "GET" &&
-        (path === "/api/dashboard" || path.startsWith("/api/dashboard/photo?"))
-      ) {
+      if (req.method === "GET" && /^\/api\/dashboard(?:[/?]|$)/.test(path)) {
         if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
-        if (Buffer.byteLength(path) > 20000 || memberReads.size >= 4)
+        if (memberReads.size >= 4)
           return send(429, { error: "OPERATION_IN_PROGRESS" });
-        const photo = path.startsWith("/api/dashboard/photo?");
-        const params = new URL(path, origin).searchParams;
+        const url = new URL(path, origin);
+        const params = url.searchParams;
+        const allowed =
+          url.pathname === "/api/dashboard"
+            ? ["before"]
+            : url.pathname === "/api/dashboard/activity"
+              ? ["id"]
+              : url.pathname === "/api/dashboard/photo"
+                ? ["activity_id", "file_id"]
+                : [];
         if (
+          !allowed.length ||
           [...params.keys()].some(
-            (k) =>
-              !photo ||
-              !["member_ref", "media_ref"].includes(k) ||
-              params.getAll(k).length !== 1 ||
-              !params.get(k) ||
-              params.get(k)!.length > 8192,
-          ) ||
-          (photo &&
-            (params.size !== 2 ||
-              !params.get("member_ref") ||
-              !params.get("media_ref")))
+            (k) => !allowed.includes(k) || params.getAll(k).length !== 1,
+          )
         )
           throw new SafeError("ARGUMENTS_REJECTED");
+        const segment = (key: string) => {
+          const value = params.get(key);
+          if (!value || !/^[a-zA-Z0-9_-]{1,128}$/.test(value))
+            throw new SafeError("ARGUMENTS_REJECTED");
+          return value;
+        };
+        let target: string;
+        const photo = url.pathname === "/api/dashboard/photo";
+        if (photo)
+          target = `/api/media/${segment("activity_id")}/files/${segment("file_id")}`;
+        else if (url.pathname === "/api/dashboard/activity")
+          target = `/api/friends/activity/${segment("id")}`;
+        else {
+          const before = params.get("before");
+          if (
+            before &&
+            (before.length > 64 || !Number.isFinite(Date.parse(before)))
+          )
+            throw new SafeError("ARGUMENTS_REJECTED");
+          target =
+            "/api/friends/feed/dojo?limit=20" +
+            (before ? "&beforeDate=" + encodeURIComponent(before) : "");
+        }
         const token = store.secrets.token;
         if (!token) throw new SafeError("TOKEN_REQUIRED");
         const c = store.publicConfig();
@@ -428,55 +449,44 @@ export async function admin(
         const cancel = () => controller.abort();
         res.once("close", cancel);
         try {
-          const signal = AbortSignal.any([
+          const result = await restGet(
+            c.origin,
+            token,
+            { path: target },
             controller.signal,
-            AbortSignal.timeout(10000),
-          ]);
-          const reads = new StudioReads(
-            new Client(c.origin, token, signal, onBackendDiagnostic),
             Object.values(store.secrets),
           );
-          if (!photo) {
-            const snapshot = await reads.dashboard();
-            signal.throwIfAborted();
-            if (
-              store.publicConfig().revision !== c.revision ||
-              store.secrets.token !== token ||
-              updates.applying
-            )
-              throw new SafeError("CANCELLED");
-            return send(200, snapshot);
-          }
-          const member_ref = params.get("member_ref")!;
-          const media_ref = params.get("media_ref")!;
-          let image;
-          try {
-            // The backend reauthorizes this exact pair against the current chief,
-            // grant, media audience and latest check-in; no roster snapshot here.
-            image = await reads.media(
-              { member_ref, media_ref },
-              "studio_dashboard_read_photo",
-            );
-          } catch (error) {
-            if (error instanceof SafeError && error.code === "MCP_TOOL_FAILED")
-              return send(404, { error: "NOT_FOUND" });
-            throw error;
-          }
-          signal.throwIfAborted();
+          controller.signal.throwIfAborted();
           if (
             store.publicConfig().revision !== c.revision ||
             store.secrets.token !== token ||
             updates.applying
           )
             throw new SafeError("CANCELLED");
-          res.setHeader("Content-Type", image.mime_type);
-          res.setHeader("Content-Length", image.bytes.length);
-          res.end(image.bytes);
-          return;
+          if (result.restReadError)
+            return send(result.restReadError.status, {
+              error: "REST_READ_DENIED",
+              status: result.restReadError.status,
+            });
+          if (photo) {
+            const image = result.content?.find((part) => part.type === "image");
+            if (!image || !("data" in image))
+              throw new SafeError("RESULT_REJECTED");
+            const bytes = Buffer.from(image.data!, "base64");
+            res.setHeader("Content-Type", image.mimeType!);
+            res.setHeader("Content-Length", bytes.length);
+            res.end(bytes);
+          } else {
+            const text = result.content?.find((part) => part.type === "text");
+            if (!text || !("text" in text))
+              throw new SafeError("RESULT_REJECTED");
+            return send(200, JSON.parse(text.text!));
+          }
         } finally {
           res.removeListener("close", cancel);
           memberReads.delete(controller);
         }
+        return;
       }
       if (req.method === "GET" && path === "/api/terminal/receipts")
         return send(200, {

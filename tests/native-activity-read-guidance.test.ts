@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { continuityFixture, DETAIL, GENERIC } from "./helpers/continuity.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 
 test("backend READ_LIMIT on activity detail yields content-free, read-only native guidance", async () => {
   const f = await continuityFixture({ detailFailure: "READ_LIMIT" });

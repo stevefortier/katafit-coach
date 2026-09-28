@@ -68,6 +68,8 @@ export async function startBackend() {
   const origin = await listen(server);
   await service.ensureExternalCoachIndexes(db);
   return {
+    app,
+    server,
     require,
     ObjectId,
     db,

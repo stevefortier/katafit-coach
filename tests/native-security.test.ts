@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fixture } from "./helpers/native.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 
 test("advertised generic reads acquire data once under backend session authority", async () => {
   const generic = "studio_operator_future_read";

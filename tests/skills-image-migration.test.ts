@@ -43,17 +43,12 @@ test("default image fetching skill is enabled and teaches bounded authorized pix
   assert.ok(skill);
   assert.equal(skill.enabled, true);
   assert.match(skill.instructions, /sequentially, one call at a time/);
-  assert.match(skill.instructions, /IMAGE_READ_BUSY.*wait/i);
   for (const pattern of [
-    /studio_operator_list_dojo_checkins/,
-    /exact.*member_ref.*media_ref/,
-    /activity-detail/i,
-    /4 images/,
-    /16 MiB/,
-    /8 MiB/,
+    /katafit_rest_get/,
+    /friends\/feed\/dojo/,
+    /friends\/activity/,
+    /api\/media/,
     /actual.*pixels/i,
-    /unchanged failed/,
-    /bypass quotas/,
     /Worker scope/,
   ])
     assert.match(skill.instructions, pattern);
@@ -115,11 +110,9 @@ test("saved v1 image guidance upgrades without enabling a disabled skill", async
     const upgraded: any = store
       .view()
       .skills.find((s: any) => s.id === image.id);
-    assert.equal(upgraded.defaultVersion, 2);
+    assert.equal(upgraded.defaultVersion, 3);
     assert.equal(upgraded.enabled, false);
-    assert.ok(
-      upgraded.instructions.includes("one exact member_ref + media_ref pair"),
-    );
+    assert.ok(upgraded.instructions.includes("katafit_rest_get"));
     assert.equal(store.view().revision, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });

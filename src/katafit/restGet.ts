@@ -4,7 +4,7 @@ import { prepareModelImage } from "./providerImage.js";
 export const restGetTool = {
   name: "katafit_rest_get",
   description:
-    "Read any ordinary Kata.fit /api/ GET route under the configured origin as the current user. Supply only a relative absolute path and optional bounded query; no writes, custom headers or URLs. Backend user permissions decide access.",
+    "Primary tool for Kata.fit reads: call any ordinary /api/ GET route as the current user, including newly added routes without registration. Start /api/friends/feed/dojo?limit=20; follow hasMore/oldestDate with beforeDate. Fetch /api/friends/activity/:id for cross-member details and full data.files (feed files are previews), then /api/media/:id/files/:fileId for pixels. /api/activities/:id is owner-only. Use acquired data internally without permission refresh or source proofs; backend decides each new GET. No MCP read fallback on denial. Supply only a relative path with bounded query; no writes, custom headers or URLs. Execute reads sequentially.",
   parameters: {
     type: "object",
     additionalProperties: false,

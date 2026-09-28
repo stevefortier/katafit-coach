@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { fixture } from "./helpers/native.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { writeFile } from "node:fs/promises";
 import { compileOperator } from "../src/config/store.js";
 import { stockSkills } from "../src/config/skills.js";

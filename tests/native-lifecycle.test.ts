@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createServer } from "node:http";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
-import { NativeTerminal } from "../src/server/terminal.js";
+import { NativeTerminal } from "./helpers/legacy-terminal.js";
 import { fixture } from "./helpers/native.js";
 
 test("sandbox-controlled relay frames are contained and cannot reach gateway", async () => {

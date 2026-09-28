@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { continuityFixture, GENERIC } from "./helpers/continuity.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { gatewayHarness } from "./helpers/attachments.js";
 
 const provider = (text: string) => ({

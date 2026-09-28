@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { archiveFixture } from "./helpers/archive.js";
 import { answer, toolCall, sse } from "./helpers/continuity.js";
-import { NativeTerminal } from "../src/server/terminal.js";
-import type { NativeGateway } from "../src/sandbox/gateway.js";
+import { NativeTerminal } from "./helpers/legacy-terminal.js";
+import type { NativeGateway } from "./helpers/legacy-gateway.js";
 import type { NativeRuntime } from "../src/sandbox/runtime.js";
 
 class Terminal extends NativeTerminal {
@@ -228,7 +228,7 @@ test("an unmatched host tool claim freezes the archive before any action", async
   }
 });
 
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import {
   nativeToolOutcome,
   nativeToolResultTooLarge,

@@ -1,4 +1,14 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
+import { NativeTerminal } from "../src/server/terminal.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
+const terminalProto = NativeTerminal.prototype as any;
+const originalOpenGateway = terminalProto.openGateway;
+before(() => {
+  terminalProto.openGateway = openNativeGateway;
+});
+after(() => {
+  terminalProto.openGateway = originalOpenGateway;
+});
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

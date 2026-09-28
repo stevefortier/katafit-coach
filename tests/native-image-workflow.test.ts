@@ -9,7 +9,7 @@ import {
   sse,
 } from "./helpers/continuity.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { waitForPiReady } from "./helpers/native-ready.js";
 
 // Real network-none Pi launch, shipped extension, HTTP relay, runtime stdio,

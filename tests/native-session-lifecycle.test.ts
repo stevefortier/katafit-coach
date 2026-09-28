@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { continuityFixture } from "./helpers/continuity.js";
 import { archiveFixture, archiveControls } from "./helpers/archive.js";
-import { NativeTerminal } from "../src/server/terminal.js";
+import { NativeTerminal } from "./helpers/legacy-terminal.js";
 import type { NativeGateway } from "../src/sandbox/gateway.js";
 import type { NativeRuntime } from "../src/sandbox/runtime.js";
 
@@ -438,7 +438,7 @@ for (const guard of [
   });
 }
 
-test("H3 legacy backend starts without touching unavailable history storage", async () => {
+test("H3 new persistent conversation refuses unavailable history storage", async () => {
   const f = await continuityFixture();
   const server = createServer();
   const terminal = new Terminal(f.store, server, () => "http://127.0.0.1");
@@ -446,8 +446,8 @@ test("H3 legacy backend starts without touching unavailable history storage", as
     (terminal as any).history.storage.list = async () => {
       throw new Error("EACCES history");
     };
-    await terminal.begin();
-    assert.ok(terminal.latest);
+    await assert.rejects(terminal.begin(), /EACCES history/);
+    assert.equal(terminal.latest, undefined);
   } finally {
     await terminal.close();
     await f.close();

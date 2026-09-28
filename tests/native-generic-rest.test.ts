@@ -51,7 +51,7 @@ test("real native relay and extension GET ordinary social, JPEG and unregistered
         body: "not found",
       },
   );
-  f.store.secrets.restToken = "synthetic-user-bound-bearer";
+
   let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
   const gateway = await openNativeGateway(f.store);
   try {
@@ -85,7 +85,7 @@ test("real native relay and extension GET ordinary social, JPEG and unregistered
       Object.keys(responses),
     );
     assert.ok(
-      gets.every((c) => c.auth === "Bearer synthetic-user-bound-bearer"),
+      gets.every((c) => c.auth === "Bearer synthetic-backend-credential"),
     );
     assert.ok(gets.every((c) => !c.headers.cookie && !c.headers["x-custom"]));
     assert.ok(relay.frames.toHost > 0 && relay.frames.toRelay > 0);
@@ -102,7 +102,7 @@ test("REST refuses URLs, traversal, header injection and redirects without follo
       ? { status: 302, location: "/api/target" }
       : { body: "{}" },
   );
-  f.store.secrets.restToken = "synthetic-user-bound-bearer";
+
   const gateway = await openNativeGateway(f.store);
   let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
   try {
@@ -135,14 +135,14 @@ test("REST refuses URLs, traversal, header injection and redirects without follo
   }
 });
 
-test("REST tool is unavailable without a separate user-scoped credential", async () => {
+test("REST tool uses the existing installation credential with no identity lookup", async () => {
   const f = await fixture();
   const gateway = await openNativeGateway(f.store);
   let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
   try {
     relay = await startRelay(gateway);
     const ext = await loadExtension(relay);
-    assert.equal(ext.tools.has("katafit_rest_get"), false);
+    assert.equal(ext.tools.has("katafit_rest_get"), true);
     assert.ok(ext.tools.has("studio_operator_list_members"));
     assert.equal(f.calls.filter((c) => c.method === "GET").length, 0);
   } finally {
@@ -166,7 +166,7 @@ test("REST rejects image MIME spoofing and oversized responses without returning
             body: '{"private":"sensitive backend denial"}',
           },
   );
-  f.store.secrets.restToken = "synthetic-user-bound-bearer";
+
   const gateway = await openNativeGateway(f.store);
   let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
   try {

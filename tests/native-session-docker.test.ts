@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { archiveFixture } from "./helpers/archive.js";
-import { NativeTerminal } from "../src/server/terminal.js";
+import { NativeTerminal } from "./helpers/legacy-terminal.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
 import { waitForPiReady } from "./helpers/native-ready.js";
 import { answer, toolCall } from "./helpers/continuity.js";

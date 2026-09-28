@@ -50,8 +50,8 @@ export const stockSkills: readonly CoachSkill[] = [
   {
     id: "review-activity",
     name: "Review an activity",
-    defaultVersion: 1,
-    basedOnDefaultVersion: 1,
+    defaultVersion: 2,
+    basedOnDefaultVersion: 2,
     customized: false,
     enabled: true,
     purpose:
@@ -61,7 +61,7 @@ export const stockSkills: readonly CoachSkill[] = [
     instructions: `${commonBoundary}
 
 Workflow:
-1. Resolve the subject and exact activity without guessing. In Operator scope, use the advertised studio_operator_list_members when identity is ambiguous, studio_operator_list_activities for a bounded relevant window, and studio_operator_read_activity when the requested detail requires it. Use studio_operator_list_dojo_checkins and studio_operator_read_dojo_checkin_image only when check-in media is relevant and image access is actually advertised. In Worker scope, use only matching offered coach_ read tools and the claimed requester context.
+1. Resolve the subject and exact activity without guessing. In Operator scope, use katafit_rest_get with /api/friends/feed/dojo for identities and recent activities, then /api/friends/activity/:id for authorized detail. Cross-member reads never use owner-only /api/activities/:id. In Worker scope, use only matching offered coach_ read tools and the claimed requester context.
 2. Check the activity's own timestamps, type, status, units, and available detail. A list row is not proof of unlisted sets, foods, media, effort, technique, or completion details.
 3. If media is requested, separate metadata from visual interpretation. Never claim to have seen media unless an authorized media result was supplied to the model.
 4. State the observed record and date first, then label the coaching assessment. Call out material gaps or anomalies without inventing a cause.
@@ -70,8 +70,8 @@ Workflow:
   {
     id: "understand-progress",
     name: "Understand a member's progress",
-    defaultVersion: 1,
-    basedOnDefaultVersion: 1,
+    defaultVersion: 2,
+    basedOnDefaultVersion: 2,
     customized: false,
     enabled: true,
     purpose:
@@ -81,8 +81,8 @@ Workflow:
     instructions: `${commonBoundary}
 
 Workflow:
-1. Establish the requested subject, period, and dimensions. In Operator scope, resolve identities through the advertised studio_operator_list_members tool; display names may collide. In Worker scope, remain bound to the claimed requester and audience.
-2. Read each relevant domain from actual advertised tools. Operator sessions may use studio_operator_read_member_coach_feed for retained coaching context and studio_operator_list_activities plus studio_operator_read_activity for typed facts. Use check-in tools only for an explicitly relevant check-in domain. Worker runs may use only the offered request-scoped coach_ reads whose schemas match the question.
+1. Establish the requested subject, period, and dimensions. In Operator scope, use katafit_rest_get /api/friends/feed/dojo; use returned user_id identifiers because display names may collide. In Worker scope, remain bound to the claimed requester and audience.
+2. Use ordinary REST for Operator reads: /api/friends/feed/dojo?limit=20, optional startDate/endDate/beforeDate, then /api/friends/activity/:id for details. These are the same routes as the human app. Newly added /api/ GET routes need no host registration. Backend decides each new fetch. Acquired context may be used internally without sharing refresh or source proofs. Worker runs still use their offered request-scoped reads.
 3. Use bounded pages and explicit date selectors. Do not treat an incomplete page as a total, or empty conversation history as empty activity history. completed_at is completion chronology; created_at is not a substitute.
 4. Compare like with like over the same stated interval. Counts alone do not establish strength, hypertrophy stimulus, adherence, intent, or capacity. Flag anomalous measurements as unverified.
 5. Answer with the observed pattern and its coverage, then a clearly labeled interpretation and a practical next check. Never disclose one member's evidence to another member or silently use a broader audience.`,
@@ -110,8 +110,8 @@ Workflow:
   {
     id: "fetch-checkin-images",
     name: "Fetch and inspect check-in images",
-    defaultVersion: 2,
-    basedOnDefaultVersion: 2,
+    defaultVersion: 3,
+    basedOnDefaultVersion: 3,
     customized: false,
     enabled: true,
     purpose:
@@ -120,10 +120,10 @@ Workflow:
       "Use when fetching, inspecting, comparing, or troubleshooting check-in photos or progress images. Metadata and historical photo-review prose are not fresh visual evidence.",
     instructions: `${commonBoundary}
 
-Operator image workflow (only when both tools are advertised):
-1. List: call studio_operator_list_dojo_checkins. Select the member's shared row and copy one exact member_ref + media_ref pair from that same row. A roster entry or activity-detail media_files ref is not a check-in image ref. Do not guess, mix members, or assume the list grants permanent access; the backend reauthorizes each read.
-2. Read: call studio_operator_read_dojo_checkin_image with only that pair (and fields explicitly allowed by its schema), sequentially, one call at a time. Do not supply host-owned session, generation, or identity fields. Prioritize requested dates/photos; delivery is bounded to 4 images, 16 MiB per turn and 8 MiB per image. Listing more descriptors does not increase capacity. Check remaining_capacity and tool-call budget after each successful read. Only actual delivered pixels—not a list or text receipt—support visual claims.
-3. Deliver or stop: send the actually received image to the operator and state which photos were inspected versus uninspected. IMAGE_READ_BUSY means wait for the pending call, inspect its receipt and capacity, then retry sequentially if still needed. For IMAGE_READ_LIMIT, stop trying other photos in this session and report the backend limit; remaining image capacity is irrelevant. For IMAGE_BACKEND_FAILED or integrity rejection, stop, report no pixels, and do not try other refs as a workaround. Correct only explicit listing/argument errors; stop on image or tool budget exhaustion. Never repeat an unchanged failed call, reopen to bypass quotas, bypass authorization/revocation, or retry uncertain writes. A failed read does not prove no photo exists or sharing is off. Never infer physiology or progress from missing/unequal photo coverage.
+Operator image workflow:
+1. Use katafit_rest_get with /api/friends/feed/dojo?limit=20 to locate the requested member and activity. Follow hasMore/oldestDate using beforeDate when needed; bounded pages are not complete history. Feed data.files are only previews, not complete photo inventory.
+2. Get /api/friends/activity/:id for the full activity data.files. Fetch actual pixels through /api/media/:id/files/:fileId, sequentially, one call at a time. Copy exact IDs from the returned records. Never use owner-only /api/activities/:id for another member. The host accepts bounded JSON or JPEG/PNG/WebP; large or invalid images fail explicitly.
+3. Only actual delivered pixels support visual claims. List inspected versus uninspected photos. Retain acquired context internally without any sharing, permission-refresh or source-proof call. Each new GET is authorized by the backend; report a new 401/403/404 denial without falling back to MCP, fabricating a privacy reason or retrying unchanged requests. NATIVE_REQUEST_BUSY means wait for the pending call. Do not infer physiology or progress from missing or unequal photo coverage. Generic REST is GET-only; it does not authorize sending messages or replaying uncertain writes.
 
 Worker scope: do not call Operator tools or open an Operator session. Use only image evidence already supplied through the claimed request's authorized context or explicitly offered request-scoped media tools. Otherwise state that pixels are unavailable.`,
   },
