@@ -562,8 +562,9 @@ for (const revocationMarker of [true, false])
         {
           revocationMarker,
           afterAuthorize: (state) => {
-            // Revoke right after the successful post-provider check.
-            if (armed && ++sinceArmed === 2) {
+            // Revoke right after the successful post-provider check. The
+            // persisted-request preflight is now an additional proof.
+            if (armed && ++sinceArmed === 3) {
               state.revoked = true;
               providerAtRevoke = h.f.providerCalls();
             }

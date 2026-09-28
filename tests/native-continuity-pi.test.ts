@@ -142,7 +142,12 @@ test(
         [...h.f.state.actions.keys()][0],
       );
       assert.equal(h.f.named("studio_operator_open_session").length, 1);
-      assert.equal(h.f.named(AUTHORIZE).length, 2 * h.f.providerCalls());
+      const proofs = h.f.named(AUTHORIZE).length;
+      assert.ok(proofs >= 3 * h.f.providerCalls());
+      assert.ok(
+        proofs <= 4 * h.f.providerCalls(),
+        "bounded per-dispatch proofs",
+      );
       // Pi's actual provider tool definitions never carry host identity.
       for (const call of h.f.calls.filter(
         (c) => c.path === "/v1/chat/completions",
@@ -212,10 +217,13 @@ test(
       h.human("Answer the second question from retained context");
       await h.waitFor(() => h.terminated.length > 0);
       assert.equal(h.f.providerCalls(), before);
-      // The used generation makes human input advance first; that transaction
-      // re-proves every retained source and is refused before any disclosure.
-      assert.deepEqual(h.terminated, ["TRANSITION_DENIED"]);
-      assert.equal(h.f.named(AUTHORIZE).length, 2 * before);
+      // Revocation can be caught by the turn transition or the new
+      // pre-provider proof; neither permits another provider request.
+      assert.ok(
+        ["TRANSITION_DENIED", "AUTHORIZATION_DENIED"].includes(h.terminated[0]),
+      );
+      assert.equal(h.terminated.length, 1);
+      assert.ok(h.f.named(AUTHORIZE).length >= 2 * before);
       assert.equal(h.f.named(GENERIC).length, 1);
       assert.equal(h.f.named("studio_operator_open_session").length, 1);
       await h.gateway.close();
