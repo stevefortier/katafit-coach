@@ -134,11 +134,17 @@ export class Actions {
   snapshot() {
     this.rows = this.storage.load();
     const scope = this.scope();
-    const actions = this.rows.flatMap((m, i) =>
-      i % 2 === 1 && this.rows[i - 1].text === scope
-        ? [this.decode(m.text)]
-        : [],
-    );
+    const actions = this.rows.flatMap((m, i) => {
+      if (i % 2 !== 1) return [];
+      const action = this.decode(m.text);
+      // An HTTP write has no transferable backend receipt. Changing any
+      // credential must not make an unresolved side effect disappear.
+      return this.rows[i - 1].text === scope ||
+        (action.tool_name === "katafit_rest_request" &&
+          ["pending", "unknown"].includes(action.status))
+        ? [action]
+        : [];
+    });
     assertNoSecrets(actions, Object.values(this.store.secrets));
     return actions;
   }
@@ -155,6 +161,7 @@ export class Actions {
         (!sessionId || a.session_id === sessionId) &&
         (a.status === "pending" || a.status === "unknown"),
     )) {
+      if (action.tool_name === "katafit_rest_request") continue; // No MCP receipt contract; retain original scope/status. Never replay.
       try {
         // Close serializes with any in-flight delivery before readback.
         const closed = await client.call("studio_operator_close_session", {

@@ -50,13 +50,13 @@ test(
             return toolCall(
               "read",
               {
-                path: "/home/node/.pi/agent/skills/fetch-checkin-images/SKILL.md",
+                path: "/home/node/.pi/agent/skills/katafit-api/SKILL.md",
               },
               "skill_read",
             );
           assert.match(
             JSON.stringify(tools),
-            /Copy exact IDs from the returned records\./,
+            /Only delivered, validated pixels support visual claims/,
           );
           if (!tools.some((m: any) => m.tool_call_id === "local_bash"))
             return toolCall(

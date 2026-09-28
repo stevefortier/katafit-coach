@@ -251,8 +251,15 @@ export class NativeConversations {
     if (
       new Actions(this.store)
         .snapshot()
-        .some((a) => ["pending", "unknown"].includes(a.status)) &&
-      (this.selected === null || !(await this.storage.list()).length)
+        .some(
+          (a) =>
+            ["pending", "unknown"].includes(a.status) &&
+            (a.tool_name === "katafit_rest_request" || this.selected === null),
+        ) ||
+      (!(await this.storage.list()).length &&
+        new Actions(this.store)
+          .snapshot()
+          .some((a) => ["pending", "unknown"].includes(a.status)))
     )
       throw new Error("DELIVERY_UNVERIFIED");
     const id =

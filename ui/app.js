@@ -900,7 +900,8 @@ function renderSkills() {
   }
   $("skillsRevision").textContent =
     `Saved Skills revision ${skillsData.revision}. ` +
-    `${skillsData.skills.filter((skill) => skill.enabled).length} of ${skillsData.skills.length} enabled.`;
+    `${skillsData.skills.filter((skill) => skill.enabled).length} of ${skillsData.skills.length} enabled.` +
+    (skillsData.migration ? ` ${skillsData.migration.notice}` : "");
   for (const skill of skillsData.skills) {
     const button = document.createElement("button");
     button.type = "button";

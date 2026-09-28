@@ -24,11 +24,9 @@ const content = (skill: any) => ({
 });
 
 test("day closure maps to the updated ordinary REST progress skill", () => {
-  const progress = stockSkills.find(
-    (skill) => skill.id === "understand-progress",
-  )!;
-  assert.equal(progress.defaultVersion, 2);
-  assert.equal(progress.basedOnDefaultVersion, 2);
+  const progress = stockSkills.find((skill) => skill.id === "katafit-api")!;
+  assert.equal(progress.defaultVersion, 1);
+  assert.equal(progress.basedOnDefaultVersion, 1);
   assert.deepEqual(
     skillForTask(
       {
@@ -37,7 +35,7 @@ test("day closure maps to the updated ordinary REST progress skill", () => {
       },
       "day_closure",
     ).map((skill) => skill.id),
-    ["understand-progress"],
+    ["katafit-api"],
   );
 });
 
@@ -230,7 +228,7 @@ test("starter skill bodies branch by scope and preserve authorization and member
     );
   }
   assert.match(
-    stockSkills.find((skill) => skill.id === "change-plan")!.instructions,
-    /outcome is unknown and do not retry automatically/i,
+    stockSkills.find((skill) => skill.id === "katafit-api")!.instructions,
+    /Never retry automatically/i,
   );
 });

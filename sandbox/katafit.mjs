@@ -10,6 +10,8 @@ const configPath =
 // Relay failure codes the host allowlists with tool-specific recovery; all
 // other failures keep the fixed per-tool fallback below.
 const relayGuidance = {
+  NATIVE_DELIVERY_UNVERIFIED:
+    "The action outcome is unknown or a previous call was already dispatched; do not replay it. Inspect canonical state with a read. HTTP acknowledgement alone is not canonical readback.",
   NATIVE_REQUEST_BUSY:
     "Another native request is still pending. This call was not dispatched and consumed nothing. Wait for the pending call to finish, then call again sequentially; do not send parallel calls.",
   NATIVE_TEXT_TOO_LARGE:
@@ -50,7 +52,9 @@ export function nativeToolOutcome(name, result, code) {
               ? "Activity detail read failed. The requested section was not verified; this does not establish whether photos exist. Do not replay the unchanged failed read or infer inaccessible evidence."
               : name === "send_to_operator"
                 ? "Sending to the operator failed. Nothing was added to the operator panel; do not claim the operator received or saw it."
-                : "Kata.fit tool failed; do not replay uncertain actions.";
+                : name === "katafit_rest_request"
+                  ? "Kata.fit HTTP result unavailable; the outcome of any mutation is unknown. Do not replay it; inspect canonical state with a read."
+                  : "Kata.fit tool failed; do not replay uncertain actions.";
     if (code !== undefined) {
       throw new Error(
         typeof code === "string" && Object.hasOwn(relayGuidance, code)
@@ -58,15 +62,24 @@ export function nativeToolOutcome(name, result, code) {
           : fallback,
       );
     }
-    if (name === "katafit_rest_get" && result?.restReadError) {
+    if (
+      ["katafit_rest_get", "katafit_rest_request"].includes(name) &&
+      result?.restReadError
+    ) {
       const error = result.restReadError;
       if (
         Object.keys(result).join() !== "restReadError" ||
-        !error || typeof error !== "object" ||
+        !error ||
+        typeof error !== "object" ||
         Object.keys(error).join() !== "status" ||
-        !Number.isInteger(error.status) || error.status < 400 || error.status > 599
-      ) throw new Error(fallback);
-      throw new Error(`Kata.fit REST GET returned HTTP ${error.status}; no data was delivered. Check the user's route access or availability. Do not infer absent records from a denied read.`);
+        !Number.isInteger(error.status) ||
+        error.status < 400 ||
+        error.status > 599
+      )
+        throw new Error(fallback);
+      throw new Error(
+        `Kata.fit REST GET returned HTTP ${error.status}; no data was delivered. Check the user's route access or availability. Do not infer absent records from a denied read.`,
+      );
     }
     if (name === "studio_operator_read_activity" && result?.operatorReadError) {
       const error = result.operatorReadError;
@@ -208,20 +221,26 @@ export default function (pi) {
       ...tool,
       label: tool.name,
       async execute(toolCallId, args, signal) {
-        const response = await fetch(`http://127.0.0.1:${port}/tool`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: tool.name, args, toolCallId }),
-          signal,
-        });
         let code;
         let result;
-        if (!response.ok) {
-          try {
-            code = (await response.json())?.error?.code;
-          } catch {}
-          code ??= "NATIVE_TOOL_FAILED";
-        } else result = await response.json();
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/tool`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: tool.name, args, toolCallId }),
+            signal,
+          });
+          if (!response.ok) {
+            try {
+              code = (await response.json())?.error?.code;
+            } catch {}
+            code ??= "NATIVE_TOOL_FAILED";
+          } else result = await response.json();
+        } catch {
+          // A relay/JSON failure can occur after backend dispatch. Never expose
+          // raw fetch errors that invite automatic retries or invent a receipt.
+          code = "NATIVE_TOOL_FAILED";
+        }
         const outcome = nativeToolOutcome(tool.name, result, code);
         if (outcome !== result && outcome.isError)
           throw new Error(outcome.content[0].text);

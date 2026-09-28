@@ -26,18 +26,22 @@ the actual intended control-plane identity. Rootless/remote Docker endpoints are
 not a supported deployment recipe; this release standardizes
 `/var/run/docker.sock` for the CLI and Docker API.
 
-### Ordinary user REST reads
+### Ordinary account HTTP API
 
-New native conversations use `katafit_rest_get` with the existing private saved
+New native conversations advertise only `katafit_rest_request` (the old GET helper remains an unadvertised compatibility entry point) with the existing private saved
 `token`. Human onboarding opts the installation credential into ordinary REST
 with `rest_user_access: true`; no second bearer or host identity introspection is
 needed. Replace older credentials in Settings with a newly opted-in credential.
-A denied REST request displays its HTTP status and never falls back to MCP reads.
+A denied GET displays its HTTP status and never falls back to MCP reads.
+Mutation non-success is reported conservatively as unknown without upstream prose.
 
-The host sends this bearer only to the configured origin on bounded `/api/` GETs,
-without redirects, caller headers or arbitrary methods. Non-loopback origins
+The host sends this bearer only to the configured origin on bounded `/api/` requests
+using GET, POST, PUT, PATCH or DELETE, without redirects or caller headers. Non-loopback origins
 require HTTPS. Pi never receives credentials. Existing backend route authorization
-alone governs each new fetch; newly added GET routes need no host registration.
+alone governs each new request; newly added routes need no host registration.
+Load `katafit-api`, GET `/api/docs/coach`, then GET the relevant domain path
+from its index. Documentation teaches contracts; it is not a permission allowlist.
+Never guess routes or methods when documentation is unavailable.
 Use `/api/friends/feed/dojo`, `/api/friends/activity/:id` and
 `/api/media/:id/files/:fileId` for cross-member feed, full media inventory and
 pixels. `/api/activities/:id` remains owner-only. Dashboard uses the same routes,
@@ -57,7 +61,23 @@ attempted. This legacy resume migration is not yet complete.
 Legacy recipient resolution and sends open their MCP session only when invoked;
 that backend's action policy and durable uncertain-action/no-replay receipts still
 apply. Workers and older member views retain their existing adapters. Generic
-REST is **GET-only**, not generic write support. Stop before rotating credentials.
+REST supports bounded JSON mutations (64 KiB requests; 256 KiB JSON results).
+Read before writes and read canonical state afterwards. The host durably records
+an action before dispatch, never retries, and retains unknown outcomes across
+restart and credential changes. Failed, denied, redirected, cancelled, lost or
+invalid mutation responses remain conservatively unknown: no assumed idempotency
+or generic backend receipt exists. GET readback remains possible in the current
+session; new sessions and further backend actions are blocked until independently
+reconciled. There is no automatic receipt lookup or automatic fence-clearing for
+ordinary REST. Do not delete the action ledger to retry. Stop before rotating credentials.
+
+The four former stock skills are archived in the existing immutable Skills history
+and replaced by one `katafit-api` skill. Saved custom text and enabled states are
+not discarded or silently concatenated. Any custom/disabled legacy skill leaves
+the new skill disabled pending explicit review/enabling in Settings, whose migration
+notice links the archive by revision. Unmodified enabled defaults migrate enabled.
+Existing conversation snapshots remain immutable and may require a new conversation
+when their skill snapshot differs; their archives stay readable.
 
 Memory: one optional initial legacy memory acquisition is cached for the whole
 conversation; provider continuation and local reopen do not recheck acquired

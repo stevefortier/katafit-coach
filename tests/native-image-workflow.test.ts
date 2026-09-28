@@ -26,7 +26,7 @@ for (const parallel of [false, true])
       const requests: any[] = [];
       const results: any[] = [];
       // The shipped skill is REST-first even in this legacy transport fixture.
-      const sentinel = "Copy exact IDs from the returned records.";
+      const sentinel = "Only delivered, validated pixels support visual claims";
       let release!: () => void;
       const imageGate = new Promise<void>((resolve) => {
         release = resolve;
@@ -49,7 +49,7 @@ for (const parallel of [false, true])
             return toolCall(
               "read",
               {
-                path: "/home/node/.pi/agent/skills/fetch-checkin-images/SKILL.md",
+                path: "/home/node/.pi/agent/skills/katafit-api/SKILL.md",
               },
               "read_image_skill",
             );
@@ -186,10 +186,7 @@ for (const parallel of [false, true])
         runtime.input("Inspect the relevant synthetic check-in photos.\r");
         await waitFor("IMAGE_RECEIPTS_VERIFIED");
         assert.equal(requests.length, 8);
-        assert.match(
-          JSON.stringify(requests[0].messages),
-          /fetch-checkin-images/,
-        );
+        assert.match(JSON.stringify(requests[0].messages), /katafit-api/);
         assert.equal(
           JSON.stringify(requests[0].messages).includes(sentinel),
           false,

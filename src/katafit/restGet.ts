@@ -70,6 +70,81 @@ export function restPath(args: unknown): string {
   return path;
 }
 
+export const restRequestTool = {
+  name: "katafit_rest_request",
+  description:
+    "Call ordinary Kata.fit HTTP APIs as the current account. First GET /api/docs/coach, then GET the relevant domain path from that index; follow documented methods, parameters and bodies, never guess routes. Backend authorizes every new request. Relative /api/ paths only; no caller headers or credentials. JSON bodies/results are bounded; validated images are supported. Execute sequentially. Read before requested changes and read back canonical state afterwards. Never replay uncertain mutations. See katafit-api skill.",
+  parameters: {
+    type: "object",
+    additionalProperties: false,
+    required: ["method", "path"],
+    properties: {
+      method: {
+        type: "string",
+        enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+      },
+      path: { type: "string", minLength: 5, maxLength: 2048 },
+      body: {
+        description: "Optional JSON body for mutations only; at most 64 KiB.",
+      },
+    },
+  },
+};
+
+export function restRequestArgs(args: unknown): {
+  method: string;
+  path: string;
+  body?: string;
+} {
+  if (
+    !args ||
+    typeof args !== "object" ||
+    Array.isArray(args) ||
+    Object.keys(args).some((key) => !["method", "path", "body"].includes(key))
+  )
+    throw new Error("REST_REQUEST_REJECTED");
+  const value = args as any;
+  if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(value.method))
+    throw new Error("REST_REQUEST_REJECTED");
+  const path = restPath({ path: value.path });
+  let body: string | undefined;
+  if (Object.hasOwn(value, "body")) {
+    if (value.method === "GET") throw new Error("REST_REQUEST_REJECTED");
+    const visit = (entry: unknown, depth = 0): void => {
+      if (depth > 32) throw new Error("REST_REQUEST_REJECTED");
+      if (
+        entry === null ||
+        typeof entry === "string" ||
+        typeof entry === "boolean"
+      )
+        return;
+      if (typeof entry === "number" && Number.isFinite(entry)) return;
+      if (Array.isArray(entry)) {
+        for (const item of entry) visit(item, depth + 1);
+        return;
+      }
+      if (
+        entry &&
+        typeof entry === "object" &&
+        Object.getPrototypeOf(entry) === Object.prototype
+      ) {
+        for (const item of Object.values(entry)) visit(item, depth + 1);
+        return;
+      }
+      throw new Error("REST_REQUEST_REJECTED");
+    };
+    visit(value.body);
+    try {
+      body = JSON.stringify(value.body);
+    } catch {
+      throw new Error("REST_REQUEST_REJECTED");
+    }
+    if (body === undefined || Buffer.byteLength(body) > 65536)
+      throw new Error("REST_REQUEST_REJECTED");
+  }
+  return { method: value.method, path, body };
+}
+
 export async function restGet(
   origin: string,
   bearer: string,
@@ -77,7 +152,24 @@ export async function restGet(
   signal: AbortSignal,
   secrets: string[],
 ) {
-  const path = restPath(args);
+  return restRequest(
+    origin,
+    bearer,
+    { method: "GET", path: restPath(args) },
+    signal,
+    secrets,
+  );
+}
+
+export async function restRequest(
+  origin: string,
+  bearer: string,
+  args: unknown,
+  signal: AbortSignal,
+  secrets: string[],
+) {
+  const { path, method, body } = restRequestArgs(args);
+  assertNoSecrets(args, [...secrets, bearer]);
   if (!bearer || bearer.length > 4096 || /[\u0000-\u001f\u007f]/.test(bearer))
     throw new Error("REST_UNAVAILABLE");
   const base = new URL(origin);
@@ -96,20 +188,30 @@ export async function restGet(
   if (url.origin !== base.origin || !url.pathname.startsWith("/api/"))
     throw new Error("REST_REQUEST_REJECTED");
   const deadline = AbortSignal.timeout(8000);
-  const response = await fetch(url, {
-    method: "GET",
-    redirect: "manual",
-    credentials: "omit",
-    headers: {
-      Authorization: `Bearer ${bearer}`,
-      Accept: "application/json, image/jpeg, image/png, image/webp",
-    },
-    signal: AbortSignal.any([signal, deadline]),
-  });
+  let response: Response | undefined;
   try {
+    response = await fetch(url, {
+      method,
+      body,
+      redirect: "manual",
+      credentials: "omit",
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        Accept: "application/json, image/jpeg, image/png, image/webp",
+      },
+      signal: AbortSignal.any([signal, deadline]),
+    });
     if (response.status >= 300 && response.status < 400)
       throw new Error("REST_REDIRECT_REJECTED");
-    if (!response.ok) return { restReadError: { status: response.status } };
+    if (!response.ok) {
+      if (method !== "GET") throw new Error("REST_MUTATION_UNKNOWN");
+      return { restReadError: { status: response.status } };
+    }
+    if (response.status === 204)
+      return {
+        content: [{ type: "text", text: JSON.stringify({ status: 204 }) }],
+      };
     const mime = response.headers
       .get("content-type")
       ?.split(";", 1)[0]
@@ -146,9 +248,12 @@ export async function restGet(
     }
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     JSON.parse(text);
-    assertNoSecrets(text, secrets);
+    assertNoSecrets(text, [...secrets, bearer]);
     return { content: [{ type: "text", text }] };
+  } catch (error) {
+    if (method !== "GET") throw new Error("REST_MUTATION_UNKNOWN");
+    throw error;
   } finally {
-    await response.body?.cancel().catch(() => {});
+    await response?.body?.cancel().catch(() => {});
   }
 }

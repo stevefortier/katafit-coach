@@ -12,6 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import { SkillStore, stockSkills } from "../src/config/skills.js";
 
+const legacyStock = JSON.parse(
+  await readFile(
+    new URL("./fixtures/legacy-stock-skills.json", import.meta.url),
+    "utf8",
+  ),
+);
 const legacyIds = ["review-activity", "understand-progress", "change-plan"];
 async function seed(dir: string, sets: any[][]) {
   await mkdir(dir + "/skills-history");
@@ -39,16 +45,16 @@ async function seed(dir: string, sets: any[][]) {
 }
 
 test("default image fetching skill is enabled and teaches bounded authorized pixel reads", () => {
-  const skill = stockSkills.find((s) => s.id === "fetch-checkin-images");
+  const skill = stockSkills.find((s) => s.id === "katafit-api");
   assert.ok(skill);
   assert.equal(skill.enabled, true);
-  assert.match(skill.instructions, /sequentially, one call at a time/);
+  assert.match(skill.instructions, /sequentially/);
   for (const pattern of [
-    /katafit_rest_get/,
+    /katafit_rest_request/,
     /friends\/feed\/dojo/,
     /friends\/activity/,
     /api\/media/,
-    /actual.*pixels/i,
+    /validated pixels/i,
     /Worker scope/,
   ])
     assert.match(skill.instructions, pattern);
@@ -58,7 +64,7 @@ test("known three-skill stores migrate append-only with customization and disabl
   const dir = await mkdtemp(tmpdir() + "/skills-image-upgrade-");
   try {
     const defaults = structuredClone(
-      stockSkills.filter((s) => legacyIds.includes(s.id)),
+      legacyStock.filter((s: any) => legacyIds.includes(s.id)),
     );
     const customized = structuredClone(defaults);
     customized[0].instructions = "Synthetic private customization.";
@@ -72,12 +78,14 @@ test("known three-skill stores migrate append-only with customization and disabl
     assert.equal(view.revision, 3);
     assert.deepEqual(
       view.skills.map((s: any) => s.id),
-      [...legacyIds, "fetch-checkin-images"],
+      ["katafit-api"],
     );
-    assert.equal(view.skills[0].instructions, customized[0].instructions);
-    assert.equal(view.skills[0].status, "customized");
-    assert.equal(view.skills[1].enabled, false);
-    assert.equal(view.skills[3].enabled, true);
+    assert.equal(
+      store.history(2).skills[0].instructions,
+      customized[0].instructions,
+    );
+    assert.equal(store.history(2).skills[1].enabled, false);
+    assert.equal(view.skills[0].enabled, false);
     for (const [name, original] of files)
       assert.equal(
         await readFile(dir + "/skills-history/" + name, "utf8"),
@@ -98,8 +106,8 @@ test("known three-skill stores migrate append-only with customization and disabl
 test("saved v1 image guidance upgrades without enabling a disabled skill", async () => {
   const dir = await mkdtemp(tmpdir() + "/skills-image-v2-");
   try {
-    const prior = structuredClone([...stockSkills]);
-    const image = prior.find((s) => s.id === "fetch-checkin-images")!;
+    const prior = structuredClone(legacyStock);
+    const image = prior.find((s: any) => s.id === "fetch-checkin-images")!;
     image.defaultVersion = 1;
     image.basedOnDefaultVersion = 1;
     image.instructions = "Old saved image workflow.";
@@ -109,10 +117,10 @@ test("saved v1 image guidance upgrades without enabling a disabled skill", async
     await store.init();
     const upgraded: any = store
       .view()
-      .skills.find((s: any) => s.id === image.id);
-    assert.equal(upgraded.defaultVersion, 3);
+      .skills.find((s: any) => s.id === "katafit-api");
+    assert.equal(upgraded.defaultVersion, 1);
     assert.equal(upgraded.enabled, false);
-    assert.ok(upgraded.instructions.includes("katafit_rest_get"));
+    assert.ok(upgraded.instructions.includes("katafit_rest_request"));
     assert.equal(store.view().revision, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -123,7 +131,7 @@ test("migration rejects a legacy catalog appearing after a modern catalog", asyn
   const dir = await mkdtemp(tmpdir() + "/skills-history-downgrade-");
   try {
     const modern = structuredClone([...stockSkills]);
-    const legacy = modern.filter((s) => legacyIds.includes(s.id));
+    const legacy = structuredClone(legacyStock.slice(0, 3));
     await seed(dir, [modern, legacy]);
     await assert.rejects(
       new SkillStore(dir, () => []).init(),
@@ -138,7 +146,7 @@ test("restoring the pre-upgrade manifest leaves the legacy hash chain intact des
   const dir = await mkdtemp(tmpdir() + "/skills-manifest-rollback-");
   try {
     const legacy = structuredClone(
-      stockSkills.filter((s) => legacyIds.includes(s.id)),
+      legacyStock.filter((s: any) => legacyIds.includes(s.id)),
     );
     const files = await seed(dir, [legacy]);
     const backup = await readFile(dir + "/skills.json");
@@ -168,7 +176,7 @@ test("restoring the pre-upgrade manifest leaves the legacy hash chain intact des
 
 test("migration rejects arbitrary missing defaults, duplicates, and unknown skills", async () => {
   const legacy = structuredClone(
-    stockSkills.filter((s) => legacyIds.includes(s.id)),
+    legacyStock.filter((s: any) => legacyIds.includes(s.id)),
   );
   for (const set of [
     legacy.slice(0, 2),
@@ -181,6 +189,23 @@ test("migration rejects arbitrary missing defaults, duplicates, and unknown skil
       await assert.rejects(
         new SkillStore(dir, () => []).init(),
         /INVALID_SKILL_STORAGE/,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("migration rejects four-skill history regressing to three and unknown future defaults", async () => {
+  for (const future of [false, true]) {
+    const dir = await mkdtemp(tmpdir() + "/skills-api-invalid-");
+    try {
+      const four = structuredClone(legacyStock);
+      if (future) four[0].defaultVersion = 99;
+      await seed(dir, future ? [four] : [four, four.slice(0, 3)]);
+      await assert.rejects(
+        () => new SkillStore(dir, () => []).init(),
+        future ? /SKILL_DEFAULT_DOWNGRADE/ : /INVALID_SKILL_STORAGE/,
       );
     } finally {
       await rm(dir, { recursive: true, force: true });
