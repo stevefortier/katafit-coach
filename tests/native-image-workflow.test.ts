@@ -25,7 +25,8 @@ for (const parallel of [false, true])
     async () => {
       const requests: any[] = [];
       const results: any[] = [];
-      const sentinel = "A five-photo inventory is valid";
+      const sentinel =
+        "one exact member_ref + media_ref pair from that same row";
       let release!: () => void;
       const imageGate = new Promise<void>((resolve) => {
         release = resolve;
