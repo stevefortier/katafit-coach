@@ -111,13 +111,22 @@ test(
         );
       const novel = await read("/api/new-paired-route");
       assert.equal(JSON.parse(novel.content![0].text!).user_id, String(viewer));
-      const index = JSON.parse((await read("/api/docs/coach")).content![0].text!);
+      const index = JSON.parse(
+        (await read("/api/docs/coach")).content![0].text!,
+      );
       assert.equal(index.version, 1);
-      const domain = index.domains.find((item: any) => item.id === "activities");
+      const domain = index.domains.find(
+        (item: any) => item.id === "activities",
+      );
       assert.ok(domain?.path);
       const reference = JSON.parse((await read(domain.path)).content![0].text!);
       assert.equal(reference.id, "activities");
-      assert.ok(reference.operations.some((operation: any) => operation.method === "POST" && operation.path === "/api/activities"));
+      assert.ok(
+        reference.operations.some(
+          (operation: any) =>
+            operation.method === "POST" && operation.path === "/api/activities",
+        ),
+      );
       const detail = await read(`/api/friends/activity/${activity}`);
       assert.equal(
         JSON.parse(detail.content![0].text!).activity.data.files.length,
