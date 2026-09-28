@@ -152,8 +152,15 @@ test(
               content: body.messages.some(
                 (m: any) =>
                   m.role === "user" &&
-                  typeof m.content === "string" &&
-                  m.content.includes("again"),
+                  (typeof m.content === "string"
+                    ? m.content
+                    : Array.isArray(m.content)
+                      ? m.content
+                          .filter((p: any) => p.type === "text")
+                          .map((p: any) => p.text)
+                          .join(" ")
+                      : ""
+                  ).includes("again"),
               )
                 ? "REST_IMAGE_REUSED"
                 : "Verified synthetic JPEG reached the native provider.",
@@ -171,11 +178,60 @@ test(
                 },
               ],
             };
-        return `data: ${JSON.stringify({ id: "paired", choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "paired", choices: [{ index: 0, delta: {}, finish_reason: acquired ? "stop" : "tool_calls" }] })}\n\ndata: [DONE]\n\n`;
+        const again = body.messages.some(
+          (m: any) =>
+            m.role === "user" &&
+            (typeof m.content === "string"
+              ? m.content
+              : Array.isArray(m.content)
+                ? m.content
+                    .filter((p: any) => p.type === "text")
+                    .map((p: any) => p.text)
+                    .join(" ")
+                : ""
+            ).includes("again"),
+        );
+        if (
+          process.env.NATIVE_DOCKER_TEST === "1" &&
+          acquired &&
+          again &&
+          !body.messages.some(
+            (m: any) =>
+              m.role === "tool" && m.tool_call_id === "call_send_to_operator",
+          )
+        ) {
+          const text = body.messages
+            .filter((m: any) => m.role === "tool")
+            .map((m: any) => m.content)
+            .join("\n");
+          const observed = text.match(/"image_receipt"\s*:\s*("[^"\n]+")/);
+          assert.ok(
+            observed,
+            "send selection must use an actually received image receipt",
+          );
+          Object.assign(delta, {
+            content: undefined,
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_send_to_operator",
+                type: "function",
+                function: {
+                  name: "send_to_operator",
+                  arguments: JSON.stringify({
+                    image_receipt: JSON.parse(observed[1]),
+                  }),
+                },
+              },
+            ],
+          });
+        }
+        return `data: ${JSON.stringify({ id: "paired", choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "paired", choices: [{ index: 0, delta: {}, finish_reason: delta.tool_calls ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`;
       });
       let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
       let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
       let runtime: NativeRuntime | undefined;
+      const published: any[] = [];
       try {
         await f.store.save({
           ...f.store.publicConfig(),
@@ -183,7 +239,18 @@ test(
           token,
           provider: { ...f.store.publicConfig().provider, vision: true },
         });
-        gateway = await openNativeGateway(f.store);
+        gateway = await openNativeGateway(f.store, undefined, {
+          attachments: {
+            read: async () => {
+              throw new Error("No workspace read in this fixture");
+            },
+            publish: (item) => {
+              published.push(item);
+              return true;
+            },
+            connected: () => true,
+          },
+        });
         if (process.env.NATIVE_DOCKER_TEST === "1") {
           assert.ok(process.env.NATIVE_TEST_IMAGE);
           runtime = new NativeRuntime(process.env.NATIVE_TEST_IMAGE!);
@@ -217,6 +284,8 @@ test(
             "Describe that same acquired image again without fetching it.\r",
           );
           await wait("REST_IMAGE_REUSED");
+          assert.equal(published.length, 1);
+          assert.equal(published[0].byte_count, jpeg.length);
           assert.equal(
             backendCalls.length,
             before,
@@ -227,8 +296,9 @@ test(
             JSON.stringify({
               proof:
                 "real Mongo/Express + isolated Docker Pi + conditional scripted provider",
-              imageFetches: 1,
-              followupBackendCalls: 0,
+              imageFetches: backendCalls.filter((url) => url === path).length,
+              followupBackendCalls: backendCalls.length - before,
+              operatorAttachments: published.length,
             }),
           );
         } else {
