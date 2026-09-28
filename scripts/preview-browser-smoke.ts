@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { WebSocket } from "ws";
+import { NativeTerminal } from "../src/server/terminal.js";
+import { openNativeGateway } from "../tests/helpers/legacy-gateway.js";
+
+// The harness holds legacy MCP startup to prove preview never tears it down.
+const terminalProto = NativeTerminal.prototype as any;
+const originalOpenGateway = terminalProto.openGateway;
+terminalProto.openGateway = openNativeGateway;
 import {
   PREVIEW,
   aborted,
@@ -307,6 +314,7 @@ try {
   );
   await page.close();
 } finally {
+  terminalProto.openGateway = originalOpenGateway;
   gate.release();
   await context?.close();
   await browser?.close();
