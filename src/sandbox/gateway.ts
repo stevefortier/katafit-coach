@@ -18,6 +18,7 @@ import {
 import { providerFailure, safeError } from "../runtime/errors.js";
 import { complete as providerComplete } from "../runtime/piAdapter.js";
 import { backendWireBudget } from "../katafit/wireBudget.js";
+import { restGet, restGetTool } from "../katafit/restGet.js";
 import {
   commitMemory,
   pendingOperatorMemory,
@@ -877,6 +878,7 @@ export async function openNativeGateway(
           }),
         ),
         tools: [
+          ...(secrets.restToken ? [restGetTool] : []),
           ...session.tools.map((t) => ({
             name: t.name,
             description: t.description,
@@ -1092,6 +1094,17 @@ export async function openNativeGateway(
       await hooks.onBeforeDispatch?.();
     }
     if (request.kind === "tool") {
+      if (request.name === restGetTool.name && secrets.restToken) {
+        const result = await restGet(
+          config.origin,
+          secrets.restToken,
+          request.args,
+          requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
+          Object.values(secrets),
+        );
+        check();
+        return result;
+      }
       if (owner && request.name === ATTACHMENT_TOOL)
         return sendAttachment(
           request.args,

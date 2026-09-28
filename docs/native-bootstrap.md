@@ -26,6 +26,23 @@ the actual intended control-plane identity. Rootless/remote Docker endpoints are
 not a supported deployment recipe; this release standardizes
 `/var/run/docker.sock` for the CLI and Docker API.
 
+### Ordinary user REST reads (opt-in)
+
+The native `katafit_rest_get` tool appears only when the trusted host's private
+`secrets.json` contains a nonempty `restToken` string. Provision this separately
+from the existing MCP `token`, with a revocable backend-issued credential that
+resolves to the same ordinary user principal as the human client. Do not use a
+Clerk interactive token or an installation-wide/operator-only MCP token. The
+backend credential issuance and production provisioning are separate work; absent
+this credential, the new tool is not advertised. The host uses the configured
+`origin` and sends the bearer only on bounded `/api/` GETs without redirects.
+Non-loopback origins must use HTTPS; plaintext is limited to literal localhost,
+127.0.0.1 or [::1] for local development.
+Pi receives neither the bearer nor arbitrary destinations. The route's existing
+backend user permissions govern access; this tool introduces no route catalogue
+or write capability. Restart a stopped native session after provisioning or
+rotation; do not change a live session's credentials.
+
 ## Build from one reviewed clean source revision
 
 Run these outside Pi, in an empty export directory on the release builder. SHA

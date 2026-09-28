@@ -4,9 +4,33 @@ import { createServer } from "node:http";
 import { Store } from "../../src/config/store.js";
 export async function fixture(
   transform?: (name: string, result: any, body: any) => any,
+  get?: (
+    url: string,
+    headers: import("node:http").IncomingHttpHeaders,
+  ) => {
+    status?: number;
+    type?: string;
+    body?: Buffer | string;
+    location?: string;
+  },
 ) {
   const calls: any[] = [];
   const server = createServer(async (req, res) => {
+    if (req.method === "GET") {
+      calls.push({
+        path: req.url,
+        auth: req.headers.authorization,
+        headers: req.headers,
+        method: req.method,
+      });
+      const reply = get?.(req.url!, req.headers) ?? { status: 404 };
+      res.writeHead(reply.status ?? 200, {
+        "content-type": reply.type ?? "application/json",
+        ...(reply.location ? { location: reply.location } : {}),
+      });
+      res.end(reply.body ?? "");
+      return;
+    }
     let raw = "";
     for await (const c of req) raw += c;
     const body = JSON.parse(raw);
