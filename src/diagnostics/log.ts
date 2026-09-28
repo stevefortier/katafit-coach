@@ -25,6 +25,7 @@ export const stages = [
   "skills-loaded",
   "skills-revision-saved",
   "operation-failed",
+  "native-history-failed",
   "connecting",
   "claimed",
   "context-read",

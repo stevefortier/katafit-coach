@@ -321,6 +321,27 @@ test("unclassified failures stay content-free; only allowlisted codes and intege
   assert.deepEqual(failureFrame(new Error("boom"), "tool"), {
     error: "NATIVE_TOOL_FAILED",
   });
+  assert.deepEqual(failureFrame(new Error("NATIVE_HISTORY_UNTRUSTED_RESULT")), {
+    error: "NATIVE_GATEWAY_FAILED",
+  });
+  assert.deepEqual(failureFrame(new Error("NATIVE_HISTORY_MISMATCH")), {
+    error: "NATIVE_GATEWAY_FAILED",
+  });
+  assert.deepEqual(
+    failureFrame(
+      new NativeFailure("NATIVE_TOOL_FAILED", "NATIVE_HISTORY_MISMATCH"),
+      "tool",
+    ),
+    { error: "NATIVE_TOOL_FAILED" },
+  );
+  assert.deepEqual(
+    failureFrame(new NativeFailure("NATIVE_HISTORY_UNTRUSTED_RESULT")),
+    { error: "NATIVE_HISTORY_UNTRUSTED_RESULT" },
+  );
+  assert.deepEqual(
+    failureFrame(new Error("NATIVE_HISTORY_MISMATCH with sk-secret")),
+    { error: "NATIVE_GATEWAY_FAILED" },
+  );
   assert.deepEqual(
     failureFrame(new NativeFailure("NATIVE_PROVIDER_AUTH_FAILED", "x", 403)),
     { error: "NATIVE_PROVIDER_AUTH_FAILED", status: 403 },

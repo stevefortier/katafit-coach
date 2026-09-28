@@ -156,7 +156,21 @@ for (const boundary of [
           body: {
             model: "synthetic",
             messages: [
-              { role: "user", content: "Use my reporting preferences." },
+              {
+                role: "user",
+                content:
+                  boundary === "provider"
+                    ? [
+                        { type: "text", text: "Use my reporting preferences." },
+                        {
+                          type: "image_url",
+                          image_url: {
+                            url: `data:image/png;base64,${bytes.toString("base64")}`,
+                          },
+                        },
+                      ]
+                    : "Use my reporting preferences.",
+              },
             ],
           },
         });
@@ -170,6 +184,19 @@ for (const boundary of [
           return;
         }
         await firstDisclosure;
+        if (boundary === "provider") {
+          const sent = provider.bodies[0];
+          assert.match(
+            sent.messages[0].content,
+            /Operator prefers brief reports/,
+          );
+          assert.deepEqual(sent.messages.at(-1).content[1], {
+            type: "image_url",
+            image_url: {
+              url: `data:image/png;base64,${bytes.toString("base64")}`,
+            },
+          });
+        }
         const session = await db
           .collection("studio_operator_sessions")
           .findOne({ status: "active" });
