@@ -238,10 +238,33 @@ for (const usageTrailer of [false, true])
         kind: "provider",
         body: {
           model: "approved-custom-model",
-          messages: [{ role: "user", content: "How should I brief Alice?" }],
+          messages: [
+            { role: "system", content: "Synthetic Coach persona" },
+            { role: "user", content: "How should I brief Alice?" },
+          ],
         },
       });
       await gateway.confirmDelivery(delivered.completion_id);
+      const mainProvider = f.calls.find(
+        (c) =>
+          c.path === "/v1/chat/completions" &&
+          c.body.messages?.some(
+            (m: any) => m.content === "How should I brief Alice?",
+          ),
+      );
+      assert.deepEqual(
+        mainProvider?.body.messages.map((m: any) => m.role),
+        ["system", "user"],
+        "recalled memory must share Pi's leading persona message",
+      );
+      assert.match(
+        mainProvider.body.messages[0].content,
+        /^Synthetic Coach persona/,
+      );
+      assert.match(
+        mainProvider.body.messages[0].content,
+        /Synthetic Alice prefers short morning check-ins/,
+      );
       assert.ok(
         f.calls.some(
           (c) => c.body.params?.name === "studio_operator_recall_memories",
