@@ -938,6 +938,32 @@ header {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr));
   gap: 12px;
 }
+.dashboard-chart {
+  position: relative;
+  overflow-x: auto;
+}
+@media (max-width: 650px) {
+  .dashboard-chart svg {
+    min-width: 540px;
+  }
+}
+.dashboard-tooltip {
+  position: absolute;
+  z-index: 2;
+  max-width: min(260px, 95%);
+  padding: 6px 9px;
+  background: #ededed;
+  border: 1px solid #bbb;
+  color: #111;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.dashboard-chart circle:focus-visible {
+  stroke: #8ed0ff;
+  stroke-width: 3;
+  outline: none;
+}
 .dashboard-chart svg {
   display: block;
   width: 100%;

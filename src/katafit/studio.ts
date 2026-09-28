@@ -356,6 +356,9 @@ export class StudioReads {
             if (
               typeof p.date !== "string" ||
               !/^\d{4}-\d{2}-\d{2}$/.test(p.date) ||
+              !Number.isFinite(Date.parse(`${p.date}T00:00:00Z`)) ||
+              new Date(`${p.date}T00:00:00Z`).toISOString().slice(0, 10) !==
+                p.date ||
               !Number.isFinite(p[valueKey]) ||
               Math.abs(p[valueKey]) > 1000000 ||
               (name === "training" &&
@@ -398,8 +401,10 @@ export class StudioReads {
             return p;
           }) as any,
         };
+        const member_ref = text(m.member_ref, 256);
+        if (member_ref.includes("\u0000")) reject();
         members.push({
-          member_ref: text(m.member_ref, 256),
+          member_ref,
           display_name: text(m.display_name, 200),
           media: m.photo_access,
           category_access: category_access as Member["category_access"],
@@ -421,19 +426,18 @@ export class StudioReads {
       {
         label: string;
         unit: string;
-        points: { date: string; value: number; contributor_count: number }[];
+        member_ref: string;
+        member_name: string;
+        points: { date: string; value: number }[];
       }[]
     > = {
       training: [],
       nutrition: [],
       body_measurements: [],
     };
-    // domain → metric+unit → day → member → values. Never combine kg/lb or
-    // count duplicate same-member measurements as additional contributors.
-    const buckets = new Map<
-      string,
-      Map<string, Map<string, Map<string, number[]>>>
-    >();
+    // Separate each authorized member and metric. Only duplicate body readings
+    // from the same member on the same day may be averaged; missing is missing.
+    const buckets = new Map<string, Map<string, number[]>>();
     const add = (
       domain: string,
       label: string,
@@ -442,16 +446,12 @@ export class StudioReads {
       member: string,
       value: number,
     ) => {
-      if (!buckets.has(domain)) buckets.set(domain, new Map());
-      const metrics = buckets.get(domain)!;
-      const key = `${label}\u0000${unit}`;
-      if (!metrics.has(key)) metrics.set(key, new Map());
-      const days = metrics.get(key)!;
-      if (!days.has(date)) days.set(date, new Map());
-      const owners = days.get(date)!;
-      const values = owners.get(member) ?? [];
+      const key = `${domain}\u0000${member}\u0000${label}\u0000${unit}`;
+      if (!buckets.has(key)) buckets.set(key, new Map());
+      const days = buckets.get(key)!;
+      const values = days.get(date) ?? [];
       values.push(value);
-      owners.set(member, values);
+      days.set(date, values);
     };
     for (const m of members)
       if (m.charts) {
@@ -512,30 +512,24 @@ export class StudioReads {
             row.value,
           );
       }
-    for (const [domain, metrics] of buckets)
-      for (const [key, days] of metrics) {
-        const [label, unit] = key.split("\u0000");
-        series[domain].push({
-          label,
-          unit,
-          points: [...days]
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([date, owners]) => {
-              const totals = [...owners.values()].map(
-                (values) =>
-                  values.reduce((a, b) => a + b, 0) /
-                  (domain === "body_measurements" ? values.length : 1),
-              );
-              return {
-                date,
-                value:
-                  totals.reduce((a, b) => a + b, 0) /
-                  (domain === "body_measurements" ? totals.length : 1),
-                contributor_count: owners.size,
-              };
-            }),
-        });
-      }
+    const names = new Map(members.map((m) => [m.member_ref, m.display_name]));
+    for (const [key, days] of buckets) {
+      const [domain, member_ref, label, unit] = key.split("\u0000");
+      series[domain].push({
+        member_ref,
+        member_name: names.get(member_ref)!,
+        label,
+        unit,
+        points: [...days]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([date, values]) => ({
+            date,
+            value:
+              values.reduce((a, b) => a + b, 0) /
+              (domain === "body_measurements" ? values.length : 1),
+          })),
+      });
+    }
     return {
       schema_version: 1,
       owner_type: "dojo",

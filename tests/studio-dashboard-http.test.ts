@@ -308,37 +308,42 @@ test("served authenticated dashboard follows pages, keeps units apart and reauth
       data.series.body_measurements.map((s: any) => s.unit).sort(),
       ["kg", "lb"],
     );
-    assert.deepEqual(data.series.training[0].points[0], {
-      date: "2026-09-20",
-      value: 4,
-      contributor_count: 2,
-    });
     assert.deepEqual(
-      data.series.training.find((s: any) => s.label === "Completed sets")
-        .points[0],
-      {
-        date: "2026-09-20",
-        value: 10,
-        contributor_count: 2,
-      },
+      data.series.training.filter((s: any) => s.label === "Completed workouts"),
+      [
+        {
+          member_ref: "one",
+          member_name: "Synthetic Ada",
+          label: "Completed workouts",
+          unit: "workouts",
+          points: [{ date: "2026-09-20", value: 2 }],
+        },
+        {
+          member_ref: "three",
+          member_name: "Synthetic Cy",
+          label: "Completed workouts",
+          unit: "workouts",
+          points: [{ date: "2026-09-20", value: 2 }],
+        },
+      ],
     );
     assert.deepEqual(
-      data.series.nutrition.find((s: any) => s.label === "Recorded calories")
-        .points[0],
-      {
-        date: "2026-09-20",
-        value: 0,
-        contributor_count: 2,
-      },
+      data.series.training
+        .filter((s: any) => s.label === "Completed sets")
+        .map((s: any) => [s.member_name, s.points[0].value]),
+      [
+        ["Synthetic Ada", 5],
+        ["Synthetic Cy", 5],
+      ],
     );
     assert.deepEqual(
-      data.series.nutrition.find((s: any) => s.label === "Recorded protein")
-        .points[0],
-      {
-        date: "2026-09-20",
-        value: 96,
-        contributor_count: 2,
-      },
+      data.series.nutrition
+        .filter((s: any) => s.label === "Recorded calories")
+        .map((s: any) => [s.member_name, s.points[0].value]),
+      [
+        ["Synthetic Ada", 0],
+        ["Synthetic Cy", 0],
+      ],
     );
     assert.doesNotMatch(
       JSON.stringify(data),
@@ -462,7 +467,8 @@ test("category authorization keeps partial graphs and independent media", async 
   });
   assert.deepEqual(data.members[0].category_access, member.category_access);
   assert.equal(data.members[0].media, "not_shared");
-  assert.equal(data.series.training[0].points[0].contributor_count, 1);
+  assert.equal(data.series.training[0].member_name, "Partial member");
+  assert.equal(data.series.training[0].points[0].value, 2);
   assert.equal(data.series.nutrition.length, 0);
   assert.equal(data.series.body_measurements.length, 1);
 });
@@ -492,6 +498,7 @@ test("category access cannot disagree with individual chart availability", async
       category_access: { ...member.category_access, training: "unknown" },
     },
     { ...member, stats_access: "shared" },
+    { ...member, member_ref: "partial\u0000spoofed" },
     {
       ...member,
       category_access: {
