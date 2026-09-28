@@ -100,6 +100,32 @@ test("known three-skill stores migrate append-only with customization and disabl
   }
 });
 
+test("saved v1 image guidance upgrades without enabling a disabled skill", async () => {
+  const dir = await mkdtemp(tmpdir() + "/skills-image-v2-");
+  try {
+    const prior = structuredClone([...stockSkills]);
+    const image = prior.find((s) => s.id === "fetch-checkin-images")!;
+    image.defaultVersion = 1;
+    image.basedOnDefaultVersion = 1;
+    image.instructions = "Old saved image workflow.";
+    image.enabled = false;
+    await seed(dir, [prior]);
+    const store = new SkillStore(dir, () => []);
+    await store.init();
+    const upgraded: any = store
+      .view()
+      .skills.find((s: any) => s.id === image.id);
+    assert.equal(upgraded.defaultVersion, 2);
+    assert.equal(upgraded.enabled, false);
+    assert.ok(
+      upgraded.instructions.includes("one exact member_ref + media_ref pair"),
+    );
+    assert.equal(store.view().revision, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("migration rejects a legacy catalog appearing after a modern catalog", async () => {
   const dir = await mkdtemp(tmpdir() + "/skills-history-downgrade-");
   try {

@@ -28,6 +28,7 @@ export async function fixture(
     imageSize?: number;
     imageDescription?: string;
     imageGate?: Promise<void>;
+    imageToolCode?: "READ_LIMIT";
   } = {},
 ) {
   const png = await sharp({
@@ -283,8 +284,19 @@ export async function fixture(
     if (name === IMAGE && options.imageGate) await options.imageGate;
     if (name === IMAGE)
       result =
-        options.revoke || revoked
-          ? { isError: true }
+        options.imageToolCode || options.revoke || revoked
+          ? {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    code: options.imageToolCode ?? "OPERATOR_NOT_AUTHORIZED",
+                    error: "Synthetic backend refusal.",
+                  }),
+                },
+              ],
+            }
           : {
               structuredContent: {
                 ...metadata,

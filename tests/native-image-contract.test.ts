@@ -326,3 +326,29 @@ test("native image failures distinguish prerequisites, invalid arguments, backen
     }
   }
 });
+
+test("backend read limit is not mislabeled as permissions or file availability", async () => {
+  const f = await setup({ imageToolCode: "READ_LIMIT" });
+  try {
+    await f.gateway.handle({ kind: "tool", name: LIST, args: {} });
+    const result = await f.gateway.handle({
+      kind: "tool",
+      name: IMAGE,
+      args: { member_ref: "member-photo", media_ref: "media-photo" },
+    });
+    assert.deepEqual(result, {
+      imageReadError: {
+        code: "IMAGE_READ_LIMIT",
+        remainingImages: 4,
+        remainingBytes: 16 * 1024 * 1024,
+      },
+    });
+    assert.equal(f.backend.calls.filter((name) => name === IMAGE).length, 1);
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /member-photo|media-photo|Synthetic/,
+    );
+  } finally {
+    await f.close();
+  }
+});

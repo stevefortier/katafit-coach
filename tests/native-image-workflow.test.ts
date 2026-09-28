@@ -25,7 +25,8 @@ for (const parallel of [false, true])
     async () => {
       const requests: any[] = [];
       const results: any[] = [];
-      const sentinel = "A five-photo inventory is valid";
+      const sentinel =
+        "one exact member_ref + media_ref pair from that same row";
       let release!: () => void;
       const imageGate = new Promise<void>((resolve) => {
         release = resolve;
@@ -189,13 +190,13 @@ for (const parallel of [false, true])
           JSON.stringify(requests[0].messages),
           /fetch-checkin-images/,
         );
-        assert.doesNotMatch(
-          JSON.stringify(requests[0].messages),
-          new RegExp(sentinel),
+        assert.equal(
+          JSON.stringify(requests[0].messages).includes(sentinel),
+          false,
         );
-        assert.match(
-          JSON.stringify(requests[1].messages),
-          new RegExp(sentinel),
+        assert.equal(
+          JSON.stringify(requests[1].messages).includes(sentinel),
+          true,
         );
         const listing = results.find((r) => r.name === CHECKINS).result;
         assert.equal(

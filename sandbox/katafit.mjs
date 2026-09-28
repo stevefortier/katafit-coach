@@ -155,6 +155,8 @@ export function nativeToolOutcome(name, result, code) {
           "Tool-call budget exhausted for this turn even if image capacity remains. Stop reads and synthesize from successful receipts; do not reset or reopen a session to bypass quotas.",
         IMAGE_BACKEND_FAILED:
           "Backend did not deliver an authorized image. Access or availability could not be established; this does not prove no photo exists or sharing is disabled. State the gap; do not bypass authorization.",
+        IMAGE_READ_LIMIT:
+          "Backend read limit prevented this image read. The listed photo may still be authorized; remaining delivery capacity does not override the backend read limit. Stop trying other photos in this session, report the backend limit, and do not claim to have inspected pixels.",
         IMAGE_RESULT_REJECTED:
           "Returned image failed integrity or format validation and was not delivered. Do not inspect rejected bytes; use other verified evidence and report the gap.",
       };
