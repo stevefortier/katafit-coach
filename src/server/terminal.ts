@@ -220,7 +220,12 @@ export class NativeTerminal {
         resumeSessionId: prepared.record?.execution?.sessionId,
         seed: prepared.seed,
         onBeforeDispatch: () => this.history.flush(),
-        onHistoryMismatch: async () => {
+        onHistoryMismatch: async (reason) => {
+          this.onDiagnostic?.({
+            source: "studio",
+            stage: "native-history-failed",
+            error: new Error(reason),
+          });
           const id = this.history.active?.id;
           if (id)
             await this.history.storage.change(id, (row) => {
