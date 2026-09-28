@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fixture } from "./helpers/native.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 
-test("generic reads without a backend source-authorization contract fail before private hydration", async () => {
+test("advertised generic reads acquire data once under backend session authority", async () => {
   const generic = "studio_operator_future_read";
   const f = await fixture((name, result) => {
     if (name === "tools/list")
@@ -42,16 +42,18 @@ test("generic reads without a backend source-authorization contract fail before 
   let gateway!: Awaited<ReturnType<typeof openNativeGateway>>;
   try {
     gateway = await openNativeGateway(f.store);
-    await assert.rejects(
-      gateway.handle({ kind: "tool", name: generic, args: {} }),
-      /SOURCE_AUTHORIZATION_UNSUPPORTED/,
-    );
+    const acquired = await gateway.handle({
+      kind: "tool",
+      name: generic,
+      args: {},
+    });
+    assert.match(JSON.stringify(acquired), /synthetic retained private source/);
     assert.equal(
       f.calls.filter((c) => c.body.params?.name === generic).length,
-      0,
-      "never hydrate a source we cannot reauthorize",
+      1,
+      "one authorized acquisition",
     );
-    // Mixed-source path: supported legacy reads still use their retained fence.
+    // Neither generic nor roster source is fetched again for provider use.
     await gateway.handle({
       kind: "tool",
       name: "studio_operator_list_members",
@@ -65,7 +67,11 @@ test("generic reads without a backend source-authorization contract fail before 
       f.calls.filter(
         (c) => c.body.params?.name === "studio_operator_list_members",
       ).length,
-      4,
+      1,
+    );
+    assert.equal(
+      f.calls.filter((c) => c.body.params?.name === generic).length,
+      1,
     );
   } finally {
     await gateway?.close();
@@ -264,7 +270,7 @@ for (const schema of [
       const reads = f.calls.filter(
         (c) => c.body.params?.name === "studio_operator_list_members",
       );
-      assert.equal(reads.length, 4);
+      assert.equal(reads.length, 1);
       assert.ok(
         reads.every(
           (c) =>

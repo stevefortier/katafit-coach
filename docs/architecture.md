@@ -2,7 +2,7 @@
 
 ## Current native Operator
 
-`/chat/operator` serves only native Pi in the isolated Docker sandbox. The authenticated terminal owns one-use tickets, runtime teardown and configuration authority. `NativeRuntime` connects Pi's terminal and extension over bounded docker-exec relay stdio; `NativeGateway` keeps provider/backend credentials on the host and reauthorizes tool/provider traffic. No host fallback or legacy Operator inference API exists.
+`/chat/operator` serves only native Pi in the isolated Docker sandbox. The authenticated terminal owns one-use tickets, runtime teardown and configuration authority. `NativeRuntime` connects Pi's terminal and extension over bounded docker-exec relay stdio; `NativeGateway` keeps provider/backend credentials on the host and enforces backend authorization when fetching new data or sending, with local runtime/lifetime checks for already-fetched Coach context. No host fallback or legacy Operator inference API exists.
 
 The catalog carries `compileOperator(savedConfig)`. The launcher passes it as Pi's **primary** `--system-prompt`, not an addendum to Pi's coding-assistant identity. It preserves all eight saved persona fields and states that the operator is the Coach's manager and boss; the manager relationship overrides trainee discipline, not backend permissions. Configuration replacement closes the old runtime and a new runtime starts with the new revision, without old transcripts or workspace contents.
 

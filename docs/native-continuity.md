@@ -3,7 +3,9 @@
 The native terminal keeps one isolated Pi runtime (process, transcript and
 filesystem) for up to the backend's retained lifetime. Its shell files and
 transcript may contain member-derived data, so the host never authorizes that
-context with a new, proof-free backend session. This page describes the Coach
+context with a new, proof-free backend session. Already fetched evidence can be
+used for any purpose inside this installation's authenticated Coach runtime;
+new backend reads and outgoing SENDs still require current authority. This page describes the Coach
 host half of backend continuity v1 (`docs/studio-operator-continuity.md` in the
 backend repository). The backend remains the authority.
 
@@ -14,8 +16,8 @@ The gateway requests `continuity_version: 1` only when authenticated
 and `studio_operator_advance_turn`). The returned descriptor, generation 0,
 retained deadline and per-generation SEND capability must match exactly;
 otherwise negotiation fails and the opened session is closed. A backend without
-continuity keeps the previous one-session behaviour. Generic reads remain
-unsupported there, and human input cannot renew anything.
+continuity keeps the previous one-session behaviour. Advertised generic reads
+are dispatched under the authenticated session; human input cannot renew it.
 
 One runtime owns one backend session for its whole life. Nothing reopens a
 session for existing runtime context.
@@ -47,11 +49,16 @@ per-message confirmation.
 
 ## Disclosure
 
-Every provider request runs `authorize_context(session, generation)` before the
-request and again after the complete buffered response, before anything is
-released to the sandbox. No read is replayed and no image is refetched.
-Revocation after the pre-check can still reach the provider during that request;
-the post-check withholds the result and ends the runtime.
+Provider admission and response release check local runtime lifetime, original
+session identity, command and retained deadlines, and transcript integrity.
+They do not call `authorize_context`, replay reads or refetch images. A denial
+on a new acquisition does not invalidate prior Coach context; explicit session
+revocation and credential failure still terminate the runtime. Attachment byte
+GET and reconnect snapshots reuse already-fetched bytes within the authenticated,
+runtime-bound Operator panel; they do not recheck original source permissions.
+Unknown file paths, non-receipt references, secret content and invalid pixels
+remain rejected independently. Browser/local expiry and teardown still erase
+retained bytes.
 
 ## Transitions and writes
 
@@ -75,11 +82,10 @@ The gateway closes its backend session and calls the terminal's `onTerminate`
 hook, which sends the browser an error, closes it with code 1008 and destroys
 the container, when any of these happen:
 
-- authorization is refused or malformed;
+- a new operation reports explicit session revocation or credential rejection;
 - a transition is refused, malformed or stays unknown;
 - the retained deadline passes (including an idle timer);
 - the last allowed generation expires.
 
-`OPERATOR_UNAVAILABLE` during authorization is retried at most three times per
-request. It discloses nothing and does not end the runtime. A later Start
-creates a new, empty runtime and session.
+Backend outages on new acquisitions do not authorize that acquisition. A later
+Start creates a new, empty runtime and session.

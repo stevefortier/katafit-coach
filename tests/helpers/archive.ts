@@ -15,7 +15,7 @@ export const archiveDescriptor = {
   host_controls: archiveControls,
   max_chain_turns: 64,
   resume_ttl_ms: 2592000000,
-  source_policy: "unchanged_original_proofs",
+  source_policy: "authorized_at_acquisition",
   credential_policy: "original_credential_only",
 };
 /** Synthetic contract boundary only. Real Mongo proof validation is paired separately. */

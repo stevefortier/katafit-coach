@@ -82,8 +82,8 @@ test("image receipt is accepted to the panel from retained bytes with a truthful
     assert.equal(g.f.named(IMAGE).length, reads, "no new backend image read");
     assert.equal(
       g.f.named("studio_operator_authorize_context").length,
-      authorizations + 1,
-      "acceptance re-authorizes retained evidence",
+      authorizations,
+      "sending acquired image data does not reacquire the source",
     );
     assert.equal(g.published.length, 1);
     const item = g.published[0];
@@ -255,9 +255,15 @@ test("parallel send is not dispatched while another native request is pending", 
   }
 });
 
-test("serving retained evidence requires fresh backend authorization; busy is retryable, revocation destroys", async () => {
-  let hold: Promise<void> | undefined;
-  const g = await open({ authorizeGate: () => hold });
+test("serving acquired evidence is local; busy requests remain retryable", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const g = await open({
+    provider: async () => {
+      await gate;
+      return answer("done");
+    },
+  });
   try {
     const id = await g.receipt();
     await g.tool(SEND, { image_receipt: id });
@@ -266,33 +272,13 @@ test("serving retained evidence requires fresh backend authorization; busy is re
     await g.gateway.readAttachment(item.id);
     assert.equal(
       g.f.named("studio_operator_authorize_context").length,
-      before + 1,
-      "every delivery re-authorizes before bytes are served",
+      before,
+      "delivery does not reauthorize the original source",
     );
-    // Host refresh is serialized with relay requests: a tool call issued
-    // while it is pending waits instead of racing a turn transition.
-    let open!: () => void;
-    hold = new Promise<void>((r) => (open = r));
-    const refreshing = g.gateway.readAttachment(item.id);
-    await new Promise((r) => setTimeout(r, 50));
-    let rosterDone = false;
-    const roster = g.tool(ROSTER, {}).then((v) => {
-      rosterDone = true;
-      return v;
-    });
-    await new Promise((r) => setTimeout(r, 50));
-    assert.equal(rosterDone, false);
-    assert.equal(g.f.named(ROSTER).length, 0);
-    open();
-    hold = undefined;
-    await refreshing;
-    await roster;
+    const roster = await g.tool(ROSTER, {});
+    assert.ok(roster);
     assert.equal(g.f.named(ROSTER).length, 1);
-    // A pending Pi request never races a host refresh: retryable busy.
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    hold = gate;
-    // The provider path's own authorize_context is held: Pi is mid-request.
+    // A pending Pi request never races host delivery: retryable busy.
     const slow = g.gateway.handle({
       kind: "provider",
       body: { model: "approved-custom-model", messages: [] },
@@ -303,16 +289,18 @@ test("serving retained evidence requires fresh backend authorization; busy is re
       /ATTACHMENT_AUTHORIZATION_BUSY/,
     );
     release();
-    hold = undefined;
     await slow;
     assert.deepEqual(g.terminated, []);
-    // Definite retained-authority denial: terminal, runtime destroyed.
+    // A source change is not retroactive authority over acquired bytes.
     g.f.state.revoked = true;
-    await assert.rejects(g.gateway.readAttachment(item.id), /REVOKED|DENIED/);
-    assert.equal(g.terminated.length, 1);
-    assert.deepEqual(g.gateway.attachments(), []);
-    await assert.rejects(g.gateway.readAttachment(item.id));
+    const served = await g.gateway.readAttachment(item.id);
+    assert.equal(
+      createHash("sha256").update(served.bytes).digest("hex"),
+      item.sha256,
+    );
+    assert.deepEqual(g.terminated, []);
   } finally {
+    release();
     await g.close();
   }
 });
@@ -345,16 +333,19 @@ test("configuration change and close revoke every attachment immediately", async
   }
 });
 
-test("legacy retained-read sessions refresh through the existing image recheck before serving", async () => {
+test("legacy acquired image reads do not refetch a changed source", async () => {
   const g = await open({ continuity: false });
   try {
     const id = await g.receipt();
     await g.tool(SEND, { image_receipt: id });
     const reads = g.f.named(IMAGE).length;
     await g.gateway.readAttachment(g.published[0].id);
-    assert.ok(g.f.named(IMAGE).length > reads, "existing recheck ran");
+    assert.equal(g.f.named(IMAGE).length, reads);
     g.f.state.status = "closed";
-    await assert.rejects(g.gateway.readAttachment(g.published[0].id));
+    assert.equal(
+      (await g.gateway.readAttachment(g.published[0].id)).item.id,
+      g.published[0].id,
+    );
   } finally {
     await g.close();
   }

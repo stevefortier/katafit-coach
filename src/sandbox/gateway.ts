@@ -607,10 +607,8 @@ export async function openNativeGateway(
     terminate("ATTACHMENT_AUTHORIZATION_DENIED");
     return new Error("ATTACHMENT_REVOKED");
   };
-  // An authority failure observed during Pi traffic must erase existing
-  // attachments too, not wait for the operator's next GET. Legacy sessions do
-  // not expose continuity.revoked, so use the same fail-closed classification
-  // at every authorization boundary when this gateway owns attachments.
+  // Local session expiry, credential replacement and explicit backend session
+  // revocation still erase retained bytes. A changed original source does not.
   const authorizeNative = async () => {
     try {
       await session.authorize();
@@ -622,11 +620,9 @@ export async function openNativeGateway(
     }
   };
   /**
-   * Every explicit disclosure of retained evidence (bytes or a metadata
-   * snapshot) needs a backend authorization that STARTED after the disclosure
-   * was admitted; there is no cached allow. It runs as host work that relay
-   * requests wait for, and is refused (retryably) while a relay request is in
-   * flight. It never replays reads through Pi's budgeted tools.
+   * Browser GET/reconnect is use of already-fetched Coach data, not another
+   * source acquisition. Keep runtime/credential/expiry fences and serialization
+   * with relay traffic, but never ask the backend to recheck original sources.
    */
   const authorizeDisclosure = async () => {
     retainedLive();
@@ -743,7 +739,7 @@ export async function openNativeGateway(
     authorizeTranscript: authorizeDisclosure,
     attachments: () => (closed ? [] : attachments.list()),
     /**
-     * Trusted host only: freshly authorized bytes for one accepted attachment,
+     * Trusted host only: runtime-bound bytes for one accepted attachment,
      * copied so a concurrent teardown's zero-fill cannot alter a response.
      */
     async readAttachment(id: string) {
@@ -756,8 +752,8 @@ export async function openNativeGateway(
     },
     /**
      * Trusted host only: metadata for a (re)connecting panel. Listing retained
-     * items is itself a disclosure and is freshly authorized; an empty list
-     * carries only the absolute context expiry.
+     * items stays within the authenticated Coach panel; an empty list carries
+     * only the absolute context expiry.
      */
     async snapshot(includeTranscript = false) {
       check();
@@ -1152,7 +1148,7 @@ export async function openNativeGateway(
     )
       throw new Error("NATIVE_MODEL_REJECTED");
     // Fully validate the original envelope before any turn transition or
-    // authorization side effect. Memory is injected only after fresh authority.
+    // authorization side effect. Memory is injected after local runtime admission.
     const admitted = nativeProviderAdmission(request.body);
     let recalledMemories: MemoryItem[] = [];
     try {
@@ -1233,8 +1229,7 @@ export async function openNativeGateway(
         : undefined;
       if (capture) await hooks.onExchange(capture);
       check();
-      // Persisting the request yields: Forget or source revocation may commit
-      // while that callback runs. Re-prove before sending recalled prose.
+      // A checkpoint can race runtime teardown; check local lifetime again.
       try {
         await authorizeNative();
         check();
