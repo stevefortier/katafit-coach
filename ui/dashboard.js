@@ -174,6 +174,7 @@ window.CoachDashboard = (() => {
       series = new Map(),
       latestPhotos = new Map(),
       photoTiles = new Map();
+    let detailError = null;
     const addPoint = (activity, label, unit, value, average = false) => {
       if (!Number.isFinite(value)) return;
       const stamp = activity.completed_at || activity.created_at;
@@ -403,7 +404,11 @@ window.CoachDashboard = (() => {
             ),
           );
       } catch (error) {
-        if (live()) tile.append(text("p", error.message));
+        if (live()) {
+          detailError ||= error.message;
+          $("dashboardStatus").textContent =
+            `Partial dashboard — activity details could not be loaded: ${detailError}`;
+        }
       }
     }
     let before,
@@ -463,9 +468,11 @@ window.CoachDashboard = (() => {
           activities.size < 200;
         before = next;
         more.hidden = !canLoad;
-        $("dashboardStatus").textContent = data.hasMore
-          ? "More activities available — partial history shown."
-          : "Loaded bounded feed history; not a complete history.";
+        $("dashboardStatus").textContent = detailError
+          ? `Partial dashboard — activity details could not be loaded: ${detailError}`
+          : data.hasMore
+            ? "More activities available — partial history shown."
+            : "Loaded bounded feed history; not a complete history.";
         const coverage = $("dashboardCoverage");
         coverage.hidden = false;
         coverage.replaceChildren(

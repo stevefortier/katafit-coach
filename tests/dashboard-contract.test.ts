@@ -5,7 +5,12 @@ import { readFile } from "node:fs/promises";
 
 // Exercise the shipped renderer; HTTP contract fixtures are synthetic. The
 // separate Mongo/Express/browser pairing exercises the actual route responses.
-async function render(rows: any[], details = rows, pages?: any[]) {
+async function render(
+  rows: any[],
+  details = rows,
+  pages?: any[],
+  detailStatuses: Record<string, number> = {},
+) {
   class Node {
     textContent = "";
     children: Node[] = [];
@@ -45,8 +50,10 @@ async function render(rows: any[], details = rows, pages?: any[]) {
       calls.push(url);
       const id = new URL(url, "http://fixture").searchParams.get("id");
       const row = details.find((a) => a._id === id);
+      const status = (id && detailStatuses[id]) || 200;
       return {
-        ok: true,
+        ok: status === 200,
+        status,
         blob: async () => ({}),
         json: async () =>
           id
@@ -69,6 +76,7 @@ async function render(rows: any[], details = rows, pages?: any[]) {
     nodes,
     calls,
     all,
+    reload: () => context.window.CoachDashboard.load(null, "synthetic"),
     labels: () =>
       all(nodes.dashboardCharts)
         .map((n) => n.attributes["aria-label"])
@@ -84,6 +92,60 @@ const metric = (measurements: any[], extra = {}) => ({
   data: { measurements },
   ...extra,
 });
+test("detail denials stay visible outside the gallery through page completion and reset on reload", async () => {
+  const denial =
+    "REST request denied (403). Renew the saved Coach credential with ordinary REST access if needed.";
+  for (const type of ["metric", "media"]) {
+    const row = metric([], {
+      type,
+      data:
+        type === "media"
+          ? { files: [{ _id: "f", type: "image/jpeg" }] }
+          : { measurements: [] },
+    });
+    const older = metric([{ type_id: "weight", value: 79, unit: "kg" }], {
+      _id: "older",
+      created_at: "2026-09-20T12:00:00Z",
+    });
+    const statuses = { m: 403 };
+    const r = await render(
+      [row],
+      [row, older],
+      [
+        {
+          users: [{ _id: "a", display_name: "Synthetic Ada" }],
+          activities: [row],
+          hasMore: true,
+          oldestDate: row.created_at,
+        },
+        { users: [], activities: [older], hasMore: false },
+      ],
+      statuses,
+    );
+    const assertFailure = () => {
+      assert.ok(r.nodes.dashboardStatus.textContent.includes(denial), type);
+      assert.match(
+        r.nodes.dashboardStatus.textContent,
+        /(?:incomplete|partial).*detail/i,
+      );
+      assert.equal(r.nodes.dashboardRoster.children.length, 0);
+    };
+    assertFailure();
+    r.nodes.more.listeners.click();
+    for (let i = 0; i < 20 && !r.nodes.more.hidden; i++)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.equal(r.nodes.more.hidden, true);
+    assert.ok(r.labels().some((s: string) => s.includes("79 kg")));
+    assertFailure();
+    statuses.m = 200;
+    await r.reload();
+    assert.equal(
+      r.nodes.dashboardStatus.textContent,
+      "Loaded bounded feed history; not a complete history.",
+    );
+  }
+});
+
 test("strict body numbers and explicit weight/fat limits, never arbitrary unit inference", async () => {
   const r = await render([
     metric([
