@@ -61,6 +61,14 @@ export const hints = {
     "The model emitted tool-command text instead of native tool calls. This text was not executed or published; check the installed model's tool parser and provider compatibility.",
   MODEL_FAILED:
     "Inference did not complete successfully. Check provider compatibility and retry.",
+  MEMORY_RESULT_REJECTED:
+    "A durable memory response failed strict validation. No memory text was used; check backend and worker compatibility.",
+  MEMORY_UNAVAILABLE:
+    "Backend durable memory was unavailable or no longer authorized for this execution. Nothing was recalled or retained; the reply continued without memory.",
+  MEMORY_CHANGED:
+    "A recalled Coach memory changed or lost authority before publication. Nothing was published; the member can retry.",
+  MEMORY_EXTRACTION_REJECTED:
+    "The model's memory proposals failed strict schema or safety validation and were discarded. Nothing was stored.",
   CONTEXT_REJECTED:
     "Authorized context or attachment access could not be validated. Check request scope and image opt-in; access was not expanded.",
   DELIVERY_UNVERIFIED:

@@ -60,7 +60,9 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
               ? { state: "stopped" }
               : path === "/api/terminal/receipts"
                 ? { actions: [] }
-                : {};
+                : path === "/api/memories"
+                  ? { revision: 0, items: [], total: 0 }
+                  : {};
       await route.fulfill({ json: body });
     });
     await page.goto(
@@ -70,7 +72,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     const tabs = page.getByRole("tab");
-    assert.equal(await tabs.count(), 7);
+    assert.equal(await tabs.count(), 8);
     assert.equal(await page.locator("#diagnosticsTab").count(), 1);
     assert.equal(await page.getByRole("tabpanel").count(), 1);
     await page.locator("#token").fill("unsaved-secret");
@@ -78,6 +80,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       "Persona",
       "Preview",
       "Skills",
+      "Memories",
       "Updates",
       "Worker",
       "Models",

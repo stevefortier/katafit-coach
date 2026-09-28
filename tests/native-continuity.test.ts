@@ -137,8 +137,9 @@ test("more than twelve tool calls succeed only across authenticated human turns;
       [...Array(12).fill(0), ...Array(12).fill(1)],
     );
     // Authorization is explicit and content-free: before and after every
-    // provider request, never a read replay.
-    assert.equal(h.f.named(AUTHORIZE).length, 2 * h.f.providerCalls());
+    // provider request, plus immediately before final response disclosure;
+    // never a read replay.
+    assert.equal(h.f.named(AUTHORIZE).length, 3 * h.f.providerCalls());
     assert.deepEqual(Object.keys(h.f.named(AUTHORIZE)[0].args), [
       "session_id",
       "turn_generation",
@@ -178,7 +179,7 @@ test("an expired command renews only through a human turn on the same session an
     assert.equal(advance.args.turn_generation, 0);
     assert.deepEqual(
       h.f.named(AUTHORIZE).map((c) => c.args.turn_generation),
-      [1, 1],
+      [1, 1, 1],
     );
     assert.equal(h.f.named("studio_operator_open_session").length, 1);
     assert.equal(h.f.named(GENERIC).length, 1, "no read replay as authority");
@@ -371,7 +372,7 @@ test("OPERATOR_UNAVAILABLE authorization is retried boundedly and never disclose
     assert.deepEqual(h.terminated, []);
     await h.gateway.handle(provider("recovered"));
     assert.equal(h.f.providerCalls(), 1);
-    assert.equal(h.f.named(AUTHORIZE).length, 6);
+    assert.equal(h.f.named(AUTHORIZE).length, 7);
   } finally {
     await h.close();
   }
@@ -449,7 +450,7 @@ test("a reconciled transition receipt past its command deadline is renewed befor
     assert.equal(h.f.state.generation, 2);
     assert.deepEqual(
       h.f.named(AUTHORIZE).map((c) => c.args.turn_generation),
-      [2, 2],
+      [2, 2, 2],
     );
     assert.equal(h.f.providerCalls(), 1);
   } finally {

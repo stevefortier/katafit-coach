@@ -303,7 +303,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     assert.equal(await page.locator("#origin").isVisible(), true);
     assert.equal(await page.locator("#token").isVisible(), true);
     assert.equal(await page.locator("#connect").isVisible(), true);
-    assert.equal(await page.getByRole("tab").count(), 7);
+    assert.equal(await page.getByRole("tab").count(), 8);
     await page.locator("#token").fill("unsaved-kata-token");
     // Roving keyboard focus reaches Models.
     await page

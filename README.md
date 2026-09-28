@@ -55,6 +55,16 @@ Save or Restore default applies only the selected skill; drafts for other skills
 
 Keep only reusable guidance in Skills, never member evidence or credentials. Saves and restores append immutable revisions. Credential changes are checked against current and historical skill text; restoring clean defaults does not erase a credential from history.
 
+### Memories
+
+**Settings → Memories** manages backend-owned Coach memories with search,
+pagination, explicit audiences, protected corrections, sources, history, Archive
+and Forget. Worker and native recall require current backend authority. Native
+sessions that already saw a corrected or revoked memory are terminated; a fresh
+session can use the current revision. Automatic extraction uses the configured
+model and durable backend recovery, with no local prose fallback. See
+[Coach long-term memory](docs/coach-long-term-memory.md).
+
 ### Persona revision history
 
 Open **Settings → Persona → Persona revision history** to browse saved snapshots. Every successful save creates a revision, even if only Kata.fit or Models settings changed or the persona fields stayed the same. Select a revision to read all eight persona fields without changing the editor; use **Older revisions** and **Latest revisions** to navigate the paginated list.

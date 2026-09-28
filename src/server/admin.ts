@@ -11,10 +11,15 @@ import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { timingSafeEqual, randomUUID, createHash } from "node:crypto";
-import { Store, compile, stockPersona } from "../config/store.js";
+import {
+  Store,
+  compile,
+  stockPersona,
+  assertNoSecrets,
+} from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
 import { Worker } from "../worker/runner.js";
-import { Client } from "../katafit/client.js";
+import { Client, ToolFailure } from "../katafit/client.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 import { archiveTaskInvalidation } from "../worker/taskInvalidationArchive.js";
 // The stable runtime imports this value from the selected application module.
@@ -85,6 +90,62 @@ export async function admin(
     { fingerprint: string; status: number; data: unknown }
   >();
   let origin = "";
+  const memoryError = (error: unknown) => {
+    if (error instanceof ToolFailure && error.code?.startsWith("MEMORY_"))
+      return {
+        status:
+          error.code === "MEMORY_UNAVAILABLE"
+            ? 503
+            : error.code === "MEMORY_LIMIT"
+              ? 413
+              : error.code === "MEMORY_INVALID"
+                ? 400
+                : error.code === "MEMORY_NOT_AUTHORIZED"
+                  ? 403
+                  : 409,
+        body: {
+          error: error.code,
+          hint:
+            error.code === "MEMORY_UNAVAILABLE"
+              ? "Backend durable memory is temporarily unavailable. No memory prose was disclosed."
+              : "Backend durable memory denied this operation under current authority.",
+        },
+      };
+    return null;
+  };
+  const memoryOperation = (signal = AbortSignal.timeout(15000)) => {
+    const config = store.publicConfig();
+    const token = store.secrets.token;
+    const credentials = { ...store.secrets };
+    const fence = () => {
+      signal.throwIfAborted();
+      const current = store.publicConfig();
+      if (
+        current.revision !== config.revision ||
+        current.origin !== config.origin ||
+        JSON.stringify(store.secrets) !== JSON.stringify(credentials) ||
+        updates.applying ||
+        closing
+      )
+        throw new SafeError("CANCELLED");
+      if (!token) throw new SafeError("CREDENTIAL_REJECTED");
+    };
+    return async (name: string, args: unknown) => {
+      fence();
+      assertNoSecrets(args, Object.values(credentials));
+      const client = new Client(config.origin, token, signal, (event) =>
+        logs.record(event),
+      );
+      await client.connect();
+      fence();
+      const result = await client.call(name, args, 15000);
+      fence();
+      assertNoSecrets(result, Object.values(credentials));
+      return result;
+    };
+  };
+  const memoryCall = (name: string, args: unknown) =>
+    memoryOperation()(name, args);
   // One server-owned operation holds busy from admission through resume. HTTP
   // disconnects never cancel configuration application or restart recovery.
   let lifecycle:
@@ -124,6 +185,7 @@ export async function admin(
         secrets: Object.values(store.secrets),
         vision: c.provider.vision === true,
         skills,
+        personaRevision: String(c.revision),
         onDiagnostic: (event) => logs.record(event),
         archiveTaskInvalidation: (record) =>
           archiveTaskInvalidation(store.dir, record),
@@ -527,6 +589,75 @@ export async function admin(
       }
       if (
         req.method === "GET" &&
+        (path === "/api/memories" || path.startsWith("/api/memories?"))
+      ) {
+        const url = new URL(path, origin);
+        const params = url.searchParams;
+        if (
+          [...params.keys()].some(
+            (key) =>
+              ![
+                "status",
+                "audience",
+                "kind",
+                "query",
+                "q",
+                "member_ref",
+                "pinned",
+                "limit",
+                "cursor",
+                "include_archived",
+                "scope",
+              ].includes(key) || params.getAll(key).length !== 1,
+          )
+        )
+          throw new Error("INVALID_MEMORY");
+        const legacyScope = params.get("scope");
+        const audience =
+          params.get("audience") ||
+          (legacyScope === "member"
+            ? "member_private"
+            : legacyScope === "dojo"
+              ? "member_coach"
+              : legacyScope === "boss" || legacyScope === "coach"
+                ? "operator_private"
+                : undefined);
+        const result = await memoryCall("studio_memory_list", {
+          ...(params.get("status")
+            ? { status: params.get("status") }
+            : params.get("include_archived") === "true"
+              ? { status: "all" }
+              : {}),
+          ...(audience ? { audience } : {}),
+          ...(params.get("kind") ? { kind: params.get("kind") } : {}),
+          ...(params.get("query") || params.get("q")
+            ? { query: params.get("query") || params.get("q") }
+            : {}),
+          ...(params.get("member_ref")
+            ? { member_ref: params.get("member_ref") }
+            : {}),
+          ...(params.get("pinned")
+            ? { pinned: params.get("pinned") === "true" }
+            : {}),
+          ...(params.get("limit")
+            ? { limit: Number(params.get("limit")) }
+            : {}),
+          ...(params.get("cursor") ? { cursor: params.get("cursor") } : {}),
+        });
+        return send(200, result);
+      }
+      if (
+        req.method === "GET" &&
+        /^\/api\/memories\/(?:history\/)?[a-f0-9]{24}$/i.test(path)
+      ) {
+        const id = path.split("/").at(-1)!;
+        return send(
+          200,
+          await memoryCall("studio_memory_get", { memory_id: id }),
+        );
+      }
+      if (
+        req.method === "GET" &&
         (path === "/api/persona-history" ||
           path.startsWith("/api/persona-history?"))
       ) {
@@ -808,6 +939,80 @@ export async function admin(
               }
             : { error: "OPERATION_IN_PROGRESS" },
         );
+      const memoryMutation =
+        /^\/api\/memories(?:\/([a-f0-9]{24})(?:\/(archive|forget))?)?$/i.exec(
+          path,
+        );
+      if (memoryMutation) {
+        const [, id, action] = memoryMutation;
+        const call = memoryOperation();
+        if (!id) {
+          const result = await call("studio_memory_create", {
+            idempotency_key:
+              typeof body.idempotency_key === "string"
+                ? body.idempotency_key
+                : randomUUID(),
+            audience: body.audience,
+            ...(body.member_ref ? { member_ref: body.member_ref } : {}),
+            kind: body.kind,
+            text: body.text,
+            ...(body.confidence !== undefined
+              ? { confidence: body.confidence }
+              : {}),
+            ...(body.importance !== undefined
+              ? { importance: body.importance }
+              : {}),
+            ...(body.goal_relevance !== undefined
+              ? { goal_relevance: body.goal_relevance }
+              : {}),
+            ...(body.review_at !== undefined
+              ? { review_at: body.review_at || null }
+              : {}),
+            ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+          });
+          return send(200, result);
+        }
+        if (action === "forget") {
+          const result = await call("studio_memory_forget", {
+            memory_id: id,
+            ...(body.expected_revision !== undefined
+              ? { expected_revision: body.expected_revision }
+              : {}),
+          });
+          return send(200, result);
+        }
+        const expected =
+          body.expected_revision ??
+          (await call("studio_memory_get", { memory_id: id })).item?.revision;
+        const result = await call("studio_memory_update", {
+          memory_id: id,
+          expected_revision: expected,
+          ...(action === "archive"
+            ? { status: "archived" }
+            : {
+                ...(body.text !== undefined ? { text: body.text } : {}),
+                ...(body.kind !== undefined ? { kind: body.kind } : {}),
+                ...(body.confidence !== undefined
+                  ? { confidence: body.confidence }
+                  : {}),
+                ...(body.importance !== undefined
+                  ? { importance: body.importance }
+                  : {}),
+                ...(body.goal_relevance !== undefined
+                  ? { goal_relevance: body.goal_relevance }
+                  : {}),
+                ...(body.review_at !== undefined
+                  ? { review_at: body.review_at || null }
+                  : {}),
+                ...(body.pinned !== undefined ? { pinned: body.pinned } : {}),
+                ...(body.protected !== undefined
+                  ? { protected: body.protected }
+                  : {}),
+                ...(body.status !== undefined ? { status: body.status } : {}),
+              }),
+        });
+        return send(200, result);
+      }
       if (path === "/api/worker/reconcile") {
         if (Object.keys(input).length)
           return send(400, { error: "ARGUMENTS_REJECTED" });
@@ -1196,6 +1401,8 @@ export async function admin(
         busy = false;
       }
     } catch (e: any) {
+      const memory = memoryError(e);
+      if (memory) return send(memory.status, memory.body);
       if ((e as Error)?.message === "NATIVE_HISTORY_BUSY")
         return send(409, {
           error: "NATIVE_HISTORY_BUSY",
