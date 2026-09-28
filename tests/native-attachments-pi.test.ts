@@ -214,11 +214,11 @@ test(
         { timeout: 15000 },
       );
       assert.equal(
-        await cards.nth(0).locator(".attachment-caption").textContent(),
+        await cards.nth(1).locator(".attachment-caption").textContent(),
         "Synthetic check-in photo",
       );
       assert.equal(
-        await cards.nth(1).locator(".attachment-name").textContent(),
+        await cards.nth(0).locator(".attachment-name").textContent(),
         "visits.csv",
       );
       const evidence = process.env.ATTACHMENT_SCREENSHOT_DIR;
@@ -227,7 +227,7 @@ test(
         await page.locator("#nativeTerminal").scrollIntoViewIfNeeded();
         await page.screenshot({ path: evidence + "/pi-desktop-1280.png" });
       }
-      await cards.nth(0).locator(".attachment-preview").click();
+      await cards.nth(1).locator(".attachment-preview").click();
       await page.waitForFunction(
         () =>
           (document.querySelector("#attachmentDialogImage") as HTMLImageElement)
@@ -238,7 +238,7 @@ test(
       await page.locator("#attachmentDialogClose").click();
       const [download] = await Promise.all([
         page.waitForEvent("download"),
-        cards.nth(1).getByRole("button", { name: "Download" }).click(),
+        cards.nth(0).getByRole("button", { name: "Download" }).click(),
       ]);
       assert.equal(download.suggestedFilename(), "visits.csv");
       assert.equal(
@@ -256,6 +256,10 @@ test(
       );
       await page.waitForTimeout(300);
       assert.equal(await cards.count(), 2);
+      assert.equal(
+        await cards.nth(0).locator(".attachment-name").textContent(),
+        "visits.csv",
+      );
       assert.equal(fetched.length, 2);
       assert.deepEqual(
         [...(await containers())].filter((id) => !before.has(id)),
