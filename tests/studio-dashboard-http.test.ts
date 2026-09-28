@@ -492,6 +492,20 @@ test("category access cannot disagree with individual chart availability", async
       category_access: { ...member.category_access, training: "unknown" },
     },
     { ...member, stats_access: "shared" },
+    {
+      ...member,
+      category_access: {
+        training: "not_shared",
+        nutrition: "not_shared",
+        body: "not_shared",
+      },
+      charts: {
+        training: null,
+        nutrition: null,
+        body: null,
+        limitations: "No source categories shared",
+      },
+    },
   ]) {
     const reads = new StudioReads(
       {

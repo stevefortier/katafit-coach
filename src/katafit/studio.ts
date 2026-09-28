@@ -322,14 +322,14 @@ export class StudioReads {
           "limitations",
         ]);
         let charts: Member["charts"];
-        if (c.limitations === null) {
-          if (
-            ["training", "nutrition", "body"].some(
-              (key) => category_access[key] === "shared",
-            )
-          )
-            reject();
-        } else text(c.limitations, 500);
+        const anyShared = ["training", "nutrition", "body"].some(
+          (key) => category_access[key] === "shared",
+        );
+        if (anyShared) {
+          text(c.limitations, 500);
+        } else if (c.limitations !== null) {
+          reject();
+        }
         const rows = (
           name: "training" | "nutrition" | "body",
           valueKey: string,
