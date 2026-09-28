@@ -57,9 +57,17 @@ const backend = createServer(async (req, res) => {
             user_id: "ada",
             type: "media",
             name: "Progress check-in",
+            status: "complete",
             created_at: "2026-09-28T12:00:00Z",
             data: { files: [{ _id: "one", type: "image/png" }] },
           },
+          ...["pending", "missed"].map((status) => ({
+            _id: "metric-" + status,
+            user_id: "ada",
+            type: "metric",
+            status,
+            created_at: "2026-09-27T12:00:00Z",
+          })),
           ...(
             [
               {
@@ -89,27 +97,48 @@ const backend = createServer(async (req, res) => {
   else if (req.url?.startsWith("/api/friends/activity/metric"))
     res.end(
       JSON.stringify({
-        data: {
-          measurements: [
-            {
-              type_id: "weight",
-              value: req.url.endsWith("Kg") ? 80 : 176,
-              unit: req.url.endsWith("Kg") ? "kg" : "lb",
-            },
-          ],
+        owner: { _id: "ada" },
+        activity: {
+          _id: req.url.split("/").pop(),
+          user_id: "ada",
+          type: "metric",
+          status: req.url.includes("pending")
+            ? "pending"
+            : req.url.includes("missed")
+              ? "missed"
+              : "complete",
+          created_at: "2026-09-28T12:00:00Z",
+          data: {
+            measurements: [
+              {
+                type_id: "weight",
+                value: /pending|missed/.test(req.url)
+                  ? 999
+                  : req.url.endsWith("Kg")
+                    ? 80
+                    : 176,
+                unit: req.url.endsWith("Kg") ? "kg" : "lb",
+              },
+            ],
+          },
         },
       }),
     );
   else if (req.url === "/api/friends/activity/photo")
     res.end(
       JSON.stringify({
-        _id: "photo",
-        type: "media",
-        data: {
-          files: ["one", "two", "three", "four"].map((_id) => ({
-            _id,
-            type: "image/png",
-          })),
+        owner: { _id: "ada" },
+        activity: {
+          _id: "photo",
+          user_id: "ada",
+          status: "complete",
+          type: "media",
+          data: {
+            files: ["one", "two", "three", "four"].map((_id) => ({
+              _id,
+              type: "image/png",
+            })),
+          },
         },
       }),
     );
@@ -167,6 +196,12 @@ try {
       assert.ok(calls.includes("/api/friends/activity/photo"));
       assert.equal(await page.locator("#dashboardRoster img").count(), 4);
       assert.equal(await page.locator("#dashboardCharts svg").count(), 7);
+      assert.ok(
+        !(await page.locator("#dashboardCharts").textContent())?.includes(
+          "999",
+        ),
+        "pending/missed measurements excluded",
+      );
       assert.ok(
         await page
           .getByText("Synthetic Ada — weight (kg)", { exact: true })

@@ -2,6 +2,10 @@
 window.CoachDashboard = (() => {
   const $ = (id) => document.getElementById(id);
   const svgNS = "http://www.w3.org/2000/svg";
+  const isPhoto = (f) =>
+    f &&
+    (f._id || f.id) &&
+    (f.type === "image" || /^image\/(jpeg|png|webp)$/.test(f.type));
   let epoch = 0;
   let controller;
   let observer;
@@ -167,7 +171,9 @@ window.CoachDashboard = (() => {
     };
     const users = new Map(),
       activities = new Map(),
-      series = new Map();
+      series = new Map(),
+      latestPhotos = new Map(),
+      photoTiles = new Map();
     const addPoint = (activity, label, unit, value, average = false) => {
       if (!Number.isFinite(value)) return;
       const stamp = activity.completed_at || activity.created_at;
@@ -193,7 +199,7 @@ window.CoachDashboard = (() => {
         text("h3", "Activity trends"),
         text(
           "p",
-          "Loaded activities only, not a complete history or adherence. UTC completion day (creation-date fallback). Nutrition uses available recorded summaries; missing values are not zero. Body points use explicit recorded units; units are never inferred from photos.",
+          "Loaded activities only, not a complete history or adherence. UTC completion day (creation-date fallback). Nutrition uses available recorded summaries; missing values are not zero. Body points use explicit recorded units or verified Health Connect stored lb; units are never inferred from photos.",
           "hint",
         ),
       );
@@ -233,7 +239,11 @@ window.CoachDashboard = (() => {
           "hint",
         ),
       );
-      $("dashboardRoster").append(tile);
+      if (
+        activity.type === "media" &&
+        latestPhotos.get(activity.user_id)?._id !== activity._id
+      )
+        return;
       if (["complete", "completed"].includes(activity.status)) {
         if (activity.type === "workout") {
           addPoint(activity, "Completed workouts", "workouts", 1);
@@ -262,49 +272,102 @@ window.CoachDashboard = (() => {
           }
         }
       }
-      if (!["media", "metric"].includes(activity.type)) return;
+      if (
+        !["media", "metric"].includes(activity.type) ||
+        !["complete", "completed"].includes(activity.status)
+      )
+        return;
       // Feed files are preview refs, not complete inventories. Detail is a new
       // ordinary backend fetch, not a local sharing/source-proof decision.
       try {
-        const detail = await request(
+        const envelope = await request(
           "dashboard/activity?" + new URLSearchParams({ id: activity._id }),
         );
         if (!live()) return;
+        const detail = envelope?.activity;
+        if (
+          !detail ||
+          detail._id !== activity._id ||
+          detail.user_id !== activity.user_id ||
+          detail.type !== activity.type ||
+          envelope.owner?._id !== activity.user_id ||
+          !detail.data ||
+          typeof detail.data !== "object"
+        )
+          throw new Error("Invalid activity response.");
+        if (!["complete", "completed"].includes(detail.status)) return;
         if (activity.type === "metric") {
-          let count = 0;
-          for (const m of detail.data?.measurements || []) {
+          for (const m of Array.isArray(detail.data.measurements)
+            ? detail.data.measurements
+            : []) {
+            let value = m?.value;
             if (
-              typeof m.unit !== "string" ||
-              !m.unit ||
-              !Number.isFinite(m.value)
+              typeof value === "string" &&
+              value.length <= 20 &&
+              /^[+]?(?:\d+\.?\d*|\.\d+)$/.test(value.trim())
+            )
+              value = Number(value.trim());
+            if (
+              typeof value !== "number" ||
+              !Number.isFinite(value) ||
+              value <= 0 ||
+              value > 2000
             )
               continue;
-            addPoint(
-              activity,
-              m.name || m.type_id || "Measurement",
-              m.unit,
-              m.value,
-              true,
-            );
-            count++;
+            let unit = m.unit;
+            let pointActivity = detail;
+            if (
+              m.type_id === "weight" &&
+              ["kg", "lb", "lbs"].includes(unit) &&
+              (unit !== "kg" || value <= 1000)
+            ) {
+              // Explicit recorded units remain distinct series.
+            } else if (
+              m.type_id === "weight" &&
+              unit == null &&
+              detail.source?.provider === "health_connect"
+            ) {
+              const leaf = m.health_connect;
+              const stamp = detail.completed_at || detail.created_at;
+              if (
+                !stamp ||
+                !Number.isFinite(Date.parse(stamp)) ||
+                typeof leaf?.date !== "string" ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(leaf.date)
+              )
+                continue;
+              const time = Date.parse(`${leaf.date}T00:00:00Z`);
+              const day = new Date(stamp).toISOString().slice(0, 10);
+              if (
+                !Number.isFinite(time) ||
+                new Date(time).toISOString().slice(0, 10) !== leaf.date ||
+                Math.abs(time - Date.parse(`${day}T00:00:00Z`)) > 86400000 ||
+                leaf.value !== m.value
+              )
+                continue;
+              // The verified import stores converted lb, not source kg.
+              unit = "lb";
+              pointActivity = {
+                ...detail,
+                completed_at: `${leaf.date}T00:00:00Z`,
+              };
+            } else if (
+              !(m.type_id === "fat_percentage" && unit === "%" && value <= 100)
+            )
+              continue;
+            addPoint(pointActivity, m.type_id, unit, value, true);
           }
-          if (!count)
-            tile.append(
-              text(
-                "p",
-                "Body trend unavailable: no numeric measurements with explicit units.",
-                "hint",
-              ),
-            );
           return;
         }
-        const photos = (detail.data?.files || []).filter(
-          (f) => f.type === "image" || /^image\/(jpeg|png|webp)$/.test(f.type),
-        );
+        const photos = (
+          Array.isArray(detail.data.files) ? detail.data.files : []
+        ).filter(isPhoto);
+        if (!photos.length) return;
+        photoTiles.get(activity.user_id)?.remove();
+        photoTiles.set(activity.user_id, tile);
+        $("dashboardRoster").append(tile);
         const gallery = text("div", "", "dashboard-gallery");
         tile.append(gallery);
-        if (!photos.length)
-          gallery.append(text("p", "No supported photos in this activity."));
         for (const [index, photo] of photos.slice(0, 32).entries()) {
           const frame = text("div", "", "dashboard-photo");
           gallery.append(frame);
@@ -359,10 +422,35 @@ window.CoachDashboard = (() => {
         if (!Array.isArray(data.users) || !Array.isArray(data.activities))
           throw new Error("Invalid feed response.");
         for (const user of data.users) users.set(user._id, user);
+        const added = [];
         for (const activity of data.activities) {
           if (activities.has(activity._id)) continue;
           if (activities.size >= 200) break;
           activities.set(activity._id, activity);
+          added.push(activity);
+          if (
+            activity.type === "media" &&
+            Array.isArray(activity.data?.files) &&
+            activity.data.files.some(isPhoto) &&
+            ["complete", "completed"].includes(activity.status)
+          ) {
+            const previous = latestPhotos.get(activity.user_id);
+            const stamp = Date.parse(
+              activity.completed_at || activity.created_at,
+            );
+            const prior =
+              previous &&
+              Date.parse(previous.completed_at || previous.created_at);
+            if (
+              Number.isFinite(stamp) &&
+              (!previous ||
+                stamp > prior ||
+                (stamp === prior && activity._id > previous._id))
+            )
+              latestPhotos.set(activity.user_id, activity);
+          }
+        }
+        for (const activity of added) {
           await renderActivity(activity);
           if (!live()) return;
         }
@@ -377,13 +465,13 @@ window.CoachDashboard = (() => {
         more.hidden = !canLoad;
         $("dashboardStatus").textContent = data.hasMore
           ? "More activities available — partial history shown."
-          : "Shared dashboard loaded. Loaded feed coverage only.";
+          : "Loaded bounded feed history; not a complete history.";
         const coverage = $("dashboardCoverage");
         coverage.hidden = false;
         coverage.replaceChildren(
           text(
             "span",
-            `${users.size} members · ${activities.size} loaded activities`,
+            `${users.size} people in loaded feed · ${activities.size} loaded activities (200 activity limit). Not a complete roster. Photos: latest completed check-in per member among loaded data only.`,
           ),
         );
         if (activities.size >= 200)
