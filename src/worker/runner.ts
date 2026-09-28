@@ -149,6 +149,10 @@ const DENIAL_CODES = new Set([
   "CREDENTIAL_REJECTED",
 ]);
 const MAX_INCIDENTS = 32;
+// Presence report budgets: fresh initialize + initialized, then a fresh call.
+const PRESENCE_HANDSHAKE_MS = 4000;
+const PRESENCE_CALL_MS = 2000;
+const PRESENCE_REPORT_MS = 6500;
 export class Worker {
   private controller = new AbortController();
   private active?: Promise<void>;
@@ -317,7 +321,9 @@ export class Worker {
   }
   /**
    * Backend-owned durable memory for one exact execution. Any failure means no
-   * memory text for this turn (fail closed), never a local fallback.
+   * memory text for this turn (fail closed), never a local fallback. Only
+   * availability and bounded-work limits degrade to a memoryless turn; authority
+   * failures (credential, lease, memory authorization) still fail the turn.
    */
   private async memoryFor(
     c: Client,
@@ -351,9 +357,11 @@ export class Worker {
     } catch (error) {
       if (
         !(error instanceof ToolFailure) ||
-        !["MEMORY_UNAVAILABLE", "MEMORY_COVERAGE_UNAVAILABLE"].includes(
-          error.code ?? "",
-        )
+        ![
+          "MEMORY_UNAVAILABLE",
+          "MEMORY_COVERAGE_UNAVAILABLE",
+          "MEMORY_LIMIT",
+        ].includes(error.code ?? "")
       )
         throw error;
       this.diagnostic({
@@ -1227,7 +1235,7 @@ export class Worker {
           this.presenceAttempted = true;
           // Presence RPCs must finish even if Stop aborts polling mid-flight:
           // the returned generation is needed to fence the final stop.
-          await this.report("running", AbortSignal.timeout(2500));
+          await this.report("running");
           this.presence = "reported";
         }
         signal.throwIfAborted();
@@ -1236,10 +1244,7 @@ export class Worker {
         if (this.presence === "reported") {
           this.presenceTimer = setInterval(() => {
             if (this.controller.signal.aborted || this.presenceCall) return;
-            this.presenceCall = this.report(
-              "running",
-              AbortSignal.timeout(2500),
-            )
+            this.presenceCall = this.report("running")
               .then(() => {
                 this.presence = "reported";
               })
@@ -1260,16 +1265,20 @@ export class Worker {
     })();
     return this.startup;
   }
-  private async report(state: "running" | "stopped", signal: AbortSignal) {
+  private async report(state: "running" | "stopped") {
     if (state === "stopped" && !this.presenceGeneration)
       throw new Error("WORKER_PRESENCE_UNCONFIRMED");
+    // Stateless MCP: the handshake and the tool call are independent POSTs, so
+    // each gets its own budget under one aggregate deadline. withSignal only
+    // narrows. Stop may await an in-flight heartbeat and then its own report;
+    // two aggregates must fit the updater's 15s quiesce request with headroom.
     const c = new Client(
       this.options.origin,
       this.options.token,
-      signal,
+      AbortSignal.timeout(PRESENCE_REPORT_MS),
       (event) => this.diagnostic(event),
     );
-    await c.connect();
+    await c.withSignal(AbortSignal.timeout(PRESENCE_HANDSHAKE_MS)).connect();
     const result = await c.call(
       "coach_report_worker_presence",
       {
@@ -1279,7 +1288,7 @@ export class Worker {
           ? { generation: this.presenceGeneration }
           : {}),
       },
-      2000,
+      PRESENCE_CALL_MS,
     );
     if (result.state !== state) throw new Error("MCP_PROTOCOL_ERROR");
     if (state === "running") {
@@ -1327,7 +1336,7 @@ export class Worker {
       ]);
       if (this.presenceAttempted) {
         try {
-          await this.report("stopped", AbortSignal.timeout(2500));
+          await this.report("stopped");
           this.presence = "reported";
         } catch {
           this.presence = "unconfirmed";

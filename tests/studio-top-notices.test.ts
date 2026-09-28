@@ -565,12 +565,29 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
         "Worker started and presence reported. Wait for persisted-reply status to confirm delivery.",
       );
       assert.equal((await noticeState(page)).severity, "success");
-      handler = undefined;
+      // Only an explicit unsupported outcome blames the backend's feature set;
+      // an unconfirmed heartbeat is a connectivity warning, not missing support.
+      handler = async (route, path) => {
+        if (path !== "/api/run") return false;
+        await route.fulfill({ json: { presence: "unconfirmed" } });
+        return true;
+      };
+      await page.locator("#run").click();
+      await waitText(
+        "Worker started; presence unconfirmed. The backend did not confirm a heartbeat, so connectivity is not confirmed.",
+      );
+      assert.equal((await noticeState(page)).severity, "warning");
+      handler = async (route, path) => {
+        if (path !== "/api/run") return false;
+        await route.fulfill({ json: { presence: "unsupported" } });
+        return true;
+      };
       await page.locator("#run").click();
       await waitText(
         "Worker started; this backend does not support explicit presence. Connectivity is not confirmed by a heartbeat.",
       );
       assert.equal((await noticeState(page)).severity, "warning");
+      handler = undefined;
 
       // Other pages: the same notice stays above the primary tabs.
       await page.locator("#coachTab").click();
