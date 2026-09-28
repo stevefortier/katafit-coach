@@ -152,7 +152,14 @@ test("real host gateway seals structured history, Stop and service restart prese
 test("F1 prefix rewrite freezes archive but live provider and tools retain authority guards", async () => {
   const f = await archiveFixture(),
     server = createServer();
-  const terminal = new Terminal(f.store, server, () => "http://127.0.0.1");
+  const diagnostics: any[] = [];
+  const terminal = new Terminal(
+    f.store,
+    server,
+    () => "http://127.0.0.1",
+    () => true,
+    (event) => diagnostics.push(event),
+  );
   try {
     await terminal.begin();
     const body = {
@@ -190,6 +197,11 @@ test("F1 prefix rewrite freezes archive but live provider and tools retain autho
     );
     const after = await terminal.historyRead(id);
     assert.equal(after.reason, "history_mismatch");
+    assert.equal(
+      diagnostics.filter((e) => e.stage === "native-history-failed").at(-1)
+        ?.error?.message,
+      "NATIVE_HISTORY_MISMATCH",
+    );
     assert.deepEqual(after.entries, before.entries);
     assert.equal(
       f.calls.filter((c) => c.path === "/v1/chat/completions").length,

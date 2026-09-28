@@ -61,7 +61,10 @@ const DETAIL = "studio_operator_read_activity";
  * 5. the final envelope is measured again (notices are text) and capped at
  *    the 24 MiB provider wire. Returns the exact bytes to send upstream.
  */
-export function nativeProviderEnvelope(body: unknown): string {
+export function nativeProviderAdmission(body: unknown): {
+  original: unknown;
+  wire: string;
+} {
   const raw = JSON.stringify(body) ?? "";
   const rawBytes = Buffer.byteLength(raw);
   if (rawBytes > NATIVE_PROVIDER_UPLOAD_LIMIT)
@@ -84,7 +87,11 @@ export function nativeProviderEnvelope(body: unknown): string {
     throw new NativeFailure("NATIVE_TEXT_TOO_LARGE");
   if (wireBytes > NATIVE_PROVIDER_WIRE_LIMIT)
     throw new NativeFailure("NATIVE_WIRE_TOO_LARGE");
-  return wire;
+  return { original: body, wire };
+}
+
+export function nativeProviderEnvelope(body: unknown): string {
+  return nativeProviderAdmission(body).wire;
 }
 
 const providerCodes: Record<string, NativeFailureCode> = {
@@ -189,6 +196,7 @@ import {
   captureNativeExchange,
   CanonicalNativeHistory,
 } from "./sessionCapture.js";
+import { normalizeHostToolImages } from "./toolImageNormalization.js";
 import type { FileEntry } from "@earendil-works/pi-coding-agent";
 export interface NativeGatewayHooks {
   resume?: ArchiveResume;
@@ -197,7 +205,9 @@ export interface NativeGatewayHooks {
   onExchange?: (
     capture: NonNullable<ReturnType<typeof captureNativeExchange>>,
   ) => Promise<void>;
-  onHistoryMismatch?: () => Promise<void>;
+  onHistoryMismatch?: (
+    reason: "NATIVE_HISTORY_MISMATCH" | "NATIVE_HISTORY_UNTRUSTED_RESULT",
+  ) => Promise<void>;
   onBeforeDispatch?: () => Promise<void>;
   onDiagnostic?: BackendLogger;
   /**
@@ -237,14 +247,19 @@ export async function openNativeGateway(
       const first = !historyMismatch;
       historyMismatch = true;
       if (!freezeOnly) historyUnsafe = true;
+      const reason =
+        error instanceof Error &&
+        error.message === "NATIVE_HISTORY_UNTRUSTED_RESULT"
+          ? "NATIVE_HISTORY_UNTRUSTED_RESULT"
+          : "NATIVE_HISTORY_MISMATCH";
       try {
-        if (first) await hooks.onHistoryMismatch?.();
+        if (first) await hooks.onHistoryMismatch?.(reason);
       } catch (persistenceError) {
         historyUnsafe = true;
         throw persistenceError;
       }
       if (freezeOnly) return undefined;
-      throw error;
+      throw new NativeFailure(reason);
     }
   };
   const config = store.publicConfig();
@@ -642,14 +657,7 @@ export async function openNativeGateway(
     },
     close,
   };
-  async function admit(
-    request: any,
-    requestSignal: AbortSignal | undefined,
-    prior: Promise<void>,
-    claim: () => void,
-  ) {
-    check();
-    if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
+  function validateRequestShape(request: any) {
     if (!request || typeof request !== "object" || Array.isArray(request))
       throw new Error("NATIVE_REQUEST_REJECTED");
     // Provider bodies are raw Pi history (images resent every turn), bounded
@@ -683,6 +691,15 @@ export async function openNativeGateway(
         request.toolCallId.length > 256)
     )
       throw new Error("NATIVE_REQUEST_REJECTED");
+  }
+  async function admit(
+    request: any,
+    requestSignal: AbortSignal | undefined,
+    prior: Promise<void>,
+    claim: () => void,
+  ) {
+    check();
+    if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     if (request.kind === "catalog") {
       if (hooks.seed) await authorizeNative();
       const catalog = {
@@ -781,6 +798,11 @@ export async function openNativeGateway(
     operation: (prior: Promise<void>) => Promise<any>,
     requestSignal?: AbortSignal,
   ) {
+    check();
+    if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
+    // Malformed sandbox frames are not evidence that Pi's selected history
+    // changed. Refuse them before claiming/freeze-checking any tool slot.
+    validateRequestShape(request);
     let selected: object | undefined;
     let prior = orderedOutcomes;
     let finish: (() => void) | undefined;
@@ -797,10 +819,8 @@ export async function openNativeGateway(
       (request.toolCallId === undefined ||
         typeof request.toolCallId === "string")
     ) {
-      selected = historyLog.claim(
-        request.name,
-        request.args,
-        request.toolCallId,
+      selected = await canonical(() =>
+        historyLog.claim(request.name, request.args, request.toolCallId),
       );
       if (selected) {
         orderedOutcomes = new Promise<void>((resolve) => {
@@ -808,9 +828,11 @@ export async function openNativeGateway(
         });
       }
     }
-    let result: any, failure: NativeFailure | undefined;
+    let result: any, proofResult: any, failure: NativeFailure | undefined;
     try {
       result = await operation(prior);
+      if (request?.kind === "tool")
+        proofResult = await normalizeHostToolImages(result);
     } catch (error) {
       failure = classify(error, request?.kind, requestSignal);
     }
@@ -826,7 +848,11 @@ export async function openNativeGateway(
       hooks.onExchange &&
       !historyUnsafe
     ) {
-      const outcome = nativeToolOutcome(request.name, result, failure?.code);
+      const outcome = nativeToolOutcome(
+        request.name,
+        proofResult ?? result,
+        failure?.code,
+      );
       try {
         const work = prior.then(async () => {
           const recorded = await canonical(() =>
@@ -953,7 +979,8 @@ export async function openNativeGateway(
     )
       throw new Error("NATIVE_MODEL_REJECTED");
     // Fully validated before any turn transition or authorization side effect.
-    const wire = nativeProviderEnvelope(request.body);
+    const admitted = nativeProviderAdmission(request.body);
+    const wire = admitted.wire;
     try {
       // A pending human turn is consumed here, once, before any disclosure.
       // A journaled transition is resumed (identically) before anything else.
@@ -970,9 +997,9 @@ export async function openNativeGateway(
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const timeout = AbortSignal.timeout(120000);
     if (session.archive && hooks.onExchange) {
-      await canonical(() => historyLog.validateResultClaims(JSON.parse(wire)));
+      await canonical(() => historyLog.validateResultClaims(admitted.original));
       const capture = !historyMismatch
-        ? await canonical(() => historyLog.request(JSON.parse(wire)), true)
+        ? await canonical(() => historyLog.request(admitted.original), true)
         : undefined;
       if (capture) await hooks.onExchange(capture);
       check();

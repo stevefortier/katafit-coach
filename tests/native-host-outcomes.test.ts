@@ -96,6 +96,138 @@ test("host observed invalid arguments error survives next provider and archive r
   }
 });
 
+test("local result preceding a host result is sealed in Pi order before continuation", async () => {
+  const hostName = "studio_operator_list_members";
+  const calls = [
+    {
+      id: "local-first",
+      type: "function",
+      function: { name: "read", arguments: "{}" },
+    },
+    {
+      id: "host-second",
+      type: "function",
+      function: { name: hostName, arguments: "{}" },
+    },
+  ];
+  let rounds = 0;
+  const f = await archiveFixture({
+    provider: () =>
+      rounds++ === 0
+        ? sse(
+            { tool_calls: calls.map((call, index) => ({ ...call, index })) },
+            false,
+          )
+        : answer("MIXED_RESULTS_CONTINUED"),
+  });
+  const server = createServer();
+  const terminal = new Terminal(f.store, server, () => "http://127.0.0.1");
+  try {
+    await terminal.begin();
+    const gateway = terminal.latest!;
+    const messages: any[] = [{ role: "user", content: "read then list" }];
+    await gateway.handle({
+      kind: "provider",
+      body: {
+        model: "approved-custom-model",
+        messages,
+        stream: true,
+      },
+    });
+    const result = await gateway.handle({
+      kind: "tool",
+      name: hostName,
+      args: {},
+      toolCallId: "host-second",
+    });
+    const hostText = nativeToolOutcome(hostName, result)
+      .content.filter((part: any) => part.type === "text")
+      .map((part: any) => part.text)
+      .join("\n");
+    messages.push(
+      { role: "assistant", content: null, tool_calls: calls },
+      {
+        role: "tool",
+        tool_call_id: "local-first",
+        content: "synthetic local read",
+      },
+      { role: "tool", tool_call_id: "host-second", content: hostText },
+    );
+    await gateway.handle({
+      kind: "provider",
+      body: {
+        model: "approved-custom-model",
+        messages,
+        stream: true,
+      },
+    });
+    assert.equal(rounds, 2);
+    const id = (await terminal.historyList()).sessions[0].id;
+    const history = await terminal.historyRead(id);
+    assert.equal(history.reason, null);
+    assert.deepEqual(
+      history.entries
+        .filter((entry: any) => entry.message?.role === "toolResult")
+        .map((entry: any) => entry.message.toolCallId),
+      ["local-first", "host-second"],
+    );
+    assert.match(JSON.stringify(history.entries), /MIXED_RESULTS_CONTINUED/);
+  } finally {
+    await terminal.close();
+    await f.close();
+    server.close();
+  }
+});
+
+test("an unmatched host tool claim freezes the archive before any action", async () => {
+  const name = "studio_operator_list_members";
+  let reason: string | undefined;
+  const f = await archiveFixture({
+    provider: () => toolCall(name, {}, "selected"),
+  });
+  const gateway = await openNativeGateway(f.store, undefined, {
+    onExchange: async () => {},
+    onHistoryMismatch: async (code) => {
+      reason = code;
+    },
+  });
+  try {
+    await gateway.handle({
+      kind: "provider",
+      body: {
+        model: "approved-custom-model",
+        messages: [{ role: "user", content: "list" }],
+        stream: true,
+      },
+    });
+    for (const malformed of [
+      { kind: "tool", name, args: {}, toolCallId: "" },
+      { kind: "tool", name, args: {}, toolCallId: "unselected", extra: true },
+    ]) {
+      await assert.rejects(
+        gateway.handle(malformed),
+        (error: any) => error.code === "NATIVE_REQUEST_REJECTED",
+      );
+      assert.equal(reason, undefined);
+      assert.equal(f.named(name).length, 0);
+    }
+    await assert.rejects(
+      gateway.handle({
+        kind: "tool",
+        name,
+        args: {},
+        toolCallId: "unselected",
+      }),
+      (error: any) => error.code === "NATIVE_HISTORY_MISMATCH",
+    );
+    assert.equal(reason, "NATIVE_HISTORY_MISMATCH");
+    assert.equal(f.named(name).length, 0);
+  } finally {
+    await gateway.close();
+    await f.close();
+  }
+});
+
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import {
   nativeToolOutcome,

@@ -26,6 +26,31 @@ const usage = {
 /** Capture only the host-observed, validated provider exchange, never a Pi file.
  * This is a transcript, not source authority. Its exact digest is sealed against
  * backend-owned proofs. Native tool actions are not executed during hydration. */
+const toolImageDigest = (mimeType: string, data: string) =>
+  createHash("sha256").update(mimeType).update(":").update(data).digest("hex");
+const syntheticToolImages = (message: any): string[] | null => {
+  if (
+    message?.role !== "user" ||
+    !Array.isArray(message.content) ||
+    message.content[0]?.type !== "text" ||
+    message.content[0]?.text !== "Attached image(s) from tool result:" ||
+    message.content.length < 2
+  )
+    return null;
+  const images: string[] = [];
+  for (const block of message.content.slice(1)) {
+    const url = block?.type === "image_url" && block.image_url?.url;
+    const match =
+      typeof url === "string" &&
+      /^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(
+        url,
+      );
+    if (!match) return null;
+    images.push(toolImageDigest(match[1], match[2]));
+  }
+  return images;
+};
+
 export function captureNativeExchange(
   wire: any,
   response: string,
@@ -61,7 +86,7 @@ export function captureNativeExchange(
   if (!requestOnly && (typeof text !== "string" || !text.length)) return null;
   const manager = SessionManager.inMemory("/workspace");
   let imagesOmitted = false;
-  const textOf = (content: any): string => {
+  const textOf = (content: any, toolResult = false): string => {
     if (typeof content === "string") return clean(content);
     if (content === null || content === undefined) return "";
     if (!Array.isArray(content)) throw new Error("NATIVE_HISTORY_FORMAT");
@@ -71,15 +96,41 @@ export function captureNativeExchange(
           return clean(part.text);
         if (part?.type === "image_url" || part?.type === "image") {
           imagesOmitted = true;
-          return "[Image not retained. Attachments and workspace files are ephemeral.]";
+          // The host-observed tool receipt stores only text. An extra archive
+          // placeholder would falsely change its prefix on the next Pi turn.
+          return toolResult
+            ? null
+            : "[Image not retained. Attachments and workspace files are ephemeral.]";
         }
         throw new Error("NATIVE_HISTORY_FORMAT");
       })
+      .filter((part): part is string => part !== null)
       .join("\n");
   };
-  for (const message of wire.messages) {
+  for (let i = 0; i < wire.messages.length; i++) {
+    const message = wire.messages[i];
     if (["system", "developer"].includes(message.role)) continue;
-    const content = textOf(message.content);
+    // Pi 0.86.1 sends tool-image bytes in a synthetic user message after
+    // consecutive tool results. It is not a human turn and never belongs in
+    // the durable transcript. The caller separately verifies its exact image
+    // digests against host-observed results before any provider dispatch.
+    const prior = wire.messages[i - 1];
+    const shim =
+      prior?.role === "assistant" &&
+      prior.content === "I have processed the tool results." &&
+      wire.messages[i - 2]?.role === "tool";
+    if (syntheticToolImages(message) && (prior?.role === "tool" || shim)) {
+      imagesOmitted = true;
+      continue;
+    }
+    if (
+      message.role === "assistant" &&
+      message.content === "I have processed the tool results." &&
+      prior?.role === "tool" &&
+      syntheticToolImages(wire.messages[i + 1])
+    )
+      continue;
+    const content = textOf(message.content, message.role === "tool");
     if (message.role === "user")
       manager.appendMessage({ role: "user", content, timestamp: Date.now() });
     else if (message.role === "assistant") {
@@ -163,6 +214,7 @@ export class CanonicalNativeHistory {
   // Live comparisons precede privacy redaction. Digests never enter archives;
   // resumed, already-redacted seed entries use their sealed canonical text.
   private emittedText = new WeakMap<object, string>();
+  private emittedImages = new WeakMap<object, string[]>();
   private reserved = new WeakSet<object>();
   constructor(seed?: FileEntry[]) {
     this.entries = structuredClone(
@@ -242,6 +294,8 @@ export class CanonicalNativeHistory {
       .filter((e) => e.type === "message")
       .map((e) => e.message);
     const rawResults = wire.messages.filter((m: any) => m.role === "tool");
+    const imageProofs = new Map<any, { local: boolean; digests: string[] }>();
+    const validatedImageMessages = new Set<any>();
     const positioned = new Map<string, any>();
     let prefix = true,
       resultIndex = 0;
@@ -274,7 +328,10 @@ export class CanonicalNativeHistory {
           message.toolName !== matching.name)
       )
         throw new Error("NATIVE_HISTORY_UNTRUSTED_RESULT");
-      if (localTools.has(matching.name)) continue;
+      if (localTools.has(matching.name)) {
+        imageProofs.set(raw, { local: true, digests: [] });
+        continue;
+      }
       const recorded = receipts.get(matching);
       if (
         !recorded ||
@@ -287,6 +344,57 @@ export class CanonicalNativeHistory {
         (Object.hasOwn(raw, "isError") && raw.isError !== recorded.isError)
       )
         throw new Error("NATIVE_HISTORY_UNTRUSTED_RESULT");
+      imageProofs.set(raw, {
+        local: false,
+        digests: this.emittedImages.get(recorded) ?? [],
+      });
+    }
+    // Pi groups consecutive tool results, then emits one synthetic user image
+    // message. Bind that extra provider input to the exact host-normalized
+    // image bytes; never infer authority from the sandbox's image metadata.
+    for (let i = 0; i < wire.messages.length; i++) {
+      if (wire.messages[i].role !== "tool") continue;
+      const group: any[] = [];
+      while (wire.messages[i]?.role === "tool") group.push(wire.messages[i++]);
+      const proofs = group.map((raw) => imageProofs.get(raw));
+      if (proofs.some((proof) => !proof))
+        throw new Error("NATIVE_HISTORY_UNTRUSTED_RESULT");
+      const expected = proofs.flatMap((proof) => proof!.digests);
+      const next = wire.messages[i];
+      const shim =
+        next?.role === "assistant" &&
+        next.content === "I have processed the tool results.";
+      const afterTools = wire.messages[i + (shim ? 1 : 0)];
+      const attached = syntheticToolImages(afterTools);
+      // A tool continuation cannot mint a human image turn with a different
+      // caption. Only Pi's exact synthetic message and host image proof pass.
+      const unprovedImage =
+        afterTools?.role === "user" &&
+        Array.isArray(afterTools.content) &&
+        afterTools.content.some(
+          (part: any) => part?.type === "image_url" || part?.type === "image",
+        ) &&
+        attached === null;
+      if (
+        unprovedImage ||
+        (expected.length > 0 &&
+          (!attached || !isDeepStrictEqual(attached, expected))) ||
+        (expected.length === 0 && attached !== null)
+      )
+        throw new Error("NATIVE_HISTORY_UNTRUSTED_RESULT");
+      if (expected.length > 0) validatedImageMessages.add(afterTools);
+      i--;
+    }
+    // Text-only human input is the Operator contract. An image anywhere else
+    // in the provider wire is neither a host-observed result nor an authorized
+    // human attachment, even if it follows a valid synthetic image message.
+    for (const message of wire.messages) {
+      if (!Array.isArray(message.content)) continue;
+      const hasImage = message.content.some(
+        (part: any) => part?.type === "image_url" || part?.type === "image",
+      );
+      if (hasImage && !validatedImageMessages.has(message))
+        throw new Error("NATIVE_HISTORY_UNTRUSTED_RESULT");
     }
   }
 
@@ -296,15 +404,66 @@ export class CanonicalNativeHistory {
       .filter((e: any) => e.type === "message")
       .map((e: any) => e.message);
     const existing = this.messages();
-    if (
-      incoming.length < existing.length ||
-      existing.some(
-        (m, i) =>
-          !isDeepStrictEqual(this.comparable(m), this.comparable(incoming[i])),
+    // Host results are sealed as they arrive, while Pi may emit a preceding
+    // sandbox-local result only in its next provider request. Reconcile that
+    // one gap without allowing a rewrite or substitution of the sealed host
+    // result. The local call must have been selected in the observed prefix.
+    const selected = new Map<string, any[]>();
+    const consumed = new Set<string>();
+    for (const message of existing) {
+      if (message.role === "assistant")
+        for (const call of message.content.filter(
+          (part: any) => part.type === "toolCall",
+        ))
+          selected.set(call.id, [...(selected.get(call.id) ?? []), call]);
+      if (message.role === "toolResult") consumed.add(message.toolCallId);
+    }
+    const insertions: { at: number; message: any }[] = [];
+    let journal = 0,
+      cursor = 0;
+    while (cursor < incoming.length && journal < existing.length) {
+      const message = incoming[cursor];
+      if (
+        isDeepStrictEqual(
+          this.comparable(existing[journal]),
+          this.comparable(message),
+        )
+      ) {
+        journal++;
+        cursor++;
+        continue;
+      }
+      const calls = selected.get(message.toolCallId) ?? [];
+      const call = calls.length === 1 ? calls[0] : undefined;
+      if (
+        existing[journal].role !== "toolResult" ||
+        message.role !== "toolResult" ||
+        !call ||
+        !localTools.has(call.name) ||
+        consumed.has(call.id) ||
+        (message.toolName !== "archived_tool" &&
+          message.toolName !== call.name) ||
+        // A call selected after the gap cannot grant an earlier result slot.
+        !existing
+          .slice(0, journal)
+          .some((entry) =>
+            entry.role === "assistant" ? entry.content.includes(call) : false,
+          )
       )
-    )
-      throw new Error("NATIVE_HISTORY_MISMATCH");
-    const added = incoming.slice(existing.length);
+        throw new Error("NATIVE_HISTORY_MISMATCH");
+      consumed.add(call.id);
+      insertions.push({
+        at: journal,
+        message: {
+          ...message,
+          toolName: call.name,
+          details: { provenance: "sandbox_local" },
+        },
+      });
+      cursor++;
+    }
+    if (journal !== existing.length) throw new Error("NATIVE_HISTORY_MISMATCH");
+    const added = incoming.slice(cursor);
     const pending = new Map<string, any>();
     for (const message of existing) {
       if (message.role === "user") pending.clear();
@@ -315,6 +474,7 @@ export class CanonicalNativeHistory {
           pending.set(call.id, call);
       if (message.role === "toolResult") pending.delete(message.toolCallId);
     }
+    for (const item of insertions) pending.delete(item.message.toolCallId);
     // Validate the whole suffix before changing the immutable journal.
     for (const message of added) {
       if (message.role === "user") {
@@ -333,6 +493,41 @@ export class CanonicalNativeHistory {
       message.toolName = call.name;
       message.details = { provenance: "sandbox_local" };
     }
+    // Validate size and the complete suffix before changing any sealed state.
+    const projected = structuredClone(this.entries);
+    const originalEntries = this.entries.filter(
+      (entry: any) => entry.type === "message",
+    );
+    for (const item of insertions) {
+      const target: any = originalEntries[item.at];
+      const at = projected.findIndex((entry: any) => entry.id === target?.id);
+      if (at < 0) throw new Error("NATIVE_HISTORY_MISMATCH");
+      const prior: any = projected[at - 1];
+      const entry: any = {
+        type: "message",
+        id: randomBytes(4).toString("hex"),
+        parentId: prior?.type === "session" ? null : prior.id,
+        timestamp: new Date().toISOString(),
+        message: structuredClone(item.message),
+      };
+      (projected[at] as any).parentId = entry.id;
+      projected.splice(at, 0, entry);
+    }
+    if (Buffer.byteLength(JSON.stringify(projected)) > 2 * 1024 * 1024)
+      throw new Error("NATIVE_HISTORY_LIMIT");
+    // Preserve the original host result objects: ephemeral text/image digests
+    // are WeakMap-bound to them and must survive this ordering correction.
+    for (let i = 0; i < projected.length; i++) {
+      const item: any = projected[i];
+      const prior = this.entries.find((entry: any) => entry.id === item.id);
+      if (prior) (prior as any).parentId = item.parentId;
+    }
+    const known = new Set(this.entries.map((entry: any) => entry.id));
+    this.entries = projected.map((entry: any) =>
+      known.has(entry.id)
+        ? this.entries.find((prior: any) => prior.id === entry.id)!
+        : entry,
+    );
     for (const message of added) this.append(message);
     this.imagesOmitted ||= candidate.imagesOmitted;
     this.complete = false;
@@ -497,6 +692,12 @@ export class CanonicalNativeHistory {
       timestamp: Date.now(),
     });
     this.emittedText.set(this.messages().at(-1), textDigest(result.content));
+    this.emittedImages.set(
+      this.messages().at(-1),
+      result.content
+        .filter((p: any) => p.type === "image")
+        .map((p: any) => toolImageDigest(p.mimeType, p.data)),
+    );
     this.release(call);
     return true;
   }
