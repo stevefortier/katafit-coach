@@ -546,7 +546,7 @@ test(
 
 for (const revocationMarker of [true, false])
   test(
-    `real terminal: retained authority revoked after a provider post-check tears Pi down on its next tool, with no further provider call (marker ${revocationMarker})`,
+    `real terminal: retained authority revoked after a provider post-check tears Pi down at its next boundary, with no further provider call (marker ${revocationMarker})`,
     { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 150000 },
     async () => {
       let armed = false,
@@ -585,18 +585,21 @@ for (const revocationMarker of [true, false])
         await h.waitFor(() => owned() === "", "runtime destruction");
         assert.ok(providerAtRevoke > 0);
         assert.equal(h.f.providerCalls(), providerAtRevoke);
-        assert.equal(h.f.named(GENERIC).length, 2, "denied tool not replayed");
-        // Discriminating check: the denied TOOL itself triggers teardown. With
-        // the marker no authorization (e.g. a later provider pre-check) runs
-        // after it; unmarked, exactly one content-free resolution runs.
-        const denied = h.f.calls.findLastIndex((c) => c.name === GENERIC);
-        assert.equal(
-          h.f.calls
-            .slice(denied)
-            .filter((c) => c.name === "studio_operator_authorize_context")
-            .length,
-          revocationMarker ? 0 : 1,
-        );
+        const genericCalls = h.f.named(GENERIC);
+        assert.ok(genericCalls.length === 1 || genericCalls.length === 2);
+        // The new pre-provider proof may stop the second turn before the
+        // denied tool is even dispatched. If Pi reaches it, preserve the
+        // discriminating marker-specific authorization check.
+        if (genericCalls.length === 2) {
+          const denied = h.f.calls.findLastIndex((c) => c.name === GENERIC);
+          assert.equal(
+            h.f.calls
+              .slice(denied)
+              .filter((c) => c.name === "studio_operator_authorize_context")
+              .length,
+            revocationMarker ? 0 : 1,
+          );
+        }
         assert.equal(h.f.named("studio_operator_open_session").length, 1);
       } finally {
         await h.close();
