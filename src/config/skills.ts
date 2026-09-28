@@ -110,8 +110,8 @@ Workflow:
   {
     id: "fetch-checkin-images",
     name: "Fetch and inspect check-in images",
-    defaultVersion: 1,
-    basedOnDefaultVersion: 1,
+    defaultVersion: 2,
+    basedOnDefaultVersion: 2,
     customized: false,
     enabled: true,
     purpose:
@@ -373,7 +373,7 @@ export class SkillStore {
       if (skill.defaultVersion === builtin.defaultVersion) return skill;
       if (skill.customized)
         return { ...skill, defaultVersion: builtin.defaultVersion };
-      return structuredClone(builtin);
+      return { ...structuredClone(builtin), enabled: skill.enabled };
     });
     // Existing/customized/disabled entries and historical bytes stay intact.
     for (const builtin of stockSkills)
