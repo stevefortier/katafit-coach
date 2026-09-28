@@ -1,4 +1,6 @@
 import test from "node:test";
+import { NativeRuntime } from "../src/sandbox/runtime.js";
+import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import sharp from "sharp";
@@ -146,7 +148,16 @@ test(
         const acquired = body.messages.some((m: any) => m.role === "tool");
         if (acquired) assert.equal(imageParts(body).length, 1);
         const delta = acquired
-          ? { content: "Verified synthetic JPEG reached the native provider." }
+          ? {
+              content: body.messages.some(
+                (m: any) =>
+                  m.role === "user" &&
+                  typeof m.content === "string" &&
+                  m.content.includes("again"),
+              )
+                ? "REST_IMAGE_REUSED"
+                : "Verified synthetic JPEG reached the native provider.",
+            }
           : {
               tool_calls: [
                 {
@@ -164,6 +175,7 @@ test(
       });
       let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
       let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
+      let runtime: NativeRuntime | undefined;
       try {
         await f.store.save({
           ...f.store.publicConfig(),
@@ -172,64 +184,114 @@ test(
           provider: { ...f.store.publicConfig().provider, vision: true },
         });
         gateway = await openNativeGateway(f.store);
-        relay = await startRelay(gateway);
-        const extension = await loadExtension(relay);
-        const messages: any[] = [
-          {
-            role: "user",
-            content: "Read the synthetic shared image.",
-            timestamp: Date.now(),
-          },
-        ];
-        const selection = await piTurn(
-          relay,
-          "approved-custom-model",
-          messages,
-        );
-        assert.equal(selection.stopReason, "toolUse");
-        messages.push(selection);
-        const result = await extension.call("katafit_rest_get", { path });
-        assert.ok(
-          result.content.some((p: any) => p.type === "image"),
-          "real backend pixels reached the shipped native extension",
-        );
-        const { normalizeToolResultImages } = await import(
-          new URL(
-            "./utils/tool-result-images.js",
-            import.meta.resolve("@earendil-works/pi-coding-agent"),
-          ).href
-        );
-        messages.push({
-          role: "toolResult",
-          toolCallId: "call-katafit_rest_get",
-          toolName: "katafit_rest_get",
-          content: await normalizeToolResultImages(result.content),
-          isError: false,
-          timestamp: Date.now(),
-        });
-        await b.db
-          .collection("users")
-          .updateOne(
-            { _id: owner },
-            { $set: { "privacy_settings.media": [] } },
+        if (process.env.NATIVE_DOCKER_TEST === "1") {
+          assert.ok(process.env.NATIVE_TEST_IMAGE);
+          runtime = new NativeRuntime(process.env.NATIVE_TEST_IMAGE!);
+          let output = "";
+          runtime.onOutput = (chunk) => {
+            output = (output + chunk).slice(-100000);
+          };
+          const wait = async (text: string) => {
+            const until = Date.now() + 25000;
+            while (!output.includes(text)) {
+              if (Date.now() > until)
+                throw new Error(
+                  `Missing native marker ${text}: ${output.slice(-2500)}`,
+                );
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+          };
+          await runtime.start(gateway);
+          await runtime.attach();
+          await wait(PI_READY);
+          runtime.input("Read the synthetic shared image.\r");
+          await wait("Verified synthetic JPEG reached the native provider.");
+          await b.db
+            .collection("users")
+            .updateOne(
+              { _id: owner },
+              { $set: { "privacy_settings.media": [] } },
+            );
+          const before = backendCalls.length;
+          runtime.input(
+            "Describe that same acquired image again without fetching it.\r",
           );
-        const before = backendCalls.length;
-        const answer = await piTurn(relay, "approved-custom-model", messages);
-        assert.equal(answer.stopReason, "stop");
-        assert.ok(
-          JSON.stringify(answer.content).includes("Verified synthetic JPEG"),
-        );
-        assert.equal(
-          backendCalls.length,
-          before,
-          "provider follow-up does not reauthorize or reread acquired data",
-        );
-        assert.deepEqual(
-          backendCalls.filter((url) => url !== "/api/agents/coach/mcp"),
-          [path],
-          "optional initial legacy memory denial never gates ordinary nonchief REST; follow-up above makes zero requests",
-        );
+          await wait("REST_IMAGE_REUSED");
+          assert.equal(
+            backendCalls.length,
+            before,
+            "real isolated Pi reuses acquired pixels without another backend request",
+          );
+          assert.equal(backendCalls.filter((url) => url === path).length, 1);
+          console.log(
+            JSON.stringify({
+              proof:
+                "real Mongo/Express + isolated Docker Pi + conditional scripted provider",
+              imageFetches: 1,
+              followupBackendCalls: 0,
+            }),
+          );
+        } else {
+          relay = await startRelay(gateway);
+          const extension = await loadExtension(relay);
+          const messages: any[] = [
+            {
+              role: "user",
+              content: "Read the synthetic shared image.",
+              timestamp: Date.now(),
+            },
+          ];
+          const selection = await piTurn(
+            relay,
+            "approved-custom-model",
+            messages,
+          );
+          assert.equal(selection.stopReason, "toolUse");
+          messages.push(selection);
+          const result = await extension.call("katafit_rest_get", { path });
+          assert.ok(
+            result.content.some((p: any) => p.type === "image"),
+            "real backend pixels reached the shipped native extension",
+          );
+          const { normalizeToolResultImages } = await import(
+            new URL(
+              "./utils/tool-result-images.js",
+              import.meta.resolve("@earendil-works/pi-coding-agent"),
+            ).href
+          );
+          messages.push({
+            role: "toolResult",
+            toolCallId: "call-katafit_rest_get",
+            toolName: "katafit_rest_get",
+            content: await normalizeToolResultImages(result.content),
+            isError: false,
+            timestamp: Date.now(),
+          });
+          await b.db
+            .collection("users")
+            .updateOne(
+              { _id: owner },
+              { $set: { "privacy_settings.media": [] } },
+            );
+          const before = backendCalls.length;
+          const answer = await piTurn(relay, "approved-custom-model", messages);
+          assert.equal(answer.stopReason, "stop");
+          assert.ok(
+            JSON.stringify(answer.content).includes("Verified synthetic JPEG"),
+          );
+          assert.equal(
+            backendCalls.length,
+            before,
+            "provider follow-up does not reauthorize or reread acquired data",
+          );
+          assert.deepEqual(
+            backendCalls.filter((url) => url !== "/api/agents/coach/mcp"),
+            [path],
+            "optional initial legacy memory denial never gates ordinary nonchief REST; follow-up above makes zero requests",
+          );
+        }
       } finally {
+        await runtime?.stop();
         await relay?.close();
         await gateway?.close();
         await f.close();
