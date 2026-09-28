@@ -721,7 +721,10 @@ function operatorAttachments($, fetchAttachment) {
     entry.state = state;
     entry.preview = preview;
     items.set(item.id, entry);
-    list.append(node);
+    // Snapshots and live frames follow host acceptance order, oldest first.
+    // Prepend only new identities: ties/clock changes need no timestamp sort,
+    // and reconnect duplicates must not move existing cards or steal focus.
+    list.prepend(node);
     render();
     if (image) void load(entry).catch(() => {});
   }
