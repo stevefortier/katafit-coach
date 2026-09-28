@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fixture } from "./helpers/native.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { Actions } from "../src/chat/actions.js";
 
 test("native provider retains acquired data when source authorization changes during inference", async () => {
@@ -631,7 +631,7 @@ test("native MCP catalog consumes bounded pages, rejects repeated cursors", asyn
   });
   try {
     const gateway = await openNativeGateway(f.store);
-    assert.equal((await gateway.handle({ kind: "catalog" })).tools.length, 1);
+    assert.equal((await gateway.handle({ kind: "catalog" })).tools.length, 2);
     await gateway.close();
     repeated = true;
     await assert.rejects(openNativeGateway(f.store), /MCP_CATALOG_REJECTED/);
@@ -692,13 +692,13 @@ test("scoped native gateway negotiates MCP and never accepts a proxy destination
   const f = await fixture();
   let gateway: any;
   try {
-    const module = await import("../src/sandbox/gateway.js");
+    const module = await import("./helpers/legacy-gateway.js");
     gateway = await module.openNativeGateway(f.store);
     const catalog = await gateway.handle({ kind: "catalog" });
     assert.equal(catalog.model, "approved-custom-model");
     assert.deepEqual(
       catalog.tools.map((t: any) => t.name),
-      ["studio_operator_list_members"],
+      ["katafit_rest_get", "studio_operator_list_members"],
     );
     assert.doesNotMatch(
       JSON.stringify(catalog),

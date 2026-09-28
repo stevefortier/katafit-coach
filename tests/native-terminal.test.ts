@@ -1,4 +1,6 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
+import { NativeTerminal } from "../src/server/terminal.js";
+import { openNativeGateway as legacyGateway } from "./helpers/legacy-gateway.js";
 import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { WebSocket } from "ws";
@@ -15,6 +17,16 @@ import {
 } from "./helpers/continuity.js";
 import { Updates } from "../src/update/updates.js";
 import { AutoUpdateSetting } from "../src/update/auto.js";
+
+// These backend-session lifecycle regressions exercise explicit legacy mode.
+const terminalProto = NativeTerminal.prototype as any;
+const originalOpenGateway = terminalProto.openGateway;
+before(() => {
+  terminalProto.openGateway = legacyGateway;
+});
+after(() => {
+  terminalProto.openGateway = originalOpenGateway;
+});
 
 test(
   "Stop aborts a pending MCP startup rather than waiting for its backend",

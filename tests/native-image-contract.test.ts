@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { fixture } from "./operator-checkins.test.js";
 
 const LIST = "studio_operator_list_dojo_checkins";

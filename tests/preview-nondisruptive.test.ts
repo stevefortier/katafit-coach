@@ -1,4 +1,15 @@
-import { test } from "node:test";
+import { test, before, after } from "node:test";
+import { NativeTerminal } from "../src/server/terminal.js";
+import { openNativeGateway as legacyGateway } from "./helpers/legacy-gateway.js";
+const proto = NativeTerminal.prototype as any;
+const originalOpen = proto.openGateway;
+// This fixture holds a legacy backend start to exercise nondisruptive lifecycle.
+before(() => {
+  proto.openGateway = legacyGateway;
+});
+after(() => {
+  proto.openGateway = originalOpen;
+});
 import assert from "node:assert/strict";
 import { WebSocket } from "ws";
 import { Updates } from "../src/update/updates.js";

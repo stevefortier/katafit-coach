@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { continuityFixture } from "./helpers/continuity.js";
 import { archiveFixture, archiveControls } from "./helpers/archive.js";
-import { NativeTerminal } from "../src/server/terminal.js";
+import { NativeTerminal } from "./helpers/legacy-terminal.js";
 import type { NativeGateway } from "../src/sandbox/gateway.js";
 import type { NativeRuntime } from "../src/sandbox/runtime.js";
 
@@ -136,10 +136,15 @@ test("real host gateway seals structured history, Stop and service restart prese
     assert.equal(f.named("studio_operator_resume_archive").length, 1);
     await terminal.stop();
     f.revoke();
-    const denied = await terminal.historyRead(id);
-    assert.equal(denied.status, "locked");
-    assert.equal(denied.entries, undefined);
-    assert.equal(JSON.stringify(denied).includes("Synthetic"), false);
+    const callsBeforeLocalRead = f.calls.length;
+    const retained = await terminal.historyRead(id);
+    assert.equal(retained.status, "authorized");
+    assert.match(JSON.stringify(retained.entries), /Synthetic archived answer/);
+    assert.equal(
+      f.calls.length,
+      callsBeforeLocalRead,
+      "saved data needs no backend permission refresh",
+    );
     await terminal.historyDelete(id);
     assert.equal((await terminal.historyList()).sessions.length, 0);
   } finally {
@@ -438,7 +443,7 @@ for (const guard of [
   });
 }
 
-test("H3 legacy backend starts without touching unavailable history storage", async () => {
+test("H3 new persistent conversation refuses unavailable history storage", async () => {
   const f = await continuityFixture();
   const server = createServer();
   const terminal = new Terminal(f.store, server, () => "http://127.0.0.1");
@@ -446,8 +451,8 @@ test("H3 legacy backend starts without touching unavailable history storage", as
     (terminal as any).history.storage.list = async () => {
       throw new Error("EACCES history");
     };
-    await terminal.begin();
-    assert.ok(terminal.latest);
+    await assert.rejects(terminal.begin(), /EACCES history/);
+    assert.equal(terminal.latest, undefined);
   } finally {
     await terminal.close();
     await f.close();

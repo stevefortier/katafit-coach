@@ -61,17 +61,35 @@ export class NativeConversations {
         }
       }),
     );
-    const sessions = await this.storage.list();
+    const sessions = await this.visibleSessions();
     return {
       sessions: sessions.map((row) => ({
         ...row,
         title: `Conversation · ${row.createdAt}`,
       })),
-      selected: this.selected ?? sessions[0]?.id ?? null,
+      selected: sessions.some((row) => row.id === this.selected)
+        ? this.selected
+        : (sessions[0]?.id ?? null),
     };
   }
-  private currentSnapshot() {
-    const config = this.store.publicConfig();
+  private localScope() {
+    // The private installation directory/admin owns acquired history, not a
+    // rotating backend credential. Separate tenants require separate homes.
+    return createHash("sha256").update(this.store.dir).digest("hex");
+  }
+  private async visibleSessions() {
+    const rows = await this.storage.list();
+    const scope = this.localScope();
+    const visible = [];
+    for (const row of rows) {
+      const record = await this.storage.loadForHost(row.id);
+      if (!record.localScope || record.localScope === scope) visible.push(row);
+    }
+    return visible;
+  }
+  private currentSnapshot(revision?: number) {
+    const config = { ...this.store.publicConfig() };
+    if (revision !== undefined) config.revision = revision;
     const skills = this.store.skills.runtime();
     return {
       personaRevision: config.revision,
@@ -85,8 +103,9 @@ export class NativeConversations {
     };
   }
   private check(record: NativeHistoryRecord) {
-    if (record.blocked === "authority_revoked")
+    if (record.localScope && record.localScope !== this.localScope())
       throw new Error("NATIVE_ARCHIVE_REVOKED");
+
     if (
       !record.archive ||
       record.archive.transcript_digest !==
@@ -100,12 +119,22 @@ export class NativeConversations {
       const pending = record.pendingSeal;
       if (pending.digest !== historyDigest(pending.entries, record.snapshot))
         throw new Error("NATIVE_ARCHIVE_CORRUPT");
-      const value = await this.authority.call(ARCHIVE_CONTROLS[0], {
-        session_id: pending.sessionId,
-        turn_generation: pending.generation,
-        archive_revision: pending.revision,
-        transcript_digest: pending.digest,
-      });
+      if (record.localScope && record.localScope !== this.localScope())
+        throw new Error("NATIVE_ARCHIVE_REVOKED");
+      const value = record.localScope
+        ? {
+            schema_version: 1,
+            status: "sealed",
+            archive_id: pending.sessionId,
+            archive_revision: pending.revision,
+            transcript_digest: pending.digest,
+          }
+        : await this.authority.call(ARCHIVE_CONTROLS[0], {
+            session_id: pending.sessionId,
+            turn_generation: pending.generation,
+            archive_revision: pending.revision,
+            transcript_digest: pending.digest,
+          });
       const archive = archiveReceipt(
         value,
         {
@@ -149,7 +178,8 @@ export class NativeConversations {
     try {
       const record = await this.recover(id);
       this.check(record);
-      await this.authority.authorize(record.archive!);
+      // The authenticated installation already holds these sealed entries.
+      // Backend authorization applies to new fetches, not local archive display.
       const latest = await this.storage.loadForHost(id);
       if (
         latest.revision !== record.revision ||
@@ -166,7 +196,17 @@ export class NativeConversations {
         reason:
           record.blocked ??
           nativeResumeBlocker(record.entries) ??
-          (!isDeepStrictEqual(record.snapshot, this.currentSnapshot())
+          (!isDeepStrictEqual(
+            record.localScope
+              ? { ...record.snapshot, personaRevision: 0 }
+              : record.snapshot,
+            record.localScope
+              ? {
+                  ...this.currentSnapshot(record.snapshot.personaRevision),
+                  personaRevision: 0,
+                }
+              : this.currentSnapshot(),
+          )
             ? "settings_changed"
             : null),
         attachments: "Workspace files and attachments are not retained.",
@@ -215,17 +255,16 @@ export class NativeConversations {
       (this.selected === null || !(await this.storage.list()).length)
     )
       throw new Error("DELIVERY_UNVERIFIED");
-    if (!(await this.authority.available(signal))) return {};
     const id =
       this.selected === null
         ? undefined
-        : (this.selected ?? (await this.storage.list())[0]?.id);
+        : (this.selected ?? (await this.visibleSessions())[0]?.id);
     if (!id) return {};
     let record: NativeHistoryRecord;
     try {
       record = await this.recover(id);
       this.check(record);
-      await this.authority.authorize(record.archive!);
+      if (!record.localScope) await this.authority.authorize(record.archive!);
     } catch (error) {
       if ((error as any)?.contextRevoked || (error as any)?.context_revoked)
         await this.lock(id);
@@ -234,9 +273,29 @@ export class NativeConversations {
     if (
       record.blocked ||
       nativeResumeBlocker(record.entries) ||
-      !isDeepStrictEqual(record.snapshot, this.currentSnapshot())
+      !isDeepStrictEqual(
+        record.localScope
+          ? { ...record.snapshot, personaRevision: 0 }
+          : record.snapshot,
+        record.localScope
+          ? {
+              ...this.currentSnapshot(record.snapshot.personaRevision),
+              personaRevision: 0,
+            }
+          : this.currentSnapshot(),
+      )
     )
       throw new Error("NATIVE_HISTORY_READ_ONLY");
+    if (record.localScope) {
+      if (
+        new Actions(this.store)
+          .snapshot()
+          .some((a) => ["pending", "unknown"].includes(a.status))
+      )
+        throw new Error("DELIVERY_UNVERIFIED");
+      this.selected = id;
+      return { record, seed: record.entries };
+    }
     if (record.execution) {
       const closed = await this.authority.call(
         "studio_operator_close_session",
@@ -317,6 +376,7 @@ export class NativeConversations {
     this.active = { id: record.id, writer };
     this.selected = record.id;
     await this.storage.change(record.id, (row) => {
+      if (state.local) row.localScope = this.localScope();
       row.execution = {
         sessionId: state.sessionId,
         generation: state.generation,
@@ -392,7 +452,12 @@ export class NativeConversations {
     await this.storage.stop(owner.id);
   }
   async select(id: string | null) {
-    if (id !== null) await this.storage.select(id);
+    if (id !== null) {
+      const record = await this.storage.loadForHost(id);
+      if (record.localScope && record.localScope !== this.localScope())
+        throw new Error("NATIVE_ARCHIVE_REVOKED");
+      await this.storage.select(id);
+    }
     this.selected = id;
   }
   async rename(id: string, title: string) {
@@ -402,6 +467,8 @@ export class NativeConversations {
   }
   async delete(id: string) {
     const record = await this.storage.loadForHost(id);
+    if (record.localScope && record.localScope !== this.localScope())
+      throw new Error("NATIVE_ARCHIVE_REVOKED");
     if (this.active?.id === id) throw new Error("NATIVE_HISTORY_BUSY");
     await this.storage.delete(id); // Local fence/erasure precedes network.
     if (this.selected === id) this.selected = undefined;

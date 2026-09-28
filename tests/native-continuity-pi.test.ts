@@ -9,7 +9,7 @@ import {
   type ContinuityOptions,
 } from "./helpers/continuity.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 
 // Real network-none Pi TUI, real relay/extension and host gateway. Only the
 // backend MCP and model provider are synthetic loopback boundaries modelling the

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import {
   nativeToolOutcome,
   nativeToolResultTooLarge,
@@ -18,6 +18,8 @@ import {
 import { providerFailure, safeError } from "../runtime/errors.js";
 import { complete as providerComplete } from "../runtime/piAdapter.js";
 import { backendWireBudget } from "../katafit/wireBudget.js";
+import { restGet, restGetTool } from "../katafit/restGet.js";
+import { restSession } from "../katafit/restSession.js";
 import {
   commitMemory,
   pendingOperatorMemory,
@@ -269,6 +271,8 @@ import {
 import { normalizeHostToolImages } from "./toolImageNormalization.js";
 import type { FileEntry } from "@earendil-works/pi-coding-agent";
 export interface NativeGatewayHooks {
+  /** Trusted host compatibility path for existing backend-owned history. */
+  backendHistory?: boolean;
   resume?: ArchiveResume;
   resumeSessionId?: string;
   seed?: FileEntry[];
@@ -390,30 +394,37 @@ export async function openNativeGateway(
     lifetime,
     hooks.onDiagnostic,
   );
-  const session = await openOperatorTools(client, undefined, {
-    secrets: Object.values(secrets),
-    current,
-    onAction: actions.recorder(),
-    // Close/receipt lookups must outlive request cancellation and the gateway
-    // lifetime for the whole retained window; each call keeps its wire budget.
-    control: new Client(
-      config.origin,
-      secrets.token,
-      new AbortController().signal,
-      hooks.onDiagnostic,
-    ),
-    continuity: true,
-    resume: hooks.resume,
-    onImage: (image) => {
-      lastImage = owner
-        ? {
-            bytes: image.bytes,
-            mime_type: image.mime_type,
-            sha256: image.sha256,
-          }
-        : undefined;
-    },
-  });
+  const openLegacy = () =>
+    openOperatorTools(client, undefined, {
+      secrets: Object.values(secrets),
+      current,
+      onAction: actions.recorder(),
+      // Close/receipt lookups must outlive request cancellation and the gateway
+      // lifetime for the whole retained window; each call keeps its wire budget.
+      control: new Client(
+        config.origin,
+        secrets.token,
+        new AbortController().signal,
+        hooks.onDiagnostic,
+      ),
+      continuity: true,
+      resume: hooks.resume,
+      onImage: (image) => {
+        lastImage = owner
+          ? {
+              bytes: image.bytes,
+              mime_type: image.mime_type,
+              sha256: image.sha256,
+            }
+          : undefined;
+      },
+    });
+  // Opening REST conversations requires no MCP grant. Optional initial memory
+  // acquisition and explicit legacy actions are independent new requests.
+  const local = !hooks.resume && !hooks.backendHistory;
+  const session = local
+    ? restSession(current, openLegacy, !hooks.seed?.length)
+    : await openLegacy();
   const check = () => {
     if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
   };
@@ -728,6 +739,7 @@ export async function openNativeGateway(
     /** Trusted host only: content-free metadata of accepted attachments. */
     historyState: () => ({
       supported: session.archive,
+      local,
       sessionId: session.session_id,
       generation: session.continuity()?.turn_generation ?? 0,
       action: session.currentAction(),
@@ -877,6 +889,7 @@ export async function openNativeGateway(
           }),
         ),
         tools: [
+          ...(secrets.token ? [restGetTool] : []),
           ...session.tools.map((t) => ({
             name: t.name,
             description: t.description,
@@ -1092,6 +1105,34 @@ export async function openNativeGateway(
       await hooks.onBeforeDispatch?.();
     }
     if (request.kind === "tool") {
+      if (request.name === restGetTool.name && secrets.token) {
+        const result = await restGet(
+          config.origin,
+          secrets.token,
+          request.args,
+          requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
+          Object.values(secrets),
+        );
+        check();
+        const image = result.content?.find((part) => part.type === "image");
+        if (owner && image && "data" in image) {
+          const bytes = Buffer.from(image.data!, "base64");
+          const image_receipt = receipts.add(
+            bytes,
+            image.mimeType!,
+            createHash("sha256").update(bytes).digest("hex"),
+            "activity",
+          );
+          result.content![0] = {
+            type: "text",
+            text: JSON.stringify({
+              message: "Kata.fit image read (validated pixels).",
+              image_receipt,
+            }),
+          };
+        }
+        return result;
+      }
       if (owner && request.name === ATTACHMENT_TOOL)
         return sendAttachment(
           request.args,

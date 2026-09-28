@@ -30,6 +30,8 @@ export interface NativeHistoryRecord {
   updatedAt: string;
   snapshot: NativeHistorySnapshot;
   entries: FileEntry[];
+  /** Host-only installation-local history marker; never backend credentials. */
+  localScope?: string;
   archive?: ArchiveIdentity;
   archiveSession?: string;
   execution?: { sessionId: string; generation: number; writer: string };
@@ -261,6 +263,7 @@ function validateManifest(value: any): asserts value is Manifest {
             "snapshot",
             "entries",
             "archive",
+            "localScope",
             "archiveSession",
             "execution",
             "resume",
@@ -269,6 +272,7 @@ function validateManifest(value: any): asserts value is Manifest {
           ].includes(k),
       ) ||
       !identity.test(row.id) ||
+      (row.localScope !== undefined && !identity.test(row.localScope)) ||
       ids.has(row.id) ||
       !Number.isSafeInteger(row.revision) ||
       row.revision < 1 ||
@@ -588,20 +592,21 @@ export class NativeSessionHistory {
       if (!value.sessions.some((record) => record.id === id))
         throw new Error("NATIVE_HISTORY_NOT_FOUND");
       const record = value.sessions.find((record) => record.id === id)!;
-      (value.tombstones ??= []).push({
-        id,
-        ...(record.archive ? { archiveId: record.archive.archive_id } : {}),
-        ...(!record.archive && record.pendingSeal
-          ? {
-              seal: {
-                session_id: record.pendingSeal.sessionId,
-                turn_generation: record.pendingSeal.generation,
-                archive_revision: record.pendingSeal.revision,
-                transcript_digest: record.pendingSeal.digest,
-              },
-            }
-          : {}),
-      });
+      if (!record.localScope)
+        (value.tombstones ??= []).push({
+          id,
+          ...(record.archive ? { archiveId: record.archive.archive_id } : {}),
+          ...(!record.archive && record.pendingSeal
+            ? {
+                seal: {
+                  session_id: record.pendingSeal.sessionId,
+                  turn_generation: record.pendingSeal.generation,
+                  archive_revision: record.pendingSeal.revision,
+                  transcript_digest: record.pendingSeal.digest,
+                },
+              }
+            : {}),
+        });
       value.sessions = value.sessions.filter((record) => record.id !== id);
       await this.write(root, value);
     });

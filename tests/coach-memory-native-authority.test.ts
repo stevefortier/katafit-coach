@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { Store } from "../src/config/store.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import {
   memoryBackendEnabled,
   startBackend,

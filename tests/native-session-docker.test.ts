@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { archiveFixture } from "./helpers/archive.js";
-import { NativeTerminal } from "../src/server/terminal.js";
+import { NativeTerminal } from "./helpers/legacy-terminal.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
 import { waitForPiReady } from "./helpers/native-ready.js";
 import { answer, toolCall } from "./helpers/continuity.js";
@@ -56,7 +56,7 @@ test(
             );
           assert.match(
             JSON.stringify(tools),
-            /one exact member_ref \+ media_ref pair from that same row/,
+            /Copy exact IDs from the returned records\./,
           );
           if (!tools.some((m: any) => m.tool_call_id === "local_bash"))
             return toolCall(

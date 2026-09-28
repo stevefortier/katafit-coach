@@ -1,4 +1,14 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
+import { NativeTerminal } from "../src/server/terminal.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
+const terminalProto = NativeTerminal.prototype as any;
+const originalOpenGateway = terminalProto.openGateway;
+before(() => {
+  terminalProto.openGateway = openNativeGateway;
+});
+after(() => {
+  terminalProto.openGateway = originalOpenGateway;
+});
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -161,8 +171,11 @@ test("manual update defers native startup without teardown or acceptance", async
 });
 
 async function supervised(prefix: string, badTarget: string) {
-  const { supervise } = await import("./helpers/legacy-supervisor.js");
+  const { supervise, prepareLegacyNativeGateway } = await import(
+    "./helpers/legacy-supervisor.js"
+  );
   const home = await mkdtemp(join(tmpdir(), prefix));
+  await prepareLegacyNativeGateway(home);
   const store = new Store(home);
   await store.init();
   let prepares = 0;
@@ -260,7 +273,14 @@ test("supervised auto update prepares but defers activation while native Pi is s
       ((await response.json()) as any).ticket,
     );
     ws = started.ws;
-    await h.started;
+    await Promise.race([
+      h.started,
+      started.closed.then(() => {
+        throw new Error(
+          "fixture runtime closed before controlled native startup",
+        );
+      }),
+    ]);
     await s.owner.auto.tick();
     assert.equal(s.owner.updates.snapshot().autoOutcome?.state, "deferred");
     assert.equal(

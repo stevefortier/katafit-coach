@@ -3,7 +3,7 @@ import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { fixture } from "./helpers/native.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { Actions } from "../src/chat/actions.js";
 
 // Real network-none Pi TUI, real relay and gateway; only remote services are

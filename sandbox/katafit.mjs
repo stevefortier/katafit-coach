@@ -58,6 +58,16 @@ export function nativeToolOutcome(name, result, code) {
           : fallback,
       );
     }
+    if (name === "katafit_rest_get" && result?.restReadError) {
+      const error = result.restReadError;
+      if (
+        Object.keys(result).join() !== "restReadError" ||
+        !error || typeof error !== "object" ||
+        Object.keys(error).join() !== "status" ||
+        !Number.isInteger(error.status) || error.status < 400 || error.status > 599
+      ) throw new Error(fallback);
+      throw new Error(`Kata.fit REST GET returned HTTP ${error.status}; no data was delivered. Check the user's route access or availability. Do not infer absent records from a denied read.`);
+    }
     if (name === "studio_operator_read_activity" && result?.operatorReadError) {
       const error = result.operatorReadError;
       const guidance = {

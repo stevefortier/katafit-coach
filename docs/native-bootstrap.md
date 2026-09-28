@@ -26,6 +26,47 @@ the actual intended control-plane identity. Rootless/remote Docker endpoints are
 not a supported deployment recipe; this release standardizes
 `/var/run/docker.sock` for the CLI and Docker API.
 
+### Ordinary user REST reads
+
+New native conversations use `katafit_rest_get` with the existing private saved
+`token`. Human onboarding opts the installation credential into ordinary REST
+with `rest_user_access: true`; no second bearer or host identity introspection is
+needed. Replace older credentials in Settings with a newly opted-in credential.
+A denied REST request displays its HTTP status and never falls back to MCP reads.
+
+The host sends this bearer only to the configured origin on bounded `/api/` GETs,
+without redirects, caller headers or arbitrary methods. Non-loopback origins
+require HTTPS. Pi never receives credentials. Existing backend route authorization
+alone governs each new fetch; newly added GET routes need no host registration.
+Use `/api/friends/feed/dojo`, `/api/friends/activity/:id` and
+`/api/media/:id/files/:fileId` for cross-member feed, full media inventory and
+pixels. `/api/activities/:id` remains owner-only. Dashboard uses the same routes,
+retains chart presentation from available records, and labels bounded coverage.
+
+New native history belongs to the private installation/admin, is digest checked,
+and survives backend-token rotation. Separate tenants must use separate private
+Coach homes; replacing the token is not a local-data deletion or account switch.
+Read/reopen of acquired local history makes no permission calls.
+Stop preserves text history; the existing image/unsupported-history read-only
+limitations remain (raw image bytes and workspace attachments are not persisted).
+Old host-saved archives remain locally readable without source reauthorization.
+Their legacy execution-resume contract still uses backend archive endpoints and
+may become read-only after credential replacement; no unsafe action replay is
+attempted. This legacy resume migration is not yet complete.
+
+Legacy recipient resolution and sends open their MCP session only when invoked;
+that backend's action policy and durable uncertain-action/no-replay receipts still
+apply. Workers and older member views retain their existing adapters. Generic
+REST is **GET-only**, not generic write support. Stop before rotating credentials.
+
+Memory: one optional initial legacy memory acquisition is cached for the whole
+conversation; provider continuation and local reopen do not recheck acquired
+memory. Explicit `coach_memory_search` is a new backend fetch. Legacy refusal
+does not block ordinary REST. **REST-derived automatic memory persistence remains
+unsupported**: native guidance discloses this and retention emits
+`memory-retention-skipped` / `MEMORY_UNAVAILABLE`, never a successful no-op.
+Existing Memory screen/manual management and worker memory are unchanged.
+
 ## Build from one reviewed clean source revision
 
 Run these outside Pi, in an empty export directory on the release builder. SHA

@@ -6,7 +6,7 @@ import {
   CHECKINS,
   IMAGE,
 } from "./helpers/continuity.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { Actions } from "../src/chat/actions.js";
 
 // Only explicit session/credential revocation tears down the runtime. An

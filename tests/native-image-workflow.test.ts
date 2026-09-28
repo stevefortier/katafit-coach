@@ -9,7 +9,7 @@ import {
   sse,
 } from "./helpers/continuity.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
-import { openNativeGateway } from "../src/sandbox/gateway.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
 import { waitForPiReady } from "./helpers/native-ready.js";
 
 // Real network-none Pi launch, shipped extension, HTTP relay, runtime stdio,
@@ -25,8 +25,8 @@ for (const parallel of [false, true])
     async () => {
       const requests: any[] = [];
       const results: any[] = [];
-      const sentinel =
-        "one exact member_ref + media_ref pair from that same row";
+      // The shipped skill is REST-first even in this legacy transport fixture.
+      const sentinel = "Copy exact IDs from the returned records.";
       let release!: () => void;
       const imageGate = new Promise<void>((resolve) => {
         release = resolve;
