@@ -86,6 +86,11 @@ const backend = createServer(async (req, res) => {
                         completed_workouts: 1,
                         completed_sets: 2,
                       },
+                      {
+                        date: "2026-09-27",
+                        completed_workouts: 1,
+                        completed_sets: 3,
+                      },
                     ],
                     nutrition: [
                       {
@@ -229,13 +234,57 @@ try {
         throw Error("Expected charts split by unit and domain");
       if (
         !(await page
-          .getByText("2026-09-20 · 0 kcal · 1 contributor")
-          .isVisible()) ||
-        !(await page
-          .getByText("2026-09-20 · 6 sets · 1 contributor")
+          .getByText("Synthetic Ada — Completed workouts (workouts)")
           .isVisible())
       )
-        throw Error("Readable per-point values and contributor counts missing");
+        throw Error("Member-specific curve heading missing");
+      const workoutGraph = page.locator("#dashboardCharts svg").first();
+      if (
+        !(await workoutGraph.getByText("Date (UTC)").count()) ||
+        !(await workoutGraph.getByText("Workouts").count())
+      )
+        throw Error("Chart axes need visible date and metric labels");
+      const firstPoint = workoutGraph.locator("circle[tabindex='0']").first();
+      const x = await workoutGraph
+        .locator("circle[tabindex='0']")
+        .evaluateAll((dots) =>
+          dots.map((dot) => Number(dot.getAttribute("cx"))),
+        );
+      if (x.length !== 3 || !(x[1] - x[0] < (x[2] - x[1]) / 3))
+        throw Error("Uneven dates must have proportional spacing");
+      await firstPoint.hover();
+      if (
+        !(await page
+          .getByRole("tooltip")
+          .getByText("Synthetic Ada · 2026-09-20 · 2 workouts")
+          .isVisible())
+      )
+        throw Error("Hovered point did not expose member, date and value");
+      await firstPoint.focus();
+      await page.mouse.move(0, 0);
+      if (!(await page.getByRole("tooltip").isVisible()))
+        throw Error(
+          "Keyboard focus did not preserve point tooltip after pointer exit",
+        );
+      if (width < 650) {
+        const card = page.locator("#dashboardCharts .dashboard-chart").first();
+        await card.evaluate((el) => {
+          el.scrollLeft = el.scrollWidth;
+        });
+        const lastPoint = workoutGraph.locator("circle[tabindex='0']").last();
+        await lastPoint.hover();
+        const [tooltipBox, cardBox] = await Promise.all([
+          page.getByRole("tooltip").boundingBox(),
+          card.boundingBox(),
+        ]);
+        if (
+          !tooltipBox ||
+          !cardBox ||
+          tooltipBox.x < cardBox.x ||
+          tooltipBox.x + tooltipBox.width > cardBox.x + cardBox.width
+        )
+          throw Error("Tooltip escaped horizontally scrolled chart viewport");
+      }
       await page.waitForFunction(
         () =>
           [
@@ -300,7 +349,7 @@ try {
         throw Error("Unavailable training category leaked graphs");
       await page.unroute("**/api/dashboard");
       await page.locator("#dashboardRefresh").click();
-      await page.getByText("2026-09-20 · 6 sets · 1 contributor").waitFor();
+      await page.getByText("2026-09-20 · 6 sets").waitFor();
       await page.waitForFunction(
         () =>
           [

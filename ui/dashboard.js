@@ -33,7 +33,9 @@ window.CoachDashboard = (() => {
   }
   function chart(series) {
     const card = text("article", "", "dashboard-chart");
-    card.append(text("h4", `${series.label} (${series.unit})`));
+    card.append(
+      text("h4", `${series.member_name} — ${series.label} (${series.unit})`),
+    );
     const points = series.points;
     if (!points.length) {
       card.append(text("p", "No shared data in this period.", "hint"));
@@ -44,35 +46,85 @@ window.CoachDashboard = (() => {
       max = Math.max(...range);
     const span = max - min || 1;
     const graph = svg("svg", {
-      viewBox: "0 0 600 165",
+      viewBox: "0 0 600 210",
       role: "img",
-      "aria-label": `${series.label}: ${points.map((p) => `${p.date} ${p.value} ${series.unit}, ${p.contributor_count} contributors`).join("; ")}`,
+      "aria-label": `${series.member_name}, ${series.label} in ${series.unit}: ${points.map((p) => `${p.date} ${p.value}`).join("; ")}`,
     });
+    const axis = (value, attributes) => {
+      const label = svg("text", {
+        fill: "#c9c9c9",
+        "font-size": 11,
+        ...attributes,
+      });
+      label.textContent = String(value);
+      return label;
+    };
     graph.append(
-      svg("line", { x1: 30, y1: 135, x2: 575, y2: 135, stroke: "#777" }),
-    );
-    const coords = points.map((p, i) => [
-      30 + (points.length === 1 ? 272 : (i * 545) / (points.length - 1)),
-      125 - ((p.value - min) / span) * 100,
-    ]);
-    graph.append(
-      svg("polyline", {
-        points: coords.map((p) => p.join(",")).join(" "),
-        fill: "none",
-        stroke: "#ddd",
-        "stroke-width": 2,
+      svg("line", { x1: 55, y1: 140, x2: 575, y2: 140, stroke: "#777" }),
+      svg("line", { x1: 55, y1: 25, x2: 55, y2: 140, stroke: "#777" }),
+      axis(`${max} ${series.unit}`, { x: 52, y: 26, "text-anchor": "end" }),
+      axis(`${min} ${series.unit}`, { x: 52, y: 140, "text-anchor": "end" }),
+      axis(series.unit === "workouts" ? "Workouts" : series.label, {
+        x: 55,
+        y: 14,
       }),
+      axis(points[0].date, { x: 55, y: 158 }),
+      axis(points[points.length - 1].date, {
+        x: 575,
+        y: 158,
+        "text-anchor": "end",
+      }),
+      axis("Date (UTC)", { x: 315, y: 184, "text-anchor": "middle" }),
     );
+    const days = points.map((p) => Date.parse(`${p.date}T00:00:00Z`));
+    const elapsed = days[days.length - 1] - days[0];
+    const coords = points.map((p, i) => [
+      55 + (elapsed > 0 ? ((days[i] - days[0]) * 520) / elapsed : 260),
+      130 - ((p.value - min) / span) * 95,
+    ]);
+    if (points.length > 1)
+      graph.append(
+        svg("polyline", {
+          points: coords.map((p) => p.join(",")).join(" "),
+          fill: "none",
+          stroke: "#ddd",
+          "stroke-width": 2,
+        }),
+      );
+    const tooltip = text("div", "", "dashboard-tooltip");
+    tooltip.setAttribute("role", "tooltip");
+    tooltip.hidden = true;
+    const show = (dot, point) => {
+      tooltip.textContent = `${series.member_name} · ${point.date} · ${point.value} ${series.unit}`;
+      tooltip.hidden = false;
+      const rect = card.getBoundingClientRect();
+      const target = dot.getBoundingClientRect();
+      tooltip.style.left = `${card.scrollLeft + Math.max(0, Math.min(target.left - rect.left, card.clientWidth - tooltip.offsetWidth))}px`;
+      tooltip.style.top = `${Math.max(0, target.top - rect.top - tooltip.offsetHeight - 8)}px`;
+    };
     coords.forEach(([x, y], i) => {
-      const dot = svg("circle", { cx: x, cy: y, r: 4, fill: "#fff" });
-      dot.append(svg("title", {}));
-      dot.firstChild.textContent = `${points[i].date}: ${points[i].value} ${series.unit} · ${points[i].contributor_count} contributors`;
+      const dot = svg("circle", {
+        cx: x,
+        cy: y,
+        r: 5,
+        fill: "#fff",
+        tabindex: 0,
+        "aria-label": `${series.member_name}: ${points[i].date}, ${points[i].value} ${series.unit}`,
+      });
+      dot.addEventListener("mouseenter", () => show(dot, points[i]));
+      dot.addEventListener("focus", () => show(dot, points[i]));
+      dot.addEventListener("mouseleave", () => {
+        if (document.activeElement !== dot) tooltip.hidden = true;
+      });
+      dot.addEventListener("blur", () => {
+        tooltip.hidden = true;
+      });
       graph.append(dot);
     });
-    const valueLabel = (p) =>
-      `${p.date} · ${p.value} ${series.unit} · ${p.contributor_count} contributor${p.contributor_count === 1 ? "" : "s"}`;
+    const valueLabel = (p) => `${p.date} · ${p.value} ${series.unit}`;
     card.append(
       graph,
+      tooltip,
       text(
         "p",
         `Range: ${min}–${max} ${series.unit} · ${points.length} recorded periods`,
@@ -264,7 +316,7 @@ window.CoachDashboard = (() => {
           text("h3", label),
           text(
             "p",
-            `${coverage.category_shared[category]} of ${coverage.roster_total} shown members share ${label.toLowerCase()} activity${coverage.complete ? "" : " · partial roster coverage"}. ${key === "body_measurements" ? "Logged metric points only; same-unit daily average, not inferred from photos." : key === "training" ? "Completed workouts and sets by UTC completion day (creation-date fallback); not lifting volume or adherence." : "Logged meals and available recorded nutrition totals by UTC completion day (creation-date fallback); no food lookup or adherence."} Missing days and unavailable nutrition totals are not zero.`,
+            `${coverage.category_shared[category]} of ${coverage.roster_total} shown members share ${label.toLowerCase()} activity${coverage.complete ? "" : " · partial roster coverage"}. Each curve belongs to the named member. ${key === "body_measurements" ? "Logged metric points only; same-unit daily average within a member, not inferred from photos." : key === "training" ? "Completed workouts and sets by UTC completion day (creation-date fallback); not lifting volume or adherence." : "Logged meals and available recorded nutrition totals by UTC completion day (creation-date fallback); no food lookup or adherence."} Missing days and unavailable nutrition totals are not zero.`,
             "hint",
           ),
         );
