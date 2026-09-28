@@ -18,6 +18,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
       if (path.startsWith("/xterm")) return void res.writeHead(404).end();
       const file = [
         "/backend-performance.js",
+        "/dashboard.js",
         "/app.js",
         "/terminal.js",
         "/style.css",

@@ -345,12 +345,17 @@ export async function admin(
       }
       const viewPath = path.split("?")[0];
       if (
-        (["/", "/settings", "/diagnostics", "/chat/operator"].includes(
-          viewPath,
-        ) ||
+        ([
+          "/",
+          "/settings",
+          "/diagnostics",
+          "/dashboard",
+          "/chat/operator",
+        ].includes(viewPath) ||
           /^\/chat\/member\/[^/]+$/.test(viewPath) ||
           [
             "/backend-performance.js",
+            "/dashboard.js",
             "/app.js",
             "/terminal.js",
             "/style.css",
@@ -359,9 +364,13 @@ export async function admin(
         req.method === "GET"
       ) {
         const file =
-          ["/", "/settings", "/diagnostics", "/chat/operator"].includes(
-            viewPath,
-          ) || /^\/chat\/member\/[^/]+$/.test(viewPath)
+          [
+            "/",
+            "/settings",
+            "/diagnostics",
+            "/dashboard",
+            "/chat/operator",
+          ].includes(viewPath) || /^\/chat\/member\/[^/]+$/.test(viewPath)
             ? "index.html"
             : path.slice(1);
         res.setHeader(
@@ -387,6 +396,88 @@ export async function admin(
         return send(403, { error: "ORIGIN_REJECTED" });
       if (req.method === "POST" && req.headers.origin !== origin)
         return send(403, { error: "ORIGIN_REQUIRED" });
+      if (
+        req.method === "GET" &&
+        (path === "/api/dashboard" || path.startsWith("/api/dashboard/photo?"))
+      ) {
+        if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+        if (Buffer.byteLength(path) > 20000 || memberReads.size >= 4)
+          return send(429, { error: "OPERATION_IN_PROGRESS" });
+        const photo = path.startsWith("/api/dashboard/photo?");
+        const params = new URL(path, origin).searchParams;
+        if (
+          [...params.keys()].some(
+            (k) =>
+              !photo ||
+              !["member_ref", "media_ref"].includes(k) ||
+              params.getAll(k).length !== 1 ||
+              !params.get(k) ||
+              params.get(k)!.length > 8192,
+          ) ||
+          (photo &&
+            (params.size !== 2 ||
+              !params.get("member_ref") ||
+              !params.get("media_ref")))
+        )
+          throw new SafeError("ARGUMENTS_REJECTED");
+        const token = store.secrets.token;
+        if (!token) throw new SafeError("TOKEN_REQUIRED");
+        const c = store.publicConfig();
+        const controller = new AbortController();
+        memberReads.add(controller);
+        const cancel = () => controller.abort();
+        res.once("close", cancel);
+        try {
+          const signal = AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(10000),
+          ]);
+          const reads = new StudioReads(
+            new Client(c.origin, token, signal, onBackendDiagnostic),
+            Object.values(store.secrets),
+          );
+          if (!photo) {
+            const snapshot = await reads.dashboard();
+            signal.throwIfAborted();
+            if (
+              store.publicConfig().revision !== c.revision ||
+              store.secrets.token !== token ||
+              updates.applying
+            )
+              throw new SafeError("CANCELLED");
+            return send(200, snapshot);
+          }
+          const member_ref = params.get("member_ref")!;
+          const media_ref = params.get("media_ref")!;
+          let image;
+          try {
+            // The backend reauthorizes this exact pair against the current chief,
+            // grant, media audience and latest check-in; no roster snapshot here.
+            image = await reads.media(
+              { member_ref, media_ref },
+              "studio_dashboard_read_photo",
+            );
+          } catch (error) {
+            if (error instanceof SafeError && error.code === "MCP_TOOL_FAILED")
+              return send(404, { error: "NOT_FOUND" });
+            throw error;
+          }
+          signal.throwIfAborted();
+          if (
+            store.publicConfig().revision !== c.revision ||
+            store.secrets.token !== token ||
+            updates.applying
+          )
+            throw new SafeError("CANCELLED");
+          res.setHeader("Content-Type", image.mime_type);
+          res.setHeader("Content-Length", image.bytes.length);
+          res.end(image.bytes);
+          return;
+        } finally {
+          res.removeListener("close", cancel);
+          memberReads.delete(controller);
+        }
+      }
       if (req.method === "GET" && path === "/api/terminal/receipts")
         return send(200, {
           actions: new Actions(store, onBackendDiagnostic).snapshot(),

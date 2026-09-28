@@ -54,6 +54,8 @@ export const backendTools = [
   "studio_operator_recall_memories",
   "studio_operator_record_interaction",
   "studio_operator_send_message",
+  "studio_dashboard_overview",
+  "studio_dashboard_read_photo",
   "studio_list_members",
   "studio_read_member_coach_feed",
   "studio_list_member_activities",

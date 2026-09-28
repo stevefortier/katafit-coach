@@ -225,6 +225,308 @@ export class StudioReads {
     if (Buffer.byteLength(JSON.stringify(result)) > 256 * 1024) reject();
     return record(result);
   }
+  // studio_dashboard_overview v1: paginated, chief-authorized, prefiltered rows.
+  async dashboard() {
+    type Member = {
+      member_ref: string;
+      display_name: string;
+      media: "shared" | "not_shared";
+      stats: "shared" | "not_shared";
+      photos: { media_ref: string; captured_at: string }[];
+      charts: {
+        training: {
+          date: string;
+          completed_workouts: number;
+          completed_sets: number;
+        }[];
+        nutrition: {
+          date: string;
+          logged_meals: number;
+          recorded_calories?: number;
+          recorded_protein_g?: number;
+        }[];
+        body: { date: string; type_id: string; value: number; unit: string }[];
+      } | null;
+    };
+    const members: Member[] = [];
+    let cursor: string | undefined;
+    let complete = false;
+    for (let pageIndex = 0; pageIndex < 10; pageIndex++) {
+      const r = strict(
+        await this.read("studio_dashboard_overview", {
+          limit: 10,
+          period_days: 30,
+          ...(cursor ? { cursor } : {}),
+        }),
+        [
+          "schema_version",
+          "owner_type",
+          "period_days",
+          "members",
+          "has_more",
+          "next_cursor",
+        ],
+      );
+      if (
+        r.schema_version !== 1 ||
+        r.owner_type !== "dojo" ||
+        r.period_days !== 30 ||
+        !Array.isArray(r.members) ||
+        r.members.length > 10
+      )
+        reject();
+      page(r);
+      for (const v of r.members) {
+        const m = strict(v, [
+          "member_ref",
+          "display_name",
+          "stats_access",
+          "charts",
+          "photo_access",
+          "photos",
+        ]);
+        if (
+          !["shared", "not_shared"].includes(m.stats_access) ||
+          !["shared", "not_shared"].includes(m.photo_access) ||
+          !Array.isArray(m.photos) ||
+          m.photos.length > 16 ||
+          (m.stats_access === "not_shared" && m.charts !== null) ||
+          (m.photo_access === "not_shared" && m.photos.length)
+        )
+          reject();
+        const photoRows = m.photos.map((v: unknown) => {
+          const p = strict(v, ["media_ref", "checkin_at"]);
+          const captured_at = text(p.checkin_at, 64);
+          if (!Number.isFinite(Date.parse(captured_at))) reject();
+          return { media_ref: text(p.media_ref, 4096), captured_at };
+        });
+        let charts: Member["charts"] = null;
+        if (m.stats_access === "shared") {
+          const c = strict(m.charts, [
+            "training",
+            "nutrition",
+            "body",
+            "limitations",
+          ]);
+          text(c.limitations, 500);
+          const rows = (
+            name: "training" | "nutrition" | "body",
+            valueKey: string,
+          ) => {
+            if (!Array.isArray(c[name]) || c[name].length > 500) reject();
+            return c[name].map((v: unknown) => {
+              const p = strict(
+                v,
+                name === "body"
+                  ? ["date", "type_id", "value", "unit", "unit_provenance"]
+                  : name === "training"
+                    ? ["date", "completed_workouts", "completed_sets"]
+                    : [
+                        "date",
+                        "logged_meals",
+                        "recorded_calories",
+                        "recorded_protein_g",
+                      ],
+              );
+              if (
+                typeof p.date !== "string" ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(p.date) ||
+                !Number.isFinite(p[valueKey]) ||
+                Math.abs(p[valueKey]) > 1000000 ||
+                (name === "training" &&
+                  (!Number.isSafeInteger(p.completed_sets) ||
+                    p.completed_sets < 0 ||
+                    p.completed_sets > 1000000)) ||
+                (name === "nutrition" &&
+                  ["recorded_calories", "recorded_protein_g"].some(
+                    (field) =>
+                      p[field] !== undefined &&
+                      (!Number.isFinite(p[field]) ||
+                        p[field] < 0 ||
+                        p[field] > 1000000),
+                  ))
+              )
+                reject();
+              return p;
+            });
+          };
+          charts = {
+            training: rows(
+              "training",
+              "completed_workouts",
+            ) as Member["charts"] & any,
+            nutrition: rows("nutrition", "logged_meals") as any,
+            body: rows("body", "value").map((p) => {
+              if (
+                !(
+                  ["weight", "fat_percentage"].includes(p.type_id) &&
+                  ["kg", "lb", "lbs", "%"].includes(p.unit)
+                ) ||
+                (p.unit_provenance !== undefined &&
+                  !(
+                    p.type_id === "weight" &&
+                    ((p.unit_provenance === "measurement_unit" &&
+                      ["kg", "lb", "lbs"].includes(p.unit)) ||
+                      (p.unit_provenance === "health_connect_kg_to_lb" &&
+                        p.unit === "lb"))
+                  ))
+              )
+                reject();
+              return p;
+            }) as any,
+          };
+        }
+        members.push({
+          member_ref: text(m.member_ref, 256),
+          display_name: text(m.display_name, 200),
+          media: m.photo_access,
+          stats: m.stats_access,
+          photos: photoRows,
+          charts,
+        });
+      }
+      if (!r.has_more) {
+        complete = true;
+        break;
+      }
+      if (!r.members.length || r.next_cursor === cursor) reject();
+      cursor = r.next_cursor;
+    }
+    if (new Set(members.map((m) => m.member_ref)).size !== members.length)
+      reject();
+    const series: Record<
+      string,
+      {
+        label: string;
+        unit: string;
+        points: { date: string; value: number; contributor_count: number }[];
+      }[]
+    > = {
+      training: [],
+      nutrition: [],
+      body_measurements: [],
+    };
+    // domain → metric+unit → day → member → values. Never combine kg/lb or
+    // count duplicate same-member measurements as additional contributors.
+    const buckets = new Map<
+      string,
+      Map<string, Map<string, Map<string, number[]>>>
+    >();
+    const add = (
+      domain: string,
+      label: string,
+      unit: string,
+      date: string,
+      member: string,
+      value: number,
+    ) => {
+      if (!buckets.has(domain)) buckets.set(domain, new Map());
+      const metrics = buckets.get(domain)!;
+      const key = `${label}\u0000${unit}`;
+      if (!metrics.has(key)) metrics.set(key, new Map());
+      const days = metrics.get(key)!;
+      if (!days.has(date)) days.set(date, new Map());
+      const owners = days.get(date)!;
+      const values = owners.get(member) ?? [];
+      values.push(value);
+      owners.set(member, values);
+    };
+    for (const m of members)
+      if (m.charts) {
+        for (const row of m.charts.training)
+          add(
+            "training",
+            "Completed workouts",
+            "workouts",
+            row.date,
+            m.member_ref,
+            row.completed_workouts,
+          );
+        for (const row of m.charts.training)
+          add(
+            "training",
+            "Completed sets",
+            "sets",
+            row.date,
+            m.member_ref,
+            row.completed_sets,
+          );
+        for (const row of m.charts.nutrition)
+          add(
+            "nutrition",
+            "Logged meals",
+            "meals",
+            row.date,
+            m.member_ref,
+            row.logged_meals,
+          );
+        for (const row of m.charts.nutrition) {
+          if (row.recorded_calories !== undefined)
+            add(
+              "nutrition",
+              "Recorded calories",
+              "kcal",
+              row.date,
+              m.member_ref,
+              row.recorded_calories,
+            );
+          if (row.recorded_protein_g !== undefined)
+            add(
+              "nutrition",
+              "Recorded protein",
+              "g",
+              row.date,
+              m.member_ref,
+              row.recorded_protein_g,
+            );
+        }
+        for (const row of m.charts.body)
+          add(
+            "body_measurements",
+            row.type_id === "weight" ? "Weight" : "Body fat",
+            row.unit,
+            row.date,
+            m.member_ref,
+            row.value,
+          );
+      }
+    for (const [domain, metrics] of buckets)
+      for (const [key, days] of metrics) {
+        const [label, unit] = key.split("\u0000");
+        series[domain].push({
+          label,
+          unit,
+          points: [...days]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([date, owners]) => {
+              const totals = [...owners.values()].map(
+                (values) =>
+                  values.reduce((a, b) => a + b, 0) /
+                  (domain === "body_measurements" ? values.length : 1),
+              );
+              return {
+                date,
+                value:
+                  totals.reduce((a, b) => a + b, 0) /
+                  (domain === "body_measurements" ? totals.length : 1),
+                contributor_count: owners.size,
+              };
+            }),
+        });
+      }
+    return {
+      schema_version: 1,
+      owner_type: "dojo",
+      members: members.map(({ charts, ...m }) => m),
+      series,
+      coverage: {
+        roster_total: members.length,
+        media_shared: members.filter((m) => m.media === "shared").length,
+        stats_shared: members.filter((m) => m.stats === "shared").length,
+        complete,
+      },
+    };
+  }
   async feed(input: {
     member_ref: string;
     cursor?: string;
@@ -392,7 +694,16 @@ export class StudioReads {
       ...page(r),
     };
   }
-  async media(input: { member_ref: string; media_ref: string }) {
+  async media(
+    input: { member_ref: string; media_ref: string },
+    tool = "studio_read_member_media",
+  ) {
+    if (
+      !["studio_read_member_media", "studio_dashboard_read_photo"].includes(
+        tool,
+      )
+    )
+      reject();
     const args = {
       member_ref: text(input.member_ref, 256),
       media_ref: text(input.media_ref, 4096),
@@ -402,7 +713,7 @@ export class StudioReads {
     const r = record(
       await this.client.rpc(
         "tools/call",
-        { name: "studio_read_member_media", arguments: args },
+        { name: tool, arguments: args },
         false,
         10000,
         12 * 1024 * 1024,

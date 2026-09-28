@@ -191,6 +191,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       ![
         "index.html",
         "backend-performance.js",
+        "dashboard.js",
         "app.js",
         "terminal.js",
         "style.css",
