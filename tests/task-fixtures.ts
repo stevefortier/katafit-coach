@@ -64,11 +64,44 @@ export async function taskFixture(options: any = {}) {
       );
       return;
     }
+    // Opt-in backend memory whose initial recall fails with a fixed code
+    // (CREDENTIAL_REJECTED models a transport-level 403).
+    if (n === "coach_memory_recall" && options.memoryRecallFailure) {
+      if (options.memoryRecallFailure === "CREDENTIAL_REJECTED") {
+        res.writeHead(403).end();
+        return;
+      }
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ code: options.memoryRecallFailure }),
+              },
+            ],
+          },
+        }),
+      );
+      return;
+    }
     if (m.method === "initialize") value = { protocolVersion: "2025-03-26" };
     else if (m.method === "tools/list")
       value = {
         tools: [
           ...(options.tools ?? names).map((name: string) => ({ name })),
+          ...(options.memoryRecallFailure
+            ? [
+                "coach_memory_capabilities",
+                "coach_memory_begin",
+                "coach_memory_recall",
+                "coach_memory_commit",
+              ].map((name) => ({ name }))
+            : []),
           {
             name: "coach_list_requests",
             inputSchema: {
@@ -89,6 +122,28 @@ export async function taskFixture(options: any = {}) {
         limits,
         direct_mutations_forbidden: true,
         completion_is_publication: false,
+      };
+    else if (n === "coach_memory_capabilities")
+      value = {
+        protocol: "coach.memory.v1",
+        storage: "backend",
+        kinds: [
+          "fact",
+          "preference",
+          "commitment",
+          "goal",
+          "lesson",
+          "hypothesis",
+        ],
+        limits: { max_proposals: 8, max_recall_items: 20 },
+      };
+    else if (n === "coach_memory_begin")
+      value = {
+        protocol: "coach.memory.v1",
+        capture_id: "abcdefabcdefabcdefabcdef",
+        audience: "member_private",
+        memory_epoch: 0,
+        extraction_expires_at: new Date(Date.now() + 600000).toISOString(),
       };
     else if (n === "coach_claim_task") {
       await options.onClaimTask?.();

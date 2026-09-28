@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -131,6 +132,71 @@ test("CLI starts an installed service, reports health, rejects duplicate ownersh
     assert.match((await run("stop")).stdout, /stopped/);
   } finally {
     await run("stop").catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("CLI run distinguishes reported, unconfirmed and unsupported worker presence", async () => {
+  // Synthetic local service: only /api/run answers, with a fixed presence.
+  let presence = "reported";
+  const server = createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(req.url === "/api/run" ? { ok: true, presence } : {}),
+    );
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const dir = await mkdtemp(tmpdir() + "/coach-cli-presence-");
+  const origin = `http://127.0.0.1:${(server.address() as any).port}`;
+  await writeFile(dir + "/service.json", JSON.stringify({ origin }));
+  const run = async () =>
+    (
+      await exec(process.execPath, ["--import", "tsx", "src/cli.ts", "run"], {
+        env: { ...process.env, KATAFIT_COACH_HOME: dir },
+        timeout: 15000,
+      })
+    ).stdout.trim();
+  try {
+    assert.equal(await run(), "Worker started; presence reported.");
+    presence = "unconfirmed";
+    const unconfirmed = await run();
+    assert.equal(
+      unconfirmed,
+      "Worker started; presence unconfirmed: the backend did not confirm a heartbeat.",
+    );
+    assert.doesNotMatch(unconfirmed, /unsupported|does not support/);
+    presence = "unsupported";
+    assert.equal(
+      await run(),
+      "Worker started; explicit presence unsupported by backend.",
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("CLI pause waits beyond 10s for a Stop with two bounded presence reports", async () => {
+  // Worker Stop may await an in-flight heartbeat and then the stop report,
+  // each bounded at 6.5s; the CLI must not abandon a Stop still in progress.
+  const server = createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url !== "/api/stop") return res.end("{}");
+    setTimeout(() => res.end(JSON.stringify({ ok: true })), 10500);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const dir = await mkdtemp(tmpdir() + "/coach-cli-pause-");
+  const origin = `http://127.0.0.1:${(server.address() as any).port}`;
+  await writeFile(dir + "/service.json", JSON.stringify({ origin }));
+  try {
+    const { stdout } = await exec(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "pause"],
+      { env: { ...process.env, KATAFIT_COACH_HOME: dir }, timeout: 30000 },
+    );
+    assert.equal(stdout.trim(), "Worker paused.");
+  } finally {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
     await rm(dir, { recursive: true, force: true });
   }
 });

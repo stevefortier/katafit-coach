@@ -17,6 +17,8 @@ async function target() {
     throw new Error("INVALID_SERVICE");
   return t;
 }
+// Worker Stop may await an in-flight presence heartbeat then its own stop
+// report (each bounded at 6.5s); lifecycle POSTs must outlast both.
 async function call(path: string, post = false) {
   const t = await target();
   const r = await fetch(t.origin + "/api/" + path, {
@@ -27,7 +29,7 @@ async function call(path: string, post = false) {
       "Content-Type": "application/json",
     },
     body: post ? "{}" : undefined,
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(post ? 20000 : 10000),
   });
   if (!r.ok) throw new Error("SERVICE_REQUEST_FAILED");
   return r.json();
@@ -151,7 +153,9 @@ async function main() {
       command === "run"
         ? result.presence === "reported"
           ? "Worker started; presence reported."
-          : "Worker started; explicit presence unsupported by backend."
+          : result.presence === "unsupported"
+            ? "Worker started; explicit presence unsupported by backend."
+            : "Worker started; presence unconfirmed: the backend did not confirm a heartbeat."
         : "Worker paused.",
     );
     return;
