@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -15,6 +15,18 @@ import {
 } from "./helpers/continuity.js";
 import { PI_READY } from "./helpers/native-ready.js";
 import { admin } from "../src/server/admin.js";
+import { NativeTerminal } from "../src/server/terminal.js";
+import { openNativeGateway } from "./helpers/legacy-gateway.js";
+
+// This MCP attachment regression must opt into legacy acquisition explicitly.
+const terminalProto = NativeTerminal.prototype as any;
+const originalOpenGateway = terminalProto.openGateway;
+before(() => {
+  terminalProto.openGateway = openNativeGateway;
+});
+after(() => {
+  terminalProto.openGateway = originalOpenGateway;
+});
 
 // Real served admin UI, real network-none Pi TUI with the shipped extension,
 // relay, gateway and Docker exec workspace reads. Only the Kata.fit backend

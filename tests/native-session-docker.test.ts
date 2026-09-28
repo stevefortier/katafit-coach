@@ -56,7 +56,7 @@ test(
             );
           assert.match(
             JSON.stringify(tools),
-            /one exact member_ref \+ media_ref pair from that same row/,
+            /Copy exact IDs from the returned records\./,
           );
           if (!tools.some((m: any) => m.tool_call_id === "local_bash"))
             return toolCall(
