@@ -1208,13 +1208,18 @@ export async function openNativeGateway(
       (session.memoryPartial()
         ? "\nMemory recall covered a bounded page. Use coach_memory_search and continuation for deeper recall.\n"
         : "");
+    const messages = request.body.messages;
+    const first = messages[0];
     const bodyWithMemory = memoryNotice
       ? {
           ...request.body,
-          messages: [
-            { role: "system", content: memoryNotice },
-            ...request.body.messages,
-          ],
+          messages:
+            first?.role === "system" && typeof first.content === "string"
+              ? [
+                  { ...first, content: `${first.content}\n\n${memoryNotice}` },
+                  ...messages.slice(1),
+                ]
+              : [{ role: "system", content: memoryNotice }, ...messages],
         }
       : request.body;
     assertNoSecrets(bodyWithMemory, Object.values(secrets));
