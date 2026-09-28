@@ -339,6 +339,10 @@ test("actual Pi records both rejected candidates and precise reasons locally, ne
       "TASK_INVALID_OUTPUT",
     );
     assert.equal(
+      f.calls.filter((c) => c.name === "coach_fail_task")[0].args.detail_code,
+      "TASK_OUTPUT_JSON",
+    );
+    assert.equal(
       f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
       1,
     );
@@ -370,6 +374,53 @@ test("actual Pi records both rejected candidates and precise reasons locally, ne
     await p.close();
   }
 });
+
+for (const [category, kind, raw] of [
+  ["SCHEMA", "daily_insight", '{"unexpected":"private-schema-output"}'],
+  [
+    "SEMANTIC",
+    "activity_reaction",
+    JSON.stringify({
+      activity_feedback: { reaction: "check", reply_worthwhile: false },
+      general_advice: "private-semantic-output",
+    }),
+  ],
+] as const)
+  test(`typed failure sends only safe ${category} subtype`, async () => {
+    const f = await taskFixture();
+    const p = await provider(() => raw);
+    const events: any[] = [];
+    const w = new Worker({
+      origin: f.origin,
+      token: "synthetic-worker-credential",
+      system: "Coach",
+      onDiagnostic: (e) => events.push(e),
+      complete: (context, signal, system, tools) =>
+        complete(p.config, system, context, signal, tools),
+    });
+    try {
+      f.enqueue(kind);
+      await assert.rejects(w.pollOnce());
+      const failures = f.calls.filter((c) => c.name === "coach_fail_task");
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0].args.code, "TASK_INVALID_OUTPUT");
+      assert.equal(failures[0].args.detail_code, `TASK_OUTPUT_${category}`);
+      assert.ok(events.some((e) => e.stage === "task-failure-reported"));
+      assert.ok(!events.some((e) => e.stage === "task-failure-unverified"));
+      assert.ok(!JSON.stringify(f.calls).includes(raw));
+      assert.deepEqual(Object.keys(failures[0].args).sort(), [
+        "code",
+        "detail_code",
+        "lease_generation",
+        "protocol",
+        "task_id",
+      ]);
+    } finally {
+      await w.stop();
+      await f.close();
+      await p.close();
+    }
+  });
 
 test("actual Pi skips correction when inference time is insufficient", async () => {
   const f = await taskFixture();

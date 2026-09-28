@@ -116,10 +116,12 @@ export interface Entry {
   calls?: NativeCall[];
   receipt?: ToolReceipt;
 }
-export const LOG_ENTRIES = 5000;
-// Each file fits 5000 ordinary call receipts, including at a rotation boundary.
+export const LOG_ENTRIES = 20000;
+// Four times the former ordinary-receipt window; content-heavy logs hit the
+// independent memory/disk byte bounds earlier.
+export const LOG_MEMORY_BYTES = 16 * 1024 * 1024;
 // Large existing provider/task excerpts remain subject to this byte bound.
-export const LOG_FILE_BYTES = 4 * 1024 * 1024;
+export const LOG_FILE_BYTES = 16 * 1024 * 1024;
 const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
 const toolNamePattern = /^(?:coach_|studio_operator_)[a-z_]{1,48}$/;
@@ -426,6 +428,7 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
 }
 export class Diagnostics {
   private entries: Entry[] = [];
+  private entryBytes = 0;
   private retainedError: Entry | null = null;
   persistence = true;
   private path: string;
@@ -451,7 +454,7 @@ export class Diagnostics {
               !Number.isFinite(Date.parse(e.time))
             )
               continue;
-            this.entries.push(
+            this.addEntry(
               entry(
                 {
                   ...e,
@@ -474,13 +477,22 @@ export class Diagnostics {
     this.retainedError =
       [...this.entries].reverse().find((e) => e.level === "error" && e.code) ??
       null;
-    this.entries = this.entries.slice(-LOG_ENTRIES);
+  }
+  private addEntry(e: Entry) {
+    this.entries.push(e);
+    this.entryBytes += Buffer.byteLength(JSON.stringify(e)) + 1;
+    while (
+      this.entries.length > LOG_ENTRIES ||
+      this.entryBytes > LOG_MEMORY_BYTES
+    ) {
+      const removed = this.entries.shift()!;
+      this.entryBytes -= Buffer.byteLength(JSON.stringify(removed)) + 1;
+    }
   }
   record(input: LogInput) {
     const e = entry(input);
     if (e.level === "error" && e.code) this.retainedError = e;
-    this.entries.push(e);
-    this.entries = this.entries.slice(-LOG_ENTRIES);
+    this.addEntry(e);
     if (!this.persistence) return;
     let fd: number | undefined;
     try {

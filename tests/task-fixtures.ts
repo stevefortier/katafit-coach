@@ -240,6 +240,7 @@ export async function taskFixture(options: any = {}) {
     } else if (n === "coach_fail_task") {
       current.status = "failed";
       current.failure = a.code;
+      current.failureDetail = a.detail_code;
       value = receipt(true);
     } else if (n === "coach_list_requests")
       value = { requests: options.main ? [{ status: "queued" }] : [] };
@@ -296,7 +297,7 @@ export async function taskFixture(options: any = {}) {
       }),
     );
     function receipt(write: boolean) {
-      const { hash, failure, ...task } = current;
+      const { hash, failure, failureDetail, ...task } = current;
       return {
         task,
         status: task.status,
@@ -304,6 +305,7 @@ export async function taskFixture(options: any = {}) {
         completed_at: hash ? new Date().toISOString() : null,
         consumed_at: null,
         failure_code: failure ?? null,
+        ...(failureDetail ? { failure_detail_code: failureDetail } : {}),
         ...(write ? { idempotent: false } : {}),
       };
     }

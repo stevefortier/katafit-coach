@@ -2115,7 +2115,7 @@ function renderLogs() {
     ordered.push(row);
   }
   // Reuse unchanged rows (including open disclosures) rather than rebuilding
-  // 5000 articles every live poll. No display cap; exports use the same filter.
+  // retained articles every live poll. No display cap; exports use the same filter.
   const container = $("logRows");
   const keep = new Set(ordered);
   for (const child of [...container.childNodes])
