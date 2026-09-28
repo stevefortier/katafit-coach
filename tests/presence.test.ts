@@ -11,14 +11,15 @@ import { Worker } from "../src/worker/runner.js";
 import { Client } from "../src/katafit/client.js";
 import { Updates } from "../src/update/updates.js";
 import { AutoUpdateSetting } from "../src/update/auto.js";
+import type { LogInput } from "../src/diagnostics/log.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => (resolve = r));
   return { promise, resolve };
 }
-async function waitFor(check: () => boolean) {
-  for (let i = 0; i < 100; i++) {
+async function waitFor(check: () => boolean, ms = 1000) {
+  for (let i = 0; i < ms / 10; i++) {
     if (check()) return;
     await new Promise((r) => setTimeout(r, 10));
   }
@@ -49,6 +50,18 @@ async function backend(
   const entered = deferred<void>();
   const release = deferred<void>();
   const deferredWrite = deferred<void>();
+  const closed = deferred<void>();
+  // Mutable per-request latency, applied after start to model a slow backend.
+  const delays = { initialize: 0, presence: 0 };
+  const pause = (ms: number) =>
+    ms > 0 &&
+    new Promise<void>((r) => {
+      const timer = setTimeout(r, ms);
+      void closed.promise.then(() => {
+        clearTimeout(timer);
+        r();
+      });
+    });
   const server = createServer(async (req, res) => {
     if (
       req.method === "POST" &&
@@ -68,8 +81,10 @@ async function backend(
     calls.push(name);
     const args = msg.params?.arguments;
     let result: any = {};
-    if (name === "initialize") result = { protocolVersion: "2025-03-26" };
-    else if (name === "notifications/initialized") {
+    if (name === "initialize") {
+      await pause(delays.initialize);
+      result = { protocolVersion: "2025-03-26" };
+    } else if (name === "notifications/initialized") {
       res.writeHead(202).end();
       return;
     } else if (name === "tools/list")
@@ -81,6 +96,7 @@ async function backend(
       };
     else if (name === "coach_report_worker_presence") {
       reports.push(args);
+      await pause(delays.presence);
       if (
         args.state === "running" &&
         ((options.holdRunning &&
@@ -193,9 +209,11 @@ async function backend(
     accepted,
     entered: entered.promise,
     deferredWrite: deferredWrite.promise,
+    delays,
     release: () => release.resolve(),
     async close() {
       release.resolve();
+      closed.resolve();
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(r));
     },
@@ -533,6 +551,127 @@ test("refused stop remains unconfirmed rather than showing server-confirmed offl
     assert.deepEqual(
       f.accepted.map((r) => r.state),
       ["running"],
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+// Production shape: a fresh stateless initialize took ~2.3s, leaving the
+// presence call almost nothing of a shared 2.5s deadline.
+const SLOW_HANDSHAKE = { initialize: 2300, presence: 300 };
+const presenceReceipts = (events: LogInput[]) =>
+  events.filter((e) => e.backendCall?.tool === "coach_report_worker_presence");
+
+test("slow fresh handshake plus presence call still confirms the heartbeat and Stop", async () => {
+  const f = await backend();
+  const diagnostics: LogInput[] = [];
+  try {
+    const w = worker(f.origin, {
+      presenceMs: 200,
+      onDiagnostic: (event: LogInput) => diagnostics.push(event),
+    });
+    await w.start();
+    // Synchronously after start: the first heartbeat has not fired yet.
+    Object.assign(f.delays, SLOW_HANDSHAKE);
+    const before = presenceReceipts(diagnostics).length;
+    await waitFor(() => presenceReceipts(diagnostics).length > before, 8000);
+    assert.equal(
+      presenceReceipts(diagnostics)[before].backendCall?.outcome,
+      "ok",
+    );
+    assert.equal(w.presence, "reported");
+    const started = performance.now();
+    await w.stop();
+    // At most an in-flight heartbeat plus the stop report, each <= 6.5s.
+    assert.ok(performance.now() - started < 13000);
+    assert.equal(w.presence, "reported");
+    assert.equal(f.accepted.length, f.reports.length, "no stale generation");
+    const running = f.accepted.filter((r) => r.state === "running").length;
+    assert.ok(running >= 2);
+    assert.deepEqual(f.accepted.at(-1), {
+      ...f.accepted[0],
+      state: "stopped",
+      generation: running.toString(16).padStart(32, "0"),
+    });
+    assert.ok(
+      presenceReceipts(diagnostics).every(
+        (e) => e.backendCall?.outcome === "ok",
+      ),
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("slow fresh handshake during Stop still confirms offline", async () => {
+  const f = await backend();
+  try {
+    const w = worker(f.origin);
+    await w.start();
+    Object.assign(f.delays, SLOW_HANDSHAKE);
+    await w.stop();
+    assert.equal(w.presence, "reported");
+    assert.equal(w.state, "stopped");
+    assert.deepEqual(
+      f.accepted.map((r) => [r.state, r.generation]),
+      [
+        ["running", undefined],
+        ["stopped", "00000000000000000000000000000001"],
+      ],
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("slow old heartbeat that times out cannot revive a confirmed Stop", async () => {
+  const f = await backend({ holdRunning: true });
+  try {
+    const w = worker(f.origin, { presenceMs: 20 });
+    await w.start();
+    Object.assign(f.delays, SLOW_HANDSHAKE);
+    await f.entered;
+    const started = performance.now();
+    await w.stop();
+    // Held heartbeat call is bounded by its own budget, not by Stop.
+    assert.ok(performance.now() - started < 13000);
+    assert.equal(w.presence, "reported");
+    assert.equal(f.accepted.at(-1)?.state, "stopped");
+    assert.equal(
+      f.accepted.at(-1)?.generation,
+      "00000000000000000000000000000001",
+    );
+    // The old worker's late write now lands with its stale generation.
+    f.release();
+    await f.deferredWrite;
+    assert.equal(f.accepted.at(-1)?.state, "stopped");
+    assert.equal(f.accepted.filter((r) => r.state === "running").length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("hung handshake during Stop fails within its own bounded budget", async () => {
+  const f = await backend();
+  try {
+    const w = worker(f.origin);
+    await w.start();
+    f.delays.initialize = 60000;
+    const started = performance.now();
+    await w.stop();
+    const elapsed = performance.now() - started;
+    // The handshake has its own 4s budget, well inside the 6.5s aggregate.
+    assert.ok(elapsed >= 3500 && elapsed < 6500, String(elapsed));
+    assert.equal(w.state, "stopped");
+    assert.equal(w.presence, "unconfirmed");
+    assert.deepEqual(
+      f.accepted.map((r) => r.state),
+      ["running"],
+    );
+    assert.equal(
+      f.reports.some((r) => r.state === "stopped"),
+      false,
     );
   } finally {
     await f.close();

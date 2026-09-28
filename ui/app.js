@@ -1311,9 +1311,14 @@ for (const cmd of ["run", "stop"])
         "Worker started and presence reported. Wait for persisted-reply status to confirm delivery.",
         "success",
       );
-    else if (cmd === "run")
+    else if (cmd === "run" && result.presence === "unsupported")
       notice(
         "Worker started; this backend does not support explicit presence. Connectivity is not confirmed by a heartbeat.",
+        "warning",
+      );
+    else if (cmd === "run")
+      notice(
+        "Worker started; presence unconfirmed. The backend did not confirm a heartbeat, so connectivity is not confirmed.",
         "warning",
       );
     else if (reported)
