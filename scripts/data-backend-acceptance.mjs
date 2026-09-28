@@ -56,6 +56,7 @@ function referenceChecks() {
       };
     });
 }
+const auxiliaryPayloads = [];
 let active = 0;
 let maximumActive = 0;
 const { Worker } = await import(
@@ -129,8 +130,14 @@ const provider = createServer(async (req, res) => {
       assert.ok(Buffer.byteLength(raw) <= 24 * 1024 * 1024);
     }
     const body = JSON.parse(raw);
-    payloads.push(body);
-    if (payloads.length === 1 && process.env.KATAFIT_DATA_CATALOG_FILE) {
+    const main = Array.isArray(body.tools);
+    if (main) payloads.push(body);
+    else auxiliaryPayloads.push(body);
+    if (
+      main &&
+      payloads.length === 1 &&
+      process.env.KATAFIT_DATA_CATALOG_FILE
+    ) {
       const { writeFile } = await import("node:fs/promises");
       await writeFile(
         process.env.KATAFIT_DATA_CATALOG_FILE,
@@ -155,7 +162,7 @@ const provider = createServer(async (req, res) => {
           body: raw,
           signal: controller.signal,
         });
-        const recorded = { status: response.status, body: "" };
+        const recorded = { status: response.status, body: "", main };
         providerResponses.push(recorded);
         res.writeHead(response.status, {
           "Content-Type": response.headers.get("content-type") || "text/plain",
@@ -321,6 +328,7 @@ try {
   assert.equal(request.status, "completed");
   const finalText = live
     ? providerResponses
+        .filter((response) => response.main)
         .at(-1)
         .body.split("\n")
         .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
@@ -348,7 +356,7 @@ try {
     backendReferenceChecks.length > 0 &&
       backendReferenceChecks.every((r) => r.exactIssuedReference),
   );
-  const modelView = JSON.stringify(payloads);
+  const modelView = JSON.stringify([...payloads, ...auxiliaryPayloads]);
   assert.ok(
     [...issuedReferences].every((ref) => !modelView.includes(ref)),
     "Backend references must remain private",
@@ -359,7 +367,19 @@ try {
   assert.ok(
     !JSON.stringify(payloads.at(-1).messages).includes("Read unavailable:"),
   );
-  assert.equal(payloads[0].tools.length, 11); // Personal scope excludes Dojo-owner-only read.
+  assert.ok(
+    payloads[0].tools.some(
+      (tool) => tool.function.name === "coach_memory_search",
+    ),
+  );
+  assert.ok(
+    payloads[0].tools.some((tool) => tool.function.name === "coach_read_media"),
+  );
+  assert.ok(
+    payloads[0].tools.every(
+      (tool) => !tool.function.name.startsWith("studio_operator_"),
+    ),
+  ); // Personal scope excludes Dojo-owner tools.
   console.log(
     JSON.stringify({
       proof: live
@@ -385,6 +405,7 @@ try {
         .map((t) => t.function.name),
       providerTextEnvelopeBytes: payloads.map(providerTextBytes),
       providerTurns: payloads.length,
+      auxiliaryTurns: auxiliaryPayloads.length,
       originalImageBytes: bytes.length,
       originalImageSha256: createHash("sha256").update(bytes).digest("hex"),
       canonicalStatus: request.status,
@@ -398,15 +419,16 @@ try {
     liveProvider: live,
     workerState: worker?.state,
     providerTurns: payloads.length,
+    auxiliaryTurns: auxiliaryPayloads.length,
     envelopeBytes: payloads.map((p) => Buffer.byteLength(JSON.stringify(p))),
     catalogBytes: payloads.map((p) =>
-      Buffer.byteLength(JSON.stringify(p.tools)),
+      Buffer.byteLength(JSON.stringify(p.tools ?? [])),
     ),
     providerStatuses: providerResponses.map((r) => r.status),
     referenceChecks: referenceChecks(),
     backendReferenceChecks,
     requestedTools: payloads.map((p) =>
-      p.messages
+      (p.messages || [])
         .filter((m) => m.role === "assistant")
         .flatMap((m) => m.tool_calls || [])
         .map((t) => t.function.name),

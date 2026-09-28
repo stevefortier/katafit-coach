@@ -108,6 +108,82 @@ export function parseProposals(
   return proposals.map((p) => ({ ...p, text: p.text.trim() }));
 }
 
+// Backend navigation references are capability-like handles, not coaching facts.
+// Memory extraction uses raw backend evidence rather than the model-facing read
+// aliases; redact technical handles before crossing the provider boundary.
+const navigationKey = (key: string) =>
+  /(?:^|_)(?:ref|reference|cursor|token|secret|url|uri|id|authorization|password|api_key|access_key)$/i.test(
+    key,
+  ) ||
+  /(?:Ref|Reference|Cursor|Token|Secret|Url|Uri|Id|Authorization|Password|ApiKey|AccessKey)$/.test(
+    key,
+  );
+function evidenceContainer(value: string): unknown | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return;
+  }
+}
+function providerEvidence(evidence: Record<string, unknown>) {
+  const handles = new Set<string>();
+  function collect(value: unknown, depth: number): void {
+    if (depth > 32) throw new ExtractionRejected();
+    if (typeof value === "string") {
+      const parsed = evidenceContainer(value);
+      if (parsed) collect(parsed, depth + 1);
+    } else if (Array.isArray(value)) {
+      for (const item of value) collect(item, depth + 1);
+    } else if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        if (
+          navigationKey(key) &&
+          typeof item === "string" &&
+          item.length >= 4
+        ) {
+          handles.add(item);
+          if (handles.size > 128) throw new ExtractionRejected();
+        }
+        collect(item, depth + 1);
+      }
+    }
+  }
+  function scrub(value: unknown, depth: number): unknown {
+    if (depth > 32) throw new ExtractionRejected();
+    if (typeof value === "string") {
+      const parsed = evidenceContainer(value);
+      if (parsed) return JSON.stringify(scrub(parsed, depth + 1));
+      let text = value.replace(
+        /\bBearer\s+[A-Za-z0-9._~+/-]{4,}/gi,
+        "Bearer [opaque credential omitted]",
+      );
+      for (const handle of handles)
+        text = text.replaceAll(handle, "[opaque reference omitted]");
+      return text;
+    }
+    if (Array.isArray(value))
+      return value.map((item) => scrub(item, depth + 1));
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(
+            ([key]) =>
+              !navigationKey(key) &&
+              !handles.has(key) &&
+              ![...handles].some((handle) => key.includes(handle)) &&
+              !(key.length > 64 && !/\s/.test(key)),
+          )
+          .map(([key, item]) => [key, scrub(item, depth + 1)]),
+      );
+    return value;
+  }
+  collect(evidence, 0);
+  return scrub(evidence, 0);
+}
+
 export function extractionContext(
   origin: MemoryOrigin,
   evidence: Record<string, unknown>,
@@ -115,7 +191,7 @@ export function extractionContext(
 ) {
   return JSON.stringify({
     origin,
-    evidence,
+    evidence: providerEvidence(evidence),
     recalled: recalled
       .filter((i) => i.availability === "available")
       .map((i) => ({

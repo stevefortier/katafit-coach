@@ -23,7 +23,7 @@ for (const boundary of [
   "archive_request",
 ])
   test(
-    `paired native imported memory revocation blocks actual ${boundary} disclosure`,
+    `paired native acquired memory remains internal after forget at ${boundary} boundary`,
     { skip: !memoryBackendEnabled, timeout: 60000 },
     async () => {
       const backend = await startBackend();
@@ -174,16 +174,11 @@ for (const boundary of [
             ],
           },
         });
-        if (boundary === "archive_request" || boundary === "archive_response") {
-          await assert.rejects(firstDisclosure);
-          assert.equal(
-            provider.bodies.length,
-            boundary === "archive_request" ? 0 : 1,
-          );
-          assert.equal(terminated, 1);
-          return;
-        }
         await firstDisclosure;
+        if (boundary === "archive_request" || boundary === "archive_response") {
+          assert.equal(provider.bodies.length, 1);
+          assert.equal(terminated, 0);
+        }
         if (boundary === "provider") {
           const sent = provider.bodies[0];
           assert.match(
@@ -247,41 +242,47 @@ for (const boundary of [
           (await gateway.readAttachment(attachment.attachment_id)).bytes,
           bytes,
         );
-        await memory.execute(auth, "studio_memory_forget", {
-          memory_id: remembered.id,
-        });
+        if (!boundary.startsWith("archive_"))
+          await memory.execute(auth, "studio_memory_forget", {
+            memory_id: remembered.id,
+          });
         const count = provider.bodies.length;
-        if (boundary === "provider")
-          await assert.rejects(
-            gateway.handle({
-              kind: "provider",
-              body: {
-                model: "synthetic",
-                messages: [{ role: "user", content: "Continue." }],
-              },
-            }),
-          );
-        else if (boundary === "send")
-          await assert.rejects(
-            tool("studio_operator_send_message", {
+        if (boundary === "provider") {
+          await gateway.handle({
+            kind: "provider",
+            body: {
+              model: "synthetic",
+              messages: [{ role: "user", content: "Continue." }],
+            },
+          });
+          assert.equal(provider.bodies.length, count + 1);
+        } else if (boundary === "send") {
+          const sent = text(
+            await tool("studio_operator_send_message", {
               member_ref: entry.member_ref,
-              text: "Must not publish stale advice.",
+              text: "Follow-up for the current recipient.",
             }),
           );
-        else if (boundary === "image" || boundary === "activity_image")
-          await assert.rejects(tool(imageTool, args));
-        else
-          await assert.rejects(
-            gateway.readAttachment(attachment.attachment_id),
+          assert.equal(sent.status, "delivered");
+        } else if (boundary === "image" || boundary === "activity_image") {
+          assert.ok(text(await tool(imageTool, args)).image_receipt);
+          assert.equal(imageReads, 2);
+        } else {
+          assert.deepEqual(
+            (await gateway.readAttachment(attachment.attachment_id)).bytes,
+            bytes,
           );
-        assert.equal(provider.bodies.length, count);
-        assert.equal(imageReads, 1);
+        }
+        if (boundary !== "provider")
+          assert.equal(provider.bodies.length, count);
+        if (boundary !== "image" && boundary !== "activity_image")
+          assert.equal(imageReads, 1);
         assert.equal(published, 1);
-        assert.equal(terminated, 1);
-        assert.deepEqual(gateway.attachments(), []);
+        assert.equal(terminated, 0);
+        assert.equal(gateway.attachments().length, 1);
         assert.equal(
           await db.collection("studio_operator_actions").countDocuments(),
-          0,
+          boundary === "send" ? 1 : 0,
         );
         assert.equal(
           await db.collection("studio_operator_sessions").countDocuments(),
