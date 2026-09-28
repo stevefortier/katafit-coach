@@ -7,7 +7,7 @@ import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { Diagnostics } from "../src/diagnostics/log.js";
 
-test("real Diagnostics shows all 5000, verbose filter, copy/download and stable live rows", async () => {
+test("real Diagnostics shows retained calls, verbose filter, copy/download and stable live rows", async () => {
   const dir = await mkdtemp(tmpdir() + "/backend-ui-");
   const store = new Store(dir);
   await store.init();
@@ -49,12 +49,12 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     await page.waitForFunction(() =>
       document
         .querySelector("#performanceWindow")
-        ?.textContent?.includes("4998 receipts"),
+        ?.textContent?.includes("5001 receipts"),
     );
     assert.equal(await page.locator("#logLevel").inputValue(), "info");
     await page.locator("#diagnostics-performance-tab").click();
     const summaryText = await page.locator("#performanceRows").innerText();
-    assert.match(summaryText, /4998 calls/);
+    assert.match(summaryText, /5001 calls/);
     await page.locator("#diagnostics-logs-tab").click();
     await page.locator("#logLevel").selectOption("warn");
     await page.locator("#diagnostics-performance-tab").click();
@@ -64,7 +64,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     );
     await page.locator("#performanceRows button").click();
     assert.equal(await page.locator("#logLevel").inputValue(), "all");
-    assert.equal(await page.locator("#logRows article").count(), 4998);
+    assert.equal(await page.locator("#logRows article").count(), 5001);
     assert.match(
       await page.locator("#performanceSelection").innerText(),
       /All levels/,
@@ -86,8 +86,8 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     const aggregate = JSON.parse(
       await readFile((await aggregateFile.path())!, "utf8"),
     );
-    assert.equal(aggregate.window.receiptCount, 4998);
-    assert.equal(aggregate.groups[0].totalMs, 4997 * 123 + 25000);
+    assert.equal(aggregate.window.receiptCount, 5001);
+    assert.equal(aggregate.groups[0].totalMs, 5000 * 123 + 25000);
     assert.equal(aggregate.groups[0].timeouts, 1);
     assert.equal(aggregate.entries, undefined);
     assert.equal(aggregate.metrics.durationUnit, "ms");
@@ -96,15 +96,19 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     assert.equal(await page.locator("#logLevel").inputValue(), "warn");
     assert.equal(await page.locator("#performanceClear").isVisible(), false);
     await page.locator("#logLevel").selectOption("all");
-    await page.waitForFunction(
-      () => document.querySelectorAll("#logRows article").length === 5000,
+    await page.waitForFunction(() =>
+      document.querySelector("#logStatus")?.textContent?.includes("max 20000"),
     );
+    const retainedRows = await page.locator("#logRows article").count();
+    assert.ok(retainedRows >= 5001 && retainedRows <= 5010);
     assert.match(
       await page.locator("#logStatus").innerText(),
-      /5000 shown \/ 5000 retained \(max 5000\)/,
+      new RegExp(
+        `${retainedRows} shown / ${retainedRows} retained \\(max 20000\\)`,
+      ),
     );
     await page.locator("#logLevel").selectOption("verbose");
-    assert.equal(await page.locator("#logRows article").count(), 4997);
+    assert.equal(await page.locator("#logRows article").count(), 5000);
     assert.match(
       await page.locator("#logRows article").first().innerText(),
       /coach_list_requests.*123 ms.*HTTP 200/,
@@ -132,7 +136,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     const copied = JSON.parse(
       await page.evaluate(() => navigator.clipboard.readText()),
     );
-    assert.equal(copied.entries.length, 4997);
+    assert.equal(copied.entries.length, 5000);
     assert.equal(copied.entries[0].metadata.elapsedMs, 123);
     assert.equal(copied.entries[0].backendCall.tool, "coach_list_requests");
     const downloadPromise = page.waitForEvent("download");
@@ -203,7 +207,7 @@ test("real Diagnostics shows all 5000, verbose filter, copy/download and stable 
     await page.waitForFunction(() =>
       document
         .querySelector("#performanceRows strong")
-        ?.textContent?.includes("4999 calls"),
+        ?.textContent?.includes("5002 calls"),
     );
     assert.equal(
       await page
