@@ -546,12 +546,9 @@ test(
 
 for (const revocationMarker of [true, false])
   test(
-    `real terminal: retained authority revoked after a provider post-check tears Pi down at its next boundary, with no further provider call (marker ${revocationMarker})`,
+    `real terminal: revoked backend session blocks next generation and closes Pi (marker ${revocationMarker})`,
     { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 150000 },
     async () => {
-      let armed = false,
-        sinceArmed = 0,
-        providerAtRevoke = -1;
       const h = await continuityTerminal(
         (body) => {
           const { turn, results } = turnOf(body);
@@ -559,17 +556,7 @@ for (const revocationMarker of [true, false])
             ? answer(`TERM_${turn}_ANSWERED`)
             : toolCall(GENERIC, { topic: turn }, `g_${turn}`);
         },
-        {
-          revocationMarker,
-          afterAuthorize: (state) => {
-            // Revoke right after the successful post-provider check. The
-            // persisted-request preflight is now an additional proof.
-            if (armed && ++sinceArmed === 3) {
-              state.revoked = true;
-              providerAtRevoke = h.f.providerCalls();
-            }
-          },
-        },
+        { revocationMarker },
       );
       try {
         h.type("Read the first private synthetic source\r");
@@ -577,29 +564,17 @@ for (const revocationMarker of [true, false])
           () => h.output().includes("TERM_first_ANSWERED"),
           "first answer",
         );
-        armed = true;
+        const providerAtRevoke = h.f.providerCalls();
+        h.f.state.revoked = true;
         h.type("Read the second private synthetic source\r");
         await h.waitFor(() => h.closeCode() !== undefined, "browser close");
         assert.equal(h.closeCode(), 1008);
         assert.match(h.errors.join("\n"), /revoked or expired/);
         await h.waitFor(() => owned() === "", "runtime destruction");
-        assert.ok(providerAtRevoke > 0);
         assert.equal(h.f.providerCalls(), providerAtRevoke);
-        const genericCalls = h.f.named(GENERIC);
-        assert.ok(genericCalls.length === 1 || genericCalls.length === 2);
-        // The new pre-provider proof may stop the second turn before the
-        // denied tool is even dispatched. If Pi reaches it, preserve the
-        // discriminating marker-specific authorization check.
-        if (genericCalls.length === 2) {
-          const denied = h.f.calls.findLastIndex((c) => c.name === GENERIC);
-          assert.equal(
-            h.f.calls
-              .slice(denied)
-              .filter((c) => c.name === "studio_operator_authorize_context")
-              .length,
-            revocationMarker ? 0 : 1,
-          );
-        }
+        assert.equal(h.f.named(GENERIC).length, 1);
+        assert.equal(h.f.named("studio_operator_advance_turn").length, 1);
+        assert.equal(h.f.named("studio_operator_authorize_context").length, 0);
         assert.equal(h.f.named("studio_operator_open_session").length, 1);
       } finally {
         await h.close();

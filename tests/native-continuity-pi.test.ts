@@ -142,12 +142,8 @@ test(
         [...h.f.state.actions.keys()][0],
       );
       assert.equal(h.f.named("studio_operator_open_session").length, 1);
-      const proofs = h.f.named(AUTHORIZE).length;
-      assert.ok(proofs >= 3 * h.f.providerCalls());
-      assert.ok(
-        proofs <= 4 * h.f.providerCalls(),
-        "bounded per-dispatch proofs",
-      );
+      // Prior evidence is intentionally not re-proved on each provider call.
+      assert.equal(h.f.named(AUTHORIZE).length, 0);
       // Pi's actual provider tool definitions never carry host identity.
       for (const call of h.f.calls.filter(
         (c) => c.path === "/v1/chat/completions",
@@ -189,7 +185,7 @@ test(
       assert.equal(advance.args.session_id, h.f.state.session_id);
       assert.equal(h.f.named(GENERIC).length, 1);
       assert.equal(h.f.named("studio_operator_open_session").length, 1);
-      assert.equal(h.f.named(AUTHORIZE).at(-1)!.args.turn_generation, 1);
+      assert.equal(h.f.named(AUTHORIZE).length, 0);
       assert.deepEqual(h.terminated, []);
     } finally {
       await h.close();
@@ -198,7 +194,7 @@ test(
 );
 
 test(
-  "real Pi: revoked retained generic source blocks provider disclosure and destroys the runtime",
+  "real Pi: a revoked backend session blocks the next generation without replaying old reads",
   options,
   async () => {
     const h = await harness({
@@ -217,13 +213,10 @@ test(
       h.human("Answer the second question from retained context");
       await h.waitFor(() => h.terminated.length > 0);
       assert.equal(h.f.providerCalls(), before);
-      // Revocation can be caught by the turn transition or the new
-      // pre-provider proof; neither permits another provider request.
-      assert.ok(
-        ["TRANSITION_DENIED", "AUTHORIZATION_DENIED"].includes(h.terminated[0]),
-      );
-      assert.equal(h.terminated.length, 1);
-      assert.ok(h.f.named(AUTHORIZE).length >= 2 * before);
+      assert.deepEqual(h.terminated, ["TRANSITION_DENIED"]);
+      // The next generation is a new backend admission. A revoked session
+      // cannot advance, although its already-acquired data was safe to use.
+      assert.equal(h.f.named(AUTHORIZE).length, 0);
       assert.equal(h.f.named(GENERIC).length, 1);
       assert.equal(h.f.named("studio_operator_open_session").length, 1);
       await h.gateway.close();
