@@ -256,17 +256,14 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
       await page.clock.install({ time: new Date("2026-10-02T12:00:00Z") });
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.route(
-        /^https:\/\/[abc]\.tile\.openstreetmap\.org\//,
-        (route) => {
-          tiles.push(route.request().url());
-          return route.fulfill({
-            status: 200,
-            contentType: "image/svg+xml",
-            body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#273845"/><path d="M0 128H256M128 0V256" stroke="#49616b" stroke-width="2"/><text x="20" y="28" fill="#a8b5ba" font-size="13">SYNTHETIC TILE</text></svg>',
-          });
-        },
-      );
+      await page.route(/^https:\/\/tile\.openstreetmap\.org\//, (route) => {
+        tiles.push(route.request().url());
+        return route.fulfill({
+          status: 200,
+          contentType: "image/svg+xml",
+          body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#273845"/><path d="M0 128H256M128 0V256" stroke="#49616b" stroke-width="2"/><text x="20" y="28" fill="#a8b5ba" font-size="13">SYNTHETIC TILE</text></svg>',
+        });
+      });
       await page.goto(`http://127.0.0.1:${(server.address() as any).port}/`);
       await page.evaluate(() =>
         (window as any).CoachDashboard.load(null, "synthetic-key"),
@@ -315,9 +312,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
       );
       assert.ok(
         tiles.some((url) =>
-          /^https:\/\/[abc]\.tile\.openstreetmap\.org\/\d+\/\d+\/\d+\.png$/.test(
-            url,
-          ),
+          /^https:\/\/tile\.openstreetmap\.org\/\d+\/\d+\/\d+\.png$/.test(url),
         ),
         "OSM tiles requested",
       );
@@ -746,13 +741,12 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
         "late day cannot replace current day",
       );
       // Optional visual evidence with real OSM tiles: only synthetic fixture positions.
-      await page.unroute(/^https:\/\/[abc]\.tile\.openstreetmap\.org\//);
+      await page.unroute(/^https:\/\/tile\.openstreetmap\.org\//);
       try {
         const realTile = page.waitForResponse(
           (response) =>
-            /^https:\/\/[abc]\.tile\.openstreetmap\.org\//.test(
-              response.url(),
-            ) && response.ok(),
+            /^https:\/\/tile\.openstreetmap\.org\//.test(response.url()) &&
+            response.ok(),
           { timeout: 5000 },
         );
         await page.locator("#dashboardMapDate").fill("2026-09-25");
