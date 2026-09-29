@@ -15,6 +15,7 @@ async function render(
     textContent = "";
     children: Node[] = [];
     attributes: any = {};
+    dataset: Record<string, string> = {};
     hidden = false;
     listeners: any = {};
     append(...nodes: Node[]) {
@@ -25,6 +26,10 @@ async function render(
     }
     setAttribute(k: string, v: string) {
       this.attributes[k] = v;
+    }
+    removeAttribute(k: string) {
+      delete this.attributes[k];
+      if (k.startsWith("data-")) delete this.dataset[k.slice(5)];
     }
     addEventListener(k: string, f: any) {
       this.listeners[k] = f;

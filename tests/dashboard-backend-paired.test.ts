@@ -572,7 +572,8 @@ test(
               ),
             4,
           );
-          await page.locator("#dashboardRefresh").click();
+          await page.locator("#coachTab").click();
+          await page.locator("#dashboardTab").click();
           await page.waitForFunction(() =>
             document
               .querySelector("#dashboardStatus")

@@ -55,7 +55,11 @@ async function neutralSurfaces(page: Page) {
       "outlineColor",
     ] as const;
     for (const el of document.querySelectorAll<HTMLElement>("body, body *")) {
-      if (!el.getClientRects().length || el.closest("#state")) continue;
+      if (
+        !el.getClientRects().length ||
+        el.closest("#state, .leaflet-container")
+      )
+        continue;
       // Deliberate status/warning/error colors are not decorative accents.
       if (
         el.matches(
@@ -88,7 +92,8 @@ async function squareContainers(page: Page) {
     await page.evaluate(() => {
       const failures: string[] = [];
       for (const el of document.querySelectorAll<HTMLElement>("body *")) {
-        if (!el.getClientRects().length) continue;
+        if (!el.getClientRects().length || el.closest(".leaflet-container"))
+          continue;
         const s = getComputedStyle(el);
         const radii = [
           s.borderTopLeftRadius,
@@ -275,8 +280,11 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       let state = "idle";
+      let denyMap = false;
       await page.route("**/api/**", async (route) => {
         const path = new URL(route.request().url()).pathname;
+        if (path === "/api/dashboard/map" && denyMap)
+          return route.fulfill({ status: 403, json: { error: "DENIED" } });
         const bodies: Record<string, unknown> = {
           "/api/config": config,
           "/api/status": { state, lastError: null },
@@ -285,6 +293,8 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           "/api/persona/history": { revisions: [] },
           "/api/logs": { entries: [] },
           "/api/mcp/registrations": { registrations: [] },
+          "/api/dashboard": { users: [], activities: [], hasMore: false },
+          "/api/dashboard/map": { users: [], activities: [], hasMore: false },
         };
         await route.fulfill({ json: bodies[path] || {} });
       });
@@ -330,7 +340,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           ),
         [
           ["BUTTON", "Synthetic preview Coach"],
-          ["BUTTON", "Dashboard"],
+          ["BUTTON", "Dojo"],
           ["BUTTON", "Activity"],
           ["BUTTON", "Settings"],
         ],
@@ -371,6 +381,74 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       );
       await primaryContrast(page, "#coachTab");
       await capture("coach-chat");
+      await page.locator("#dashboardTab").click();
+      assert.equal(await page.locator("#dashboardTab").innerText(), "Dojo");
+      assert.equal(
+        await page
+          .locator(
+            "#dashboardPanel h2, #dashboardMapHeading, #dashboardRefresh",
+          )
+          .count(),
+        0,
+      );
+      const dojoShell = await page.evaluate(() => {
+        const map = document.querySelector<HTMLElement>("#dashboardMap")!;
+        const date =
+          document.querySelector<HTMLInputElement>("#dashboardMapDate")!;
+        const status = document.querySelector<HTMLElement>(
+          "#dashboardMapStatus",
+        )!;
+        const feedStatus =
+          document.querySelector<HTMLElement>("#dashboardStatus")!;
+        const coverage =
+          document.querySelector<HTMLElement>("#dashboardCoverage")!;
+        const mapBox = map.getBoundingClientRect();
+        const dateBox = date.getBoundingClientRect();
+        return {
+          dateName:
+            date.getAttribute("aria-label") ||
+            date.labels?.[0]?.textContent?.trim(),
+          dateWidth: dateBox.width,
+          gap: mapBox.top - dateBox.bottom,
+          aligned: dateBox.left >= mapBox.left && dateBox.right <= mapBox.right,
+          statusWidth: status.getBoundingClientRect().width,
+          feedStatusWidth: feedStatus.getBoundingClientRect().width,
+          coverageWidth: coverage.getBoundingClientRect().width,
+          mapWidth: mapBox.width,
+          overflow: document.documentElement.scrollWidth > innerWidth,
+        };
+      });
+      assert.match(dojoShell.dateName || "", /activity creation date/i);
+      assert.ok(
+        dojoShell.dateWidth >= 120 && dojoShell.mapWidth >= 240,
+        JSON.stringify(dojoShell),
+      );
+      assert.ok(
+        dojoShell.gap >= 0 && dojoShell.gap <= 16,
+        "date stays next to map",
+      );
+      assert.ok(dojoShell.aligned && !dojoShell.overflow);
+      assert.ok(dojoShell.statusWidth <= 1 && dojoShell.feedStatusWidth <= 1);
+      assert.ok(
+        dojoShell.coverageWidth <= 1,
+        "no feed counter block above map",
+      );
+      await capture("dojo-map");
+      denyMap = true;
+      await page.locator("#dashboardMapDate").fill("2026-09-28");
+      await page.locator("#dashboardMapDate").dispatchEvent("change");
+      await page.locator('#dashboardMapStatus[data-tone="error"]').waitFor();
+      assert.match(
+        await page.locator("#dashboardMapStatus").innerText(),
+        /denied \(403\)/,
+      );
+      assert.ok(
+        await page
+          .locator("#dashboardMapStatus")
+          .evaluate((el) => el.getBoundingClientRect().width > 100),
+        "map denial remains visible",
+      );
+      denyMap = false;
       await page.locator("#settingsTab").click();
       await primaryContrast(page, "#settings-katafit-tab");
       await capture("settings-katafit");
@@ -424,14 +502,14 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         await page
           .locator("#dashboardTab")
           .evaluate((el) => el === document.activeElement),
-        "Dashboard follows Operator in keyboard order",
+        "Dojo follows Coach in keyboard order",
       );
       await page.keyboard.press("Tab");
       assert.ok(
         await page
           .locator("#diagnosticsTab")
           .evaluate((el) => el === document.activeElement),
-        "Activity follows Dashboard in keyboard order",
+        "Activity follows Dojo in keyboard order",
       );
       await page.keyboard.press("Enter");
       await capture("diagnostics");
