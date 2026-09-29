@@ -102,11 +102,12 @@
   max-width: 100%;
   overflow: hidden;
   background: #101010;
-  padding: 8px;
   margin: 12px 0;
 }
 #nativeTerminal .xterm {
   height: 100%;
+  /* FitAddon subtracts xterm padding, leaving a dedicated scrollbar gutter. */
+  padding: 8px 24px 8px 8px;
 }
 .native-workbench {
   display: grid;
@@ -249,7 +250,9 @@ a.button[aria-disabled="true"] {
 @media (max-width: 600px) {
   #nativeTerminal {
     height: 460px;
-    padding: 4px;
+  }
+  #nativeTerminal .xterm {
+    padding: 4px 24px 4px 4px;
   }
 }
 
