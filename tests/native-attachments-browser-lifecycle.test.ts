@@ -129,9 +129,33 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
   const original = (NativeTerminal as any).heartbeatMs;
   (NativeTerminal as any).heartbeatMs = 100;
   const h = await attachmentHarness();
+  const sockets: { heartbeats: number; closed?: number }[] = [];
+  let observedPage: Page | undefined;
+  let browserErrors: string[] = [];
+  let phase = "opening";
   try {
     h.files.set("a.png", await png());
-    const { page, context, errors } = await open(h, (p) => p.clock.install());
+    const { page, context, errors } = await open(h, async (p) => {
+      p.on("websocket", (ws) => {
+        const observed: { heartbeats: number; closed?: number } = {
+          heartbeats: 0,
+        };
+        sockets.push(observed);
+        ws.on("close", () => {
+          observed.closed = Date.now();
+        });
+        ws.on("framereceived", (frame) => {
+          if (JSON.parse(String(frame.payload)).type === "heartbeat")
+            observed.heartbeats++;
+        });
+      });
+      await p.clock.install();
+    });
+    observedPage = page;
+    browserErrors = errors;
+    if (process.env.COACH_HEARTBEAT_FORCE_FAILURE === "1")
+      throw new Error("forced heartbeat diagnostic probe");
+    phase = "healthy heartbeats";
     await h.send({ workspace_path: "a.png" });
     await waitPreview(page);
     // Heartbeats keep a healthy link alive across long idle periods.
@@ -145,9 +169,23 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
       /^Connected/,
     );
     // Silence: no frames for longer than the watchdog allows.
+    phase = "silent watchdog";
     (NativeTerminal as any).heartbeatMs = 1e9;
+    // The interval is captured on WebSocket admission; changing the static
+    // setting cannot silence the already admitted socket. Force a fresh one.
+    const previousSockets = sockets.length;
+    h.dropSocket();
+    await page.locator("#nativeStatus[data-state=disconnected]").waitFor();
     await connect(page);
+    assert.ok(sockets.length > previousSockets, "fresh silent socket admitted");
     await waitPreview(page);
+    const beats = sockets.at(-1)!.heartbeats;
+    await page.waitForTimeout(400);
+    assert.equal(
+      sockets.at(-1)!.heartbeats,
+      beats,
+      "silenced socket emits no heartbeats",
+    );
     // Keep reconnect unavailable so the automatic retry cannot erase the
     // transient lost state before the assertion observes it.
     await page.route("**/api/terminal/ticket", (route) =>
@@ -163,6 +201,7 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
     await waitCards(page, 0);
 
     // Offline: the browser learns the network is gone.
+    phase = "offline transition";
     await page.unroute("**/api/terminal/ticket");
     (NativeTerminal as any).heartbeatMs = 100;
     await connect(page);
@@ -178,6 +217,29 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
     await context.setOffline(false);
     assert.deepEqual(await leaked(page), []);
     assert.deepEqual(errors, []);
+  } catch (error) {
+    // Log only bounded local lifecycle state; never the admin key, URLs or
+    // attachment bytes. Keep the original error/stack as the cause.
+    let state: unknown = "page unavailable";
+    if (observedPage && !observedPage.isClosed()) {
+      state = await observedPage
+        .evaluate(() => ({
+          status: document.querySelector("#nativeStatus")?.textContent,
+          statusState: document
+            .querySelector("#nativeStatus")
+            ?.getAttribute("data-state"),
+          notice: document.querySelector("#nativeAttachmentsNotice")
+            ?.textContent,
+          cards: document.querySelectorAll("#nativeAttachmentList > li").length,
+          online: navigator.onLine,
+          visibility: document.visibilityState,
+        }))
+        .catch((e) => `browser evaluation failed: ${String(e)}`);
+    }
+    throw new Error(
+      `heartbeat lifecycle ${phase}: ${JSON.stringify({ failure: String(error), state, sockets, browserErrors })}`,
+      { cause: error },
+    );
   } finally {
     (NativeTerminal as any).heartbeatMs = original;
     await h.close();
