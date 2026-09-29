@@ -524,6 +524,8 @@ window.CoachDashboard = (() => {
             } catch (error) {
               if (!live() || choiceId !== selectionEpoch) return;
               marker.remove();
+              anchor.remove();
+              link.remove();
               selection.replaceChildren(
                 text(
                   "p",

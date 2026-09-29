@@ -572,6 +572,29 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
           );
         });
       assert.ok(denseInside, "dense pins remain inside narrow map");
+      const displaced = await page.locator("#dashboardMap").evaluate((map) => {
+        const link = map.querySelector(".dashboard-map-pin-link:not([hidden])");
+        const anchor = link?.nextElementSibling;
+        const marker = anchor?.nextElementSibling;
+        if (!link || !anchor || !marker) return false;
+        (window as any).__revokedGeometry = [link, anchor];
+        (marker as HTMLButtonElement).click();
+        return true;
+      });
+      assert.ok(displaced, "fixture includes a displaced activity pin");
+      await page
+        .locator("#dashboardMapSelection")
+        .getByText(/denied|unavailable/i)
+        .waitFor();
+      assert.equal(
+        await page.evaluate(() =>
+          (window as any).__revokedGeometry.every(
+            (element: Element) => !element.isConnected,
+          ),
+        ),
+        true,
+        "denied detail removes its true-location dot and connector immediately",
+      );
       for (const [day, expectedPins] of [
         ["2026-09-25", 2],
         ["2026-09-24", 1],
