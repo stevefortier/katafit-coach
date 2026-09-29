@@ -344,7 +344,6 @@ action("unlock", async () => {
   $("lockStudio").hidden = false;
   restoreStudioRoute(true);
   void loadNativeReceipts();
-  void native.refreshHistory();
   await status();
   await refreshUpdate(true);
 });
@@ -1863,7 +1862,8 @@ function selectStudioTab(tab, navigate = true) {
   logVisibility();
   if (dashboard) CoachDashboard.load(api, key);
   else CoachDashboard.clear();
-  if (coach) operatorSnapshotLabel();
+  if (coach && key && !document.hidden) void native.connect();
+  else native.suspend();
   if (navigate)
     navigateStudio(
       coach
@@ -1882,8 +1882,13 @@ $("dashboardRefresh").onclick = () => {
     CoachDashboard.load(api, key);
 };
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) CoachDashboard.clear();
-  else if (key && !$("dashboardPanel").hidden) CoachDashboard.load(api, key);
+  if (document.hidden) {
+    CoachDashboard.clear();
+    native.suspend();
+  } else {
+    if (key && !$("dashboardPanel").hidden) CoachDashboard.load(api, key);
+    if (key && !$("coachPanel").hidden) void native.connect();
+  }
 });
 window.addEventListener("pagehide", () => CoachDashboard.clear());
 $("settingsTab").onclick = () => selectStudioTab("settings");
@@ -2832,22 +2837,12 @@ action("lockStudio", async () =>
   ),
 );
 
-function operatorSnapshotLabel() {
-  if (config)
-    $("operatorSnapshot").textContent =
-      "Saved default: " +
-      config.provider.model +
-      " · revision " +
-      config.revision +
-      ". Native /model changes only this ephemeral session.";
-}
 async function loadNativeReceipts() {
   const generation = authGeneration;
   try {
     const receipts = await api("terminal/receipts");
     if (generation !== authGeneration) return;
     renderOperatorActions(receipts.actions);
-    operatorSnapshotLabel();
     $("operatorStatus").textContent = "";
   } catch (error) {
     if (!error.stale)
@@ -2858,6 +2853,7 @@ async function loadNativeReceipts() {
 $("operatorReconcile").onclick = () => loadNativeReceipts();
 const native = nativeTerminal({
   api,
+  active: () => !!key && !document.hidden && !$("coachPanel").hidden,
   // Private attachment bytes; bound to the key of the session that requested.
   fetchAttachment: (path, signal) =>
     fetch(path, {

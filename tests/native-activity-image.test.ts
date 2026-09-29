@@ -1,225 +1,127 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gatewayHarness } from "./helpers/attachments.js";
-import { ACTIVITY_IMAGE, ACTIVITIES, DETAIL } from "./helpers/continuity.js";
+import sharp from "sharp";
+import { fixture } from "./helpers/native.js";
+import { openNativeGateway } from "../src/sandbox/gateway.js";
 
-const pair = {
-  member_ref: "fixture-member",
-  activity_ref: "activity-1",
-  media_ref: "activity-media-1",
+const path = "/api/media/activity-1/files/activity-media-1";
+const request = {
+  kind: "tool",
+  name: "katafit_rest_request",
+  args: { method: "GET", path },
 };
-const list = (g: Awaited<ReturnType<typeof gatewayHarness>>) =>
-  g.tool(ACTIVITIES, { member_ref: pair.member_ref });
-const detail = (g: Awaited<ReturnType<typeof gatewayHarness>>) =>
-  g.tool(DETAIL, {
-    member_ref: pair.member_ref,
-    activity_ref: pair.activity_ref,
-    section: "media_files",
+
+test("legacy activity image catalog is absent; ordinary REST supplies validated pixels and a live panel receipt", async () => {
+  const pixels = await sharp({
+    create: { width: 3, height: 2, channels: 3, background: "#123456" },
+  })
+    .png()
+    .toBuffer();
+  let shared = true;
+  const f = await fixture(undefined, (url) =>
+    url === path && shared
+      ? { type: "image/png", body: pixels }
+      : { status: 403, body: '{"error":"private"}' },
+  );
+  const published: any[] = [];
+  const gateway = await openNativeGateway(f.store, undefined, {
+    attachments: {
+      read: async () => {
+        throw new Error("unused");
+      },
+      publish: (item) => {
+        published.push(item);
+        return true;
+      },
+      connected: () => true,
+    },
   });
-
-test("unnegotiated activity image tool is absent and cannot dispatch", async () => {
-  const g = await gatewayHarness();
   try {
-    const catalog = await g.gateway.handle({ kind: "catalog" });
+    const catalog = await gateway.handle({ kind: "catalog" });
     assert.equal(
-      catalog.tools.some((tool: any) => tool.name === ACTIVITY_IMAGE),
+      catalog.tools.some(
+        (tool: any) => tool.name === "studio_operator_read_activity_image",
+      ),
       false,
     );
-    await assert.rejects(
-      g.tool(ACTIVITY_IMAGE, pair),
-      (error: any) => error.code === "NATIVE_REQUEST_REJECTED",
+    assert.ok(
+      catalog.tools.some((tool: any) => tool.name === "katafit_rest_request"),
     );
-    assert.equal(
-      g.f.calls.some((c) => c.name === ACTIVITY_IMAGE),
-      false,
+    assert.ok(
+      catalog.tools.some((tool: any) => tool.name === "send_to_operator"),
     );
-  } finally {
-    await g.close();
-  }
-});
-
-test("negotiated completed activity image requires exact list and media detail; receipt sends original bytes to panel", async () => {
-  const g = await gatewayHarness({ activityImages: true });
-  try {
-    const catalog = await g.gateway.handle({ kind: "catalog" });
-    const tool = catalog.tools.find((t: any) => t.name === ACTIVITY_IMAGE);
-    assert.ok(tool);
-    for (const key of ["session_id", "turn_generation", "idempotency_key"])
-      assert.equal(tool.parameters.properties[key], undefined);
-    const count = () =>
-      g.f.calls.filter((c) => c.name === ACTIVITY_IMAGE).length;
-    assert.equal(
-      (await g.tool(ACTIVITY_IMAGE, pair)).imageReadError.code,
-      "ACTIVITY_PROOF_REQUIRED",
-    );
-    assert.equal(count(), 0);
-    await list(g);
-    assert.equal(
-      (await g.tool(ACTIVITY_IMAGE, pair)).imageReadError.code,
-      "ACTIVITY_PROOF_REQUIRED",
-    );
-    assert.equal(count(), 0);
-    await detail(g);
-    for (const args of [
-      { ...pair, media_ref: "media-1" },
-      { ...pair, activity_ref: "other" },
-      { ...pair, session_id: g.f.state.session_id },
-    ]) {
-      assert.ok((await g.tool(ACTIVITY_IMAGE, args)).imageReadError);
-    }
-    assert.equal(count(), 0);
-    const result = await g.tool(ACTIVITY_IMAGE, pair);
-    const receipt = g.text(result).image_receipt;
-    assert.match(receipt, /^ir_[0-9a-f]{32}$/);
+    const result = await gateway.handle(request);
     assert.equal(result.content[1].type, "image");
-    assert.equal(count(), 1);
-    assert.deepEqual(g.f.calls.find((c) => c.name === ACTIVITY_IMAGE)?.args, {
-      ...pair,
-      session_id: g.f.state.session_id,
-      turn_generation: 0,
-    });
-    const sent = g.text(
-      await g.tool("send_to_operator", { image_receipt: receipt }),
+    assert.equal(
+      Buffer.from(result.content[1].data, "base64").equals(pixels),
+      true,
+    );
+    const receipt = JSON.parse(result.content[0].text).image_receipt;
+    assert.match(receipt, /^ir_[0-9a-f]{32}$/);
+    shared = false;
+    const before = f.calls.length;
+    const sent = JSON.parse(
+      (
+        await gateway.handle({
+          kind: "tool",
+          name: "send_to_operator",
+          args: { image_receipt: receipt },
+        })
+      ).content[0].text,
     );
     assert.equal(sent.status, "accepted_to_operator_panel");
-    assert.equal(g.published.length, 1);
-    const item = await g.gateway.readAttachment(sent.attachment_id);
-    assert.equal(item.bytes.equals(g.f.activityBytes!), true);
-    assert.equal(item.item.source, "image_receipt");
-    // Sending retained pixels to this authenticated panel must not replay
-    // source authorization; the image read itself was backend-authorized.
+    assert.equal(f.calls.length, before, "panel send never refetches source");
+    assert.equal(published.length, 1);
+    assert.equal(published[0].source, "image_receipt");
     assert.equal(
-      g.f.calls.filter((c) => c.name === "studio_operator_authorize_context")
-        .length,
-      0,
+      (await gateway.readAttachment(sent.attachment_id)).bytes.equals(pixels),
+      true,
     );
-  } finally {
-    await g.close();
-  }
-});
-
-test("activity image requires the listing to precede the matching media detail", async () => {
-  const g = await gatewayHarness({ activityImages: true });
-  try {
-    // A previously held activity_ref may permit a detail read before this
-    // context lists the activity. That reverse order is not a host proof.
-    await detail(g);
-    await list(g);
-    const before = g.f.calls.filter(
-      (call) => call.name === ACTIVITY_IMAGE,
-    ).length;
-    assert.equal(
-      (await g.tool(ACTIVITY_IMAGE, pair)).imageReadError?.code,
-      "ACTIVITY_PROOF_REQUIRED",
-    );
-    assert.equal(
-      g.f.calls.filter((call) => call.name === ACTIVITY_IMAGE).length,
-      before,
-    );
-    assert.equal(g.published.length, 0);
-
-    await detail(g);
-    assert.match(
-      g.text(await g.tool(ACTIVITY_IMAGE, pair)).image_receipt,
-      /^ir_[0-9a-f]{32}$/,
-    );
-  } finally {
-    await g.close();
-  }
-});
-
-test("generic image rejects forged or changed multipart and does not mint receipt", async () => {
-  for (const corruption of ["hash", "mime", "bytes", "dimensions", "size"]) {
-    const g = await gatewayHarness({
-      activityImages: true,
-      activityCorruption: corruption,
+    assert.deepEqual(await gateway.handle(request), {
+      restReadError: { status: 403 },
     });
-    try {
-      await list(g);
-      await detail(g);
-      const result = await g.tool(ACTIVITY_IMAGE, pair);
-      assert.deepEqual(
-        result.imageReadError?.code,
-        "IMAGE_RESULT_REJECTED",
-        corruption,
-      );
-      assert.equal(
-        (
-          await g.tool("send_to_operator", {
-            image_receipt: "activity-media-1",
-          })
-        ).attachmentError.code,
-        "ATTACHMENT_ARGUMENTS_REJECTED",
-      );
-      assert.equal(g.published.length, 0);
-    } finally {
-      await g.close();
-    }
+    assert.equal(
+      (await gateway.readAttachment(sent.attachment_id)).bytes.equals(pixels),
+      true,
+    );
+    assert.equal(f.calls.filter((call) => call.method === "GET").length, 2);
+  } finally {
+    await gateway.close();
+    await f.close();
   }
 });
 
-test("ordinary backend image denial is read-only, while explicit session revocation tears down", async () => {
-  const denied = await gatewayHarness({
-    activityImages: true,
-    activityDeny: true,
+test("REST image denial does not mint a receipt or publish an attachment", async () => {
+  const f = await fixture(undefined, () => ({
+    status: 403,
+    body: '{"error":"private"}',
+  }));
+  const published: any[] = [];
+  const gateway = await openNativeGateway(f.store, undefined, {
+    attachments: {
+      read: async () => Buffer.alloc(0),
+      publish: (item) => {
+        published.push(item);
+        return true;
+      },
+    },
   });
   try {
-    await list(denied);
-    await detail(denied);
-    assert.equal(
-      (await denied.tool(ACTIVITY_IMAGE, pair)).imageReadError.code,
-      "IMAGE_BACKEND_FAILED",
-    );
-    assert.equal(denied.terminated.length, 0);
-    assert.equal(denied.published.length, 0);
-    assert.ok((await list(denied)).content);
-  } finally {
-    await denied.close();
-  }
-  const revoked = await gatewayHarness({
-    activityImages: true,
-    revocationMarker: true,
-  });
-  try {
-    await list(revoked);
-    await detail(revoked);
-    revoked.f.state.revoked = true;
-    await assert.rejects(revoked.tool(ACTIVITY_IMAGE, pair));
-    assert.equal(revoked.published.length, 0);
-    assert.ok(revoked.terminated.length > 0);
-  } finally {
-    await revoked.close();
-  }
-});
-
-test("source loss after image acquisition retains pixels and panel attachment", async () => {
-  const g = await gatewayHarness({ activityImages: true });
-  try {
-    await list(g);
-    await detail(g);
-    const receipt = g.text(await g.tool(ACTIVITY_IMAGE, pair)).image_receipt;
-    g.f.state.revoked = true;
-    const sent = g.text(
-      await g.tool("send_to_operator", { image_receipt: receipt }),
-    );
-    assert.equal(sent.status, "accepted_to_operator_panel");
-    assert.equal(g.published.length, 1);
-    const item = await g.gateway.readAttachment(sent.attachment_id);
-    assert.equal(item.bytes.equals(g.f.activityBytes!), true);
-    // The receipt remains readable, but a new pixel fetch is still decided
-    // by the backend after the source disappears.
-    assert.equal(
-      (await g.tool(ACTIVITY_IMAGE, pair)).imageReadError.code,
-      "IMAGE_BACKEND_FAILED",
-    );
-    assert.equal(g.f.calls.filter((c) => c.name === ACTIVITY_IMAGE).length, 2);
-    assert.equal(g.terminated.length, 0);
-    assert.equal(
-      g.f.calls.filter((c) => c.name === "studio_operator_authorize_context")
-        .length,
-      0,
+    assert.deepEqual(await gateway.handle(request), {
+      restReadError: { status: 403 },
+    });
+    assert.deepEqual(gateway.attachments(), []);
+    assert.deepEqual(published, []);
+    assert.deepEqual(
+      await gateway.handle({
+        kind: "tool",
+        name: "send_to_operator",
+        args: { image_receipt: "ir_" + "a".repeat(32) },
+      }),
+      { attachmentError: { code: "ATTACHMENT_RECEIPT_UNKNOWN" } },
     );
   } finally {
-    await g.close();
+    await gateway.close();
+    await f.close();
   }
 });

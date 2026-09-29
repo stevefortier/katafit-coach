@@ -1,16 +1,39 @@
 import test, { before, after } from "node:test";
 import { NativeTerminal } from "../src/server/terminal.js";
-import { openNativeGateway } from "./helpers/legacy-gateway.js";
+import { openNativeGateway } from "../src/sandbox/gateway.js";
 const terminalProto = NativeTerminal.prototype as any;
 const originalOpenGateway = terminalProto.openGateway;
+let heldStartup: ReturnType<typeof held> | undefined;
 before(() => {
-  terminalProto.openGateway = openNativeGateway;
+  terminalProto.openGateway = async (
+    ...args: Parameters<typeof openNativeGateway>
+  ) => {
+    const gateway = await openNativeGateway(...args);
+    const pending = heldStartup;
+    if (pending) {
+      pending.entered();
+      await Promise.race([
+        pending.gate,
+        new Promise<void>((resolve) =>
+          args[1]?.addEventListener("abort", () => resolve(), { once: true }),
+        ),
+      ]);
+    }
+    return gateway;
+  };
 });
 after(() => {
   terminalProto.openGateway = originalOpenGateway;
 });
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  mkdtemp,
+  mkdir,
+  writeFile,
+  rm,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -51,14 +74,8 @@ const connect = async (origin: string, ticket: string) => {
 
 test("auto quiesce is refused while native Pi is starting and blocks every later native admission", async () => {
   const h = held();
-  let hold = true;
-  const f = await fixture(async (name, result) => {
-    if (name === "initialize" && hold) {
-      h.entered();
-      await h.gate;
-    }
-    return result;
-  });
+  heldStartup = h;
+  const f = await fixture();
   const setting = new AutoUpdateSetting(f.store.dir);
   await setting.write(true);
   const app = await admin(
@@ -86,7 +103,6 @@ test("auto quiesce is refused while native Pi is starting and blocks every later
     const busy = await post("/api/update/auto/quiesce");
     assert.equal(busy.status, 409);
     assert.deepEqual(await busy.json(), { error: "AUTO_UPDATE_BUSY" });
-    hold = false;
     h.release();
     // No artifact is provisioned: the start fails and fully cleans up.
     assert.equal(await starting.closed, 1008);
@@ -111,6 +127,7 @@ test("auto quiesce is refused while native Pi is starting and blocks every later
     assert.equal((await post("/api/terminal/ticket")).status, 200);
   } finally {
     h.release();
+    heldStartup = undefined;
     for (const ws of sockets) ws.terminate();
     await app.close();
     await f.close();
@@ -119,13 +136,8 @@ test("auto quiesce is refused while native Pi is starting and blocks every later
 
 test("manual update defers native startup without teardown or acceptance", async () => {
   const h = held();
-  const f = await fixture(async (name, result) => {
-    if (name === "initialize") {
-      h.entered();
-      await h.gate;
-    }
-    return result;
-  });
+  heldStartup = h;
+  const f = await fixture();
   const updates = new Updates("a".repeat(40), async () => {});
   updates.latest = "b".repeat(40);
   updates.checkedAt = Date.now();
@@ -163,6 +175,7 @@ test("manual update defers native startup without teardown or acceptance", async
     assert.equal(ws.readyState, WebSocket.OPEN);
   } finally {
     h.release();
+    heldStartup = undefined;
     await pending;
     ws?.terminate();
     await app.close();
@@ -170,12 +183,24 @@ test("manual update defers native startup without teardown or acceptance", async
   }
 });
 
-async function supervised(prefix: string, badTarget: string) {
+async function supervised(
+  prefix: string,
+  badTarget: string,
+  holdStartup = false,
+) {
   const { supervise, prepareLegacyNativeGateway } = await import(
     "./helpers/legacy-supervisor.js"
   );
   const home = await mkdtemp(join(tmpdir(), prefix));
   await prepareLegacyNativeGateway(home);
+  if (holdStartup) {
+    // Only this disposable supervised child is held; a source-process prototype
+    // hook cannot reach its compiled module instance.
+    await appendFile(
+      join(home, "legacy-bootstrap-fixture", "dist/server/terminal.js"),
+      `\nNativeTerminal.prototype.openGateway = async (store, signal, hooks) => { const gateway = await openNativeGateway(store, signal, hooks); await import('node:fs/promises').then(fs => fs.writeFile(${JSON.stringify(join(home, "native-start-held"))}, 'held')); await new Promise(resolve => signal.addEventListener('abort', resolve, {once:true})); return gateway; };\n`,
+    );
+  }
   const store = new Store(home);
   await store.init();
   let prepares = 0;
@@ -253,15 +278,8 @@ async function supervised(prefix: string, badTarget: string) {
 }
 
 test("supervised auto update prepares but defers activation while native Pi is starting", async () => {
-  const h = held();
-  const f = await fixture(async (name, result) => {
-    if (name === "initialize") {
-      h.entered();
-      await h.gate;
-    }
-    return result;
-  });
-  const s = await supervised("coach-native-defer-", "e".repeat(40));
+  const f = await fixture();
+  const s = await supervised("coach-native-defer-", "e".repeat(40), true);
   let ws: WebSocket | undefined;
   try {
     await s.configure(new URL(f.store.publicConfig().origin).origin);
@@ -273,14 +291,20 @@ test("supervised auto update prepares but defers activation while native Pi is s
       ((await response.json()) as any).ticket,
     );
     ws = started.ws;
-    await Promise.race([
-      h.started,
-      started.closed.then(() => {
+    const deadline = Date.now() + 5000;
+    while (true) {
+      if (Date.now() > deadline)
         throw new Error(
-          "fixture runtime closed before controlled native startup",
+          "fixture child did not reach controlled native startup",
         );
-      }),
-    ]);
+      const held = await access(join(s.home, "native-start-held")).then(
+        () => true,
+        () => false,
+      );
+      if (held) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(ws.readyState, WebSocket.OPEN);
     await s.owner.auto.tick();
     assert.equal(s.owner.updates.snapshot().autoOutcome?.state, "deferred");
     assert.equal(
@@ -291,7 +315,6 @@ test("supervised auto update prepares but defers activation while native Pi is s
     assert.equal(s.owner.pid, pid);
     assert.equal(s.owner.updates.snapshot().installed, "b".repeat(40));
   } finally {
-    h.release();
     ws?.terminate();
     await s.close();
     await f.close();
@@ -344,13 +367,8 @@ test("failed supervised activation keeps the original uncertain native action id
 
 test("confirmed configuration revokes a starting native session and its spare admission ticket", async () => {
   const hold = held();
-  const f = await fixture(async (name, result) => {
-    if (name === "initialize") {
-      hold.entered();
-      await hold.gate;
-    }
-    return result;
-  });
+  heldStartup = hold;
+  const f = await fixture();
   const app = await admin(f.store, 0);
   const sockets: WebSocket[] = [];
   const headers = {
@@ -392,6 +410,7 @@ test("confirmed configuration revokes a starting native session and its spare ad
     assert.equal(await late.closed, 1008);
   } finally {
     hold.release();
+    heldStartup = undefined;
     for (const ws of sockets) ws.terminate();
     await app.close();
     await f.close();
@@ -401,13 +420,8 @@ test("confirmed configuration revokes a starting native session and its spare ad
 test("confirmed settings apply awaits native startup teardown and fences spare tickets", async () => {
   const starting = held(),
     saving = held();
-  const f = await fixture(async (name, result) => {
-    if (name === "initialize") {
-      starting.entered();
-      await starting.gate;
-    }
-    return result;
-  });
+  heldStartup = starting;
+  const f = await fixture();
   const app = await admin(f.store, 0);
   const save = f.store.save.bind(f.store);
   const headers = {
@@ -460,6 +474,7 @@ test("confirmed settings apply awaits native startup teardown and fences spare t
     assert.equal(f.store.publicConfig().revision, revision + 1);
   } finally {
     starting.release();
+    heldStartup = undefined;
     saving.release();
     await request;
     f.store.save = save;

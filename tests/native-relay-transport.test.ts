@@ -321,25 +321,18 @@ test("unclassified failures stay content-free; only allowlisted codes and intege
   assert.deepEqual(failureFrame(new Error("boom"), "tool"), {
     error: "NATIVE_TOOL_FAILED",
   });
-  assert.deepEqual(failureFrame(new Error("NATIVE_HISTORY_UNTRUSTED_RESULT")), {
-    error: "NATIVE_GATEWAY_FAILED",
-  });
-  assert.deepEqual(failureFrame(new Error("NATIVE_HISTORY_MISMATCH")), {
+  assert.deepEqual(failureFrame(new Error("UNCLASSIFIED_UPSTREAM_FAILURE")), {
     error: "NATIVE_GATEWAY_FAILED",
   });
   assert.deepEqual(
     failureFrame(
-      new NativeFailure("NATIVE_TOOL_FAILED", "NATIVE_HISTORY_MISMATCH"),
+      new NativeFailure("NATIVE_TOOL_FAILED", "UNCLASSIFIED_UPSTREAM_FAILURE"),
       "tool",
     ),
     { error: "NATIVE_TOOL_FAILED" },
   );
   assert.deepEqual(
-    failureFrame(new NativeFailure("NATIVE_HISTORY_UNTRUSTED_RESULT")),
-    { error: "NATIVE_HISTORY_UNTRUSTED_RESULT" },
-  );
-  assert.deepEqual(
-    failureFrame(new Error("NATIVE_HISTORY_MISMATCH with sk-secret")),
+    failureFrame(new Error("UNCLASSIFIED_UPSTREAM_FAILURE with sk-secret")),
     { error: "NATIVE_GATEWAY_FAILED" },
   );
   assert.deepEqual(
@@ -437,8 +430,7 @@ test("every host failure code has exactly one fixed relay message with the pinne
   assert.match(turn, /do not replay/i);
 });
 
-test("real relay acknowledges only an emitted provider completion to the trusted runtime", async () => {
-  const delivered: string[] = [];
+test("real relay emits provider output without a delivery callback", async () => {
   const r = await startRelay({
     handle: async (request: any) =>
       request.kind === "catalog"
@@ -446,11 +438,7 @@ test("real relay acknowledges only an emitted provider completion to the trusted
         : {
             type: "application/json",
             body: '{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Complete"}}]}',
-            completion_id: "host-issued-completion",
           },
-    confirmDelivery: async (id) => {
-      delivered.push(id);
-    },
     close: async () => {},
   });
   try {
@@ -460,10 +448,6 @@ test("real relay acknowledges only an emitted provider completion to the trusted
       body: JSON.stringify({ model: "m", messages: [] }),
     });
     assert.match(await response.text(), /Complete/);
-    const deadline = Date.now() + 1500;
-    while (!delivered.length && Date.now() < deadline)
-      await new Promise((r) => setTimeout(r, 10));
-    assert.deepEqual(delivered, ["host-issued-completion"]);
     assert.equal(r.stops(), 0);
   } finally {
     await r.close();

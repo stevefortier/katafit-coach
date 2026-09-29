@@ -11,7 +11,6 @@ after(() => {
   proto.openGateway = originalOpen;
 });
 import assert from "node:assert/strict";
-import { WebSocket } from "ws";
 import { Updates } from "../src/update/updates.js";
 import { PREVIEW, aborted, bounded, harness, held } from "./helpers/preview.js";
 
@@ -73,32 +72,6 @@ test("preview beside a running Coach never pauses its in-flight live request", a
       await new Promise((r) => setTimeout(r, 20));
     assert.equal(h.publications, 1, "live request completed exactly once");
     assert.notEqual((await h.status()).state, "stopped");
-  } finally {
-    await h.close();
-  }
-});
-
-test("preview during an active native session keeps the session open", async () => {
-  const h = await harness(livePreview());
-  try {
-    assert.equal((await h.post("run")).status, 200);
-    h.native.hold = true;
-    const native = await h.connectNative();
-    await bounded(h.native.started, "native session start");
-    assert.equal((await h.status()).nativeActive, true);
-    const response = await h.post("preview", { text: PREVIEW });
-    const data = (await response.json()) as any;
-    assert.equal(response.status, 200, JSON.stringify(data));
-    assert.equal(data.text, "Synthetic preview answer");
-    assert.equal(native.ws.readyState, WebSocket.OPEN, "native not closed");
-    const s = await h.status();
-    assert.equal(s.nativeActive, true);
-    assert.notEqual(s.state, "stopped");
-    assert.equal(s.lifecycle, undefined);
-    assert.equal(
-      h.calls.filter((c) => c === "studio_operator_close_session").length,
-      0,
-    );
   } finally {
     await h.close();
   }
@@ -475,42 +448,6 @@ test("manual update and automatic quiesce stay excluded from a running preview",
   } finally {
     gate.release();
     finish?.();
-    await h.close();
-  }
-});
-
-test("preview with a native session and stopped worker leaves both as they were; skills wait", async () => {
-  const gate = held();
-  const h = await harness(async (signal) => {
-    gate.entered();
-    await Promise.race([gate.gate, aborted(signal)]);
-    return "Synthetic preview answer";
-  });
-  try {
-    h.native.hold = true;
-    const native = await h.connectNative();
-    await bounded(h.native.started, "native session start");
-    assert.equal((await h.status()).state, "stopped");
-    const pending = h.post("preview", { text: PREVIEW });
-    await bounded(gate.started, "preview start");
-    const skills = h.store.skills.view() as any;
-    const id = (skills.skills ?? skills)[0]?.id;
-    assert.ok(id, "a stock skill exists");
-    const skill = await h.post(`skills/${id}/restore-default`, {
-      expectedRevision: h.store.skills.runtime().revision,
-    });
-    assert.equal(skill.status, 409);
-    assert.match(((await skill.json()) as any).hint, /preview/i);
-    gate.release();
-    assert.equal((await pending).status, 200);
-    const s = await h.status();
-    assert.equal(s.state, "stopped", "worker not started");
-    assert.equal(s.nativeActive, true);
-    assert.equal(s.lifecycle, undefined);
-    assert.equal(native.ws.readyState, WebSocket.OPEN);
-    assert.equal(h.calls.includes("studio_operator_close_session"), false);
-  } finally {
-    gate.release();
     await h.close();
   }
 });

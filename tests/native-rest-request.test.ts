@@ -4,11 +4,10 @@ import { createServer } from "node:http";
 import { fixture } from "./helpers/native.js";
 import { startRelay, loadExtension, piTurn } from "./helpers/native-relay.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
-import { NativeConversations } from "../src/sandbox/conversations.js";
 
 import { Actions } from "../src/chat/actions.js";
 
-test("actual relay/extension exposes one HTTP tool; uncertain mutation is journaled and never replayed or reconciled via MCP", async () => {
+test("actual relay exposes REST mutations without a Coach journal or automatic retry", async () => {
   const calls: string[] = [];
   const server = createServer((req, res) => {
     calls.push(req.method + " " + req.url);
@@ -41,10 +40,7 @@ test("actual relay/extension exposes one HTTP tool; uncertain mutation is journa
         body: { exact_id: "slug", value: 0 },
       });
     }
-    await assert.rejects(
-      () => tool.execute("POST", { method: "POST", path: "/api/success" }),
-      /replay/i,
-    );
+    await tool.execute("POST", { method: "POST", path: "/api/success" });
     await gateway.handle({
       kind: "tool",
       name: "katafit_rest_get",
@@ -60,42 +56,19 @@ test("actual relay/extension exposes one HTTP tool; uncertain mutation is journa
         }),
       /outcome is unknown.*do not replay/i,
     );
-    assert.equal(new Actions(f.store).snapshot().at(-1)?.status, "unknown");
-    await assert.rejects(
-      () => tool.execute("retry", { method: "PATCH", path: "/api/lost" }),
-      /unknown|unverified|replay/i,
-    );
-    await assert.rejects(
-      () =>
-        ext.call("studio_operator_send_message", {
-          member_ref: "anything",
-          text: "retry through legacy",
-        }),
-      /unknown|unverified|replay/i,
-    );
-    await new Actions(f.store).reconcile();
+    assert.deepEqual(new Actions(f.store).snapshot(), []);
+    // An unknown acknowledgement does not trigger an automatic REST replay.
     assert.deepEqual(calls, [
       "GET /api/docs/coach",
       "POST /api/success",
       "PUT /api/success",
       "PATCH /api/success",
       "DELETE /api/success",
+      "POST /api/success",
       "GET /api/compat",
       "PATCH /api/lost",
     ]);
     await gateway.close();
-    await assert.rejects(
-      () => openNativeGateway(f.store),
-      /DELIVERY_UNVERIFIED/,
-    );
-    await f.store.save({
-      ...f.store.publicConfig(),
-      apiKey: "replacement-synthetic-provider-key",
-    });
-    await assert.rejects(
-      () => openNativeGateway(f.store),
-      /DELIVERY_UNVERIFIED/,
-    );
   } finally {
     await relay?.close();
     await gateway.close();
@@ -146,15 +119,10 @@ test("actual Pi continuations may reuse a mutation ID for distinct canonical occ
     ...f.store.publicConfig(),
     origin: `http://127.0.0.1:${(backend.address() as any).port}`,
   });
-  const history = new NativeConversations(f.store);
   let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
   let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
   try {
-    gateway = await openNativeGateway(f.store, undefined, {
-      onBeforeDispatch: () => history.flush(),
-      onExchange: (capture) => history.capture(gateway!, capture),
-    });
-    await history.bind(gateway, await history.prepare());
+    gateway = await openNativeGateway(f.store);
     relay = await startRelay(gateway);
     const ext = await loadExtension(relay);
     const tool = ext.tools.get("katafit_rest_request");
@@ -183,33 +151,11 @@ test("actual Pi continuations may reuse a mutation ID for distinct canonical occ
     }
     const answer = await piTurn(relay, "approved-custom-model", messages);
     assert.equal(answer.stopReason, "stop", JSON.stringify(answer));
-    const id = history.active!.id;
-    await history.finish(gateway);
     assert.deepEqual(writes, [args.body, args.body]);
-    assert.deepEqual(
-      new Actions(f.store).snapshot().map((a) => a.status),
-      ["completed", "completed"],
-    );
-    const reopened = new NativeConversations(f.store);
-    const view = await reopened.read(id);
-    assert.equal(view.status, "authorized");
-    const prepared = await reopened.prepare();
-    const results = prepared
-      .seed!.filter((e: any) => e.type === "message")
-      .map((e: any) => e.message)
-      .filter((m: any) => m.role === "toolResult");
-    assert.equal(results.length, 2);
-    assert.deepEqual(
-      results.map((m: any) => m.toolCallId),
-      ["reused-mutation", "reused-mutation"],
-    );
-    // No new provider selection: the just-consumed occurrence cannot replay.
-    await assert.rejects(
-      () => tool.execute("reused-mutation", args),
-      /history|replay|unverified/i,
-    );
+    assert.deepEqual(new Actions(f.store).snapshot(), []);
+    // Distinct provider selections dispatched despite reusing the same ID.
     assert.equal(writes.length, 2);
-    assert.equal(new Actions(f.store).snapshot().length, 2);
+    assert.equal(new Actions(f.store).snapshot().length, 0);
   } finally {
     await relay?.close();
     await gateway?.close();
@@ -240,38 +186,37 @@ test("invalid REST mutation arguments are rejected before dispatch or journaling
   }
 });
 
-for (const mode of [false, true, "seal"] as const)
-  test(`real Pi serialization and saved history retain mutation ${mode} outcome`, async () => {
-    const lost = mode === true;
-    const sealFailure = mode === "seal";
+for (const lost of [false, true])
+  test(`real Pi serialization retains REST mutation ${lost ? "unknown" : "success"} outcome in the live turn`, async () => {
     let mutations = 0;
     const backend = createServer(async (req, res) => {
       for await (const _chunk of req) {
+        /* drain */
       }
-      if (req.url === "/api/future") {
-        mutations++;
-        if (lost) {
-          req.socket.destroy();
-          return;
-        }
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end('{"saved":true}');
-      } else {
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end("{}");
+      if (req.url !== "/api/future") {
+        res.writeHead(404);
+        res.end();
+        return;
       }
+      mutations++;
+      if (lost) return req.socket.destroy();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"saved":true}');
     });
     await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
     const args = {
       method: "PUT",
       path: "/api/future",
-      body: { exact_id: "slug", unit: "lbs", value: 0 },
+      body: { exact_id: "slug", value: 0 },
     };
     const f = await fixture((name, _value, body) => {
       if (name !== "provider") return;
       const tool = body.messages.find((m: any) => m.role === "tool");
-      if (tool && lost)
-        assert.match(tool.content, /outcome is unknown.*do not replay/i);
+      if (tool)
+        assert.match(
+          tool.content,
+          lost ? /outcome is unknown.*do not replay/i : /saved/,
+        );
       const delta = tool
         ? {
             content: lost
@@ -297,25 +242,15 @@ for (const mode of [false, true, "seal"] as const)
       ...f.store.publicConfig(),
       origin: `http://127.0.0.1:${(backend.address() as any).port}`,
     });
-    const history = new NativeConversations(f.store);
+    const gateway = await openNativeGateway(f.store);
     let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
-    let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
     try {
-      gateway = await openNativeGateway(f.store, undefined, {
-        onBeforeDispatch: () => history.flush(),
-        onExchange: (capture) => {
-          if (sealFailure && JSON.stringify(capture).includes("toolResult"))
-            throw new Error("synthetic seal failure");
-          return history.capture(gateway!, capture);
-        },
-      });
-      await history.bind(gateway, await history.prepare());
       relay = await startRelay(gateway);
       const ext = await loadExtension(relay);
       const messages: any[] = [
         {
           role: "user",
-          content: "Apply the requested exact change once.",
+          content: "Apply one exact change.",
           timestamp: Date.now(),
         },
       ];
@@ -333,16 +268,7 @@ for (const mode of [false, true, "seal"] as const)
           isError: true,
         };
       }
-      assert.equal(Boolean(result.isError), lost || sealFailure);
-      if (sealFailure) {
-        assert.ok(
-          ["pending", "unknown"].includes(
-            new Actions(f.store).snapshot().at(-1)!.status,
-          ),
-        );
-        assert.equal(mutations, 1);
-        return;
-      }
+      assert.equal(Boolean(result.isError), lost);
       messages.push({
         role: "toolResult",
         toolCallId: "mutation",
@@ -353,156 +279,12 @@ for (const mode of [false, true, "seal"] as const)
       });
       const answer = await piTurn(relay, "approved-custom-model", messages);
       assert.equal(answer.stopReason, "stop", JSON.stringify(answer));
-      const id = history.active!.id;
-      await history.finish(gateway);
-      await relay.close();
-      relay = undefined;
-      await gateway.close();
-      gateway = undefined;
-      const reopened = new NativeConversations(f.store);
-      const view = await reopened.read(id);
-      assert.equal(view.status, "authorized");
-      assert.match(
-        JSON.stringify(view.entries),
-        lost ? /outcome is unknown/i : /saved/,
-      );
-      if (lost)
-        await assert.rejects(() => reopened.prepare(), /DELIVERY_UNVERIFIED/);
-      else assert.ok((await reopened.prepare()).seed?.length);
       assert.equal(mutations, 1);
-      assert.equal(
-        new Actions(f.store).snapshot().at(-1)?.status,
-        lost ? "unknown" : "completed",
-      );
+      assert.deepEqual(new Actions(f.store).snapshot(), []);
+      assert.equal(mutations, 1);
     } finally {
       await relay?.close();
-      await gateway?.close();
-      await f.close();
-      backend.closeAllConnections();
-      await new Promise<void>((r) => backend.close(() => r()));
-    }
-  });
-
-for (const unknown of [false, true])
-  test(`mutation host outcome is retained through actual Pi history (${unknown ? "unknown" : "success"})`, async () => {
-    const { NativeConversations } = await import(
-      "../src/sandbox/conversations.js"
-    );
-    const { Store } = await import("../src/config/store.js");
-    let writes = 0;
-    const backend = createServer(async (req, res) => {
-      for await (const _ of req) {
-        /* drain */
-      }
-      if (req.url !== "/api/example") {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
-      writes++;
-      if (unknown) {
-        req.socket.destroy();
-        return;
-      }
-      res.writeHead(204);
-      res.end();
-    });
-    await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
-    const args = {
-      method: "PUT",
-      path: "/api/example",
-      body: { exact_id: "slug-1", value: 0 },
-    };
-    const f = await fixture((name, _value, body) => {
-      if (name !== "provider") return;
-      const hasResult = body.messages.some((m: any) => m.role === "tool");
-      const delta = hasResult
-        ? {
-            content: unknown
-              ? "Unknown outcome; no replay."
-              : "HTTP acknowledged; canonical readback is still required.",
-          }
-        : {
-            tool_calls: [
-              {
-                index: 0,
-                id: "call-katafit_rest_request",
-                type: "function",
-                function: {
-                  name: "katafit_rest_request",
-                  arguments: JSON.stringify(args),
-                },
-              },
-            ],
-          };
-      return `data: ${JSON.stringify({ id: "http-action", choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "http-action", choices: [{ index: 0, delta: {}, finish_reason: hasResult ? "stop" : "tool_calls" }] })}\n\ndata: [DONE]\n\n`;
-    });
-    await f.store.save({
-      ...f.store.publicConfig(),
-      origin: `http://127.0.0.1:${(backend.address() as any).port}`,
-    });
-    const history = new NativeConversations(f.store);
-    let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
-    let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
-    try {
-      gateway = await openNativeGateway(f.store, undefined, {
-        onBeforeDispatch: () => history.flush(),
-        onExchange: (capture) => history.capture(gateway!, capture),
-      });
-      await history.bind(gateway, await history.prepare());
-      relay = await startRelay(gateway);
-      const ext = await loadExtension(relay);
-      const messages: any[] = [
-        {
-          role: "user",
-          content: "Apply this requested change once.",
-          timestamp: Date.now(),
-        },
-      ];
-      const selected = await piTurn(relay, "approved-custom-model", messages);
-      assert.equal(selected.stopReason, "toolUse");
-      messages.push(selected);
-      let content: any[],
-        isError = false;
-      try {
-        content = (await ext.call("katafit_rest_request", args)).content;
-      } catch (error) {
-        isError = true;
-        content = [{ type: "text", text: (error as Error).message }];
-      }
-      assert.equal(isError, unknown);
-      messages.push({
-        role: "toolResult",
-        toolCallId: "call-katafit_rest_request",
-        toolName: "katafit_rest_request",
-        content,
-        isError,
-        timestamp: Date.now(),
-      });
-      const answer = await piTurn(relay, "approved-custom-model", messages);
-      assert.equal(answer.stopReason, "stop", JSON.stringify(answer));
-      const id = history.active!.id;
-      await history.finish(gateway);
-      await relay.close();
-      relay = undefined;
       await gateway.close();
-      gateway = undefined;
-      const restarted = new Store(f.store.dir);
-      await restarted.init();
-      const reopened = new NativeConversations(restarted);
-      const view = await reopened.read(id);
-      assert.equal(view.status, "authorized");
-      assert.match(
-        JSON.stringify(view.entries),
-        unknown ? /outcome is unknown/ : /204/,
-      );
-      if (unknown)
-        await assert.rejects(() => reopened.prepare(), /DELIVERY_UNVERIFIED/);
-      else assert.ok((await reopened.prepare()).seed?.length);
-      assert.equal(writes, 1);
-    } finally {
-      await relay?.close();
-      await gateway?.close();
       await f.close();
       backend.closeAllConnections();
       await new Promise<void>((r) => backend.close(() => r()));

@@ -66,7 +66,6 @@ async function open(
   return { page, context, errors };
 }
 async function connect(page: Page) {
-  await page.locator("#nativeStart").click({ timeout: 5000 });
   await page.waitForFunction(() =>
     document
       .querySelector("#nativeStatus")
@@ -111,6 +110,7 @@ test("an abnormal disconnect erases the panel by the detach deadline unless the 
     assert.equal(await count(page), 1, "re-authorized snapshot kept it");
 
     h.dropSocket();
+    await page.locator("#settingsTab").click();
     await page.waitForFunction(() =>
       document
         .querySelector("#nativeStatus")
@@ -148,9 +148,14 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
     (NativeTerminal as any).heartbeatMs = 1e9;
     await connect(page);
     await waitPreview(page);
+    // Keep reconnect unavailable so the automatic retry cannot erase the
+    // transient lost state before the assertion observes it.
+    await page.route("**/api/terminal/ticket", (route) =>
+      route.fulfill({ status: 503, body: "unavailable" }),
+    );
     await page.clock.fastForward(26000);
     await page.waitForFunction(() =>
-      /lost|Disconnected/i.test(
+      /lost|Disconnected|unavailable/i.test(
         document.querySelector("#nativeStatus")?.textContent ?? "",
       ),
     );
@@ -158,6 +163,7 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
     await waitCards(page, 0);
 
     // Offline: the browser learns the network is gone.
+    await page.unroute("**/api/terminal/ticket");
     (NativeTerminal as any).heartbeatMs = 100;
     await connect(page);
     await waitCards(page, 1);
@@ -178,7 +184,7 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
   }
 });
 
-test("the panel erases itself at the backend context expiry even while connected", async () => {
+test("acquired panel bytes survive legacy backend context expiry while the local Pi runtime stays connected", async () => {
   const h = await attachmentHarness({ contextTtlMs: 6000 });
   try {
     h.files.set("a.png", await png());
@@ -186,12 +192,14 @@ test("the panel erases itself at the backend context expiry even while connected
     await h.send({ workspace_path: "a.png" });
     await waitPreview(page);
     await page.clock.fastForward(6500);
-    await waitCards(page, 0);
-    assert.match(
-      (await page.locator("#nativeAttachmentsNotice").textContent())!,
-      /expired/i,
+    await waitCards(page, 1);
+    assert.equal(
+      (await page.locator("#nativeAttachmentsNotice").textContent())?.includes(
+        "expired",
+      ),
+      false,
     );
-    assert.deepEqual(await leaked(page), []);
+    assert.equal((await leaked(page)).length, 1);
     assert.deepEqual(errors, []);
   } finally {
     await h.close();
@@ -230,7 +238,7 @@ test("a response arriving after Stop creates no object URL", async () => {
     );
     await h.send({ workspace_path: "a.png" });
     await waitCards(page, 1);
-    await page.locator("#nativeStop").click();
+    await page.evaluate(() => api("terminal/stop", {}));
     await waitCards(page, 0);
     release();
     await page.waitForTimeout(300);
@@ -362,7 +370,7 @@ test("a reconnect that cannot be re-authorized yet shows pending and keeps nothi
     });
     provider.catch(() => {});
     await new Promise((r) => setTimeout(r, 100));
-    await connect(page);
+    h.dropSocket();
     await page.waitForFunction(() =>
       /Pi is busy|waiting/i.test(
         document.querySelector("#nativeAttachmentsNotice")?.textContent ?? "",

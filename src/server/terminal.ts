@@ -6,7 +6,6 @@ import { NativeRuntime } from "../sandbox/runtime.js";
 import { nativeImage } from "../sandbox/artifact.js";
 import { openNativeGateway, type NativeGateway } from "../sandbox/gateway.js";
 import { AttachmentFailure } from "../sandbox/attachments.js";
-import { NativeConversations } from "../sandbox/conversations.js";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 /** Installation-admin terminal only; not a managed multi-tenant service. */
@@ -14,7 +13,6 @@ const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const expiresIn = (at?: string | null) =>
   at ? Math.max(0, Date.parse(at) - Date.now()) : null;
 export class NativeTerminal {
-  private history: NativeConversations;
   /** Liveness frames let an offline browser notice a silently dead link. */
   static heartbeatMs = 10000;
   private tickets = new Map<string, { expires: number; authority: string }>();
@@ -28,11 +26,11 @@ export class NativeTerminal {
   private generation = 0;
   private controller?: AbortController;
   private output = "";
-  private historyNotice?: string;
+
   // Random per runtime; scopes the private attachment endpoint to it.
   private session?: string;
   private sessionAuthority?: string;
-  private detach?: NodeJS.Timeout;
+
   private readonly wss = new WebSocketServer({
     noServer: true,
     maxPayload: 16384,
@@ -45,7 +43,6 @@ export class NativeTerminal {
     private allowed: () => boolean = () => true,
     private onDiagnostic?: import("../katafit/client.js").BackendLogger,
   ) {
-    this.history = new NativeConversations(store);
     server.on("upgrade", (req, socket, head) => {
       if (
         req.url !== "/api/terminal/ws" ||
@@ -122,9 +119,6 @@ export class NativeTerminal {
       this.sockets.delete(ws);
       if (this.ws === ws) {
         this.ws = undefined;
-        this.detach = setTimeout(() => {
-          void this.stop();
-        }, 30000);
       }
     });
     ws.on("message", async (data) => {
@@ -148,7 +142,7 @@ export class NativeTerminal {
           admitted = true;
           authority = ticket.authority;
           clearTimeout(timer);
-          clearTimeout(this.detach);
+
           if (this.ws) {
             // The replaced tab can no longer be reached by a later Stop.
             this.send(this.ws, { type: "attachments-cleared" });
@@ -164,11 +158,7 @@ export class NativeTerminal {
           await this.start();
           if (this.ws === ws && this.session) {
             this.send(ws, { type: "ready" });
-            if (this.historyNotice)
-              this.send(ws, {
-                type: "history-notice",
-                message: this.historyNotice,
-              });
+
             void this.replay(ws, this.session, replayOutput);
           }
           return;
@@ -186,15 +176,10 @@ export class NativeTerminal {
           await this.runtime?.resize(message.cols, message.rows);
         else throw new Error("FRAME");
       } catch (error) {
-        const historyReadOnly = /^NATIVE_(?:HISTORY|ARCHIVE)_/.test(
-          (error as Error)?.message ?? "",
-        );
         this.send(ws, {
           type: "error",
-          historyReadOnly,
-          message: historyReadOnly
-            ? "Saved conversation cannot safely resume. Open History for its current authorized read-only view and reason; choose New explicitly to continue."
-            : "Native Pi unavailable or session revoked. Stop before retrying; actions are never replayed.",
+          message:
+            "Native Pi unavailable or session revoked. Reconnect to start a fresh runtime; actions are never replayed.",
         });
         ws.close(1008, "Session rejected");
       }
@@ -213,35 +198,7 @@ export class NativeTerminal {
       const session = randomBytes(16).toString("hex");
       const authority = this.authority();
       let owned: NativeRuntime | undefined;
-      const prepared = await this.history.prepare(controller.signal);
-      this.historyNotice = undefined;
       const gateway = await this.openGateway(this.store, controller.signal, {
-        resume: prepared.resume,
-        resumeSessionId: prepared.record?.execution?.sessionId,
-        seed: prepared.seed,
-        onBeforeDispatch: () => this.history.flush(),
-        onHistoryMismatch: async (reason) => {
-          this.onDiagnostic?.({
-            source: "studio",
-            stage: "native-history-failed",
-            error: new Error(reason),
-          });
-          const id = this.history.active?.id;
-          if (id)
-            await this.history.storage.change(id, (row) => {
-              row.blocked = "history_mismatch";
-            });
-          const notice =
-            "History is now read-only. Live Pi may continue under current permissions, but further output is not saved. After Stop, use New; this archive cannot resume.";
-          this.historyNotice = notice;
-          this.output += "\r\n" + notice + "\r\n";
-          if (this.ws)
-            this.send(this.ws, { type: "history-notice", message: notice });
-        },
-        onExchange: async (capture) => {
-          if (generation !== this.generation) return;
-          await this.history.capture(gateway, capture);
-        },
         onDiagnostic: this.onDiagnostic,
         attachments: {
           // Only this generation's own container; never a sandbox-named path.
@@ -283,13 +240,10 @@ export class NativeTerminal {
             this.send(ws, {
               type: "error",
               message:
-                "Native Pi retained context was revoked or expired, so this runtime was destroyed. Start a new session; actions are never replayed.",
+                "Native Pi retained context was revoked or expired, so this runtime was destroyed. Reconnect for a fresh session; actions are never replayed.",
             });
           void this.stop().catch(() => {});
         },
-      }).catch(async (error) => {
-        await this.history.resumeFailed(prepared.record, error);
-        throw error;
       });
       let image: string;
       try {
@@ -305,7 +259,7 @@ export class NativeTerminal {
       this.gateway = gateway;
       this.session = session;
       this.sessionAuthority = authority;
-      await this.history.bind(gateway, prepared);
+
       const runtime = (this.runtime = owned = this.createRuntime(image));
       runtime.onExit = () => {
         if (this.runtime === runtime) void this.stop().catch(() => {});
@@ -437,7 +391,7 @@ export class NativeTerminal {
   stop() {
     this.generation++;
     this.tickets.clear();
-    clearTimeout(this.detach);
+
     this.controller?.abort();
     // Erase panel access before teardown completes; old URLs are now unknown.
     this.session = undefined;
@@ -463,7 +417,7 @@ export class NativeTerminal {
         throw error;
       } finally {
         await gateway?.close();
-        await this.history.finish(gateway);
+
         this.gateway = undefined;
       }
     })().finally(() => {
@@ -474,24 +428,5 @@ export class NativeTerminal {
     await this.stop();
     for (const ws of this.sockets) ws.terminate();
     this.wss.close();
-  }
-  historyList() {
-    return this.history.list();
-  }
-  historyRead(id: string) {
-    return this.history.read(id);
-  }
-  async historySelect(id: string | null) {
-    if (this.runtime || this.starting || this.stopping || this.gateway)
-      throw new Error("NATIVE_HISTORY_BUSY");
-    await this.history.select(id);
-  }
-  historyRename(id: string, title: string) {
-    return this.history.rename(id, title);
-  }
-  async historyDelete(id: string) {
-    if (this.runtime || this.starting || this.stopping || this.gateway)
-      throw new Error("NATIVE_HISTORY_BUSY");
-    await this.history.delete(id);
   }
 }

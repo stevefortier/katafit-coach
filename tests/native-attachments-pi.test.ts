@@ -1,4 +1,4 @@
-import test, { before, after } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -6,27 +6,10 @@ import { promisify } from "node:util";
 import { mkdir, readFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
 import { chromePath } from "./helpers/chrome.js";
-import {
-  continuityFixture,
-  CHECKINS,
-  IMAGE,
-  answer,
-  toolCall,
-} from "./helpers/continuity.js";
+import sharp from "sharp";
+import { continuityFixture, answer, toolCall } from "./helpers/continuity.js";
 import { PI_READY } from "./helpers/native-ready.js";
 import { admin } from "../src/server/admin.js";
-import { NativeTerminal } from "../src/server/terminal.js";
-import { openNativeGateway } from "./helpers/legacy-gateway.js";
-
-// This MCP attachment regression must opt into legacy acquisition explicitly.
-const terminalProto = NativeTerminal.prototype as any;
-const originalOpenGateway = terminalProto.openGateway;
-before(() => {
-  terminalProto.openGateway = openNativeGateway;
-});
-after(() => {
-  terminalProto.openGateway = originalOpenGateway;
-});
 
 // Real served admin UI, real network-none Pi TUI with the shipped extension,
 // relay, gateway and Docker exec workspace reads. Only the Kata.fit backend
@@ -51,12 +34,21 @@ const containers = async () =>
   );
 
 test(
-  "native Pi sends a check-in photo and a /workspace file to the Operator panel; escapes are refused; Stop erases",
+  "native Pi sends an image and CSV from /workspace to the panel; escapes are refused; teardown erases",
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 150000 },
   async () => {
     const steps: string[] = [];
+    const image = await sharp({
+      create: {
+        width: 3,
+        height: 2,
+        channels: 3,
+        background: "#123456",
+      },
+    })
+      .png()
+      .toBuffer();
     const f = await continuityFixture({
-      images: true,
       provider: (body) => {
         // Single human turn; delivered pixels arrive as a later user message,
         // so consider every tool result in the conversation.
@@ -69,20 +61,18 @@ test(
           steps.push(id);
           return toolCall(name, args, id);
         };
-        if (!result("inventory")) return next(CHECKINS, {}, "inventory");
-        if (!result("photo"))
+        if (!result("write_photo"))
           return next(
-            IMAGE,
-            { member_ref: "fixture-member", media_ref: "media-1" },
-            "photo",
+            "bash",
+            {
+              command: `printf %s '${image.toString("base64")}' | base64 -d > /workspace/checkin.png`,
+            },
+            "write_photo",
           );
-        const receipt = /ir_[a-f0-9]{32}/.exec(result("photo")!)?.[0];
-        if (!receipt)
-          return answer("ATTACHMENTS_MISSING: no image_receipt was minted.");
         if (!result("share_photo"))
           return next(
             "send_to_operator",
-            { image_receipt: receipt, caption: "Synthetic check-in photo" },
+            { workspace_path: "checkin.png", caption: "Synthetic image" },
             "share_photo",
           );
         if (!result("write_csv"))
@@ -131,7 +121,7 @@ test(
         return answer(
           verdict.length
             ? "ATTACHMENTS_MISSING: " + verdict.join(",")
-            : "ATTACHMENTS_VERIFIED: photo and visits.csv are in your attachments panel; the symlink and traversal were refused.",
+            : "ATTACHMENTS_VERIFIED: image and visits.csv are in your attachments panel; the symlink and traversal were refused.",
         );
       },
     });
@@ -180,19 +170,17 @@ test(
       await page.goto(app.origin + "/chat/operator");
       await page.locator("#adminKey").fill(f.store.secrets.admin);
       await page.locator("#unlock").click();
-      await page.locator("#nativeStart").click({ timeout: 5000 });
       await waitOutput(PI_READY, 30000);
       owned = [...(await containers())].filter((id) => !before.has(id));
       assert.ok(owned.length >= 1, "a sandbox container is running");
       await page.locator(".xterm-helper-textarea").focus();
       await page.keyboard.type(
-        "Share the synthetic check-in photo and a visits CSV with me.",
+        "Share the synthetic image and a visits CSV with me.",
       );
       await page.keyboard.press("Enter");
       await waitOutput("ATTACHMENTS_VERIFIED", 90000);
       assert.deepEqual(steps, [
-        "inventory",
-        "photo",
+        "write_photo",
         "share_photo",
         "write_csv",
         "make_link",
@@ -215,7 +203,7 @@ test(
       );
       assert.equal(
         await cards.nth(1).locator(".attachment-caption").textContent(),
-        "Synthetic check-in photo",
+        "Synthetic image",
       );
       assert.equal(
         await cards.nth(0).locator(".attachment-name").textContent(),
@@ -247,8 +235,10 @@ test(
       );
       assert.equal(fetched.length, 2);
 
-      // Reconnect: same runtime, same cards, no duplicate fetches.
-      await page.locator("#nativeStart").click();
+      // Reconnect: same runtime and cards. The image preview reloads from the
+      // private attachment endpoint, never from the original backend source.
+      await page.reload();
+      await page.locator("#studio").waitFor({ state: "visible" });
       await page.waitForFunction(() =>
         document
           .querySelector("#nativeStatus")
@@ -260,7 +250,12 @@ test(
         await cards.nth(0).locator(".attachment-name").textContent(),
         "visits.csv",
       );
-      assert.equal(fetched.length, 2);
+      assert.equal(fetched.length, 3);
+      assert.equal(
+        new URL(fetched[2]).pathname,
+        new URL(fetched[0]).pathname,
+        "reload fetches the same private image preview",
+      );
       assert.deepEqual(
         [...(await containers())].filter((id) => !before.has(id)),
         owned,
@@ -287,15 +282,14 @@ test(
       }
 
       const url = new URL(fetched[0]).pathname;
-      await page.locator("#nativeStop").click();
+      await page.evaluate(() => api("terminal/stop", {}));
       await page.waitForFunction(
         () =>
-          document
-            .querySelector("#nativeStatus")
-            ?.textContent?.includes("Stopped"),
+          document.querySelectorAll("#nativeAttachmentList > li").length === 0,
         {},
         { timeout: 20000 },
       );
+      await page.locator("#settingsTab").click();
       assert.equal(await cards.count(), 0);
       const stale = await fetch(app.origin + url, {
         headers: { Authorization: "Bearer " + f.store.secrets.admin },
@@ -308,10 +302,12 @@ test(
         if (Date.now() > end) throw new Error("sandbox container survived");
         await new Promise((r) => setTimeout(r, 200));
       }
-      assert.ok(
+      assert.equal(
         f.calls.some(
           (c) => c.body.params?.name === "studio_operator_close_session",
         ),
+        false,
+        "workspace-only attachments need no backend conversation session",
       );
       assert.doesNotMatch(output, /synthetic-(?:backend|provider)-credential/);
       assert.deepEqual(errors, []);

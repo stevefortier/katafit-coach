@@ -112,10 +112,8 @@ test("Settings preview composer retains Enter, Shift+Enter and IME behavior", as
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(await page.locator("#operatorView h2").count(), 0);
-    assert.equal(
-      await page.getByRole("group", { name: "Native Pi controls" }).isVisible(),
-      true,
-    );
+    assert.equal(await page.locator("#nativeTerminal").isVisible(), true);
+    assert.equal(await page.locator("#nativeAttachments").isVisible(), true);
     assert.doesNotMatch(
       await page.locator("#operatorView").innerText(),
       /cannot recall a sent message|Enter to send/,

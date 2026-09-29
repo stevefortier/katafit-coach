@@ -59,7 +59,7 @@ async function neutralSurfaces(page: Page) {
       // Deliberate status/warning/error colors are not decorative accents.
       if (
         el.matches(
-          '#modelDraftStatus, #models .saved-badge, [data-tone="error"], .log-error, .log-warn',
+          '#modelDraftStatus, #models .saved-badge, [data-tone="error"], #nativeStatus[data-state="error"], #nativeStatus[data-state="unavailable"], #nativeStatus[data-state="overflow"], .log-error, .log-warn',
         )
       )
         continue;
@@ -221,6 +221,14 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       ),
       "xterm-fit.js": new URL(
         "../node_modules/@xterm/addon-fit/lib/addon-fit.js",
+        import.meta.url,
+      ),
+      "leaflet.js": new URL(
+        "../node_modules/leaflet/dist/leaflet.js",
+        import.meta.url,
+      ),
+      "leaflet.css": new URL(
+        "../node_modules/leaflet/dist/leaflet.css",
         import.meta.url,
       ),
     };

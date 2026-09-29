@@ -143,42 +143,6 @@ test("two delivered photos over 1 MiB and the subsequent provider turn cross the
   }
 });
 
-test("near-limit original image results return through the actual relay and extension, then reach the provider", async () => {
-  const size = Math.floor(7.5 * MiB);
-  const f = await setup({ imageSize: size });
-  try {
-    const pi = await loadExtension(f.relay);
-    await pi.call(LIST, {});
-    const results = [];
-    for (const media_ref of ["media-photo", "media-photo-1"])
-      results.push(
-        await pi.call(IMAGE, { member_ref: "member-photo", media_ref }),
-      );
-    for (const result of results) {
-      assert.equal(result.content[1].type, "image");
-      assert.equal(Buffer.from(result.content[1].data, "base64").length, size);
-      assert.ok(
-        Buffer.from(result.content[1].data, "base64").equals(f.backend.bytes),
-      );
-    }
-    assert.equal(f.relay.stops(), 0, "large results never tear down Pi");
-    const images = results.map((r) => ({
-      data: r.content[1].data,
-      mimeType: r.content[1].mimeType,
-    }));
-    const reply = await piTurn(f.relay, MODEL, imageTranscript(images));
-    assert.equal(reply.stopReason, "stop", reply.errorMessage);
-    assert.equal(f.provider.bodies.length, 1);
-    assert.deepEqual(
-      imageParts(f.provider.bodies[0]).map((p: any) => p.image_url.url.length),
-      images.map((i) => "data:image/png;base64,".length + i.data.length),
-    );
-    assert.equal(f.relay.stops(), 0);
-  } finally {
-    await f.close();
-  }
-});
-
 test("header-invalid and over-limit images, oversized text and oversized raw upload are rejected before dispatch with distinct codes", async () => {
   const f = await setup();
   try {
@@ -617,78 +581,6 @@ test("provider failures reach Pi as fixed codes with numeric status only and the
     }
     assert.equal(f.relay.stops(), 0);
   } finally {
-    await f.close();
-  }
-});
-
-test("busy, revoked and tool-path failures are distinguishable and never promise unsafe replay", async () => {
-  let release!: () => void;
-  const imageGate = new Promise<void>((resolve) => (release = resolve));
-  const f = await setup({ imageGate });
-  let pending: Promise<any> | undefined;
-  try {
-    const pi = await loadExtension(f.relay);
-    await pi.call(LIST, {});
-    pending = pi.call(IMAGE, {
-      member_ref: "member-photo",
-      media_ref: "media-photo",
-    });
-    const end = Date.now() + 5000;
-    while (!f.backend.calls.includes(IMAGE)) {
-      assert.ok(Date.now() < end, "first image reached backend");
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    const busy = await piTurn(f.relay, MODEL, [
-      { role: "user", content: "hello", timestamp: 1 },
-    ]);
-    assert.match(busy.errorMessage!, /^409\b.*NATIVE_REQUEST_BUSY/s);
-    assert.match(busy.errorMessage!, /not dispatched/);
-    assert.equal(isRetryableAssistantError(busy as any), false);
-    assert.equal(f.provider.bodies.length, 0);
-    await assert.rejects(
-      pi.call("studio_operator_send_message", {
-        member_ref: "member-photo",
-        text: "Synthetic note",
-      }),
-      (error: Error) => {
-        assert.match(error.message, /^NATIVE_REQUEST_BUSY: /);
-        assert.match(error.message, /not dispatched/);
-        return true;
-      },
-    );
-    assert.equal(
-      f.backend.calls.filter((n) => n === "studio_operator_send_message")
-        .length,
-      0,
-    );
-    release();
-    assert.equal((await pending).content[1].type, "image");
-    // Any saved configuration change revokes this native session.
-    const config = f.store.publicConfig();
-    await f.store.save({
-      ...config,
-      persona: { ...config.persona, name: "Synthetic Coach Two" },
-    });
-    const revoked = await piTurn(f.relay, MODEL, [
-      { role: "user", content: "hello", timestamp: 1 },
-    ]);
-    assert.match(revoked.errorMessage!, /^403\b.*NATIVE_SESSION_REVOKED/s);
-    assert.equal(isRetryableAssistantError(revoked as any), false);
-    await assert.rejects(
-      pi.call("studio_operator_send_message", {
-        member_ref: "member-photo",
-        text: "Synthetic note",
-      }),
-      (error: Error) => {
-        assert.match(error.message, /^NATIVE_SESSION_REVOKED: /);
-        assert.doesNotMatch(error.message, /retry/i);
-        return true;
-      },
-    );
-    assert.equal(f.provider.bodies.length, 0);
-  } finally {
-    release();
-    await pending?.catch(() => {});
     await f.close();
   }
 });

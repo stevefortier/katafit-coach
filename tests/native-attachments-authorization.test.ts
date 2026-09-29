@@ -6,24 +6,24 @@ import { answer } from "./helpers/continuity.js";
 
 const SEND = "send_to_operator";
 const AUTHORIZE = "studio_operator_authorize_context";
-const IMAGE = "studio_operator_read_dojo_checkin_image";
+
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 const tick = (ms = 50) => new Promise((r) => setTimeout(r, ms));
 
-test("acquired image bytes remain available without rechecking the changed source", async () => {
+test("acquired workspace bytes remain available without rechecking the changed source", async () => {
   const g = await open();
   try {
-    await g.tool(SEND, { image_receipt: await g.receipt() });
+    g.files.set("a.txt", Buffer.from("synthetic"));
+    await g.tool(SEND, { workspace_path: "a.txt" });
     const item = g.published[0];
     const authorizations = g.f.named(AUTHORIZE).length;
-    const images = g.f.named(IMAGE).length;
     g.f.state.revoked = true; // source changed after acquisition, not session revocation
     for (const _ of [1, 2]) {
       const delivered = await g.gateway.readAttachment(item.id);
       assert.equal(sha(delivered.bytes), item.sha256);
     }
     assert.equal(g.f.named(AUTHORIZE).length, authorizations);
-    assert.equal(g.f.named(IMAGE).length, images);
+
     assert.deepEqual(g.terminated, []);
   } finally {
     await g.close();
@@ -87,15 +87,15 @@ test("backend outage after acquisition does not invalidate already acquired work
   }
 });
 
-test("expired command requires a new turn but leaves retained evidence recoverable", async () => {
+test("legacy command expiry does not hide live panel evidence", async () => {
   const g = await open({ commandTtlMs: 1200 });
   try {
     g.files.set("a.txt", Buffer.from("synthetic"));
     await g.tool(SEND, { workspace_path: "a.txt" });
     await tick(1300);
-    await assert.rejects(
-      g.gateway.readAttachment(g.published[0].id),
-      /ATTACHMENT_TURN_REQUIRED/,
+    assert.equal(
+      (await g.gateway.readAttachment(g.published[0].id)).bytes.toString(),
+      "synthetic",
     );
     assert.deepEqual(g.terminated, []);
     assert.equal(g.gateway.attachments().length, 1);
@@ -104,28 +104,11 @@ test("expired command requires a new turn but leaves retained evidence recoverab
   }
 });
 
-test("legacy acquired image bytes also survive a later source denial without refetch", async () => {
-  const g = await open({ continuity: false });
-  try {
-    await g.tool(SEND, { image_receipt: await g.receipt() });
-    const item = g.published[0];
-    const reads = g.f.named(IMAGE).length;
-    g.f.state.status = "closed";
-    assert.equal(
-      sha((await g.gateway.readAttachment(item.id)).bytes),
-      item.sha256,
-    );
-    assert.equal(g.f.named(IMAGE).length, reads);
-    assert.deepEqual(g.terminated, []);
-  } finally {
-    await g.close();
-  }
-});
-
 test("delivered bytes are a private copy that concurrent teardown cannot zero", async () => {
   const g = await open();
   try {
-    await g.tool(SEND, { image_receipt: await g.receipt() });
+    g.files.set("a.txt", Buffer.from("synthetic"));
+    await g.tool(SEND, { workspace_path: "a.txt" });
     const item = g.published[0];
     const served = await g.gateway.readAttachment(item.id);
     await g.gateway.close();
@@ -154,10 +137,7 @@ test("metadata snapshots reuse acquired permission; empty snapshots expose no it
   try {
     const empty = await g.gateway.snapshot();
     assert.deepEqual(empty.items, []);
-    assert.equal(
-      empty.context_expires_at,
-      g.gateway.continuity()!.context_expires_at,
-    );
+    assert.equal(empty.context_expires_at, null);
     g.files.set("a.txt", Buffer.from("synthetic"));
     await g.tool(SEND, { workspace_path: "a.txt", caption: "Synthetic" });
     const before = g.f.named(AUTHORIZE).length;

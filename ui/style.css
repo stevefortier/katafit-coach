@@ -45,6 +45,19 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+.native-sr-only[data-state="error"],
+.native-sr-only[data-state="unavailable"],
+.native-sr-only[data-state="overflow"] {
+  position: static;
+  display: block;
+  width: auto;
+  height: auto;
+  margin: 12px 0 0;
+  overflow: visible;
+  clip-path: none;
+  white-space: normal;
+  color: #fca5a5;
+}
 .native-tooltip {
   position: fixed;
   z-index: 20;
@@ -1348,36 +1361,4 @@ header {
 #performanceWindow,
 #performanceSelection {
   overflow-wrap: anywhere;
-}
-#nativeHistoryPanel {
-  padding: 12px;
-  border: 1px solid #444;
-  border-radius: 8px;
-  min-width: 0;
-}
-.native-history-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-.native-history-controls select,
-.native-history-controls input {
-  min-width: 0;
-  max-width: 100%;
-  flex: 1 1 160px;
-}
-#nativeHistoryLog {
-  max-height: 45vh;
-  overflow: auto;
-}
-#nativeHistoryLog pre,
-#nativeHistorySnapshot {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-#nativeHistoryToggle {
-  margin-bottom: 0;
 }

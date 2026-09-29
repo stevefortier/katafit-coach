@@ -127,133 +127,14 @@
         </section>
         <section id="coachPanel" class="card">
           <div id="operatorView">
-            <div
-              class="native-toolbar"
-              role="group"
-              aria-label="Native Pi controls"
+            <span
+              id="nativeStatus"
+              class="native-sr-only"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              >Pi disconnected.</span
             >
-              <button id="nativeStart" aria-label="Start / reconnect Pi">
-                <span class="native-label-full">Start / reconnect Pi</span
-                ><span class="native-label-compact" aria-hidden="true"
-                  >Start</span
-                >
-              </button>
-              <button
-                id="nativeStop"
-                class="secondary"
-                aria-label="Stop Pi and keep conversation"
-              >
-                <span class="native-label-full">Stop</span
-                ><span class="native-label-compact" aria-hidden="true"
-                  >Stop</span
-                >
-              </button>
-              <button
-                id="nativeConnection"
-                class="secondary native-icon"
-                type="button"
-                data-state="stopped"
-                aria-label="Pi connection: Stopped"
-                aria-describedby="nativeConnectionTooltip"
-                aria-expanded="false"
-                aria-controls="nativeConnectionTooltip"
-              >
-                <span id="nativeStateIcon" aria-hidden="true">■</span>
-              </button>
-              <button
-                id="nativeInfo"
-                class="secondary native-icon"
-                type="button"
-                aria-label="About isolated Pi and saved default"
-                aria-describedby="nativeInfoTooltip"
-                aria-expanded="false"
-                aria-controls="nativeInfoTooltip"
-              >
-                <span aria-hidden="true">ⓘ</span>
-              </button>
-              <div
-                id="nativeConnectionTooltip"
-                class="native-tooltip"
-                role="tooltip"
-                hidden
-              >
-                Stopped. Docker isolation is required; there is no host
-                fallback.
-              </div>
-              <div
-                id="nativeInfoTooltip"
-                class="native-tooltip"
-                role="tooltip"
-                hidden
-              >
-                <p>
-                  Isolated Pi 0.86.1 · ephemeral workspace. Files and
-                  attachments are erased on Stop. Conversations persist only
-                  when Kata.fit advertises archive authorization; otherwise this
-                  session is ephemeral. History always requires current source
-                  and credential access. Use /model and the Kata.fit /mcp
-                  extension command.
-                </p>
-                <p id="operatorSnapshot"></p>
-              </div>
-              <span
-                id="nativeStatus"
-                class="native-sr-only"
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-                >Stopped. Docker isolation is required; there is no host
-                fallback.</span
-              >
-              <button
-                id="nativeHistoryToggle"
-                class="secondary"
-                aria-label="History"
-                aria-controls="nativeHistoryPanel"
-                aria-expanded="false"
-              >
-                <span class="native-label-full">History</span
-                ><span class="native-label-compact" aria-hidden="true">◴</span>
-              </button>
-            </div>
-            <section
-              id="nativeHistoryPanel"
-              aria-label="Operator conversation history"
-              hidden
-            >
-              <div class="native-history-controls">
-                <label for="nativeHistorySelect">Conversation</label>
-                <select id="nativeHistorySelect">
-                  <option value="">New conversation</option>
-                </select>
-                <button id="nativeHistoryNew" class="secondary">New</button>
-                <button id="nativeHistoryDelete" class="secondary" disabled>
-                  Delete
-                </button>
-              </div>
-              <div class="native-history-controls">
-                <input
-                  id="nativeHistoryTitle"
-                  aria-label="Conversation title"
-                  maxlength="120"
-                  placeholder="Conversation title"
-                  disabled
-                />
-                <button id="nativeHistoryRename" class="secondary" disabled>
-                  Rename
-                </button>
-              </div>
-              <p id="nativeHistoryNotice" role="status" class="hint"></p>
-              <details>
-                <summary>Persona, skills and settings snapshot</summary>
-                <pre id="nativeHistorySnapshot"></pre>
-              </details>
-              <div
-                id="nativeHistoryLog"
-                role="log"
-                aria-label="Saved conversation"
-              ></div>
-            </section>
             <div class="native-workbench">
               <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
               <aside
@@ -266,7 +147,7 @@
                 </h3>
                 <p id="nativeAttachmentsEmpty" class="hint">
                   Images and files Pi sends with send_to_operator appear here.
-                  They are erased on Stop.
+                  They are erased when the session ends.
                 </p>
                 <p
                   id="nativeAttachmentsNotice"

@@ -8,11 +8,10 @@ import {
   piTurn,
   imageParts,
 } from "./helpers/native-relay.js";
-import { NativeConversations } from "../src/sandbox/conversations.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 
 for (const image of [false, true])
-  test(`real native REST selection and host-owned history follow-up (${image ? "pixels" : "JSON"})`, async () => {
+  test(`real native REST selection uses acquired ${image ? "pixels" : "JSON"} for an in-memory follow-up without replay`, async () => {
     let shared = true;
     const pixels = await sharp({
       create: { width: 200, height: 180, channels: 3, background: "blue" },
@@ -22,7 +21,6 @@ for (const image of [false, true])
     const path = image
       ? "/api/media/activity/files/photo"
       : "/api/new-uncatalogued-route";
-    const frames: any[] = [];
     const f = await fixture(
       (name, _value, body) => {
         if (name !== "provider") return;
@@ -56,18 +54,10 @@ for (const image of [false, true])
       ...f.store.publicConfig(),
       provider: { ...f.store.publicConfig().provider, vision: true },
     });
-    const history = new NativeConversations(f.store);
     let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
     let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
     try {
-      gateway = await openNativeGateway(f.store, undefined, {
-        onBeforeDispatch: () => history.flush(),
-        onExchange: async (capture) => {
-          frames.push(capture);
-          await history.capture(gateway!, capture);
-        },
-      });
-      await history.bind(gateway, await history.prepare());
+      gateway = await openNativeGateway(f.store);
       relay = await startRelay(gateway);
       const ext = await loadExtension(relay);
       const messages: any[] = [
@@ -100,54 +90,17 @@ for (const image of [false, true])
       });
       shared = false;
       const before = f.calls.length;
-      const answer = await piTurn(relay, "approved-custom-model", messages);
-      assert.equal(answer.stopReason, "stop", JSON.stringify(answer));
+      const reply = await piTurn(relay, "approved-custom-model", messages);
+      assert.equal(reply.stopReason, "stop", JSON.stringify(reply));
+      assert.match(JSON.stringify(reply.content), /Synthetic result based/);
       assert.deepEqual(
         f.calls.slice(before).map((c) => c.path),
         ["/v1/chat/completions"],
       );
-      assert.ok(frames.length >= 2);
-      const id = history.active!.id;
-      await history.finish(gateway);
-      await relay.close();
-      relay = undefined;
-      await gateway.close();
-      gateway = undefined;
-      const reopened = new NativeConversations(f.store);
-      const beforeRead = f.calls.length;
-      const view = await reopened.read(id);
-      assert.equal(view.status, "authorized");
-      assert.ok(
-        JSON.stringify(view.entries).includes("Synthetic result based"),
+      await assert.rejects(
+        () => ext.call("katafit_rest_request", { method: "GET", path }),
+        /403/,
       );
-      if (!image) {
-        const prepared = await reopened.prepare();
-        assert.ok(prepared.seed?.length);
-        assert.equal(prepared.resume, undefined);
-        gateway = await openNativeGateway(f.store, undefined, {
-          seed: prepared.seed,
-          onBeforeDispatch: () => reopened.flush(),
-          onExchange: (capture) => reopened.capture(gateway!, capture),
-        });
-        await reopened.bind(gateway, prepared);
-        relay = await startRelay(gateway);
-        const resumedMessages = prepared
-          .seed!.filter((entry: any) => entry.type === "message")
-          .map((entry: any) => entry.message);
-        resumedMessages.push({
-          role: "user",
-          content: "Use the already acquired data again.",
-          timestamp: Date.now(),
-        });
-        const continued = await piTurn(
-          relay,
-          "approved-custom-model",
-          resumedMessages,
-        );
-        assert.equal(continued.stopReason, "stop", JSON.stringify(continued));
-        await reopened.finish(gateway);
-      } else assert.equal(view.reason, "images_not_retained");
-      assert.equal(f.calls.length, beforeRead + (image ? 0 : 1));
       assert.ok(
         !f.calls.some(
           (c) => c.body?.params?.name === "studio_operator_authorize_context",
