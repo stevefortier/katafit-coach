@@ -28,6 +28,10 @@ not a supported deployment recipe; this release standardizes
 
 ### Ordinary account HTTP API
 
+`katafit_rest_get` is deprecated for model-facing use. Its hidden dispatch alias exists only for compatibility; it is not a second supported discovery surface. Historical skill snapshots retain their original text for archival integrity and are not the active stock catalog. An old tool name in a running transcript alone does not establish the installed host revision: old runtime images and frozen conversations can retain old context. Upgrade through the normal verified update lifecycle and start a new conversation to adopt the current tool/skill snapshot; do not silently rewrite history or interrupt active Pi.
+
+Image acquisition and operator delivery are separate: `image_receipt` identifies acquired pixels, not a displayed attachment. When asked to show photos, use `send_to_operator` with each existing receipt and confirm its successful panel delivery. API skill v2 teaches this explicitly; saved uncustomized defaults upgrade, while customized instructions remain intact for explicit review.
+
 New native conversations advertise only `katafit_rest_request` (the old GET helper remains an unadvertised compatibility entry point) with the existing private saved
 `token`. Human onboarding opts the installation credential into ordinary REST
 with `rest_user_access: true`; no second bearer or host identity introspection is
