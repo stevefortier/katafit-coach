@@ -19,9 +19,12 @@ unknown/dirty, divergent and behind revisions are skipped. It waits for
 the stable owner to reserve the target, stage and validate its exact metadata,
 run native artifact/preflight checks, and probe the candidate on a disposable
 home while the current worker is still running. It then rechecks consent,
-target and child admission before quiescing and stopping an idle worker. A
-manual apply uses the same owner reservation, so manual and automatic preparation
-cannot overlap. `GET /api/update` exposes `preparing` and
+target and child admission before fencing new native Pi starts, closing the
+existing Pi runtime and quiescing the worker. A live Pi transcript, in-progress
+turn or unsent draft may be lost; automatic upgrade never replays actions. If
+native teardown or worker/publication safety cannot be confirmed, the owner
+defers rather than replacing the child. A manual apply uses the same owner
+reservation, so manual and automatic preparation cannot overlap. `GET /api/update` exposes `preparing` and
 `preparationSupported`; preparation does not commit `active.json`. A previously running worker is started again
 after a healthy upgrade or restored previous runtime; a previously stopped
 worker stays stopped. A successful local start is not proof of ongoing backend
@@ -96,7 +99,7 @@ Open **Settings → Updates** in Studio. Unlock performs a source check; checks 
 1. Save or revert unsaved edits and finish/cancel any preview or Operator turn. No manual worker stop is required.
 2. Check the displayed latest revision from the fixed public repository, `stevefortier/katafit-coach`, branch `main`.
 3. Click Upgrade and explicitly confirm the full displayed SHA and stop/apply/restart operation. This authorizes executing that trusted source and its pinned dependencies on your machine. Cancel performs no stop or apply. A running Coach is stopped safely, native sessions are closed, and actions/chat are never replayed.
-4. The stable owner stages, validates, native-preflights and probes the revision while the existing server and worker remain available. Because this can be slow, it rechecks the target and live admission afterward; work that began meanwhile defers activation without stopping Coach. Once activation is accepted, Run, configuration changes and preview are rejected. Brief reconnecting is normal during replacement; disappearance is not success.
+4. The stable owner stages, validates, native-preflights and probes the revision while the existing server and worker remain available. Because this can be slow, it rechecks the target and live admission afterward; unsafe worker or preview activity defers activation without stopping Coach. For a confirmed upgrade, it fences new native Pi admission, closes any active session (interrupting turns or unsent drafts), and waits for safe journal/publication teardown before replacement. Once activation is accepted, Run, configuration changes and preview are rejected. Brief reconnecting is normal during replacement; disappearance is not success.
 5. Wait for the installed SHA to match the confirmed target and the success result. The stable owner resumes a previously running Coach after activation or rollback; an intentionally stopped Coach stays stopped. Read Worker status separately from source success. Resume failure exposes **Retry Coach restart**, which starts the saved configuration only, without reinstalling or replaying work. Reload Studio to load its new UI assets. Closing the browser does not cancel an accepted upgrade.
 
 Manual resume requires the explicitly advertised `manualRestartSupported` launcher capability. Source-upgrading an old child does **not** upgrade its stable owner. An old owner receives no stop/apply for a running manual upgrade: Studio reports `LAUNCHER_UPGRADE_REQUIRED` with instructions to replace the reviewed stable launcher using the same protected home. Do not bypass the guard. Settings, persona restore and legacy rollback use the child-owned lifecycle, and preview does not stop Coach at all; none of them need this launcher upgrade.

@@ -2403,7 +2403,7 @@ function renderUpdate() {
     (data.auto?.enabled && data.guidance?.startsWith("New source available.")
       ? failedLatest
         ? "Main differs from the installed source. The last attempt failed; see the upgrade failure below."
-        : "Main differs from the installed source. Automatic upgrade will verify it and wait for an idle worker."
+        : "Main differs from the installed source. Automatic upgrade will verify it, then close active native Pi and safely stop the worker before replacing Studio."
       : data.guidance);
   $("updateStatus").textContent =
     guidance +
@@ -2430,7 +2430,7 @@ function renderUpdate() {
   };
   const deferReasons = {
     AUTO_UPDATE_BUSY:
-      "Automatic attempt deferred: worker, preview or native terminal activity is still busy. It will check again after activity finishes.",
+      "Automatic attempt deferred: worker, preview, or native teardown could not safely finish. Check Worker status and the upgrade result; the owner retries on its displayed schedule.",
     WORKER_STOP_UNCONFIRMED:
       "Automatic attempt deferred: worker stop could not be confirmed. Check Worker status.",
     LOCAL_UNAVAILABLE:
@@ -2460,7 +2460,7 @@ function renderUpdate() {
           : data.supported && data.auto?.available === false
             ? "Launcher upgrade required. Replace the launcher or container image with the current build, restart the service using the same Coach home, then reload Studio. Source upgrades alone leave the old launcher running."
             : data.auto?.enabled
-              ? "Enabled. Waiting for a newer verified main revision and an idle worker."
+              ? "Enabled. Waiting for a newer verified main revision; after preparation, an upgrade closes native Pi and safely stops the worker. Finish important Pi work first."
               : "Off. Enable to upgrade from main automatically.";
   const checkErrors = {
     RATE_LIMITED: "GitHub rate limit. Source check failed.",

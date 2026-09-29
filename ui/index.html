@@ -709,8 +709,10 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               <span>Automatically install newer main source</span>
             </label>
             <p class="hint" id="updateAutoStatus" role="status">
-              Off. When enabled, upgrades wait for an idle worker. A previously
-              running worker is restarted; check its status afterward.
+              Off. When enabled, upgrades may close an active native Pi session,
+              interrupting its turn and losing its live transcript or unsent
+              draft. A previously running worker is restarted; check its status
+              afterward.
             </p>
             <p class="hint" id="updateSchedule"></p>
             <div class="log-controls">
@@ -732,8 +734,9 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
             <p class="hint">
               Confirming an upgrade stops Coach safely and restarts it if it was
               running. A stopped Coach stays stopped. Finish or cancel previews
-              and native Pi first. Native sessions close; actions are never
-              replayed.
+              and native Pi first if you need their drafts. Native sessions
+              close during the upgrade; in-progress turns and unsent drafts may
+              be lost. Actions are never replayed.
             </p>
             <div id="updateConfirm" class="update-confirm" hidden>
               <h3>Install this source revision?</h3>
@@ -742,10 +745,10 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
                 This downloads and builds code from the official repository,
                 then briefly restarts Studio. Coach is stopped safely and
                 restarted only if it was running; a stopped Coach stays stopped.
-                Native sessions close and actions are never replayed. Only
-                continue if you trust this source. The launcher completes the
-                operation even if this tab closes. A disconnect is not proof of
-                success.
+                Native sessions close; an in-progress Pi turn or unsent draft
+                may be lost. Actions are never replayed. Only continue if you
+                trust this source. The launcher completes the operation even if
+                this tab closes. A disconnect is not proof of success.
               </p>
               <button id="updateConfirmApply">Install and restart</button>
               <button id="updateCancel" class="secondary">Not now</button>
