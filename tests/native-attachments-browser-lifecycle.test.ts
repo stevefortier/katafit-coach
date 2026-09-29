@@ -178,7 +178,7 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
   }
 });
 
-test("the panel erases itself at the backend context expiry even while connected", async () => {
+test("acquired panel bytes survive legacy backend context expiry while the local Pi runtime stays connected", async () => {
   const h = await attachmentHarness({ contextTtlMs: 6000 });
   try {
     h.files.set("a.png", await png());
@@ -186,12 +186,14 @@ test("the panel erases itself at the backend context expiry even while connected
     await h.send({ workspace_path: "a.png" });
     await waitPreview(page);
     await page.clock.fastForward(6500);
-    await waitCards(page, 0);
-    assert.match(
-      (await page.locator("#nativeAttachmentsNotice").textContent())!,
-      /expired/i,
+    await waitCards(page, 1);
+    assert.equal(
+      (await page.locator("#nativeAttachmentsNotice").textContent())?.includes(
+        "expired",
+      ),
+      false,
     );
-    assert.deepEqual(await leaked(page), []);
+    assert.equal((await leaked(page)).length, 1);
     assert.deepEqual(errors, []);
   } finally {
     await h.close();
