@@ -3,10 +3,21 @@ import { test } from "node:test";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
+import sharp from "sharp";
 
 const ui = new URL("../ui/", import.meta.url);
+const leaflet = new URL("../node_modules/leaflet/dist/", import.meta.url);
+const ada = "aaaaaaaaaaaaaaaaaaaaaaaa";
+const bob = "bbbbbbbbbbbbbbbbbbbbbbbb";
 
 test("synthetic authorized map: local date, separate member pins, fresh detail, stale and private reads", async () => {
+  const avatarPng = await sharp(
+    Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#385c80"/><circle cx="32" cy="24" r="13" fill="#dcb998"/><path d="M7 64 Q32 30 57 64" fill="#dcb998"/></svg>',
+    ),
+  )
+    .png()
+    .toBuffer();
   const calls: string[] = [];
   let privateAda = false;
   let holdDate = "";
@@ -19,15 +30,47 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
   };
   const activities = Object.keys(positions).map((_id) => ({
     _id,
-    user_id: _id === "b1" ? "bob" : "ada",
+    user_id: _id === "b1" ? bob : ada,
     type: "workout",
     status: "complete",
     name: `Synthetic ${_id}`,
     created_at: "2026-09-28T12:00:00Z",
     position: positions[_id],
   }));
+  const avatars: string[] = [];
+  const tiles: string[] = [];
+  let activeAvatars = 0;
+  let peakAvatars = 0;
+  let enforceAvatarLimit = false;
   const server = createServer(async (req, res) => {
     const path = new URL(req.url!, "http://localhost");
+    if (
+      path.pathname === "/leaflet.js" ||
+      path.pathname === "/leaflet.css" ||
+      path.pathname.startsWith("/images/")
+    ) {
+      res.setHeader(
+        "content-type",
+        path.pathname.endsWith(".css")
+          ? "text/css"
+          : path.pathname.endsWith(".png")
+            ? "image/png"
+            : "text/javascript",
+      );
+      res.end(
+        await readFile(
+          new URL(
+            path.pathname === "/leaflet.js"
+              ? "leaflet.js"
+              : path.pathname === "/leaflet.css"
+                ? "leaflet.css"
+                : path.pathname.slice(1),
+            leaflet,
+          ),
+        ),
+      );
+      return;
+    }
     if (path.pathname === "/dashboard.js" || path.pathname === "/style.css") {
       res.setHeader(
         "content-type",
@@ -39,7 +82,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
     if (path.pathname === "/") {
       res.setHeader("content-type", "text/html");
       res.end(
-        `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><section id="dashboardPanel"><label for="dashboardMapDate">Activity creation date (your device timezone)</label><input id="dashboardMapDate" type="date"><p id="dashboardMapStatus" role="status"></p><div id="dashboardMap" class="dashboard-map"></div><div id="dashboardMapSelection" class="dashboard-map-selection"></div><p id="dashboardStatus"></p><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div></section><script src="/dashboard.js"></script>`,
+        `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/leaflet.css"><section id="dashboardPanel"><label for="dashboardMapDate">Activity creation date (your device timezone)</label><input id="dashboardMapDate" type="date"><p id="dashboardMapStatus" role="status"></p><div id="dashboardMap" class="dashboard-map"></div><div id="dashboardMapSelection" class="dashboard-map-selection"></div><p id="dashboardStatus"></p><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div></section><script src="/leaflet.js"></script><script src="/dashboard.js"></script>`,
       );
       return;
     }
@@ -50,9 +93,78 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
     }
     calls.push(path.pathname + path.search);
     assert.equal(req.headers.authorization, "Bearer synthetic-key");
+    if (path.pathname === "/api/dashboard/avatar") {
+      avatars.push(path.searchParams.get("id") || "");
+      activeAvatars++;
+      peakAvatars = Math.max(peakAvatars, activeAvatars);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      activeAvatars--;
+      res.statusCode =
+        enforceAvatarLimit && activeAvatars >= 4
+          ? 429
+          : path.searchParams.get("id") === bob
+            ? 404
+            : 200;
+      res.setHeader("content-type", "image/png");
+      res.end(res.statusCode === 404 ? "" : avatarPng);
+      return;
+    }
     res.setHeader("content-type", "application/json");
     if (path.pathname === "/api/dashboard/map") {
       if (path.searchParams.get("date") === holdDate) await held;
+      if (
+        ["2026-09-25", "2026-09-24"].includes(
+          path.searchParams.get("date") || "",
+        )
+      ) {
+        const day = path.searchParams.get("date");
+        const points = day === "2026-09-25" ? [179, -179] : [179];
+        res.end(
+          JSON.stringify({
+            users: [{ _id: ada, display_name: "Synthetic Ada" }],
+            activities: points.map((longitude, index) => ({
+              _id: (index + 200).toString(16).padStart(24, "0"),
+              user_id: ada,
+              type: "workout",
+              status: "complete",
+              name: `Synthetic Pacific ${index}`,
+              created_at: `${day}T12:00:00Z`,
+              position: { latitude: 10, longitude },
+            })),
+            hasMore: false,
+            nextCursor: null,
+          }),
+        );
+        return;
+      }
+      if (path.searchParams.get("date") === "2026-09-29") {
+        const ids = Array.from({ length: 12 }, (_, i) =>
+          (i + 20).toString(16).padStart(24, "0"),
+        );
+        res.end(
+          JSON.stringify({
+            users: ids.map((_id) => ({
+              _id,
+              display_name: `Synthetic Member ${_id}`,
+            })),
+            activities: ids.map((user_id, i) => ({
+              _id: (i + 100).toString(16).padStart(24, "0"),
+              user_id,
+              type: "workout",
+              status: "complete",
+              name: `Synthetic ${i}`,
+              created_at: "2026-09-29T12:00:00Z",
+              position: {
+                latitude: 40.7 + i * 0.002,
+                longitude: -73.9 + i * 0.002,
+              },
+            })),
+            hasMore: false,
+            nextCursor: null,
+          }),
+        );
+        return;
+      }
       if (path.searchParams.get("date") === "2026-09-30") {
         const offset = Number(path.searchParams.get("cursor") || "0");
         const many = Array.from({ length: 201 }, (_, index) => ({
@@ -81,8 +193,8 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
       res.end(
         JSON.stringify({
           users: [
-            { _id: "ada", display_name: "Synthetic Ada" },
-            { _id: "bob", display_name: "Synthetic Bob" },
+            { _id: ada, display_name: "Synthetic Ada" },
+            { _id: bob, display_name: "Synthetic Bob" },
           ],
           activities:
             path.searchParams.get("date") === "2026-09-28" ? activities : [],
@@ -93,7 +205,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
     } else if (path.pathname === "/api/dashboard/activity") {
       const id = path.searchParams.get("id")!;
       const source = activities.find((activity) => activity._id === id);
-      if (!source || (privateAda && source.user_id === "ada")) {
+      if (!source || (privateAda && source.user_id === ada)) {
         res.statusCode = 403;
         res.end("{}");
       } else
@@ -141,14 +253,19 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
     });
     try {
       const page = await context.newPage();
+      await page.clock.install({ time: new Date("2026-10-02T12:00:00Z") });
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      page.on("request", (request) =>
-        assert.ok(
-          new URL(request.url()).origin ===
-            `http://127.0.0.1:${(server.address() as any).port}`,
-          "no third-party map/tile requests",
-        ),
+      await page.route(
+        /^https:\/\/[abc]\.tile\.openstreetmap\.org\//,
+        (route) => {
+          tiles.push(route.request().url());
+          return route.fulfill({
+            status: 200,
+            contentType: "image/svg+xml",
+            body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#273845"/><path d="M0 128H256M128 0V256" stroke="#49616b" stroke-width="2"/><text x="20" y="28" fill="#a8b5ba" font-size="13">SYNTHETIC TILE</text></svg>',
+          });
+        },
       );
       await page.goto(`http://127.0.0.1:${(server.address() as any).port}/`);
       await page.evaluate(() =>
@@ -171,6 +288,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
         new URL(firstMap!, "http://fixture").searchParams.get("date"),
         localToday,
       );
+
       await page.locator("#dashboardMapDate").fill("2026-09-28");
       await page.locator("#dashboardMapDate").dispatchEvent("change");
       await page.waitForFunction(
@@ -194,6 +312,20 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
         await page.locator("#dashboardMap .dashboard-map-marker").count(),
         3,
         "one pin per positioned activity",
+      );
+      assert.ok(
+        tiles.some((url) =>
+          /^https:\/\/[abc]\.tile\.openstreetmap\.org\/\d+\/\d+\/\d+\.png$/.test(
+            url,
+          ),
+        ),
+        "OSM tiles requested",
+      );
+      assert.match(
+        await page
+          .locator("#dashboardMap .leaflet-control-attribution")
+          .innerText(),
+        /OpenStreetMap/,
       );
       const adaPins = page.getByRole("button", {
         name: /Synthetic Ada activity:/i,
@@ -233,14 +365,40 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
           .evaluate((pin) => getComputedStyle(pin).backgroundColor),
         "members use distinct pin colors in addition to labeled initials",
       );
-      assert.match(
-        (await adaPins.first().getAttribute("style")) || "",
-        /left: 29\./,
+      const pinCenters = await adaPins.evaluateAll((pins) =>
+        pins.map((pin) => pin.getBoundingClientRect().x),
       );
-      assert.match(
-        (await adaPins.last().getAttribute("style")) || "",
-        /left: (?:calc\()?30\./,
-        "second Ada activity retains its different geographic anchor",
+      assert.notEqual(
+        pinCenters[0],
+        pinCenters[1],
+        "different geographic anchors visible at local zoom",
+      );
+      assert.ok(
+        tiles.some((url) => Number(new URL(url).pathname.split("/")[1]) >= 5),
+        "local zoom, not world scale",
+      );
+      await page.waitForFunction(
+        () => !!document.querySelector(".dashboard-map-avatar"),
+      );
+      assert.equal(await adaPins.first().locator("img").count(), 1);
+      assert.equal(
+        await page
+          .getByRole("button", { name: /Synthetic Bob activity:/i })
+          .locator("img")
+          .count(),
+        0,
+      );
+      assert.ok(
+        avatars.includes(ada) && avatars.includes(bob),
+        "visible members request avatars",
+      );
+      assert.ok(
+        avatars.length <=
+          2 *
+            calls.filter((url) =>
+              url.startsWith("/api/dashboard/map?date=2026-09-28&"),
+            ).length,
+        "not per-activity avatar reads",
       );
       assert.equal(
         calls.filter((url) => url.startsWith("/api/dashboard/activity?"))
@@ -296,14 +454,14 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
           document.querySelectorAll("#dashboardMap .dashboard-map-marker")
             .length === 3,
       );
-      await page.getByRole("button", { name: "Zoom in" }).click();
-      await page.getByRole("button", { name: "Pan right" }).click();
-      assert.match(
-        (await page.locator(".dashboard-map-canvas").getAttribute("style")) ||
-          "",
-        /translate\(/,
-      );
-      await page.getByRole("button", { name: "Zoom out" }).click();
+      await page.locator(".leaflet-control-zoom-in").click();
+      await page
+        .locator("#dashboardMap")
+        .dragTo(page.locator("#dashboardMap"), {
+          sourcePosition: { x: 160, y: 150 },
+          targetPosition: { x: 190, y: 170 },
+        });
+      await page.locator(".leaflet-control-zoom-out").click();
       await page
         .getByRole("button", { name: /Synthetic Ada activity: Synthetic a1/i })
         .click();
@@ -377,6 +535,113 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
           2,
         "fresh detail on click",
       );
+      peakAvatars = 0;
+      enforceAvatarLimit = true;
+      await page.locator("#dashboardMapDate").fill("2026-09-29");
+      await page.locator("#dashboardMapDate").dispatchEvent("change");
+      await page.waitForFunction(
+        () => document.querySelectorAll(".dashboard-map-marker").length === 12,
+      );
+      await page.waitForFunction(
+        () => document.querySelectorAll(".dashboard-map-avatar").length === 12,
+        undefined,
+        { timeout: 2500 },
+      );
+      assert.ok(
+        peakAvatars <= 3,
+        `avatar concurrency bounded; observed ${peakAvatars}`,
+      );
+      assert.ok(
+        avatars.every((id) => /^[0-9a-f]{24}$/.test(id)),
+        "only canonical member IDs used for avatar calls",
+      );
+      const denseInside = await page
+        .locator("#dashboardMap")
+        .evaluate((map) => {
+          const bounds = map.getBoundingClientRect();
+          return [...map.querySelectorAll(".dashboard-map-marker")].every(
+            (pin) => {
+              const rect = pin.getBoundingClientRect();
+              return (
+                rect.left >= bounds.left - 1 &&
+                rect.right <= bounds.right + 1 &&
+                rect.top >= bounds.top - 1 &&
+                rect.bottom <= bounds.bottom + 1
+              );
+            },
+          );
+        });
+      assert.ok(denseInside, "dense pins remain inside narrow map");
+      for (const [day, expectedPins] of [
+        ["2026-09-25", 2],
+        ["2026-09-24", 1],
+      ] as const) {
+        await page.locator("#dashboardMapDate").fill(day);
+        await page.locator("#dashboardMapDate").dispatchEvent("change");
+        await page.waitForFunction(
+          (count) =>
+            document.querySelectorAll(".dashboard-map-marker").length === count,
+          expectedPins,
+        );
+        const geometry = await page.locator("#dashboardMap").evaluate((map) => {
+          const bounds = map.getBoundingClientRect();
+          return [...map.querySelectorAll(".dashboard-map-marker")].map(
+            (pin) => {
+              const rect = pin.getBoundingClientRect();
+              return {
+                x: rect.x - bounds.x,
+                y: rect.y - bounds.y,
+                width: bounds.width,
+                height: bounds.height,
+              };
+            },
+          );
+        });
+        assert.ok(
+          geometry.every(
+            ({ x, y, width, height }) =>
+              x >= -1 && x + 34 <= width + 1 && y >= -1 && y + 34 <= height + 1,
+          ),
+          "Pacific points visible within narrow viewport",
+        );
+        assert.ok(
+          tiles
+            .slice(-12)
+            .some(
+              (url) =>
+                Number(new URL(url).pathname.split("/")[1]) >=
+                (expectedPins === 1 ? 15 : 5),
+            ),
+          "antimeridian and singleton remain local scale",
+        );
+        if (expectedPins === 1) {
+          const box = await page.locator("#dashboardMap").boundingBox();
+          assert.ok(box);
+          const x = box.x + box.width * 0.1,
+            y = box.y + box.height / 2;
+          await page.mouse.move(x, y);
+          await page.mouse.down();
+          await page.mouse.move(x + box.width * 0.8, y, { steps: 8 });
+          await page.mouse.up();
+          assert.equal(
+            await page
+              .locator("#dashboardMap .dashboard-map-marker:visible")
+              .count(),
+            0,
+            "panning cannot show a displaced pin after its true anchor leaves the viewport",
+          );
+          await page.mouse.move(x + box.width * 0.8, y);
+          await page.mouse.down();
+          await page.mouse.move(x, y, { steps: 8 });
+          await page.mouse.up();
+          await page.waitForFunction(
+            () =>
+              document
+                .querySelector("#dashboardMap .dashboard-map-marker")
+                ?.getClientRects().length,
+          );
+        }
+      }
       for (const [day, start, end] of [
         ["2026-03-08", "2026-03-08T05:00:00.000Z", "2026-03-09T04:00:00.000Z"],
         ["2026-11-01", "2026-11-01T04:00:00.000Z", "2026-11-02T05:00:00.000Z"],
@@ -457,6 +722,26 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
         ),
         "late day cannot replace current day",
       );
+      // Optional visual evidence with real OSM tiles: only synthetic fixture positions.
+      await page.unroute(/^https:\/\/[abc]\.tile\.openstreetmap\.org\//);
+      try {
+        const realTile = page.waitForResponse(
+          (response) =>
+            /^https:\/\/[abc]\.tile\.openstreetmap\.org\//.test(
+              response.url(),
+            ) && response.ok(),
+          { timeout: 5000 },
+        );
+        await page.locator("#dashboardMapDate").fill("2026-09-25");
+        await page.locator("#dashboardMapDate").dispatchEvent("change");
+        await realTile;
+        await page.screenshot({
+          path: "/tmp/coach-dashboard-map-synthetic-real-osm-390.png",
+          fullPage: true,
+        });
+      } catch {
+        /* Network unavailable: intercepted-tile screenshots remain deterministic. */
+      }
       await page.evaluate(() => (window as any).CoachDashboard.clear());
       assert.equal(
         await page.locator("#dashboardMap .dashboard-map-marker").count(),

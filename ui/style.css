@@ -887,7 +887,7 @@ header {
   border: 1px solid var(--line);
   color: var(--accent);
 }
-/* Offline map: land and pins are local DOM/SVG; no third-party tiles. */
+/* OpenStreetMap tiles under Leaflet; overlay pins remain locally rendered. */
 .dashboard-map-section {
   border-top: 1px solid var(--line);
   padding: 18px 0 24px;
@@ -913,22 +913,18 @@ header {
 .dashboard-map {
   position: relative;
   width: 100%;
-  aspect-ratio: 2 / 1;
-  min-height: 170px;
+  height: clamp(280px, 48vw, 520px);
   overflow: hidden;
   border: 1px solid var(--line);
   background: #132330;
 }
-.dashboard-map-canvas {
+.dashboard-map-overlay {
   width: 100%;
   height: 100%;
-  position: relative;
-  transform-origin: center;
-}
-.dashboard-map-world {
-  width: 100%;
-  height: 100%;
-  display: block;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 400;
 }
 .dashboard-map-pin-link,
 .dashboard-map-anchor {
@@ -948,6 +944,11 @@ header {
   background: #fbbf24;
   border: 1px solid #111;
 }
+.dashboard-map-marker[hidden],
+.dashboard-map-pin-anchor[hidden],
+.dashboard-map-pin-link[hidden] {
+  display: none;
+}
 .dashboard-map-marker {
   position: absolute;
   transform: translate(-50%, -50%);
@@ -966,6 +967,24 @@ header {
   color: #fff;
   font-size: 14px;
   cursor: pointer;
+  pointer-events: auto;
+  overflow: hidden;
+  z-index: 1;
+  box-shadow: 0 0 0 2px #111;
+}
+.dashboard-map-avatar {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+.dashboard-map-marker:hover {
+  z-index: 2;
+}
+.dashboard-map .leaflet-control-attribution {
+  color: #222;
 }
 .dashboard-map-marker:focus-visible {
   outline: 3px solid #8ed0ff;

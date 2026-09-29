@@ -49,7 +49,10 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
           data: { files: [{ _id: "file", type: "image/png" }] },
         }),
       );
-    else if (req.url === "/api/media/act/files/file") {
+    else if (
+      req.url === "/api/media/act/files/file" ||
+      req.url === "/api/users/aaaaaaaaaaaaaaaaaaaaaaaa/avatar/64"
+    ) {
       res.setHeader("content-type", "image/png");
       res.end(image);
     } else {
@@ -73,6 +76,36 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     assert.equal(
       (await fetch(base + "/api/dashboard/map?date=2026-09-28")).status,
       401,
+    );
+    assert.equal((await fetch(base + "/leaflet.js")).status, 200);
+    assert.match(
+      await (await fetch(base + "/leaflet.css")).text(),
+      /leaflet-container/,
+    );
+    const dashboardPage = await fetch(base + "/dashboard");
+    assert.equal(
+      dashboardPage.headers.get("referrer-policy"),
+      "strict-origin-when-cross-origin",
+    );
+    assert.match(
+      dashboardPage.headers.get("content-security-policy") || "",
+      /https:\/\/\*\.tile\.openstreetmap\.org/,
+    );
+    assert.equal(
+      (await fetch(base + "/api/dashboard/avatar?id=aaaaaaaaaaaaaaaaaaaaaaaa"))
+        .status,
+      401,
+    );
+    const avatar = await fetch(
+      base + "/api/dashboard/avatar?id=aaaaaaaaaaaaaaaaaaaaaaaa",
+      { headers },
+    );
+    assert.equal(avatar.status, 200);
+    assert.equal(avatar.headers.get("content-type"), "image/png");
+    assert.deepEqual(Buffer.from(await avatar.arrayBuffer()), image);
+    assert.equal(
+      (await fetch(base + "/api/dashboard/avatar?id=../x", { headers })).status,
+      400,
     );
     const feed = await fetch(base + "/api/dashboard", { headers });
     assert.equal(feed.status, 200);
@@ -110,6 +143,7 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     assert.equal(photo.status, 200);
     assert.deepEqual(Buffer.from(await photo.arrayBuffer()), image);
     assert.deepEqual(calls, [
+      "/api/users/aaaaaaaaaaaaaaaaaaaaaaaa/avatar/64",
       "/api/friends/feed/dojo?limit=20",
       "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100",
       "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100&cursor=opaque-cursor",
@@ -124,6 +158,12 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     );
     assert.equal(deniedPhoto.status, 403);
     assert.ok(!(await deniedPhoto.text()).includes("upstream-private"));
+    const deniedAvatar = await fetch(
+      base + "/api/dashboard/avatar?id=aaaaaaaaaaaaaaaaaaaaaaaa",
+      { headers },
+    );
+    assert.equal(deniedAvatar.status, 403);
+    assert.ok(!(await deniedAvatar.text()).includes("upstream-private"));
     const deniedMap = await fetch(base + "/api/dashboard/map?" + mapDay, {
       headers,
     });
