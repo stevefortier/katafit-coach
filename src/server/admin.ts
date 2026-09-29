@@ -238,6 +238,12 @@ export async function admin(
     try {
       await terminal.stop();
       if (wasRunning) await worker!.stop();
+      if (
+        worker?.state === "stopped" &&
+        worker.stopConfirmed &&
+        !worker.safeToReplace
+      )
+        await worker.reconcilePublications();
       if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
         throw new SafeError("WORKER_STOP_UNCONFIRMED");
       safeToResume = true;
