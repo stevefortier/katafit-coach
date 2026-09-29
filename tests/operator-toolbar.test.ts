@@ -59,6 +59,17 @@ test(
           await page.locator("#nativeAttachments").isVisible(),
           true,
         );
+        if (process.env.KATAFIT_UI_SCREENSHOT) {
+          await page.screenshot({ path: process.env.KATAFIT_UI_SCREENSHOT });
+          await page.setViewportSize({ width: 1440, height: 900 });
+          await page.screenshot({
+            path: process.env.KATAFIT_UI_SCREENSHOT.replace(
+              /\.png$/,
+              "-wide.png",
+            ),
+          });
+          await page.setViewportSize({ width: 320, height: 900 });
+        }
         assert.equal(
           await page
             .locator(
