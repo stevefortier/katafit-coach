@@ -129,6 +129,10 @@ Worker scope: do not call Operator tools or open an Operator session. Use only i
   },
 ] as const;
 
+// Stable owner capability: its supervisor sends this value to cold children.
+// An older owner may ship the same skill IDs but not this IPC contract.
+export const launcherSkillCatalog = 2;
+
 export const stockSkills: readonly CoachSkill[] = [
   {
     id: "katafit-api",
@@ -306,6 +310,7 @@ export class SkillStore {
   constructor(
     readonly dir: string,
     private secrets: () => string[],
+    private readonly launcherSkillCatalog = 2,
   ) {}
   private get historyDir() {
     return this.dir + "/skills-history";
@@ -394,6 +399,10 @@ export class SkillStore {
     const current = records.at(-1);
     if (!current || current.revision !== manifest.revision)
       throw new Error("INVALID_SKILL_STORAGE");
+    // Check before chmod or publishing a new head. A pinned legacy launcher
+    // accepts only the archived three/four-skill catalog on cold Store.init.
+    if (this.launcherSkillCatalog < 2)
+      throw new Error("LAUNCHER_UPGRADE_REQUIRED");
     this.revision = current.revision;
     this.head = manifest.head;
     this.skills = structuredClone(current.skills);

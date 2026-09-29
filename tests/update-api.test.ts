@@ -135,6 +135,46 @@ test("authenticated updater requires explicit pinned confirmation; asynchronous 
   }
 });
 
+test("catalog-incompatible preparation returns typed preacceptance denial", async () => {
+  const dir = await mkdtemp(tmpdir() + "/coach-catalog-admission-");
+  const store = new Store(dir);
+  await store.init();
+  const sha = "c".repeat(40);
+  let applied = false;
+  const updates = new Updates(
+    null,
+    async () => {
+      applied = true;
+    },
+    undefined,
+    undefined,
+    async () => {
+      throw new Error("LAUNCHER_UPGRADE_REQUIRED");
+    },
+  );
+  updates.latest = sha;
+  updates.checkedAt = Date.now();
+  const app = await admin(store, 0, undefined, undefined, updates);
+  try {
+    const response = await fetch(app.origin + "/api/update/apply", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + store.secrets.admin,
+        Origin: app.origin,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ sha, confirm: true }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error, "LAUNCHER_UPGRADE_REQUIRED");
+    assert.equal(applied, false);
+    assert.equal(updates.snapshot().lastOperation, undefined);
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("manual restart support is explicit, never inferred from generic update support", async () => {
   const updates = new Updates(null, async () => {});
   assert.equal(updates.snapshot().manualRestartSupported, false);

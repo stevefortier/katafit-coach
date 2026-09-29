@@ -105,7 +105,10 @@ process.on("message", async (message: any) => {
     );
     if (typeof application.admin !== "function") throw new Error();
     updates.configureAdmin(application.updatePreparationProtocol);
-    const store = new Store(home);
+    const store = new Store(
+      home,
+      message.data?.launcherSkillCatalog === 2 ? 2 : 1,
+    );
     await store.init();
     app = await application.admin(
       store,
@@ -118,7 +121,18 @@ process.on("message", async (message: any) => {
       new AutoUpdateSetting(home),
     );
     process.send?.({ type: "ready", origin: app.origin, nonce });
-  } catch {
-    process.exit(1);
+  } catch (error) {
+    const reason =
+      error instanceof Error &&
+      ["LAUNCHER_UPGRADE_REQUIRED", "INVALID_SKILL_STORAGE"].includes(
+        error.message,
+      )
+        ? error.message
+        : "STARTUP_FAILED";
+    if (process.send)
+      process.send({ type: "startupFailure", nonce, reason }, () =>
+        process.exit(1),
+      );
+    else process.exit(1);
   }
 });

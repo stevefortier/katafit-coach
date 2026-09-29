@@ -1198,18 +1198,17 @@ export async function admin(
             updates.validatePrepared(body.sha);
           } catch (error: any) {
             await updates.cancelPreparation(body.sha).catch(() => {});
-            return send(
-              error?.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
-                ? 409
-                : 503,
-              {
-                error:
-                  error?.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
-                    ? error.message
-                    : "UPDATE_PREPARATION_FAILED",
-                hint: "Candidate preparation failed while Coach remained available. Provision the exact trusted native artifact or inspect source/build prerequisites, then retry.",
-              },
-            );
+            const typed = [
+              "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED",
+              "LAUNCHER_UPGRADE_REQUIRED",
+            ].includes(error?.message);
+            return send(typed ? 409 : 503, {
+              error: typed ? error.message : "UPDATE_PREPARATION_FAILED",
+              hint:
+                error?.message === "LAUNCHER_UPGRADE_REQUIRED"
+                  ? "Replace the reviewed stable launcher side by side, preserving the complete protected home and skill history. Coach was not stopped or updated."
+                  : "Candidate preparation failed while Coach remained available. Provision the exact trusted native artifact or inspect source/build prerequisites, then retry.",
+            });
           }
         }
         const cancelPrepared = async () => {

@@ -10,7 +10,13 @@ import {
 } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { SkillStore } from "./skills.js";
+import { basename, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+  SkillStore,
+  stockSkills,
+  launcherSkillCatalog as requiredLauncherSkillCatalog,
+} from "./skills.js";
 
 // Bounded even for maximal JSON escaping; below the stable owner's 4MiB cap.
 const snapshotLimit = 1024 * 1024;
@@ -393,8 +399,22 @@ export class Store {
     admin: randomBytes(32).toString("hex"),
   };
   readonly skills: SkillStore;
-  constructor(readonly dir: string) {
-    this.skills = new SkillStore(dir, () => Object.values(this.secrets));
+  constructor(
+    readonly dir: string,
+    // An old stable runtime imports the new child's Store without passing a
+    // capability. Fail closed there: its pinned CLI cannot cold-read the new
+    // catalog even though the current child can continue running warm.
+    launcherSkillCatalog = /(?:^|\/)update\/runtime\.js$/.test(
+      process.argv[1] ?? "",
+    )
+      ? 1
+      : 2,
+  ) {
+    this.skills = new SkillStore(
+      dir,
+      () => Object.values(this.secrets),
+      launcherSkillCatalog,
+    );
   }
   private get snapshotDir() {
     return this.dir + "/persona-history";
@@ -411,6 +431,33 @@ export class Store {
     await syncDirectory(this.dir);
   }
   async init() {
+    // The pinned owner runs its own probe.js but imports this candidate Store.
+    // Check its built-in catalog before even initializing the disposable home:
+    // an older owner cannot cold-read a head migrated by this child. This also
+    // makes the old owner's normal candidate probe reject before HTTP acceptance.
+    const script = process.argv[1] ?? "";
+    if (
+      basename(script) === "probe.js" &&
+      basename(dirname(script)) === "update"
+    ) {
+      try {
+        const module = await import(
+          pathToFileURL(join(dirname(script), "../config/skills.js")).href
+        );
+        const ownerIds = module.stockSkills?.map(
+          (skill: { id: string }) => skill.id,
+        );
+        if (
+          module.launcherSkillCatalog !== requiredLauncherSkillCatalog ||
+          !Array.isArray(ownerIds) ||
+          JSON.stringify(ownerIds.slice().sort()) !==
+            JSON.stringify(stockSkills.map((skill) => skill.id).sort())
+        )
+          throw new Error("LAUNCHER_UPGRADE_REQUIRED");
+      } catch {
+        throw new Error("LAUNCHER_UPGRADE_REQUIRED");
+      }
+    }
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
     if ((await lstat(this.dir)).isSymbolicLink())
       throw new Error("UNSAFE_STORAGE");

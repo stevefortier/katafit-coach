@@ -178,7 +178,7 @@ be removed successfully before a later preflight can proceed.
 
 ### Compatibility and limits
 
-`dist/build.json` is `{revision: <40 lowercase hex|null>, protocol: 2, fingerprint: <64 lowercase hex>}` for native releases. The fingerprint binds the dependency lock, package, bridge and image recipe to native contract 2; the protected provisioning receipt additionally binds the exact application revision and local immutable image ID/platform. Protocol 1 remains accepted for legacy rollback. Both protocols require the **unchanged existing JSON data schema** and forbid migrations. Native readiness runs before stopping the previous child and again before launch. `active.json` commits the native image ID with its application revision; image receipt drift on the active revision fails closed. Unknown/incompatible candidates fail before activation. The updater does not promise arbitrary migrations, signed release verification, automatic image publication, support for custom forks, or an npm registry release.
+`dist/build.json` is `{revision: <40 lowercase hex|null>, protocol: 2, fingerprint: <64 lowercase hex>}` for native releases. The fingerprint binds the dependency lock, package, bridge and image recipe to native contract 2; the protected provisioning receipt additionally binds the exact application revision and local immutable image ID/platform. Protocol 1 remains accepted for legacy rollback. Both protocols retain immutable hash-linked skill history; the one-skill catalog transition requires a compatible stable owner before the child's Store can publish its new head. Native readiness runs before stopping the previous child and again before launch. `active.json` commits the native image ID with its application revision; image receipt drift on the active revision fails closed. Unknown/incompatible candidates fail before activation. The updater does not promise arbitrary migrations, signed release verification, automatic image publication, support for custom forks, or an npm registry release.
 
 The installed stable launcher and protocol stay fixed while managed runtime source changes. Current source identity is the active runtime revision, not a claim that the global launcher package has been overwritten. Clean Git builds embed HEAD. Dirty builds embed null. Git-less builders can attest a clean exported tree through `KATAFIT_BUILD_REVISION`; do not set it for dirty exports.
 
@@ -200,6 +200,34 @@ installation, disablement, or a changed target restores the normal cadence.
 - **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime. Workers remain stopped unless a pending durable manual-update resume intent requires recovery; recovery never reapplies source or replays chat/actions. Keep the home and the bootstrap launcher.
 - **Native probe cleanup pending at startup:** preserve the entire protected home, including `native-probe-cleanup.json`, and restore Docker/socket availability for the same reviewed launcher identity. Restart retries only the receipt's exact name and verifies its token labels, immutable image and recorded container ID before removal. A missing container clears the receipt; a mismatch or invalid receipt remains blocked. Never delete the receipt, remove a same-name container, or prune merely to force startup. Use reviewed offline recovery if exact ownership cannot be established.
 - **Corrupt active installation/manual recovery:** stop the owner first and preserve a private backup. Restore a known-good home/active pointer or remove `active.json` to return to the installed bootstrap application only if it is compatible with your unchanged data schema. Never delete a live lock inode.
+
+### Skill catalog compatibility gate
+
+A pinned legacy launcher (including `aef71b1`) cold-loads the protected
+`skills.json` head with its own four-skill Store. A child that supports the
+one-skill `katafit-api` catalog must **not** migrate that head under the old
+owner. The pinned owner's candidate probe loads the candidate Store on a disposable
+home before HTTP acceptance. It requires both the matching compiled built-in
+catalog and an explicit compiled `launcherSkillCatalog: 2` owner capability,
+which the new supervisor sends in initial IPC state. An older owner can already
+ship `katafit-api` without sending the capability; catalog IDs alone would let
+its candidate pass pre-stop probing and fail only after the worker stops. The
+probe rejects that owner before worker stop or protected skill mutation, and
+automatic preparation records/suppresses the failed SHA. The child also requires
+that explicit catalog-2 startup capability; a missing capability fails closed
+with `LAUNCHER_UPGRADE_REQUIRED` before the skill manifest or linked records
+change. The new owner supplies that capability to
+its child. An old owner cannot be retrofitted by a child update: its old update
+API may report a generic preparation failure rather than a typed diagnostic,
+although the child's own error is typed. Do not rewrite or discard the valid
+skill chain. Replace the launcher side by side **before** approving a catalog
+migration; the steps below preserve both launcher rollback and immutable history.
+
+For an installed one-skill head under an older owner, do not restart that owner:
+its own `Store.init()` cannot load the head. Stage a compatible owner, preserve
+the full home and unit, and change only the launcher path using the verified
+replacement procedure below. A new owner must cold-start against the protected
+head and validate the old links; selecting an older manifest is not recovery.
 
 ### Stable launcher replacement, including the `8daaa71` owner
 
