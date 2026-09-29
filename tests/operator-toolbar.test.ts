@@ -121,7 +121,7 @@ test(
         ticketCount + 1,
       );
       await page.reload();
-      if (await page.locator("#login").isVisible()) {
+      if (await page.locator("#adminKey").isVisible()) {
         await page.locator("#adminKey").fill(store.secrets.admin);
         await page.locator("#unlock").click();
       }
