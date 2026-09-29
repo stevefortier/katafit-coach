@@ -25,7 +25,15 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
       res.end('{"secret":"upstream-private"}');
       return;
     }
-    if (req.url === "/api/friends/feed/dojo?limit=20")
+    if (
+      req.url === "/api/friends/feed/dojo?limit=20" ||
+      req.url ===
+        "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100" ||
+      req.url ===
+        "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100&cursor=opaque-cursor" ||
+      req.url ===
+        "/api/friends/dojo/positioned-activities?start=2026-11-01T04%3A00%3A00.000Z&end=2026-11-02T05%3A00%3A00.000Z&limit=100"
+    )
       res.end(
         JSON.stringify({
           users: [{ _id: "member", display_name: "Ada" }],
@@ -62,9 +70,34 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
   const headers = { Authorization: `Bearer ${store.secrets.admin}` };
   try {
     assert.equal((await fetch(base + "/api/dashboard")).status, 401);
+    assert.equal(
+      (await fetch(base + "/api/dashboard/map?date=2026-09-28")).status,
+      401,
+    );
     const feed = await fetch(base + "/api/dashboard", { headers });
     assert.equal(feed.status, 200);
     assert.equal((await feed.json()).users[0].display_name, "Ada");
+    const mapDay =
+      "date=2026-09-28&start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z";
+    const map = await fetch(base + "/api/dashboard/map?" + mapDay, { headers });
+    assert.equal(map.status, 200);
+    assert.equal((await map.json()).users[0].display_name, "Ada");
+    const cursor = await fetch(
+      base + "/api/dashboard/map?" + mapDay + "&cursor=opaque-cursor",
+      { headers },
+    );
+    assert.equal(cursor.status, 200);
+    assert.equal((await cursor.json()).activities[0]._id, "act");
+    const dst = await fetch(
+      base +
+        "/api/dashboard/map?date=2026-11-01&start=2026-11-01T04%3A00%3A00.000Z&end=2026-11-02T05%3A00%3A00.000Z",
+      { headers },
+    );
+    assert.equal(
+      dst.status,
+      200,
+      "25-hour local day preserves exact backend bounds",
+    );
     const detail = await fetch(base + "/api/dashboard/activity?id=act", {
       headers,
     });
@@ -78,6 +111,9 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     assert.deepEqual(Buffer.from(await photo.arrayBuffer()), image);
     assert.deepEqual(calls, [
       "/api/friends/feed/dojo?limit=20",
+      "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100",
+      "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100&cursor=opaque-cursor",
+      "/api/friends/dojo/positioned-activities?start=2026-11-01T04%3A00%3A00.000Z&end=2026-11-02T05%3A00%3A00.000Z&limit=100",
       "/api/friends/activity/act",
       "/api/media/act/files/file",
     ]);
@@ -88,6 +124,11 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     );
     assert.equal(deniedPhoto.status, 403);
     assert.ok(!(await deniedPhoto.text()).includes("upstream-private"));
+    const deniedMap = await fetch(base + "/api/dashboard/map?" + mapDay, {
+      headers,
+    });
+    assert.equal(deniedMap.status, 403);
+    assert.ok(!(await deniedMap.text()).includes("upstream-private"));
     assert.ok(
       !calls.some(
         (p) =>
@@ -97,6 +138,14 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
       ),
     );
     for (const path of [
+      "/api/dashboard/map?date=2026-02-30",
+      "/api/dashboard/map?" + mapDay + "&cursor=!!!",
+      "/api/dashboard/map?" + mapDay + "&cursor=" + "x".repeat(513),
+      "/api/dashboard/map?" + mapDay + "&date=2026-09-27",
+      "/api/dashboard/map?" + mapDay + "&redirect=https://example.org",
+      "/api/dashboard/map?date=2026-09-28",
+      "/api/dashboard/map?date=2026-09-28&start=2026-09-25T04%3A00%3A00.000Z&end=2026-09-26T04%3A00%3A00.000Z",
+      "/api/dashboard/map?date=2026-09-28&start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-30T04%3A00%3A00.000Z",
       "/api/dashboard/photo?activity_id=..&file_id=file",
       "/api/dashboard/activity?id=act&headers=x",
     ])
