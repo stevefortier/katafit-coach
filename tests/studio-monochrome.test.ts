@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
 import { chromium, type Page } from "playwright-core";
+import sharp from "sharp";
 
 // Synthetic boundary data only: render the real, unmodified Studio document.
 const config = {
@@ -278,9 +279,24 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         timezoneId: "America/New_York",
       });
       const errors: string[] = [];
-      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("pageerror", (error) =>
+        errors.push(error.stack || error.message),
+      );
       let state = "idle";
       let denyMap = false;
+      const tile = await sharp({
+        create: {
+          width: 256,
+          height: 256,
+          channels: 3,
+          background: "#dfe3e1",
+        },
+      })
+        .png()
+        .toBuffer();
+      await page.route("https://tile.openstreetmap.org/**", (route) =>
+        route.fulfill({ status: 200, contentType: "image/png", body: tile }),
+      );
       await page.route("**/api/**", async (route) => {
         const path = new URL(route.request().url()).pathname;
         if (path === "/api/dashboard/map" && denyMap)
@@ -433,6 +449,10 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         dojoShell.coverageWidth <= 1,
         "no feed counter block above map",
       );
+      await page
+        .locator("#dashboardMap .leaflet-tile-loaded")
+        .first()
+        .waitFor();
       await capture("dojo-map");
       denyMap = true;
       await page.locator("#dashboardMapDate").fill("2026-09-28");
