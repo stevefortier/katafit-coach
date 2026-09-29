@@ -129,6 +129,10 @@ Worker scope: do not call Operator tools or open an Operator session. Use only i
   },
 ] as const;
 
+// Stable owner capability: its supervisor sends this value to cold children.
+// An older owner may ship the same skill IDs but not this IPC contract.
+export const launcherSkillCatalog = 2;
+
 export const stockSkills: readonly CoachSkill[] = [
   {
     id: "katafit-api",

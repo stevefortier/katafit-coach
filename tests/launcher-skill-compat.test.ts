@@ -71,6 +71,22 @@ test("old owner's candidate probe rejects the new catalog before update acceptan
       join(owner, "dist", "config", "skills.js"),
       'export const stockSkills = [{id:"katafit-api"}];',
     );
+    const capabilityLess = run();
+    assert.notEqual(
+      capabilityLess.status,
+      0,
+      "matching IDs do not prove a compatible launcher",
+    );
+    assert.match(capabilityLess.stderr, /LAUNCHER_UPGRADE_REQUIRED/);
+    assert.deepEqual(
+      await readdir(home),
+      [],
+      "probe must not mutate even its disposable home",
+    );
+    await writeFile(
+      join(owner, "dist", "config", "skills.js"),
+      'export const stockSkills = [{id:"katafit-api"}]; export const launcherSkillCatalog = 2;',
+    );
     const accepted = run();
     assert.equal(accepted.status, 0, accepted.stderr);
     assert.deepEqual(

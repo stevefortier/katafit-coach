@@ -12,7 +12,11 @@ import { constants } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SkillStore, stockSkills } from "./skills.js";
+import {
+  SkillStore,
+  stockSkills,
+  launcherSkillCatalog as requiredLauncherSkillCatalog,
+} from "./skills.js";
 
 // Bounded even for maximal JSON escaping; below the stable owner's 4MiB cap.
 const snapshotLimit = 1024 * 1024;
@@ -444,6 +448,7 @@ export class Store {
           (skill: { id: string }) => skill.id,
         );
         if (
+          module.launcherSkillCatalog !== requiredLauncherSkillCatalog ||
           !Array.isArray(ownerIds) ||
           JSON.stringify(ownerIds.slice().sort()) !==
             JSON.stringify(stockSkills.map((skill) => skill.id).sort())

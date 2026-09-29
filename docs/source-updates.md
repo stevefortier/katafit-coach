@@ -207,12 +207,16 @@ A pinned legacy launcher (including `aef71b1`) cold-loads the protected
 `skills.json` head with its own four-skill Store. A child that supports the
 one-skill `katafit-api` catalog must **not** migrate that head under the old
 owner. The pinned owner's candidate probe loads the candidate Store on a disposable
-home before HTTP acceptance. It compares the owner's actual compiled built-in
-catalog with the child's catalog and rejects an incompatible owner before
-worker stop or protected skill mutation. The child also requires an explicit
-catalog-2 startup capability from the stable owner's initial IPC state; a
-missing capability fails closed with `LAUNCHER_UPGRADE_REQUIRED` before the skill
-manifest or linked records change. The new owner supplies that capability to
+home before HTTP acceptance. It requires both the matching compiled built-in
+catalog and an explicit compiled `launcherSkillCatalog: 2` owner capability,
+which the new supervisor sends in initial IPC state. An older owner can already
+ship `katafit-api` without sending the capability; catalog IDs alone would let
+its candidate pass pre-stop probing and fail only after the worker stops. The
+probe rejects that owner before worker stop or protected skill mutation, and
+automatic preparation records/suppresses the failed SHA. The child also requires
+that explicit catalog-2 startup capability; a missing capability fails closed
+with `LAUNCHER_UPGRADE_REQUIRED` before the skill manifest or linked records
+change. The new owner supplies that capability to
 its child. An old owner cannot be retrofitted by a child update: its old update
 API may report a generic preparation failure rather than a typed diagnostic,
 although the child's own error is typed. Do not rewrite or discard the valid

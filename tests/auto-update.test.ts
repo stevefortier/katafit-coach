@@ -443,7 +443,7 @@ test("managed supervisor checks only after persisted consent and suppresses fail
     },
     prepare: async () => {
       prepares++;
-      throw Error("fixture preparation");
+      throw Error("LAUNCHER_UPGRADE_REQUIRED");
     },
   });
   try {
@@ -457,6 +457,12 @@ test("managed supervisor checks only after persisted consent and suppresses fail
     owner.updates.checkedAt = 0;
     await assert.rejects(owner.auto.tick());
     assert.equal(prepares, 1);
+    assert.equal(await new AutoUpdateSetting(home).failedTarget(), latest);
+    assert.equal(
+      owner.updates.snapshot().lastOperation?.reason,
+      "LAUNCHER_UPGRADE_REQUIRED",
+    );
+    assert.equal(owner.updates.installed, "b".repeat(40));
     await owner.auto.tick();
     assert.equal(prepares, 1);
     assert.deepEqual(owner.updates.snapshot().autoOutcome, {
@@ -466,7 +472,7 @@ test("managed supervisor checks only after persisted consent and suppresses fail
     });
     assert.equal(
       owner.updates.snapshot().lastOperation?.reason,
-      "UPGRADE_FAILED",
+      "LAUNCHER_UPGRADE_REQUIRED",
     );
   } finally {
     await owner.close();

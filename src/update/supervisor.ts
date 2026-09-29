@@ -5,6 +5,7 @@ import {
   nativePreflight,
 } from "../sandbox/artifact.js";
 import { Store } from "../config/store.js";
+import { launcherSkillCatalog } from "../config/skills.js";
 import { Updates, validSha } from "./updates.js";
 import { AutoUpdater, AutoUpdateDeferred, AutoUpdateSetting } from "./auto.js";
 import { UpdateJournal, atomicWrite } from "./journal.js";
@@ -283,7 +284,7 @@ export async function supervise(
             data: {
               ...updates.snapshot(),
               installed: revision,
-              launcherSkillCatalog: 2,
+              launcherSkillCatalog,
             },
           },
           () => {},
