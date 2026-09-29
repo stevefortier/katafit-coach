@@ -148,9 +148,14 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
     (NativeTerminal as any).heartbeatMs = 1e9;
     await connect(page);
     await waitPreview(page);
+    // Keep reconnect unavailable so the automatic retry cannot erase the
+    // transient lost state before the assertion observes it.
+    await page.route("**/api/terminal/ticket", (route) =>
+      route.fulfill({ status: 503, body: "unavailable" }),
+    );
     await page.clock.fastForward(26000);
     await page.waitForFunction(() =>
-      /lost|Disconnected/i.test(
+      /lost|Disconnected|unavailable/i.test(
         document.querySelector("#nativeStatus")?.textContent ?? "",
       ),
     );
@@ -158,6 +163,7 @@ test("a silent link (no heartbeat) or going offline is treated as lost and erase
     await waitCards(page, 0);
 
     // Offline: the browser learns the network is gone.
+    await page.unroute("**/api/terminal/ticket");
     (NativeTerminal as any).heartbeatMs = 100;
     await connect(page);
     await waitCards(page, 1);
