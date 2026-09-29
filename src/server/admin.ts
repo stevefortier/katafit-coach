@@ -65,6 +65,23 @@ export async function admin(
   // quiesce/release. Never stop an idle worker just to inspect a receipt.
   const reconcileForAutomaticUpdate = async () => {
     if (
+      autoQuiesced &&
+      worker?.presenceStopRecovery === "pending" &&
+      !autoQuiescePending &&
+      !busy &&
+      !preview &&
+      terminal.idle &&
+      !updates.applying &&
+      !closing
+    ) {
+      busy = true;
+      try {
+        await worker.recoverStoppedPresence();
+      } finally {
+        busy = false;
+      }
+    }
+    if (
       !worker ||
       worker.safeToReplace ||
       busy ||
@@ -848,6 +865,7 @@ export async function admin(
         return send(200, {
           state: worker?.state ?? "stopped",
           presence: worker?.presence ?? "unconfirmed",
+          presenceStopRecovery: worker?.presenceStopRecovery ?? "none",
           preview: !!preview,
           safeToReplace: worker?.safeToReplace ?? true,
           stopConfirmed: worker?.stopConfirmed ?? true,
