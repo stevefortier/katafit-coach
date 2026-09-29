@@ -45,6 +45,19 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+.native-sr-only[data-state="error"],
+.native-sr-only[data-state="unavailable"],
+.native-sr-only[data-state="overflow"] {
+  position: static;
+  display: block;
+  width: auto;
+  height: auto;
+  margin: 12px 0 0;
+  overflow: visible;
+  clip-path: none;
+  white-space: normal;
+  color: #fca5a5;
+}
 .native-tooltip {
   position: fixed;
   z-index: 20;

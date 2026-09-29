@@ -15,6 +15,7 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
   const attachments = operatorAttachments($, fetchAttachment);
   const status = (state, text) => {
     $("nativeStatus").textContent = text;
+    $("nativeStatus").dataset.state = state;
     stateNow = state;
   };
   const retry = () => {

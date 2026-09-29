@@ -136,6 +136,22 @@ test(
         beforeRestore + 1,
         "BFCache return must reattach without a manual button",
       );
+      await page.locator("#settingsTab").click();
+      await page.route("**/api/terminal/ticket", (route) => route.abort());
+      await page.locator("#coachTab").click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#nativeStatus")
+          ?.textContent?.startsWith("Native Pi unavailable"),
+      );
+      assert.equal(
+        await page.locator("#nativeStatus").evaluate((el) => {
+          const box = el.getBoundingClientRect();
+          return box.width > 200 && getComputedStyle(el).clipPath === "none";
+        }),
+        true,
+        "automatic connection failure must be visible without a Retry button",
+      );
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();
