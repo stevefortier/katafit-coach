@@ -7,7 +7,7 @@ test("native terminal failure guidance never automatically replays input", async
     new URL("../ui/terminal.js", import.meta.url),
     "utf8",
   );
-  assert.match(source, /No input is replayed/);
-  assert.match(source, /Stop unconfirmed/);
+  assert.match(source, /input is never replayed/i);
+  assert.match(source, /Reconnecting automatically/);
   assert.doesNotMatch(source, /setInterval|operator\/chat/);
 });
