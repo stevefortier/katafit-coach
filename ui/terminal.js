@@ -174,10 +174,7 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
             message.context_expires_in_ms,
           );
         else if (message.type === "attachments-cleared") attachments.clear();
-        else if (message.type === "history-notice") {
-          status("connected", message.message);
-          terminal.write("\r\n" + message.message + "\r\n");
-        } else if (message.type === "error") {
+        else if (message.type === "error") {
           failed = true;
           status("error", message.message);
         }

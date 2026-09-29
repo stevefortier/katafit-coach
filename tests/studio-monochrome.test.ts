@@ -59,7 +59,7 @@ async function neutralSurfaces(page: Page) {
       // Deliberate status/warning/error colors are not decorative accents.
       if (
         el.matches(
-          '#modelDraftStatus, #models .saved-badge, [data-tone="error"], .log-error, .log-warn',
+          '#modelDraftStatus, #models .saved-badge, [data-tone="error"], #nativeStatus[data-state="error"], #nativeStatus[data-state="unavailable"], #nativeStatus[data-state="overflow"], .log-error, .log-warn',
         )
       )
         continue;
