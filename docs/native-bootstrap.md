@@ -28,7 +28,7 @@ not a supported deployment recipe; this release standardizes
 
 ### Ordinary account HTTP API
 
-`katafit_rest_get` is deprecated for model-facing use. Its hidden dispatch alias exists only for compatibility; it is not a second supported discovery surface. Historical skill snapshots retain their original text for archival integrity and are not the active stock catalog. An old tool name in a running transcript alone does not establish the installed host revision: old runtime images and frozen conversations can retain old context. Upgrade through the normal verified update lifecycle and start a new conversation to adopt the current tool/skill snapshot; do not silently rewrite history or interrupt active Pi.
+`katafit_rest_get` is deprecated for model-facing use. Its hidden dispatch alias exists only for compatibility; it is not a second supported discovery surface. Historical skill snapshots retain their original text for their own immutable revision history and are not the active stock catalog. An old tool name in a running terminal alone does not establish the installed host revision: an existing Pi runtime retains its current tool/skill snapshot. Upgrade through the normal verified update lifecycle; a fresh runtime receives the current snapshot. Do not interrupt active Pi merely to inspect its version.
 
 Image acquisition and operator delivery are separate: `image_receipt` identifies acquired pixels, not a displayed attachment. When asked to show photos, use `send_to_operator` with each existing receipt and confirm its successful panel delivery. API skill v2 teaches this explicitly; saved uncustomized defaults upgrade, while customized instructions remain intact for explicit review.
 
@@ -51,16 +51,12 @@ Use `/api/friends/feed/dojo`, `/api/friends/activity/:id` and
 pixels. `/api/activities/:id` remains owner-only. Dashboard uses the same routes,
 retains chart presentation from available records, and labels bounded coverage.
 
-New native history belongs to the private installation/admin, is digest checked,
-and survives backend-token rotation. Separate tenants must use separate private
-Coach homes; replacing the token is not a local-data deletion or account switch.
-Read/reopen of acquired local history makes no permission calls.
-Stop preserves text history; the existing image/unsupported-history read-only
-limitations remain (raw image bytes and workspace attachments are not persisted).
-Old host-saved archives remain locally readable without source reauthorization.
-Their legacy execution-resume contract still uses backend archive endpoints and
-may become read-only after credential replacement; no unsafe action replay is
-attempted. This legacy resume migration is not yet complete.
+Native Pi conversations are not saved, read, or restored. While the application
+and runtime remain alive, re-entering the Coach tab attaches to the same Pi.
+Application restart, update, settings/credential change, or runtime teardown
+starts a fresh conversation with no old prompt/tool replay. Separate tenants
+still require separate protected Coach homes. Old native-history files remain
+private and inert; this change does not implicitly delete customer files.
 
 Legacy recipient resolution and sends open their MCP session only when invoked;
 that backend's action policy and durable uncertain-action/no-replay receipts still
@@ -80,11 +76,11 @@ and replaced by one `katafit-api` skill. Saved custom text and enabled states ar
 not discarded or silently concatenated. Any custom/disabled legacy skill leaves
 the new skill disabled pending explicit review/enabling in Settings, whose migration
 notice links the archive by revision. Unmodified enabled defaults migrate enabled.
-Existing conversation snapshots remain immutable and may require a new conversation
-when their skill snapshot differs; their archives stay readable.
+An existing live Pi retains the skill snapshot it started with. A newly started
+runtime receives the updated skill catalog; there is no conversation archive.
 
-Memory: one optional initial legacy memory acquisition is cached for the whole
-conversation; provider continuation and local reopen do not recheck acquired
+Memory: one optional initial legacy memory acquisition is cached for the live
+runtime; provider continuation does not recheck acquired
 memory. Explicit `coach_memory_search` is a new backend fetch. Legacy refusal
 does not block ordinary REST. **REST-derived automatic memory persistence remains
 unsupported**: native guidance discloses this and retention emits

@@ -4,7 +4,7 @@ Studio has two top-level tabs: **Coach** first and **Settings** second. Settings
 
 ## Native Operator Pi: direct the Coach as its boss
 
-`/chat/operator` is exclusively the isolated native Pi terminal. Start/reconnect Pi and use its native controls. Stop destroys its ephemeral process/workspace/attachments but preserves sealed structured history when backend archive v1 is negotiated; Delete is separate. History reads require current backend proof authorization, and resume creates bounded fresh execution without replay. See [durable Operator conversations](operator-session-history.md) for read-only/locked fallback and storage limits. Docker isolation is required; there is no host or legacy-chat fallback. Settings preview remains the separate worker-style preview, not Operator inference.
+`/chat/operator` is exclusively the isolated native Pi terminal. Entering the tab automatically connects to the running Pi or starts a fresh runtime. There are no conversation-history controls, persistence, or restoration. An application restart, update, settings/credential change, revocation, or runtime failure loses the live transcript; browser tab navigation alone does not. See [Native Operator conversation lifetime](operator-session-history.md). Docker isolation is required; there is no host or legacy-chat fallback. Settings preview remains the separate worker-style preview, not Operator inference.
 
 The primary system prompt contains all eight saved persona fields and their revision. The Coach keeps its name, voice, principles and expertise. The operator is its manager and boss, **not a trainee**; that relationship takes precedence over trainee-facing discipline, refusal rules and examples. It never grants additional backend permissions. The configured model provider receives authorized request/tool context; browsing member tabs does not add their content to Pi.
 
@@ -14,9 +14,9 @@ The backend supplies the scoped catalog and owns initial read permissions, targe
 
 Pi can use `send_to_operator` to send a check-in photo it read in this session (by `image_receipt`) or a regular file from `/workspace`. The item appears in the **Attachments from Pi** panel beside the terminal. Images can be previewed, enlarged and downloaded; other files are download cards. Bytes stay in host memory and are served only to the admin key through an endpoint scoped to the current session. Stop, revocation or a configuration change erases them. A Pi receipt means "accepted to the panel", not "seen by the operator". See [Operator attachments](operator-attachments.md).
 
-### Receipts, Stop and retired history
+### Action receipts and retired history
 
-Receipts remain separate from transcripts. The UI reads `/api/terminal/receipts`; completed/delivered and pending/unknown outcomes remain distinct. Stop cannot retract a committed write. Neither reconnect nor config changes replay input or uncertain actions. A receipt refresh is not permission to retry, and generic unknown writes without an explicit backend readback contract remain unknown.
+Action receipts remain separate from transcripts. The UI reads `/api/terminal/receipts`; completed/delivered and pending/unknown outcomes remain distinct. Ending a runtime cannot retract a committed write. Neither reconnect nor config changes replay input or uncertain actions. A receipt refresh is not permission to retry, and generic unknown writes without an explicit backend readback contract remain unknown.
 
 The old Operator service, composer/history renderer, image-card endpoint and `/api/operator/chat`, `/api/operator/cancel`, `/api/operator/clear` APIs are removed. Saved `operator-chat.json`, configuration/persona revisions and action journals remain on disk; this release does not delete or migrate customer history. Archived chat is not served or sent to Pi. Credential saves still screen current/retained configuration and action receipts for secrets; retired archives are never loaded and cannot block recovery. Keep protected-home backups private.
 
