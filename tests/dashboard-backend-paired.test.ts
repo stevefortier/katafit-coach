@@ -340,16 +340,13 @@ test(
           })
             .png()
             .toBuffer();
-          await page.route(
-            /^https:\/\/[abc]\.tile\.openstreetmap\.org\//,
-            (route) => {
-              requestedTiles.push(route.request().url());
-              return route.fulfill({
-                contentType: "image/png",
-                body: blankTile,
-              });
-            },
-          );
+          await page.route(/^https:\/\/tile\.openstreetmap\.org\//, (route) => {
+            requestedTiles.push(route.request().url());
+            return route.fulfill({
+              contentType: "image/png",
+              body: blankTile,
+            });
+          });
           const errors: string[] = [];
           page.on("pageerror", (e) => errors.push(e.message));
           const mediaResponses: number[] = [];

@@ -89,7 +89,7 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     );
     assert.match(
       dashboardPage.headers.get("content-security-policy") || "",
-      /https:\/\/\*\.tile\.openstreetmap\.org/,
+      /https:\/\/tile\.openstreetmap\.org/,
     );
     assert.equal(
       (await fetch(base + "/api/dashboard/avatar?id=aaaaaaaaaaaaaaaaaaaaaaaa"))
