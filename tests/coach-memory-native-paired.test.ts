@@ -57,11 +57,11 @@ test(
       const toolResults = body.messages
         .slice(userIndex + 1)
         .filter((m: any) => m.role === "tool");
-      const second = /second synthetic|resumed synthetic/.test(
+      const second = /second synthetic|new-runtime synthetic/.test(
         JSON.stringify(body.messages[userIndex]),
       );
-      const resumed = JSON.stringify(body.messages[userIndex]).includes(
-        "resumed synthetic",
+      const newRuntime = JSON.stringify(body.messages[userIndex]).includes(
+        "new-runtime synthetic",
       );
       if (!second && !toolResults.length)
         return res.end(
@@ -69,8 +69,8 @@ test(
         );
       res.end(
         answer(
-          resumed
-            ? "MEMORY_PAIRED_RESUMED_DONE"
+          newRuntime
+            ? "MEMORY_PAIRED_NEW_RUNTIME_DONE"
             : second
               ? "MEMORY_PAIRED_SECOND_DONE"
               : "MEMORY_PAIRED_FIRST_DONE",
@@ -228,10 +228,6 @@ test(
         .collection("coach_memories")
         .findOne({ status: "active" });
       assert.equal(record.audience, "operator_private");
-      const sessionsBefore = await db
-        .collection("studio_operator_sessions")
-        .find()
-        .toArray();
       // Verify the actual runtime sandbox configuration by its task-owned name,
       // never requiring other users' native containers to be absent.
       let containerIds = execFileSync(
@@ -286,8 +282,8 @@ test(
             .countDocuments({ status: "committed" })) === 2,
         "second delivered turn retention settles before correction",
       );
-      // Stop retains an authorized archive; a new exact-image Pi resumes its
-      // host-observed prefix under a fresh backend successor without replay.
+      // Stop destroys the Pi transcript. A fresh runtime recalls account-private
+      // memory, not the prior conversation or its tool results.
       assert.equal(
         (
           await fetch(app.origin + "/api/terminal/stop", {
@@ -297,19 +293,6 @@ test(
           })
         ).status,
         200,
-      );
-      const history = (await (
-        await fetch(app.origin + "/api/terminal/history", { headers })
-      ).json()) as any;
-      const historyId = history.sessions[0].id;
-      const archiveRead = await fetch(
-        app.origin + "/api/terminal/history/" + historyId,
-        { headers },
-      );
-      assert.equal(archiveRead.status, 200);
-      assert.match(
-        JSON.stringify(await archiveRead.json()),
-        /MEMORY_PAIRED_SECOND_DONE/,
       );
       const resumedTicket = (await (
         await fetch(app.origin + "/api/terminal/ticket", {
@@ -343,11 +326,11 @@ test(
       ws.send(
         JSON.stringify({
           type: "input",
-          data: "Perform a resumed synthetic turn using the original context.\r",
+          data: "Perform a new-runtime synthetic turn: what reporting style should we use?\r",
         }),
       );
       await waitFor(
-        () => output.includes("MEMORY_PAIRED_RESUMED_DONE"),
+        () => output.includes("MEMORY_PAIRED_NEW_RUNTIME_DONE"),
         "resumed turn",
       );
       const resumedBody = bodies.find(
@@ -355,9 +338,12 @@ test(
           !isExtraction(body) &&
           JSON.stringify(
             body.messages.findLast((m: any) => m.role === "user"),
-          ).includes("resumed synthetic"),
+          ).includes("new-runtime synthetic"),
       );
-      assert.match(JSON.stringify(resumedBody), /MEMORY_PAIRED_SECOND_DONE/);
+      assert.doesNotMatch(
+        JSON.stringify(resumedBody),
+        /MEMORY_PAIRED_SECOND_DONE|Synthetic member/,
+      );
       assert.match(
         systemOf(resumedBody),
         /Operator prefers brief morning reports/,
@@ -368,14 +354,6 @@ test(
             .collection("coach_memory_captures")
             .countDocuments({ status: "committed" })) === 3,
         "resumed retention",
-      );
-      assert.equal(
-        (
-          await db
-            .collection("studio_operator_sessions")
-            .findOne({ status: "active" })
-        ).retained_memories[0].id,
-        String(record._id),
       );
       containerIds = execFileSync(
         "docker",
@@ -426,26 +404,6 @@ test(
         "task-owned runtime removal",
       );
       assert.equal(bodies.filter((body) => !isExtraction(body)).length, count);
-      const sessionsAfter = await db
-        .collection("studio_operator_sessions")
-        .find()
-        .toArray();
-      assert.equal(
-        sessionsAfter.length,
-        sessionsBefore.length + 1,
-        "one authorized successor only; no fresh session after revocation",
-      );
-      assert.ok(
-        sessionsAfter.every((session: any) => session.status !== "active"),
-      );
-      const revokedArchive = await fetch(
-        app.origin + "/api/terminal/history/" + historyId,
-        { headers },
-      );
-      assert.doesNotMatch(
-        JSON.stringify(await revokedArchive.json()),
-        /MEMORY_PAIRED_SECOND_DONE|MEMORY_PAIRED_RESUMED_DONE/,
-      );
       assert.equal(
         await db.collection("studio_operator_actions").countDocuments(),
         0,
@@ -460,10 +418,6 @@ test(
               containerNames,
               providerRequests: count,
               extractionRequests: bodies.filter(isExtraction).length,
-              sessions: sessionsAfter.map((s: any) => ({
-                status: s.status,
-                turn_generation: s.turn_generation,
-              })),
               correctionCloseCode: closed,
               toolGrounding: true,
             },
