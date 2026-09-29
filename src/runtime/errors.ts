@@ -17,10 +17,7 @@ export const hints = {
   TOOL_BUDGET_EXHAUSTED:
     "The request exceeded its 48 read-tool call budget. Reduce the request.",
   RESULT_REJECTED: "A read result failed safety, size or structure validation.",
-  NATIVE_HISTORY_MISMATCH:
-    "Pi history disagreed with the host-observed prefix. The saved conversation is read-only; inspect the exact session before starting a new one. No action was replayed.",
-  NATIVE_HISTORY_UNTRUSTED_RESULT:
-    "A Pi tool result disagreed with the host-observed receipt. The result was withheld and the saved conversation is read-only; inspect current action receipts before retrying.",
+
   READ_UNAVAILABLE:
     "The scoped read was unavailable. Check request authority, grants and supported capabilities.",
   READ_NOT_FOUND:

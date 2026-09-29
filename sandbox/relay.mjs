@@ -128,14 +128,7 @@ const failures = {
     504,
     "Coach did not answer this native request in time (timeout); its outcome is unknown. Check Coach state before repeating any action.",
   ],
-  NATIVE_HISTORY_MISMATCH: [
-    409,
-    "The live Pi history no longer matches host-observed events. This conversation is read-only; inspect Coach diagnostics and start a new conversation only after resolving uncertain actions.",
-  ],
-  NATIVE_HISTORY_UNTRUSTED_RESULT: [
-    409,
-    "A Pi tool result did not match the host-observed receipt. It was withheld; this conversation is read-only. Inspect Coach diagnostics before starting a new conversation.",
-  ],
+
   NATIVE_GATEWAY_FAILED: [
     500,
     "The native request failed for an unclassified reason; details are withheld. Check Coach diagnostics and do not repeat actions whose outcome is unknown.",
