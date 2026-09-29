@@ -1,6 +1,6 @@
 # Coach Studio conversations
 
-Studio has two top-level tabs: **Coach** first and **Settings** second. Settings retains connection, persona, preview, diagnostics, worker controls and source upgrades.
+Studio exposes Coach, Dashboard, Activity and Settings. Settings retains connection, persona, preview, diagnostics, worker controls and source upgrades.
 
 ## Native Operator Pi: direct the Coach as its boss
 
@@ -8,7 +8,7 @@ Studio has two top-level tabs: **Coach** first and **Settings** second. Settings
 
 The primary system prompt contains all eight saved persona fields and their revision. The Coach keeps its name, voice, principles and expertise. The operator is its manager and boss, **not a trainee**; that relationship takes precedence over trainee-facing discipline, refusal rules and examples. It never grants additional backend permissions. The configured model provider receives authorized request/tool context; browsing member tabs does not add their content to Pi.
 
-The backend supplies the scoped catalog and owns initial read permissions, target and mutation authority. Native Pi chooses and calls the advertised tools; the host supplies session and action identity. See [native continuity](native-continuity.md) for acquisition-time authorization, local reuse and generation fencing. A configuration save/restore/rollback closes native sessions; a new runtime receives the new revision rather than retaining the previous persona or transcript.
+The backend owns read permissions, target and mutation authority. Native Pi chooses and calls the advertised tools; the host relays to the configured backend without a second transcript verifier. A configuration save/restore/rollback closes the live runtime; a new one receives the new revision rather than retaining the previous persona or transcript.
 
 ### Attachments from Pi
 
@@ -16,7 +16,7 @@ Pi can use `send_to_operator` to send a check-in photo it read in this session (
 
 ### Action receipts and retired history
 
-Action receipts remain separate from transcripts. The UI reads `/api/terminal/receipts`; completed/delivered and pending/unknown outcomes remain distinct. Ending a runtime cannot retract a committed write. Neither reconnect nor config changes replay input or uncertain actions. A receipt refresh is not permission to retry, and generic unknown writes without an explicit backend readback contract remain unknown.
+Legacy backend-send receipts remain separate from Pi transcripts and may be read by the Dashboard. Ordinary REST calls from Pi no longer create a Coach action journal. Ending a runtime cannot retract a committed write. Neither reconnect nor config changes automatically replay input or uncertain actions. A lost response must be resolved against canonical backend state before a person or model deliberately retries; without a host-side replay fence, doing otherwise can duplicate a write.
 
 The old Operator service, composer/history renderer, image-card endpoint and `/api/operator/chat`, `/api/operator/cancel`, `/api/operator/clear` APIs are removed. Saved `operator-chat.json`, configuration/persona revisions and action journals remain on disk; this release does not delete or migrate customer history. Archived chat is not served or sent to Pi. Credential saves still screen current/retained configuration and action receipts for secrets; retired archives are never loaded and cannot block recovery. Keep protected-home backups private.
 

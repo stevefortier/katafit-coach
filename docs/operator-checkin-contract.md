@@ -46,9 +46,7 @@ throwing fixed actionable text for Pi's native error display/model tool receipt:
 
 Other unchanged failed reads should not be repeated. No raw backend errors,
 arguments, credentials, or references are added to these failure envelopes.
-Cancellation, credential rejection and retained-context revocation keep their
-existing teardown paths. Writes/unknown tools retain generic no-replay protection;
-this does not queue writes or change concurrency admission.
+Cancellation and credential rejection keep their existing teardown paths. Writes are separate backend requests; the host does not automatically retry an unknown outcome, but ordinary REST has no Coach-side replay journal or fence. This does not queue writes or change concurrency admission.
 
 ## Default-catalog upgrade and rollback
 

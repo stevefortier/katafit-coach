@@ -154,10 +154,7 @@ test("metadata snapshots reuse acquired permission; empty snapshots expose no it
   try {
     const empty = await g.gateway.snapshot();
     assert.deepEqual(empty.items, []);
-    assert.equal(
-      empty.context_expires_at,
-      g.gateway.continuity()!.context_expires_at,
-    );
+    assert.equal(empty.context_expires_at, null);
     g.files.set("a.txt", Buffer.from("synthetic"));
     await g.tool(SEND, { workspace_path: "a.txt", caption: "Synthetic" });
     const before = g.f.named(AUTHORIZE).length;

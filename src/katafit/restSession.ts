@@ -12,7 +12,6 @@ export function restSession(
   openLegacy?: () => Promise<LegacySession>,
 ): LocalSession {
   const session_id = randomBytes(32).toString("hex");
-  const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   let closed = false,
     generation = 0,
     legacyGeneration = 0;
@@ -20,8 +19,7 @@ export function restSession(
   let legacyValue: LegacySession | undefined;
 
   const authorize = async () => {
-    if (closed || !current() || Date.now() >= Date.parse(expires))
-      throw new Error("CANCELLED");
+    if (closed || !current()) throw new Error("CANCELLED");
   };
   const acquireLegacy = async () => {
     if (!openLegacy) throw new Error("NATIVE_TOOL_REJECTED");
@@ -106,7 +104,6 @@ export function restSession(
     authorize,
     advance: async () => {
       await authorize();
-      if (generation >= 63) throw new Error("CANCELLED");
       generation++;
       return "advanced";
     },
@@ -118,12 +115,7 @@ export function restSession(
       throw new Error("MEMORY_UNAVAILABLE");
     },
     transitionPending: () => false,
-    continuity: () => ({
-      turn_generation: generation,
-      expires_at: expires,
-      context_expires_at: expires,
-      revoked: null,
-    }),
+    continuity: () => null,
     dispose: async () => {
       closed = true;
       if (legacyValue) await legacyValue.dispose();

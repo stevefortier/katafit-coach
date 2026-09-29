@@ -43,6 +43,11 @@ test("ordinary REST session does not advertise archive sealing", async () => {
     assert.equal(session.archive, false);
     assert.equal(session.seal, undefined);
     assert.equal(
+      session.continuity(),
+      null,
+      "a live Pi has no synthetic hourly expiry",
+    );
+    assert.equal(
       session.tools.some((tool) => tool.name === "coach_memory_search"),
       false,
     );

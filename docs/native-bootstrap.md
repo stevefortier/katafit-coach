@@ -62,14 +62,7 @@ Legacy recipient resolution and sends open their MCP session only when invoked;
 that backend's action policy and durable uncertain-action/no-replay receipts still
 apply. Workers and older member views retain their existing adapters. Generic
 REST supports bounded JSON mutations (64 KiB requests; 256 KiB JSON results).
-Read before writes and read canonical state afterwards. The host durably records
-an action before dispatch, never retries, and retains unknown outcomes across
-restart and credential changes. Failed, denied, redirected, cancelled, lost or
-invalid mutation responses remain conservatively unknown: no assumed idempotency
-or generic backend receipt exists. GET readback remains possible in the current
-session; new sessions and further backend actions are blocked until independently
-reconciled. There is no automatic receipt lookup or automatic fence-clearing for
-ordinary REST. Do not delete the action ledger to retry. Stop before rotating credentials.
+Read canonical backend state before a write and again after its acknowledgement. Ordinary REST mutations use the backend's authorization and validation; Coach does not maintain a second action journal or compare provider tool IDs against transcript history. A lost write response is **unknown**, not evidence of failure or success. The host does not automatically retry. A manual/model retry can duplicate a committed action unless canonical state is checked first; backend-specific idempotency contracts should be used where available.
 
 The four former stock skills are archived in the existing immutable Skills history
 and replaced by one `katafit-api` skill. Saved custom text and enabled states are
@@ -79,13 +72,7 @@ notice links the archive by revision. Unmodified enabled defaults migrate enable
 An existing live Pi retains the skill snapshot it started with. A newly started
 runtime receives the updated skill catalog; there is no conversation archive.
 
-Memory: one optional initial legacy memory acquisition is cached for the live
-runtime; provider continuation does not recheck acquired
-memory. Explicit `coach_memory_search` is a new backend fetch. Legacy refusal
-does not block ordinary REST. **REST-derived automatic memory persistence remains
-unsupported**: native guidance discloses this and retention emits
-`memory-retention-skipped` / `MEMORY_UNAVAILABLE`, never a successful no-op.
-Existing Memory screen/manual management and worker memory are unchanged.
+Native Pi does not automatically load saved memory, search old conversations, or record turn text for memory extraction. The separate Memory settings screen/manual management and worker memory remain unchanged.
 
 ## Build from one reviewed clean source revision
 
