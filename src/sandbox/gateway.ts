@@ -1,8 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import {
-  nativeToolOutcome,
-  nativeToolResultTooLarge,
-} from "../../sandbox/katafit.mjs";
+import { nativeToolResultTooLarge } from "../../sandbox/katafit.mjs";
 import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
 import {
@@ -269,26 +266,7 @@ class NativeClient extends Client {
   }
 }
 
-import type { ArchiveResume } from "../katafit/operatorArchive.js";
-import {
-  captureNativeExchange,
-  CanonicalNativeHistory,
-} from "./sessionCapture.js";
-import { normalizeHostToolImages } from "./toolImageNormalization.js";
-import type { FileEntry } from "@earendil-works/pi-coding-agent";
 export interface NativeGatewayHooks {
-  /** Trusted host compatibility path for existing backend-owned history. */
-  backendHistory?: boolean;
-  resume?: ArchiveResume;
-  resumeSessionId?: string;
-  seed?: FileEntry[];
-  onExchange?: (
-    capture: NonNullable<ReturnType<typeof captureNativeExchange>>,
-  ) => Promise<void>;
-  onHistoryMismatch?: (
-    reason: "NATIVE_HISTORY_MISMATCH" | "NATIVE_HISTORY_UNTRUSTED_RESULT",
-  ) => Promise<void>;
-  onBeforeDispatch?: () => Promise<void>;
   onDiagnostic?: BackendLogger;
   /**
    * Continuity was denied, expired or became unknown. The gateway is already
@@ -314,34 +292,6 @@ export async function openNativeGateway(
   signal?: AbortSignal,
   hooks: NativeGatewayHooks = {},
 ) {
-  const historyLog = new CanonicalNativeHistory(hooks.seed);
-  let historyMismatch = false;
-  let historyUnsafe = false;
-  const canonical = async <T>(
-    operation: () => T,
-    freezeOnly = false,
-  ): Promise<T | undefined> => {
-    try {
-      return operation();
-    } catch (error) {
-      const first = !historyMismatch;
-      historyMismatch = true;
-      if (!freezeOnly) historyUnsafe = true;
-      const reason =
-        error instanceof Error &&
-        error.message === "NATIVE_HISTORY_UNTRUSTED_RESULT"
-          ? "NATIVE_HISTORY_UNTRUSTED_RESULT"
-          : "NATIVE_HISTORY_MISMATCH";
-      try {
-        if (first) await hooks.onHistoryMismatch?.(reason);
-      } catch (persistenceError) {
-        historyUnsafe = true;
-        throw persistenceError;
-      }
-      if (freezeOnly) return undefined;
-      throw new NativeFailure(reason);
-    }
-  };
   const config = store.publicConfig();
   const skills = store.skills.runtime();
   const secrets = { ...store.secrets };
@@ -356,7 +306,7 @@ export async function openNativeGateway(
   let deliveryRecording: Promise<unknown> | undefined;
   let recoveryAttempted = false;
   const observedTools: { tool: string; result: unknown }[] = [];
-  let orderedOutcomes: Promise<void> = Promise.resolve();
+
   // One bounded human-turn latch, set only by the trusted host terminal.
   let turnArmed = false;
   let terminated: string | undefined;
@@ -385,19 +335,9 @@ export async function openNativeGateway(
   let hostWorkSeq = 0;
   const actions = new Actions(store, hooks.onDiagnostic);
   const restCalls = new Set<string | object>();
+  const uncertainRest = new Set<string>();
   const restActions = new WeakMap<object, Parameters<Actions["save"]>[0]>();
-  if (
-    actions
-      .snapshot()
-      .some(
-        (a) =>
-          (!hooks.resume ||
-            a.session_id === hooks.resumeSessionId ||
-            a.tool_name === restRequestTool.name) &&
-          ["pending", "unknown"].includes(a.status),
-      )
-  )
-    throw new Error("DELIVERY_UNVERIFIED");
+
   const client = new NativeClient(
     config.origin,
     secrets.token,
@@ -418,7 +358,7 @@ export async function openNativeGateway(
         hooks.onDiagnostic,
       ),
       continuity: true,
-      resume: hooks.resume,
+
       onImage: (image) => {
         lastImage = owner
           ? {
@@ -431,10 +371,7 @@ export async function openNativeGateway(
     });
   // Opening REST conversations requires no MCP grant. Optional initial memory
   // acquisition and explicit legacy actions are independent new requests.
-  const local = !hooks.resume && !hooks.backendHistory;
-  const session = local
-    ? restSession(current, openLegacy, !hooks.seed?.length)
-    : await openLegacy();
+  const session = restSession(current, openLegacy);
   const check = () => {
     if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
   };
@@ -747,17 +684,7 @@ export async function openNativeGateway(
   };
   return {
     /** Trusted host only: content-free metadata of accepted attachments. */
-    historyState: () => ({
-      supported: session.archive,
-      local,
-      sessionId: session.session_id,
-      generation: session.continuity()?.turn_generation ?? 0,
-      action: session.currentAction(),
-    }),
-    sealHistory: async (revision: number, digest: string) => {
-      if (historyMismatch) throw new Error("NATIVE_HISTORY_MISMATCH");
-      return session.seal(revision, digest);
-    },
+
     authorizeTranscript: authorizeDisclosure,
     attachments: () => (closed ? [] : attachments.list()),
     /**
@@ -891,10 +818,9 @@ export async function openNativeGateway(
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     if (request.kind === "catalog") {
-      if (hooks.seed) await authorizeNative();
       const catalog = {
         model: config.provider.model,
-        ...(hooks.seed ? { history: { entries: hooks.seed } } : {}),
+
         vision: config.provider.vision === true,
         prompt: compileOperator(config, Object.values(secrets)),
         skills: skills.skills.map(
@@ -982,8 +908,7 @@ export async function openNativeGateway(
       throw error;
     }
   }
-  // Busy calls also pass this boundary. Serialize capture/seal writes, never
-  // execution; keep the active admission held until its emitted outcome seals.
+  // Normalize the host outcome before releasing admission.
   async function emitted(
     request: any,
     operation: (prior: Promise<void>, selected?: object) => Promise<any>,
@@ -991,39 +916,10 @@ export async function openNativeGateway(
   ) {
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
-    // Malformed sandbox frames are not evidence that Pi's selected history
-    // changed. Refuse them before claiming/freeze-checking any tool slot.
     validateRequestShape(request);
-    let selected: object | undefined;
-    let prior = orderedOutcomes;
-    let finish: (() => void) | undefined;
-    // An ID is data from the sandbox, not authority: bind it to the actual
-    // provider-observed name and exact arguments before dispatching any tool.
-    if (
-      request?.kind === "tool" &&
-      session.archive &&
-      hooks.onExchange &&
-      !historyUnsafe &&
-      typeof request.name === "string" &&
-      request.args &&
-      typeof request.args === "object" &&
-      (request.toolCallId === undefined ||
-        typeof request.toolCallId === "string")
-    ) {
-      selected = await canonical(() =>
-        historyLog.claim(request.name, request.args, request.toolCallId),
-      );
-      if (selected) {
-        orderedOutcomes = new Promise<void>((resolve) => {
-          finish = resolve;
-        });
-      }
-    }
-    let result: any, proofResult: any, failure: NativeFailure | undefined;
+    let result: any, failure: NativeFailure | undefined;
     try {
-      result = await operation(prior, selected);
-      if (request?.kind === "tool")
-        proofResult = await normalizeHostToolImages(result);
+      result = await operation(Promise.resolve());
     } catch (error) {
       failure = classify(error, request?.kind, requestSignal);
     }
@@ -1033,39 +929,11 @@ export async function openNativeGateway(
       nativeToolResultTooLarge(result)
     )
       failure = new NativeFailure("NATIVE_RESULT_TOO_LARGE");
-    if (
-      request?.kind === "tool" &&
-      session.archive &&
-      hooks.onExchange &&
-      !historyUnsafe
-    ) {
-      const outcome = nativeToolOutcome(
-        request.name,
-        proofResult ?? result,
-        failure?.code,
-      );
-      try {
-        const work = prior.then(async () => {
-          const recorded = await canonical(() =>
-            historyLog.dispatch(request.name, request.args, outcome, selected),
-          );
-          if (recorded && !historyMismatch)
-            await hooks.onExchange!(historyLog.snapshot());
-        });
-        await work;
-      } finally {
-        if (selected) historyLog.release(selected);
-        finish?.();
-      }
-    } else {
-      if (selected) historyLog.release(selected);
-      finish?.();
-    }
     const action = restActions.get(request);
     if (action) {
-      // Completion includes host normalization and durable history sealing.
-      // A thrown seal leaves the pre-dispatch pending receipt intact.
+      // An uncertain write remains unknown; this is not conversation history.
       actions.save({ ...action, status: failure ? "unknown" : "completed" });
+      if (failure) uncertainRest.add(JSON.stringify(request.args));
       restActions.delete(request);
     }
     if (failure) throw failure;
@@ -1130,11 +998,6 @@ export async function openNativeGateway(
     prior?: Promise<void>,
     selected?: object,
   ) {
-    if (historyUnsafe) throw new Error("NATIVE_HISTORY_MISMATCH");
-    if (session.archive) {
-      await prior;
-      await hooks.onBeforeDispatch?.();
-    }
     if (request.kind === "tool") {
       if (
         [restGetTool.name, restRequestTool.name].includes(request.name) &&
@@ -1152,10 +1015,7 @@ export async function openNativeGateway(
           `${session.continuity()?.turn_generation ?? 0}:${request.toolCallId}`;
         if (
           mutation &&
-          (restCalls.has(key) ||
-            actions
-              .snapshot()
-              .some((a) => ["pending", "unknown"].includes(a.status)))
+          (restCalls.has(key) || uncertainRest.has(JSON.stringify(request.args)))
         )
           throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
         const action = mutation
@@ -1186,6 +1046,7 @@ export async function openNativeGateway(
         } catch (error) {
           if (action) {
             actions.save({ ...action, status: "unknown" });
+            uncertainRest.add(JSON.stringify(request.args));
             throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
           }
           if ((error as Error).message === "REST_REQUEST_REJECTED")
@@ -1216,16 +1077,7 @@ export async function openNativeGateway(
           request.args,
           requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
         );
-      if (
-        actions
-          .snapshot()
-          .some(
-            (a) =>
-              a.tool_name === restRequestTool.name &&
-              ["pending", "unknown"].includes(a.status),
-          )
-      )
-        throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
+
       const tool = session.tools.find((t) => t.name === request.name);
       if (!tool) throw new Error("NATIVE_TOOL_REJECTED");
       lastImage = undefined;
@@ -1356,21 +1208,7 @@ export async function openNativeGateway(
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     const providerDeadline = Date.now() + 120000;
     const timeout = AbortSignal.timeout(120000);
-    if (session.archive && hooks.onExchange) {
-      await canonical(() => historyLog.validateResultClaims(admitted.original));
-      const capture = !historyMismatch
-        ? await canonical(() => historyLog.request(admitted.original), true)
-        : undefined;
-      if (capture) await hooks.onExchange(capture);
-      check();
-      // A checkpoint can race runtime teardown; check local lifetime again.
-      try {
-        await authorizeNative();
-        check();
-      } catch (error) {
-        throw authority(error, true);
-      }
-    }
+
     // Transport failures are classified by cause only; never by error text.
     const transport = (error: unknown) =>
       requestSignal?.aborted || lifetime.aborted
@@ -1587,17 +1425,7 @@ export async function openNativeGateway(
         },
       };
     }
-    if (session.archive && hooks.onExchange) {
-      const capture = await canonical(() =>
-        historyLog.response(
-          JSON.parse(wire),
-          body,
-          response.headers.get("content-type") ?? "",
-        ),
-      );
-      if (capture && !historyMismatch) await hooks.onExchange(capture);
-      check();
-    }
+
     try {
       requestSignal?.throwIfAborted();
       lifetime.throwIfAborted();
@@ -1619,8 +1447,7 @@ export async function openNativeGateway(
 }
 type OpenedGateway = Awaited<ReturnType<typeof openNativeGateway>>;
 /** Runtime-facing surface; host-only members are optional for test stubs. */
-export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
-  Partial<
+export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> & Partial<
     Pick<
       OpenedGateway,
       | "confirmDelivery"
@@ -1629,8 +1456,6 @@ export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
       | "attachments"
       | "readAttachment"
       | "snapshot"
-      | "historyState"
-      | "sealHistory"
       | "authorizeTranscript"
     >
   >;

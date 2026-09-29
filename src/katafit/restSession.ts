@@ -1,8 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { archiveIdentity } from "./operatorArchive.js";
+
 import type { openOperatorTools } from "./operatorTools.js";
 
 type LegacySession = Awaited<ReturnType<typeof openOperatorTools>>;
+type LocalSession = Omit<LegacySession, "seal"> & {
+  seal?: LegacySession["seal"];
+};
 /** Local runtime/history integrity, never a backend permission surrogate.
  * Optional initial memory acquisition and explicit legacy tools are independent
  * new backend requests; retained context never refreshes source authorization. */
@@ -10,7 +13,7 @@ export function restSession(
   current: () => boolean,
   openLegacy?: () => Promise<LegacySession>,
   acquireInitialMemory = true,
-): LegacySession {
+): LocalSession {
   const session_id = randomBytes(32).toString("hex");
   const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   let closed = false,
@@ -126,18 +129,11 @@ export function restSession(
     capabilityGuidance:
       "Use ordinary REST for data reads. Legacy sends are authorized only when requested. Saved memory is available via explicit coach_memory_search (a new backend acquisition). Automatic recall makes one optional new legacy memory acquisition, then reuses acquired memory without rechecks. REST-derived memory persistence is not yet supported; do not claim durable retention. The Memory screen retains existing manual management.",
     session_id,
-    archive: true,
+    archive: false,
     memoryRecovery: false,
     reconcile: async () => legacyValue?.reconcile(),
     currentAction: () => legacyValue?.currentAction(),
-    seal: async (archive_revision, transcript_digest) => {
-      await authorize();
-      return archiveIdentity({
-        archive_id: session_id,
-        archive_revision,
-        transcript_digest,
-      });
-    },
+
     authorize,
     advance: async () => {
       await authorize();
