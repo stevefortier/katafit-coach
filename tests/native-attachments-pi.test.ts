@@ -235,7 +235,8 @@ test(
       );
       assert.equal(fetched.length, 2);
 
-      // Reconnect: same runtime, same cards, no duplicate fetches.
+      // Reconnect: same runtime and cards. The image preview reloads from the
+      // private attachment endpoint, never from the original backend source.
       await page.reload();
       await page.locator("#studio").waitFor({ state: "visible" });
       await page.waitForFunction(() =>
@@ -249,7 +250,12 @@ test(
         await cards.nth(0).locator(".attachment-name").textContent(),
         "visits.csv",
       );
-      assert.equal(fetched.length, 2);
+      assert.equal(fetched.length, 3);
+      assert.equal(
+        new URL(fetched[2]).pathname,
+        new URL(fetched[0]).pathname,
+        "reload fetches the same private image preview",
+      );
       assert.deepEqual(
         [...(await containers())].filter((id) => !before.has(id)),
         owned,
