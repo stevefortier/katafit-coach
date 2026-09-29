@@ -184,7 +184,9 @@ export class Updates {
       reason: failureReason(error),
     };
     this.guidance =
-      "Upgrade preparation failed before Coach was stopped. Check free disk and Git/npm network access.";
+      this.lastOperation.reason === "LAUNCHER_UPGRADE_REQUIRED"
+        ? "Launcher upgrade required: install a reviewed compatible stable owner side by side before migrating the protected skill catalog. Keep the full home and linked history intact."
+        : "Upgrade preparation failed before Coach was stopped. Check free disk and Git/npm network access.";
     if (this.cleanupWarning)
       this.guidance +=
         " Candidate cleanup is incomplete and must succeed before this revision can be staged again.";

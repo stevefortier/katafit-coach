@@ -202,7 +202,10 @@ main().catch((error) => {
             "NATIVE_PROBE_LOCK_UNAVAILABLE",
           ].includes(reason)
         ? `Coach command failed: ${reason}. Check the protected home and the trusted /usr/bin/flock installation.`
-        : "Coach command failed. Check service status, protected installation directory and port availability. Use help for commands.",
+        : reason === "LAUNCHER_UPGRADE_REQUIRED" ||
+            reason === "INVALID_SKILL_STORAGE"
+          ? `Coach command failed: ${reason}. Keep the full protected home and hash-linked skill history intact; install a reviewed compatible launcher side by side before restarting. See docs/source-updates.md.`
+          : "Coach command failed. Check service status, protected installation directory and port availability. Use help for commands.",
   );
   process.exitCode = 1;
 });

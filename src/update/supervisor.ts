@@ -253,7 +253,19 @@ export async function supervise(
           reject(new Error("STARTUP_FAILED"));
         };
         const receive = (m: any) => {
-          if (m?.type === "ready" && m.nonce === nonce) {
+          if (m?.nonce !== nonce) return;
+          if (m.type === "startupFailure") {
+            cleanup();
+            reject(
+              new Error(
+                ["LAUNCHER_UPGRADE_REQUIRED", "INVALID_SKILL_STORAGE"].includes(
+                  m.reason,
+                )
+                  ? m.reason
+                  : "STARTUP_FAILED",
+              ),
+            );
+          } else if (m.type === "ready") {
             cleanup();
             resolve(m);
           }
@@ -268,7 +280,11 @@ export async function supervise(
         target.send(
           {
             type: "state",
-            data: { ...updates.snapshot(), installed: revision },
+            data: {
+              ...updates.snapshot(),
+              installed: revision,
+              launcherSkillCatalog: 2,
+            },
           },
           () => {},
         );

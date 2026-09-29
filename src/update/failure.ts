@@ -1,5 +1,6 @@
 /** Fixed diagnostics only: never persist child output, paths, or exception text. */
 export const failureReasons = [
+  "LAUNCHER_UPGRADE_REQUIRED",
   "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED",
   "INSUFFICIENT_DISK",
   "BUILD_TOOL_UNAVAILABLE",
