@@ -115,6 +115,30 @@ for (const scenario of [
         invalidated_at: new Date().toISOString(),
       };
       if (scenario.startsWith("stopped")) await post("/api/stop");
+      if (scenario === "stopped") {
+        const beforeRestore = store.publicConfig().revision;
+        const restored = await fetch(app.origin + "/api/persona-restore", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ revision: 1 }),
+        });
+        assert.equal(
+          restored.status,
+          200,
+          `confirmed receipt permits restore without a separate recovery action: ${await restored.text()}`,
+        );
+        assert.equal(store.publicConfig().revision, beforeRestore + 1);
+        assert.equal(original.safeToReplace, true);
+        assert.equal(original.state, "stopped");
+        assert.equal(
+          (await readdir(home + "/task-terminal-receipts")).length,
+          1,
+        );
+        assert.equal(
+          f.calls.filter((c) => c.name === "coach_complete_task").length,
+          1,
+        );
+      }
       if (
         ["denied", "missing", "archive-blocked", "stopped-denied"].includes(
           scenario,
@@ -126,6 +150,25 @@ for (const scenario of [
         if (scenario === "missing") options.receipt = {};
         if (scenario === "archive-blocked")
           await writeFile(home + "/task-terminal-receipts", "blocked");
+        if (scenario === "stopped-denied") {
+          const beforeRestore = store.publicConfig().revision;
+          const deniedRestore = await fetch(
+            app.origin + "/api/persona-restore",
+            {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ revision: 1 }),
+            },
+          );
+          assert.equal(deniedRestore.status, 400);
+          assert.equal(
+            (await deniedRestore.json()).error,
+            "WORKER_STOP_UNCONFIRMED",
+          );
+          assert.equal(store.publicConfig().revision, beforeRestore);
+          assert.equal(original.state, "stopped");
+          assert.equal(original.safeToReplace, false);
+        }
         const reads = () =>
           f.calls.filter((c) => c.name === "coach_read_task_receipt").length;
         const before = reads();
