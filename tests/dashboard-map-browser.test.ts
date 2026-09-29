@@ -84,9 +84,10 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
             { _id: "ada", display_name: "Synthetic Ada" },
             { _id: "bob", display_name: "Synthetic Bob" },
           ],
-          activities,
+          activities:
+            path.searchParams.get("date") === "2026-09-28" ? activities : [],
           hasMore: false,
-          oldestDate: null,
+          nextCursor: null,
         }),
       );
     } else if (path.pathname === "/api/dashboard/activity") {
@@ -425,12 +426,31 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
         "all authorized activities across opaque pages are loaded, beyond the former cap",
       );
       holdDate = "2026-09-27";
-      await page.locator("#dashboardMapDate").fill(holdDate);
-      await page.locator("#dashboardMapDate").dispatchEvent("change");
-      await page.locator("#dashboardMapDate").fill("2026-09-26");
-      await page.locator("#dashboardMapDate").dispatchEvent("change");
+      const changeDay = (day: string) =>
+        page.locator("#dashboardMapDate").evaluate((input, value) => {
+          (input as HTMLInputElement).value = value;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        }, day);
+      await Promise.all([
+        page.waitForRequest((request) =>
+          request.url().includes("/api/dashboard/map?date=2026-09-27&"),
+        ),
+        changeDay(holdDate),
+      ]);
+      await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.url().includes("/api/dashboard/map?date=2026-09-26&") &&
+            response.ok(),
+        ),
+        changeDay("2026-09-26"),
+      ]);
       releaseHeld!();
-      await page.getByText(/2026-09-26/).waitFor();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#dashboardMapStatus")
+          ?.textContent?.startsWith("2026-09-26 activity creation date"),
+      );
       assert.ok(
         !(await page.locator("#dashboardMapStatus").textContent())?.includes(
           "2026-09-27",
