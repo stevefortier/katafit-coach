@@ -31,10 +31,23 @@ test("native Coach keeps one in-memory Pi after browser detach and never persist
 });
 
 test("ordinary REST session does not advertise archive sealing", async () => {
-  const session = restSession(() => true);
+  let legacyOpens = 0;
+  const session = restSession(
+    () => true,
+    async () => {
+      legacyOpens++;
+      throw new Error("old context must not be opened");
+    },
+  );
   try {
     assert.equal(session.archive, false);
     assert.equal(session.seal, undefined);
+    assert.equal(
+      session.tools.some((tool) => tool.name === "coach_memory_search"),
+      false,
+    );
+    await assert.rejects(session.recallMemories("old conversation"));
+    assert.equal(legacyOpens, 0);
   } finally {
     await session.dispose();
   }

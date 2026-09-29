@@ -334,9 +334,6 @@ export async function openNativeGateway(
   let hostSeq = 0;
   let hostWorkSeq = 0;
   const actions = new Actions(store, hooks.onDiagnostic);
-  const restCalls = new Set<string | object>();
-  const uncertainRest = new Set<string>();
-  const restActions = new WeakMap<object, Parameters<Actions["save"]>[0]>();
 
   const client = new NativeClient(
     config.origin,
@@ -750,16 +747,10 @@ export async function openNativeGateway(
       try {
         return await emitted(
           request,
-          (prior, selected) =>
-            admit(
-              request,
-              requestSignal,
-              prior,
-              () => {
-                admitted = true;
-              },
-              selected,
-            ),
+          (prior) =>
+            admit(request, requestSignal, prior, () => {
+              admitted = true;
+            }),
           requestSignal,
         );
       } catch (error) {
@@ -813,7 +804,6 @@ export async function openNativeGateway(
     requestSignal: AbortSignal | undefined,
     prior: Promise<void>,
     claim: () => void,
-    selected?: object,
   ) {
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
@@ -880,7 +870,7 @@ export async function openNativeGateway(
     claim();
     client.requestSignal = requestSignal;
     try {
-      return await dispatch(request, requestSignal, prior, selected);
+      return await dispatch(request, requestSignal, prior);
     } catch (error) {
       settle(error);
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
@@ -911,7 +901,7 @@ export async function openNativeGateway(
   // Normalize the host outcome before releasing admission.
   async function emitted(
     request: any,
-    operation: (prior: Promise<void>, selected?: object) => Promise<any>,
+    operation: (prior: Promise<void>) => Promise<any>,
     requestSignal?: AbortSignal,
   ) {
     check();
@@ -929,13 +919,6 @@ export async function openNativeGateway(
       nativeToolResultTooLarge(result)
     )
       failure = new NativeFailure("NATIVE_RESULT_TOO_LARGE");
-    const action = restActions.get(request);
-    if (action) {
-      // An uncertain write remains unknown; this is not conversation history.
-      actions.save({ ...action, status: failure ? "unknown" : "completed" });
-      if (failure) uncertainRest.add(JSON.stringify(request.args));
-      restActions.delete(request);
-    }
     if (failure) throw failure;
     return result;
   }
@@ -996,7 +979,6 @@ export async function openNativeGateway(
     request: any,
     requestSignal?: AbortSignal,
     prior?: Promise<void>,
-    selected?: object,
   ) {
     if (request.kind === "tool") {
       if (
@@ -1007,31 +989,6 @@ export async function openNativeGateway(
         const args = legacy ? undefined : restRequestArgs(request.args);
         assertNoSecrets(request.args, Object.values(secrets));
         const mutation = args && args.method !== "GET";
-        // Provider IDs may repeat across continuations within one human turn.
-        // The canonical claimed object identifies the occurrence; direct host
-        // calls without a provider slot retain their conservative ID fence.
-        const key =
-          selected ??
-          `${session.continuity()?.turn_generation ?? 0}:${request.toolCallId}`;
-        if (
-          mutation &&
-          (restCalls.has(key) ||
-            uncertainRest.has(JSON.stringify(request.args)))
-        )
-          throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
-        const action = mutation
-          ? {
-              session_id: session.session_id,
-              idempotency_key: randomUUID(),
-              tool_name: restRequestTool.name,
-              status: "pending" as const,
-            }
-          : undefined;
-        if (action) {
-          actions.save(action); // Durable before any possible dispatch.
-          restCalls.add(key);
-          restActions.set(request, action);
-        }
         let result;
         try {
           result = await (legacy ? restGet : restRequest)(
@@ -1045,13 +1002,10 @@ export async function openNativeGateway(
           );
           check();
         } catch (error) {
-          if (action) {
-            actions.save({ ...action, status: "unknown" });
-            uncertainRest.add(JSON.stringify(request.args));
-            throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
-          }
           if ((error as Error).message === "REST_REQUEST_REJECTED")
             throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+          // A lost response leaves a write's outcome unknown. No automatic retry.
+          if (mutation) throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
           throw error;
         }
         const image = result.content?.find((part) => part.type === "image");
