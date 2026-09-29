@@ -223,6 +223,14 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         "../node_modules/@xterm/addon-fit/lib/addon-fit.js",
         import.meta.url,
       ),
+      "leaflet.js": new URL(
+        "../node_modules/leaflet/dist/leaflet.js",
+        import.meta.url,
+      ),
+      "leaflet.css": new URL(
+        "../node_modules/leaflet/dist/leaflet.css",
+        import.meta.url,
+      ),
     };
     if (
       !assets[file] &&
