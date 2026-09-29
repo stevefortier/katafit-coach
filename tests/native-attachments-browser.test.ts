@@ -99,6 +99,10 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
           ?.naturalWidth > 0,
     );
     assert.equal(await cards.count(), 3);
+    assert.deepEqual(
+      await cards.locator(".attachment-name").allTextContents(),
+      ["page.html", "attendance report.csv", "attendance.png"],
+    );
     assert.equal(
       await page.locator("#nativeAttachmentsEmpty").isVisible(),
       false,
@@ -111,15 +115,15 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
     assert.match((await preview.getAttribute("src"))!, /^blob:/);
     // Untrusted caption/filename text is rendered inert.
     assert.equal(
-      await cards.nth(0).locator(".attachment-caption").textContent(),
+      await cards.nth(2).locator(".attachment-caption").textContent(),
       'Weekly attendance <img src=x onerror="window.pwned=2">',
     );
-    assert.equal(await cards.nth(0).locator("img").count(), 1);
+    assert.equal(await cards.nth(2).locator("img").count(), 1);
     assert.equal(
-      await cards.nth(2).locator(".attachment-name").textContent(),
+      await cards.nth(0).locator(".attachment-name").textContent(),
       "page.html",
     );
-    assert.equal(await cards.nth(2).locator("img").count(), 0);
+    assert.equal(await cards.nth(0).locator("img").count(), 0);
     assert.equal(await page.evaluate(() => (window as any).pwned), undefined);
     // Terminal and panel are side by side on desktop.
     const terminalBox = (await page.locator("#nativeTerminal").boundingBox())!;
@@ -133,7 +137,7 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
     // Only the image was fetched eagerly; files are fetched on demand.
     assert.equal(fetched.length, 1);
 
-    await cards.nth(0).locator(".attachment-preview").click();
+    await cards.nth(2).locator(".attachment-preview").click();
     const dialog = page.locator("#attachmentDialog");
     await page.waitForFunction(
       () =>
@@ -170,7 +174,7 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
     assert.equal(sha(await readFile((await download.path())!)), sha(csv));
     const [htmlDownload] = await Promise.all([
       page.waitForEvent("download"),
-      cards.nth(2).getByRole("button", { name: "Download" }).click(),
+      cards.nth(0).getByRole("button", { name: "Download" }).click(),
     ]);
     assert.equal(sha(await readFile((await htmlDownload.path())!)), sha(html));
     assert.equal(fetched.length, 3);
@@ -222,7 +226,7 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
         .evaluate((el) => el.scrollIntoView({ block: "end" }));
       await page.screenshot({ path: shots + "/attachments-mobile-360.png" });
     }
-    await cards.nth(0).locator(".attachment-preview").click();
+    await cards.nth(2).locator(".attachment-preview").click();
     await page.waitForFunction(
       () =>
         (document.querySelector("#attachmentDialogImage") as HTMLImageElement)
