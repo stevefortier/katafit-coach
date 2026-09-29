@@ -322,10 +322,10 @@ export async function admin(
     };
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; img-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; img-src 'self' blob: https://*.tile.openstreetmap.org; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     try {
       if (req.headers.host !== new URL(origin).host)
@@ -335,6 +335,8 @@ export async function admin(
         "/xterm.js": "@xterm/xterm/lib/xterm.js",
         "/xterm.css": "@xterm/xterm/css/xterm.css",
         "/xterm-fit.js": "@xterm/addon-fit/lib/addon-fit.js",
+        "/leaflet.js": "leaflet/dist/leaflet.js",
+        "/leaflet.css": "leaflet/dist/leaflet.css",
       };
       if (req.method === "GET" && terminalAssets[path]) {
         res.setHeader(
@@ -410,9 +412,11 @@ export async function admin(
               ? ["date", "start", "end", "cursor"]
               : url.pathname === "/api/dashboard/activity"
                 ? ["id"]
-                : url.pathname === "/api/dashboard/photo"
-                  ? ["activity_id", "file_id"]
-                  : [];
+                : url.pathname === "/api/dashboard/avatar"
+                  ? ["id"]
+                  : url.pathname === "/api/dashboard/photo"
+                    ? ["activity_id", "file_id"]
+                    : [];
         if (
           !allowed.length ||
           [...params.keys()].some(
@@ -428,9 +432,15 @@ export async function admin(
         };
         let target: string;
         const photo = url.pathname === "/api/dashboard/photo";
+        const avatar = url.pathname === "/api/dashboard/avatar";
         if (photo)
           target = `/api/media/${segment("activity_id")}/files/${segment("file_id")}`;
-        else if (url.pathname === "/api/dashboard/activity")
+        else if (avatar) {
+          const id = params.get("id");
+          if (!id || !/^[a-f0-9]{24}$/.test(id))
+            throw new SafeError("ARGUMENTS_REJECTED");
+          target = `/api/users/${id}/avatar/64`;
+        } else if (url.pathname === "/api/dashboard/activity")
           target = `/api/friends/activity/${segment("id")}`;
         else {
           const before = params.get("before");
@@ -509,7 +519,7 @@ export async function admin(
               error: "REST_READ_DENIED",
               status: result.restReadError.status,
             });
-          if (photo) {
+          if (photo || avatar) {
             const image = result.content?.find((part) => part.type === "image");
             if (!image || !("data" in image))
               throw new SafeError("RESULT_REJECTED");

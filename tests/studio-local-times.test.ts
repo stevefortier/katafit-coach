@@ -16,6 +16,20 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
     const server = createServer(async (req, res) => {
       const path = new URL(req.url!, "http://localhost").pathname;
       if (path.startsWith("/xterm")) return void res.writeHead(404).end();
+      if (path === "/leaflet.js" || path === "/leaflet.css") {
+        res.setHeader(
+          "Content-Type",
+          path.endsWith(".js") ? "text/javascript" : "text/css",
+        );
+        return void res.end(
+          await readFile(
+            new URL(
+              `../node_modules/leaflet/dist/leaflet.${path.endsWith(".js") ? "js" : "css"}`,
+              import.meta.url,
+            ),
+          ),
+        );
+      }
       const file = [
         "/backend-performance.js",
         "/dashboard.js",

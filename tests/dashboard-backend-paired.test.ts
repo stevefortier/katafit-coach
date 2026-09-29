@@ -329,6 +329,27 @@ test(
         });
         try {
           const page = await context.newPage();
+          const requestedTiles: string[] = [];
+          const blankTile = await sharp({
+            create: {
+              width: 256,
+              height: 256,
+              channels: 4,
+              background: "#ddd",
+            },
+          })
+            .png()
+            .toBuffer();
+          await page.route(
+            /^https:\/\/[abc]\.tile\.openstreetmap\.org\//,
+            (route) => {
+              requestedTiles.push(route.request().url());
+              return route.fulfill({
+                contentType: "image/png",
+                body: blankTile,
+              });
+            },
+          );
           const errors: string[] = [];
           page.on("pageerror", (e) => errors.push(e.message));
           const mediaResponses: number[] = [];
@@ -340,6 +361,11 @@ test(
               mediaResponses.push(response.status());
           });
           await page.goto(app.origin + "/dashboard");
+          assert.match(
+            (await page.locator("#dashboardMap").getAttribute("aria-label")) ||
+              "",
+            /OpenStreetMap/,
+          );
           await page.locator("#adminKey").fill(store.secrets.admin);
           await page.locator("#unlock").click();
           await page.waitForFunction(
@@ -361,6 +387,10 @@ test(
           assert.match(
             await page.locator("#dashboardMapStatus").innerText(),
             /1 members with authorized position/,
+          );
+          assert.ok(
+            requestedTiles.length > 0,
+            "served Studio uses OSM raster tiles",
           );
           await page.locator("#dashboardMap .dashboard-map-marker").click();
           await page.waitForFunction(
