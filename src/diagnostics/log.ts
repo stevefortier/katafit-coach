@@ -51,6 +51,7 @@ export const stages = [
   "cancelled",
   "idle",
   "stopped",
+  "presence-stop-recovery",
   "preview-started",
   "preview-completed",
   "memory-recalled",

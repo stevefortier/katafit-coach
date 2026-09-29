@@ -35,6 +35,8 @@ async function backend(
     refuseStopped?: boolean;
     loseRunningReply?: boolean;
     invalidRunningGeneration?: boolean;
+    loseStoppedReply?: boolean;
+    unavailable?: boolean;
   } = {},
 ) {
   const reports: Array<{
@@ -44,6 +46,7 @@ async function backend(
   }> = [];
   const accepted: typeof reports = [];
   const generations = new Map<string, string>();
+  const stopped = new Map<string, string>();
   const seen = new Set<string>();
   let sequence = 0;
   const calls: string[] = [];
@@ -96,6 +99,10 @@ async function backend(
       };
     else if (name === "coach_report_worker_presence") {
       reports.push(args);
+      if (options.unavailable) {
+        res.writeHead(503).end();
+        return;
+      }
       await pause(delays.presence);
       if (
         args.state === "running" &&
@@ -116,9 +123,11 @@ async function backend(
             ? !seen.has(args.instance_id) && args.generation === undefined
             : args.generation === current
           : args.state === "stopped" &&
-            current !== undefined &&
-            args.generation === current &&
-            !options.refuseStopped;
+            ((current !== undefined &&
+              args.generation === current &&
+              !options.refuseStopped) ||
+              (current === undefined &&
+                stopped.get(args.instance_id) === args.generation));
       if (valid) {
         accepted.push(args);
         if (args.state === "running") {
@@ -127,7 +136,15 @@ async function backend(
             args.instance_id,
             (++sequence).toString(16).padStart(32, "0"),
           );
-        } else generations.delete(args.instance_id);
+        } else {
+          if (current !== undefined) stopped.set(args.instance_id, current);
+          generations.delete(args.instance_id);
+        }
+      }
+      if (valid && args.state === "stopped" && options.loseStoppedReply) {
+        options.loseStoppedReply = false;
+        res.destroy();
+        return;
       }
       if (
         valid &&
@@ -207,6 +224,8 @@ async function backend(
     calls,
     reports,
     accepted,
+    presenceState: (id: string) =>
+      generations.has(id) ? "running" : stopped.has(id) ? "stopped" : "absent",
     entered: entered.promise,
     deferredWrite: deferredWrite.promise,
     delays,
@@ -889,10 +908,96 @@ test("auto quiesce rejects an unconfirmed stop and retains running intent across
   }
 });
 
+test("lost stop acknowledgment recovers behind auto gate without a second worker", async () => {
+  const backendState = { loseStoppedReply: true, unavailable: false };
+  const f = await backend(backendState);
+  const dir = await mkdtemp(tmpdir() + "/auto-presence-recovery-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synth...ey",
+  });
+  const app = await admin(
+    store,
+    0,
+    undefined,
+    undefined,
+    new Updates(null, async () => {}),
+    new AutoUpdateSetting(dir),
+  );
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string) =>
+    fetch(app.origin + "/api/" + path, { method: "POST", headers, body: "{}" });
+  const status = async () =>
+    (await fetch(app.origin + "/api/status", { headers })).json();
+  try {
+    assert.equal((await post("run")).status, 200);
+    for (let i = 0; i < 100 && (await status()).state !== "idle"; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.equal((await status()).state, "idle");
+    assert.equal((await post("update/auto/quiesce")).status, 409);
+    assert.equal((await status()).presence, "unconfirmed");
+    assert.equal((await status()).autoWasRunning, true);
+    assert.equal((await status()).presenceStopRecovery, "pending");
+    backendState.unavailable = true;
+    assert.equal((await post("update/auto/release")).status, 409);
+    assert.equal((await status()).presenceStopRecovery, "pending");
+    assert.equal((await status()).autoWasRunning, true);
+    assert.equal((await post("run")).status, 409);
+    backendState.unavailable = false;
+    assert.equal((await post("update/auto/release")).status, 200);
+    assert.equal((await status()).presence, "reported");
+    assert.equal((await status()).presenceStopRecovery, "none");
+    const logs = await (
+      await fetch(app.origin + "/api/logs", { headers })
+    ).json();
+    assert.ok(
+      logs.entries.some(
+        (e: any) => e.stage === "presence-stop-recovery" && e.level === "warn",
+      ),
+    );
+    assert.ok(
+      logs.entries.some(
+        (e: any) => e.stage === "presence-stop-recovery" && e.level === "info",
+      ),
+    );
+    assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
+    const stops = f.reports.filter((r) => r.state === "stopped");
+    assert.equal(stops.length, 3);
+    assert.equal(new Set(stops.map((r) => r.instance_id)).size, 1);
+    assert.equal(new Set(stops.map((r) => r.generation)).size, 1);
+    assert.equal(f.presenceState(stops[0].instance_id), "stopped");
+    assert.equal((await post("run")).status, 200);
+    assert.equal(f.reports.filter((r) => r.state === "running").length, 2);
+    assert.notEqual(
+      f.reports.filter((r) => r.state === "running")[1].instance_id,
+      stops[0].instance_id,
+    );
+    assert.equal(
+      f.presenceState(
+        f.reports.filter((r) => r.state === "running")[1].instance_id,
+      ),
+      "running",
+    );
+  } finally {
+    await app.close();
+    await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 for (const loseReply of [false, true])
   test(`owner retains unsafe auto-stop recovery after preparation (lost reply=${loseReply})`, async () => {
     const { supervise } = await import("./helpers/legacy-supervisor.js");
-    const f = await backend({ refuseStopped: true });
+    const backendState = { refuseStopped: true };
+    const f = await backend(backendState);
     const dir = await mkdtemp(tmpdir() + "/auto-owner-presence-");
     const store = new Store(dir);
     await store.init();
@@ -993,6 +1098,23 @@ for (const loseReply of [false, true])
       assert.equal(prepares, 1);
       assert.equal(await setting.failedTarget(), null);
       assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
+      if (loseReply) {
+        backendState.refuseStopped = false;
+        await owner.auto.tick();
+        const recovered = await (
+          await fetch(owner.origin + "/api/status", { headers })
+        ).json();
+        assert.equal(recovered.autoQuiesced, false);
+        assert.equal(recovered.autoWasRunning, false);
+        assert.equal(recovered.presence, "reported");
+        assert.ok(["connecting", "idle"].includes(recovered.state));
+        assert.equal(f.reports.filter((r) => r.state === "running").length, 2);
+        assert.equal(
+          checks,
+          checksBefore,
+          "recovery does not start a source cycle",
+        );
+      }
     } finally {
       globalThis.fetch = originalFetch;
       await owner.close();

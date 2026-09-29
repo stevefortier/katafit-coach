@@ -266,6 +266,37 @@ export class Worker {
       (!this.presenceAttempted || this.presence === "reported")
     );
   }
+  get presenceStopRecovery() {
+    return this.state === "stopped" &&
+      this.presenceAttempted &&
+      this.presence === "unconfirmed"
+      ? this.presenceGeneration
+        ? "pending"
+        : "identity-unavailable"
+      : "none";
+  }
+  /** Retry only the captured incarnation; backend Stop acknowledges an already
+   * stopped generation when the original response was lost. */
+  async recoverStoppedPresence() {
+    if (this.state !== "stopped" || this.presenceStopRecovery !== "pending")
+      return;
+    try {
+      await this.report("stopped");
+      this.presence = "reported";
+      this.diagnostic({
+        source: "worker",
+        stage: "presence-stop-recovery",
+        level: "info",
+      });
+    } catch {
+      // Denied/stale generation and transport failures remain unconfirmed.
+      this.diagnostic({
+        source: "worker",
+        stage: "presence-stop-recovery",
+        level: "warn",
+      });
+    }
+  }
   get incidents() {
     return this.isolated.map(({ task, digest, reason, nextCheck }) => ({
       taskId: task.id,
