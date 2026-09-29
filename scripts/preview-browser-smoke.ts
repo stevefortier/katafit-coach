@@ -6,10 +6,23 @@ import { WebSocket } from "ws";
 import { NativeTerminal } from "../src/server/terminal.js";
 import { openNativeGateway } from "../tests/helpers/legacy-gateway.js";
 
-// The harness holds legacy MCP startup to prove preview never tears it down.
+// Keep the real admin/socket lifecycle; replace only Pi's Docker boundary.
 const terminalProto = NativeTerminal.prototype as any;
 const originalOpenGateway = terminalProto.openGateway;
+const originalResolveImage = terminalProto.resolveImage;
+const originalCreateRuntime = terminalProto.createRuntime;
 terminalProto.openGateway = openNativeGateway;
+terminalProto.resolveImage = async () => "sha256:" + "b".repeat(64);
+terminalProto.createRuntime = () => ({
+  cleanupPending: false,
+  onOutput: (_chunk: string) => {},
+  onExit: (_code: number) => {},
+  async start(_gateway: unknown) {},
+  async attach() {},
+  input(_data: string) {},
+  async resize(_cols: number, _rows: number) {},
+  async stop() {},
+});
 import {
   PREVIEW,
   aborted,
@@ -105,9 +118,7 @@ try {
   assert.equal((await h.post("run")).status, 200);
   await bounded(h.work.started, "worker inference");
   const live = h.work.signals[0];
-  h.native.hold = true;
   const native = await h.connectNative();
-  await bounded(h.native.started, "native session start");
   await until(
     async () => (await page.locator("#state").innerText()) !== "STOPPED",
     "UI running state",
@@ -315,6 +326,8 @@ try {
   await page.close();
 } finally {
   terminalProto.openGateway = originalOpenGateway;
+  terminalProto.resolveImage = originalResolveImage;
+  terminalProto.createRuntime = originalCreateRuntime;
   gate.release();
   await context?.close();
   await browser?.close();
