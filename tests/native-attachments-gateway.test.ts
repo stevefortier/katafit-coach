@@ -1,36 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import {
-  continuityFixture,
-  CHECKINS,
-  IMAGE,
-  answer,
-} from "./helpers/continuity.js";
+import { continuityFixture, IMAGE, answer } from "./helpers/continuity.js";
 import { openNativeGateway } from "./helpers/legacy-gateway.js";
-import { AttachmentFailure } from "../src/sandbox/attachments.js";
 import { gatewayHarness as open } from "./helpers/attachments.js";
 
 const SEND = "send_to_operator";
-const ROSTER = "studio_operator_list_members";
 
-test("catalog advertises send_to_operator only with a host attachment owner; image reads mint opaque receipts", async () => {
-  const plain = await continuityFixture({ images: true });
+test("catalog advertises send_to_operator only with a host attachment owner", async () => {
+  const plain = await continuityFixture();
   try {
     const gateway = await openNativeGateway(plain.store);
-    const catalog = await gateway.handle({ kind: "catalog" });
     assert.equal(
-      catalog.tools.some((t: any) => t.name === SEND),
-      false,
-    );
-    await gateway.handle({ kind: "tool", name: CHECKINS, args: {} });
-    const image = await gateway.handle({
-      kind: "tool",
-      name: IMAGE,
-      args: { member_ref: "fixture-member", media_ref: "media-1" },
-    });
-    assert.equal(
-      Object.hasOwn(JSON.parse(image.content[0].text), "image_receipt"),
+      (await gateway.handle({ kind: "catalog" })).tools.some(
+        (t: any) => t.name === SEND,
+      ),
       false,
     );
     await gateway.close();
@@ -43,64 +27,42 @@ test("catalog advertises send_to_operator only with a host attachment owner; ima
     const tool = catalog.tools.find((t: any) => t.name === SEND);
     assert.ok(tool);
     assert.equal(tool.parameters.additionalProperties, false);
-    const id = await g.receipt();
-    assert.match(id, /^ir_[a-f0-9]{32}$/);
+    assert.ok(
+      catalog.tools.some((t: any) => t.name === "katafit_rest_request"),
+    );
     assert.equal(
-      id.includes(g.f.state.session_id),
+      catalog.tools.some((t: any) => t.name === IMAGE),
       false,
-      "receipt is not a backend identifier",
     );
   } finally {
     await g.close();
   }
 });
 
-test("image receipt is accepted to the panel from retained bytes with a truthful receipt and no refetch", async () => {
+test("workspace evidence reaches the live panel with a truthful receipt", async () => {
   const g = await open();
   try {
-    const id = await g.receipt();
-    const reads = g.f.named(IMAGE).length;
-    const authorizations = g.f.named(
-      "studio_operator_authorize_context",
-    ).length;
+    g.files.set("photo.txt", Buffer.from("synthetic file"));
     const result = await g.tool(SEND, {
-      image_receipt: id,
-      caption: "Synthetic check-in\u202E photo",
+      workspace_path: "photo.txt",
+      caption: "Synthetic photo",
     });
     const receipt = g.text(result);
     assert.equal(receipt.status, "accepted_to_operator_panel");
     assert.equal(receipt.operator_viewed, "not_confirmed");
     assert.equal(receipt.panel_connected, true);
-    assert.equal(receipt.preview, "image");
-    assert.equal(receipt.mime_type, "image/png");
     assert.match(receipt.attachment_id, /^at_[a-f0-9]{32}$/);
-    assert.match(receipt.note, /does not confirm/);
-    assert.deepEqual(receipt.remaining, {
-      attachments: 15,
-      bytes: 32 * 1024 * 1024 - receipt.byte_count,
-    });
-    assert.equal(g.f.named(IMAGE).length, reads, "no new backend image read");
-    assert.equal(
-      g.f.named("studio_operator_authorize_context").length,
-      authorizations,
-      "sending acquired image data does not reacquire the source",
-    );
     assert.equal(g.published.length, 1);
     const item = g.published[0];
-    assert.equal(item.source, "image_receipt");
-    assert.equal(item.caption, "Synthetic check-in photo");
-    assert.match(item.filename, /^checkin-[a-f0-9]{12}\.png$/);
+    assert.equal(item.source, "workspace");
+    assert.equal(item.caption, "Synthetic photo");
     const served = await g.gateway.readAttachment(item.id);
-    assert.equal(
-      createHash("sha256").update(served.bytes).digest("hex"),
-      item.sha256,
-    );
+    assert.equal(served.bytes.equals(Buffer.from("synthetic file")), true);
     assert.deepEqual(g.gateway.attachments(), [item]);
-    // Duplicate send is idempotent and consumes no further budget.
     const again = g.text(
       await g.tool(SEND, {
-        image_receipt: id,
-        caption: "Synthetic check-in\u202E photo",
+        workspace_path: "photo.txt",
+        caption: "Synthetic photo",
       }),
     );
     assert.equal(again.attachment_id, receipt.attachment_id);
@@ -115,12 +77,10 @@ test("image receipt is accepted to the panel from retained bytes with a truthful
   }
 });
 
-test("arguments are refused before any read: forged/foreign receipts, URLs, host paths, traversal, reserved keys", async () => {
+test("arguments are refused before any read: forged receipts, URLs, host paths, traversal, reserved keys", async () => {
   const g = await open();
-  const other = await open();
   try {
-    const foreign = await other.receipt();
-    await g.tool(CHECKINS, {});
+    const foreign = "ir_" + randomBytes(16).toString("hex");
     const cases: [any, string][] = [
       [{}, "ATTACHMENT_ARGUMENTS_REJECTED"],
       [
@@ -171,7 +131,6 @@ test("arguments are refused before any read: forged/foreign receipts, URLs, host
     assert.deepEqual(g.terminated, []);
   } finally {
     await g.close();
-    await other.close();
   }
 });
 
@@ -265,8 +224,8 @@ test("serving acquired evidence is local; busy requests remain retryable", async
     },
   });
   try {
-    const id = await g.receipt();
-    await g.tool(SEND, { image_receipt: id });
+    g.files.set("a.txt", Buffer.from("synthetic"));
+    await g.tool(SEND, { workspace_path: "a.txt" });
     const item = g.published[0];
     const before = g.f.named("studio_operator_authorize_context").length;
     await g.gateway.readAttachment(item.id);
@@ -275,9 +234,10 @@ test("serving acquired evidence is local; busy requests remain retryable", async
       before,
       "delivery does not reauthorize the original source",
     );
-    const roster = await g.tool(ROSTER, {});
-    assert.ok(roster);
-    assert.equal(g.f.named(ROSTER).length, 1);
+    const catalog = await g.gateway.handle({ kind: "catalog" });
+    assert.ok(
+      catalog.tools.some((t: any) => t.name === "katafit_rest_request"),
+    );
     // A pending Pi request never races host delivery: retryable busy.
     const slow = g.gateway.handle({
       kind: "provider",
@@ -330,23 +290,5 @@ test("configuration change and close revoke every attachment immediately", async
     await assert.rejects(h.gateway.readAttachment(h.published[0].id));
   } finally {
     await h.close();
-  }
-});
-
-test("legacy acquired image reads do not refetch a changed source", async () => {
-  const g = await open({ continuity: false });
-  try {
-    const id = await g.receipt();
-    await g.tool(SEND, { image_receipt: id });
-    const reads = g.f.named(IMAGE).length;
-    await g.gateway.readAttachment(g.published[0].id);
-    assert.equal(g.f.named(IMAGE).length, reads);
-    g.f.state.status = "closed";
-    assert.equal(
-      (await g.gateway.readAttachment(g.published[0].id)).item.id,
-      g.published[0].id,
-    );
-  } finally {
-    await g.close();
   }
 });

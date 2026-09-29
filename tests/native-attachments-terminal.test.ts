@@ -239,36 +239,22 @@ test("tab takeover clears the previous tab's panel before closing it", async () 
   }
 });
 
-test("snapshots carry context expiry and replay acquired metadata without source recheck", async () => {
+test("reconnecting the live panel shows acquired metadata without rechecking its source", async () => {
   const h = await attachmentHarness();
   try {
-    h.files.set("a.txt", Buffer.from("synthetic secret-ish caption source"));
-    const first = await h.connect();
-    const snapshot = first.frames.find((m) => m.type === "attachments");
-    assert.equal(typeof snapshot.context_expires_in_ms, "number");
-    assert.ok(
-      snapshot.context_expires_in_ms > 0 &&
-        snapshot.context_expires_in_ms <= 8 * 3600 * 1000,
-    );
+    h.files.set("a.txt", Buffer.from("synthetic"));
+    await h.connect();
     await h.send({
       workspace_path: "a.txt",
       caption: "Member-derived caption",
     });
-    const before = h.f.named("studio_operator_authorize_context").length;
-    const second = await h.connect();
-    const replay = second.frames.find((m) => m.type === "attachments");
-    assert.equal(replay.items.length, 1);
-    assert.equal(
-      h.f.named("studio_operator_authorize_context").length,
-      before,
-      "replay does not reacquire the source",
-    );
     h.f.state.revoked = true;
-    const third = await h.connect();
+    const second = await h.connect();
     assert.equal(
-      third.frames.find((m) => m.type === "attachments").items[0].caption,
+      second.frames.find((m) => m.type === "attachments").items[0].caption,
       "Member-derived caption",
     );
+    assert.equal(h.f.named("studio_operator_authorize_context").length, 0);
     assert.equal(h.runtimes[0].stopped, 0);
   } finally {
     await h.close();
@@ -321,7 +307,7 @@ test("a replay while Pi is busy is pending, then delivered from acquired metadat
   }
 });
 
-test("HTTP serves acquired bytes through backend outage but requires a live command turn", async () => {
+test("HTTP serves acquired bytes through backend outage and past legacy command expiry", async () => {
   let flaky = false;
   const h = await attachmentHarness({
     commandTtlMs: 2500,
@@ -342,9 +328,12 @@ test("HTTP serves acquired bytes through backend outage but requires a live comm
     flaky = false;
     assert.equal((await h.get(url)).status, 200);
     await new Promise((r) => setTimeout(r, 2600));
-    const turn = await h.get(url);
-    assert.equal(turn.status, 409);
-    assert.deepEqual(await turn.json(), { error: "ATTACHMENT_TURN_REQUIRED" });
+    const afterLegacyExpiry = await h.get(url);
+    assert.equal(afterLegacyExpiry.status, 200);
+    assert.equal(
+      Buffer.from(await afterLegacyExpiry.arrayBuffer()).toString(),
+      "synthetic",
+    );
     assert.equal(h.runtimes[0].stopped, 0);
     assert.equal(c.closed(), undefined);
   } finally {

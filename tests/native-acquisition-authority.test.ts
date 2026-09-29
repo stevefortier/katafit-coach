@@ -1,78 +1,46 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { continuityFixture, GENERIC } from "./helpers/continuity.js";
-import { openNativeGateway } from "./helpers/legacy-gateway.js";
-import { gatewayHarness } from "./helpers/attachments.js";
+import { fixture } from "./helpers/native.js";
+import { openNativeGateway } from "../src/sandbox/gateway.js";
 
-const provider = (text: string) => ({
-  kind: "provider",
-  body: {
-    model: "approved-custom-model",
-    messages: [{ role: "user", content: text }],
-  },
-});
+const request = {
+  kind: "tool",
+  name: "katafit_rest_request",
+  args: { method: "GET", path: "/api/activities/current" },
+};
 
-test("fetched context stays usable inside Coach without backend source reauthorization", async () => {
-  const f = await continuityFixture();
-  const g = await openNativeGateway(f.store);
-  try {
-    await g.handle({ kind: "tool", name: GENERIC, args: { topic: "private" } });
-    await g.handle(provider("first"));
-    g.noteHumanInput("second\r");
-    await g.handle(provider("second"));
-    assert.equal(f.providerCalls(), 2);
-    assert.equal(f.named("studio_operator_authorize_context").length, 0);
-    assert.equal(f.named(GENERIC).length, 1, "never replay an old read");
-  } finally {
-    await g.close();
-    await f.close();
-  }
-});
-
-test("an acquisition denial remains a denial even with retained context", async () => {
-  let denied = false;
-  const f = await continuityFixture({
-    response(name, _args, value) {
-      if (name === GENERIC && denied)
-        return {
-          isError: true,
-          content: [{ type: "text", text: "OPERATOR_NOT_AUTHORIZED" }],
-        };
-      return value;
-    },
+test("new ordinary REST reads use current backend authority without acquiring legacy sessions", async () => {
+  let allowed = true;
+  const f = await fixture(undefined, (_url, headers) => {
+    assert.equal(headers.authorization, "Bearer synthetic-backend-credential");
+    return allowed
+      ? { body: '{"activity":"private"}' }
+      : { status: 403, body: '{"error":"denied"}' };
   });
-  const g = await openNativeGateway(f.store);
+  const gateway = await openNativeGateway(f.store);
   try {
-    await g.handle({ kind: "tool", name: GENERIC, args: { topic: "first" } });
-    denied = true;
-    await assert.rejects(
-      g.handle({ kind: "tool", name: GENERIC, args: { topic: "new" } }),
+    const first = await gateway.handle(request);
+    assert.match(first.content[0].text, /private/);
+    allowed = false;
+    assert.deepEqual(await gateway.handle(request), {
+      restReadError: { status: 403 },
+    });
+    assert.equal(f.calls.filter((call) => call.method === "GET").length, 2);
+    assert.equal(
+      f.calls.filter(
+        (call) =>
+          call.body?.params?.name === "studio_operator_authorize_context",
+      ).length,
+      0,
     );
-    await g.handle(provider("use previously acquired context"));
-    assert.equal(f.providerCalls(), 1);
-    assert.equal(f.named("studio_operator_authorize_context").length, 0);
+    assert.equal(
+      (await gateway.handle({ kind: "catalog" })).tools.some(
+        (tool: any) => tool.name === "studio_operator_read_synthetic_generic",
+      ),
+      false,
+    );
   } finally {
-    await g.close();
+    await gateway.close();
     await f.close();
-  }
-});
-
-test("already-fetched attachment bytes and reconnect metadata remain inside authenticated Coach", async () => {
-  const h = await gatewayHarness();
-  try {
-    await h.tool("send_to_operator", { image_receipt: await h.receipt() });
-    const item = h.published[0];
-    h.f.state.revoked = true; // Original source changed after acquisition.
-    const first = await h.gateway.readAttachment(item.id);
-    const second = await h.gateway.readAttachment(item.id);
-    assert.deepEqual(first.bytes, second.bytes);
-    assert.equal((await h.gateway.snapshot()).items[0].id, item.id);
-    assert.equal(h.f.named("studio_operator_authorize_context").length, 0);
-    await assert.rejects(
-      h.gateway.readAttachment("foreign-runtime-id"),
-      /NOT_FOUND/,
-    );
-  } finally {
-    await h.close();
   }
 });
