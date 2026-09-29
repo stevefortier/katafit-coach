@@ -333,12 +333,7 @@ const server = createServer(async (req, res) => {
       (id) => (requestId = id),
     );
     res.setHeader("content-type", tool ? "application/json" : result.type);
-    res.end(tool ? JSON.stringify(result) : result.body, () => {
-      // This fixed relay, never a tool/model argument, acknowledges a complete
-      // provider return only after the HTTP response was emitted to Pi.
-      if (!tool && result.completion_id && !res.destroyed && requestId)
-        process.stdout.write(JSON.stringify({ delivered: requestId }) + "\n");
-    });
+    res.end(tool ? JSON.stringify(result) : result.body);
   } catch (error) {
     fail(res, error);
   }

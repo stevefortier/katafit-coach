@@ -53,7 +53,6 @@ export async function startRelay(gateway: NativeGateway) {
       return gateway.handle(request, signal);
     },
     close: () => gateway.close(),
-    confirmDelivery: (id: string) => gateway.confirmDelivery?.(id),
   };
   runtime.api = async () => {};
   runtime.stop = async () => {

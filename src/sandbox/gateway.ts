@@ -12,9 +12,7 @@ import {
   ImageReadFailure,
   openOperatorTools,
 } from "../katafit/operatorTools.js";
-import { providerFailure, safeError } from "../runtime/errors.js";
-import { complete as providerComplete } from "../runtime/piAdapter.js";
-import { backendWireBudget } from "../katafit/wireBudget.js";
+import { providerFailure } from "../runtime/errors.js";
 import {
   restGet,
   restGetTool,
@@ -23,14 +21,6 @@ import {
   restRequestArgs,
 } from "../katafit/restGet.js";
 import { restSession } from "../katafit/restSession.js";
-import {
-  commitMemory,
-  pendingOperatorMemory,
-  resumeOperatorMemory,
-  formatRecall,
-  type MemoryItem,
-} from "../memory/backend.js";
-import { extractMemories } from "../memory/extract.js";
 import {
   PROVIDER_TEXT_LIMIT,
   canonicalImages,
@@ -144,66 +134,6 @@ async function upstreamErrorCode(response: Response): Promise<unknown> {
   }
 }
 
-function nativeMessageText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value))
-    return value
-      .map((part) =>
-        typeof part?.text === "string"
-          ? part.text
-          : typeof part?.content === "string"
-            ? part.content
-            : "",
-      )
-      .join("\n");
-  return "";
-}
-
-function providerAssistantText(type: string, body: string): string {
-  try {
-    const chunks = type.includes("text/event-stream")
-      ? body
-          .replace(/\r\n/g, "\n")
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trim())
-          .filter((line) => line && line !== "[DONE]")
-          .map((line) => JSON.parse(line))
-          // A usage trailer is metadata, not an assistant choice. Malformed
-          // events still fail completion admission below.
-          .filter(
-            (event) =>
-              !(
-                Array.isArray(event?.choices) &&
-                event.choices.length === 0 &&
-                event.usage &&
-                typeof event.usage === "object"
-              ),
-          )
-          .map((event) => event?.choices?.[0])
-      : [JSON.parse(body)?.choices?.[0]];
-    if (
-      !chunks.length ||
-      chunks.at(-1)?.finish_reason !== "stop" ||
-      chunks.some(
-        (c) =>
-          !c ||
-          c.delta?.tool_calls?.length ||
-          c.message?.tool_calls?.length ||
-          c.delta?.function_call ||
-          c.message?.function_call,
-      )
-    )
-      return "";
-    const text = chunks
-      .map((c) => c.delta?.content ?? c.message?.content ?? "")
-      .join("");
-    return Buffer.byteLength(text) <= 16000 ? text : "";
-  } catch {
-    return "";
-  }
-}
-
 class NativeClient extends Client {
   requestSignal?: AbortSignal;
   override fetch(
@@ -301,12 +231,6 @@ export async function openNativeGateway(
     : abort.signal;
   let closed = false;
   let active = false;
-  let pendingDelivery: { id: string; retain: () => Promise<void> } | undefined;
-  const retentionWork = new Set<Promise<void>>();
-  let deliveryRecording: Promise<unknown> | undefined;
-  let recoveryAttempted = false;
-  const observedTools: { tool: string; result: unknown }[] = [];
-
   // One bounded human-turn latch, set only by the trusted host terminal.
   let turnArmed = false;
   let terminated: string | undefined;
@@ -366,8 +290,8 @@ export async function openNativeGateway(
           : undefined;
       },
     });
-  // Opening REST conversations requires no MCP grant. Optional initial memory
-  // acquisition and explicit legacy actions are independent new requests.
+  // Opening REST conversations requires no MCP grant. Explicit legacy actions
+  // are independent new requests.
   const session = restSession(current, openLegacy);
   const check = () => {
     if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
@@ -380,11 +304,7 @@ export async function openNativeGateway(
     abort.abort();
     receipts.clear();
     attachments.clear();
-    pendingDelivery = undefined;
-    return (disposal ??= Promise.all([
-      session.dispose(),
-      ...Array.from(retentionWork, (work) => work.catch(() => {})),
-    ]).then(() => {}));
+    return (disposal ??= session.dispose());
   };
   // Continuity failures invalidate this gateway and ask the owner to destroy
   // the runtime; sandbox-held context is never carried into a new session.
@@ -609,76 +529,6 @@ export async function openNativeGateway(
       return;
     }
   };
-  const recoverOriginal = async (requestSignal?: AbortSignal) => {
-    if (recoveryAttempted || !session.memoryRecovery) return;
-    recoveryAttempted = true;
-    const deadlineAt = Date.now() + 30000;
-    const recoverySignal = AbortSignal.any([
-      lifetime,
-      AbortSignal.timeout(30000),
-      ...(requestSignal ? [requestSignal] : []),
-    ]);
-    const memoryClient = new Client(
-      config.origin,
-      secrets.token,
-      recoverySignal,
-      hooks.onDiagnostic,
-    );
-    const pending = await pendingOperatorMemory(
-      memoryClient,
-      Object.values(secrets),
-      backendWireBudget(15000),
-    );
-    if (!pending.length) return;
-    const resumed = await resumeOperatorMemory(
-      memoryClient,
-      pending[0].capture_id,
-      Object.values(secrets),
-      backendWireBudget(15000),
-    );
-    const extractionDeadline = Math.min(
-      deadlineAt,
-      Date.parse(resumed.capture.extraction_expires_at) - 5000,
-    );
-    if (extractionDeadline <= Date.now()) return;
-    const extractionSignal = AbortSignal.any([
-      recoverySignal,
-      AbortSignal.timeout(extractionDeadline - Date.now()),
-    ]);
-    const proposals = await extractMemories({
-      complete: (system, context, signal) =>
-        providerComplete(
-          {
-            ...config.provider,
-            apiKey: secrets.apiKey,
-            secrets: Object.values(secrets),
-          },
-          system,
-          context,
-          signal,
-          [],
-          { deadlineAt: extractionDeadline },
-        ),
-      persona: compileOperator(config, Object.values(secrets)),
-      origin: "operator_turn",
-      evidence: resumed.evidence,
-      recalled: resumed.recalled,
-      secrets: Object.values(secrets),
-      signal: extractionSignal,
-    });
-    extractionSignal.throwIfAborted();
-    check();
-    await authorizeNative();
-    check();
-    await commitMemory(
-      memoryClient,
-      resumed.capture,
-      proposals,
-      String(config.revision),
-      Object.values(secrets),
-      backendWireBudget(Math.max(1, extractionDeadline - Date.now())),
-    );
-  };
   return {
     /** Trusted host only: content-free metadata of accepted attachments. */
 
@@ -726,22 +576,6 @@ export async function openNativeGateway(
     },
     /** Content-free continuity state for the trusted host only. */
     continuity: () => session.continuity(),
-    async confirmDelivery(id: string) {
-      if (!pendingDelivery || pendingDelivery.id !== id) return;
-      const delivered = pendingDelivery;
-      pendingDelivery = undefined; // once only; never replay the interaction
-      check();
-      const work = delivered.retain();
-      retentionWork.add(work);
-      try {
-        await work;
-      } catch (error) {
-        settle(error);
-        throw error;
-      } finally {
-        retentionWork.delete(work);
-      }
-    },
     async handle(request: any, requestSignal?: AbortSignal): Promise<any> {
       let admitted = false;
       try {
@@ -838,8 +672,8 @@ export async function openNativeGateway(
     }
     // A host-side retained-evidence refresh is brief and must never race a
     // relay request (for example a turn advance); wait for it.
-    while (hostWork || deliveryRecording) {
-      await (deliveryRecording || hostWork)!.catch(() => {});
+    while (hostWork) {
+      await hostWork.catch(() => {});
       check();
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     }
@@ -1042,14 +876,6 @@ export async function openNativeGateway(
         abort.signal,
       );
       check();
-      const text = result?.content
-        ?.filter((part: any) => part.type === "text")
-        .map((part: any) => part.text)
-        .join("\n");
-      if (typeof text === "string" && Buffer.byteLength(text) <= 16384) {
-        observedTools.push({ tool: request.name, result: text });
-        if (observedTools.length > 20) observedTools.shift();
-      }
       // Set by the onImage hook during execute(); TS cannot see that write.
       const image = lastImage as
         | { bytes: Buffer; mime_type: string; sha256: string }
@@ -1084,9 +910,8 @@ export async function openNativeGateway(
     )
       throw new Error("NATIVE_MODEL_REJECTED");
     // Fully validate the original envelope before any turn transition or
-    // authorization side effect. Memory is injected after local runtime admission.
+    // authorization side effect. No saved context is injected.
     const admitted = nativeProviderAdmission(request.body);
-    let recalledMemories: MemoryItem[] = [];
     try {
       // A pending human turn is consumed here, once, before any disclosure.
       // A journaled transition is resumed (identically) before anything else.
@@ -1097,71 +922,10 @@ export async function openNativeGateway(
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
       await authorizeNative();
       check();
-      const recovery = recoverOriginal(requestSignal);
-      retentionWork.add(recovery);
-      try {
-        await recovery;
-      } finally {
-        retentionWork.delete(recovery);
-      }
-      check();
-      const query = request.body.messages
-        .slice(-6)
-        .map((message: any) => nativeMessageText(message?.content))
-        .join("\n")
-        .slice(0, 2000);
-      try {
-        recalledMemories = await session.recallMemories(query);
-        if (recalledMemories.length)
-          hooks.onDiagnostic?.({
-            source: "provider",
-            stage: "memory-recalled",
-            ref: randomUUID(),
-            metadata: { memoryItems: recalledMemories.length },
-          });
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          !["MEMORY_UNAVAILABLE", "OPERATOR_UNAVAILABLE"].includes(
-            error.message,
-          )
-        )
-          throw error;
-        hooks.onDiagnostic?.({
-          source: "provider",
-          stage: "memory-unavailable",
-          level: "warn",
-          ref: randomUUID(),
-          error: safeError(error),
-        });
-        recalledMemories = [];
-      }
     } catch (error) {
       throw authority(error);
     }
-    const memoryNotice =
-      formatRecall(recalledMemories, "operator") +
-      (session.memoryPartial()
-        ? "\nMemory recall covered a bounded page. Use coach_memory_search and continuation for deeper recall.\n"
-        : "");
-    const messages = request.body.messages;
-    const first = messages[0];
-    const bodyWithMemory = memoryNotice
-      ? {
-          ...request.body,
-          messages:
-            first?.role === "system" && typeof first.content === "string"
-              ? [
-                  { ...first, content: `${first.content}\n\n${memoryNotice}` },
-                  ...messages.slice(1),
-                ]
-              : [{ role: "system", content: memoryNotice }, ...messages],
-        }
-      : request.body;
-    assertNoSecrets(bodyWithMemory, Object.values(secrets));
-    const wire = nativeProviderEnvelope(bodyWithMemory);
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
-    const providerDeadline = Date.now() + 120000;
     const timeout = AbortSignal.timeout(120000);
 
     // Transport failures are classified by cause only; never by error text.
@@ -1188,7 +952,7 @@ export async function openNativeGateway(
           "content-type": "application/json",
           Authorization: "Bearer " + secrets.apiKey,
         },
-        body: wire,
+        body: admitted.wire,
       });
     } catch (error) {
       throw transport(error);
@@ -1235,152 +999,6 @@ export async function openNativeGateway(
         (error as Error).message,
       );
     }
-    const assistantText = providerAssistantText(
-      response.headers.get("content-type") ?? "",
-      body,
-    );
-    const humanText = request.body.messages
-      .slice()
-      .reverse()
-      .map((message: any) =>
-        message?.role === "user" ? nativeMessageText(message.content) : "",
-      )
-      .find((text: string) => text.trim());
-    let completion_id: string | undefined;
-    if (humanText && assistantText) {
-      completion_id = randomUUID();
-      const toolEvidence = structuredClone(observedTools);
-      const turnGeneration = session.continuity()?.turn_generation;
-      pendingDelivery = {
-        id: completion_id,
-        retain: async () => {
-          // Persist the delivered original turn before a new provider call can
-          // advance the session. Extraction stays background work after this
-          // short backend operation; it does not hold gateway capacity.
-          const recording = (async () => {
-            if (session.continuity()?.turn_generation !== turnGeneration)
-              return null;
-            requestSignal?.throwIfAborted();
-            check();
-            await authorizeNative();
-            return session.recordInteraction(
-              {
-                human_text: humanText.slice(0, 8000),
-                assistant_text: assistantText,
-              },
-              turnGeneration,
-            );
-          })();
-          deliveryRecording = recording;
-          try {
-            const capture = await recording.finally(() => {
-              if (deliveryRecording === recording)
-                deliveryRecording = undefined;
-            });
-            if (capture) {
-              const extractionDeadline = Math.min(
-                providerDeadline,
-                Date.parse(capture.extraction_expires_at) - 5000,
-                Date.now() + 30000,
-              );
-              if (extractionDeadline <= Date.now())
-                throw new Error("NATIVE_CANCELLED");
-              const extractionSignal = AbortSignal.any([
-                lifetime,
-                timeout,
-                AbortSignal.timeout(extractionDeadline - Date.now()),
-                ...(requestSignal ? [requestSignal] : []),
-              ]);
-              extractionSignal.throwIfAborted();
-              const original = session.memoryRecovery
-                ? await resumeOperatorMemory(
-                    new Client(
-                      config.origin,
-                      secrets.token,
-                      extractionSignal,
-                      hooks.onDiagnostic,
-                    ),
-                    capture.capture_id,
-                    Object.values(secrets),
-                    backendWireBudget(
-                      Math.max(1, extractionDeadline - Date.now()),
-                    ),
-                  )
-                : null;
-              const proposals = await extractMemories({
-                complete: (system, context, s) =>
-                  providerComplete(
-                    {
-                      ...config.provider,
-                      apiKey: secrets.apiKey,
-                      secrets: Object.values(secrets),
-                    },
-                    system,
-                    context,
-                    s,
-                    [],
-                    { deadlineAt: extractionDeadline },
-                  ),
-                persona: compileOperator(config, Object.values(secrets)),
-                origin: "operator_turn",
-                evidence: original?.evidence ?? {
-                  human_text: humanText,
-                  assistant_text: assistantText,
-                  tool_results: toolEvidence,
-                },
-                recalled: original?.recalled ?? recalledMemories,
-                secrets: Object.values(secrets),
-                signal: extractionSignal,
-              });
-              extractionSignal.throwIfAborted();
-              check();
-              {
-                const memoryClient = new Client(
-                  config.origin,
-                  secrets.token,
-                  extractionSignal,
-                  hooks.onDiagnostic,
-                );
-                const receipt = await commitMemory(
-                  memoryClient,
-                  capture,
-                  proposals,
-                  String(config.revision),
-                  Object.values(secrets),
-                  backendWireBudget(
-                    Math.max(1, extractionDeadline - Date.now()),
-                  ),
-                );
-                hooks.onDiagnostic?.({
-                  source: "provider",
-                  stage: "memory-retained",
-                  ref: randomUUID(),
-                  metadata: {
-                    created: receipt.created.length,
-                    superseded: receipt.superseded.length,
-                    skipped: receipt.skipped.length,
-                  },
-                });
-              }
-            }
-          } catch (error) {
-            if (session.continuity()?.revoked) throw authority(error, true);
-            hooks.onDiagnostic?.({
-              source: "provider",
-              stage: "memory-retention-skipped",
-              level: "warn",
-              ref: randomUUID(),
-              error: safeError(error),
-            });
-          }
-          requestSignal?.throwIfAborted();
-          check();
-          await authorizeNative();
-          check();
-        },
-      };
-    }
-
     try {
       requestSignal?.throwIfAborted();
       lifetime.throwIfAborted();
@@ -1393,7 +1011,6 @@ export async function openNativeGateway(
     }
     return {
       body,
-      ...(completion_id ? { completion_id } : {}),
       type: response.headers.get("content-type")?.includes("text/event-stream")
         ? "text/event-stream"
         : "application/json",
@@ -1406,7 +1023,6 @@ export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
   Partial<
     Pick<
       OpenedGateway,
-      | "confirmDelivery"
       | "noteHumanInput"
       | "continuity"
       | "attachments"
