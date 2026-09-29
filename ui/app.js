@@ -1877,10 +1877,6 @@ function selectStudioTab(tab, navigate = true) {
 }
 $("coachTab").onclick = () => selectStudioTab("coach");
 $("dashboardTab").onclick = () => selectStudioTab("dashboard");
-$("dashboardRefresh").onclick = () => {
-  if (key && !document.hidden && !$("dashboardPanel").hidden)
-    CoachDashboard.load(api, key);
-};
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     CoachDashboard.clear();

@@ -32,6 +32,7 @@ window.CoachDashboard = (() => {
     $("dashboardMap")?.replaceChildren();
     $("dashboardMapSelection")?.replaceChildren();
     if ($("dashboardMapStatus")) $("dashboardMapStatus").textContent = "";
+    $("dashboardMapStatus")?.removeAttribute("data-tone");
     observer?.disconnect();
     observer = undefined;
     for (const url of urls.splice(0)) URL.revokeObjectURL(url);
@@ -39,7 +40,8 @@ window.CoachDashboard = (() => {
     $("dashboardCharts").replaceChildren();
     $("dashboardCoverage").replaceChildren();
     $("dashboardCoverage").hidden = true;
-    $("dashboardStatus").textContent = "Open Dashboard to load shared data.";
+    $("dashboardStatus").textContent = "Open Dojo to load shared data.";
+    $("dashboardStatus").removeAttribute("data-tone");
   }
   function disposeMap() {
     mapResizeObserver?.disconnect();
@@ -205,8 +207,10 @@ window.CoachDashboard = (() => {
     disposeMap();
     map.replaceChildren();
     selection.replaceChildren();
+    status.removeAttribute("data-tone");
     const date = $("dashboardMapDate").value;
     if (!validDay(date)) {
+      status.dataset.tone = "error";
       status.textContent = "Choose a valid activity creation date.";
       return;
     }
@@ -231,6 +235,7 @@ window.CoachDashboard = (() => {
       return response.json();
     };
     if (!window.L) {
+      status.dataset.tone = "error";
       status.textContent = "Map unavailable: Leaflet could not load.";
       return;
     }
@@ -659,7 +664,10 @@ window.CoachDashboard = (() => {
       placePins();
       status.textContent = `${date} activity creation date (device timezone) · ${byMember.size} members with authorized position · ${count} activities · complete selected date as loaded (not live).${avatarMembers.length > avatarQueue.length ? " Profile pictures limited to the first 80 members; remaining pins show initials." : ""}`;
     } catch (error) {
-      if (live()) status.textContent = `Map unavailable: ${error.message}`;
+      if (live()) {
+        status.dataset.tone = "error";
+        status.textContent = `Map unavailable: ${error.message}`;
+      }
     }
   }
   async function load(_api, adminKey) {
@@ -925,6 +933,7 @@ window.CoachDashboard = (() => {
       } catch (error) {
         if (live()) {
           detailError ||= error.message;
+          $("dashboardStatus").dataset.tone = "error";
           $("dashboardStatus").textContent =
             `Partial dashboard — activity details could not be loaded: ${detailError}`;
         }
@@ -937,6 +946,7 @@ window.CoachDashboard = (() => {
       if (loading || !live()) return;
       loading = true;
       more.disabled = true;
+      $("dashboardStatus").removeAttribute("data-tone");
       $("dashboardStatus").textContent = "Loading shared dashboard…";
       try {
         const data = await request(
@@ -987,6 +997,8 @@ window.CoachDashboard = (() => {
           activities.size < 200;
         before = next;
         more.hidden = !canLoad;
+        if (detailError) $("dashboardStatus").dataset.tone = "error";
+        else $("dashboardStatus").removeAttribute("data-tone");
         $("dashboardStatus").textContent = detailError
           ? `Partial dashboard — activity details could not be loaded: ${detailError}`
           : data.hasMore
@@ -1008,7 +1020,10 @@ window.CoachDashboard = (() => {
             ),
           );
       } catch (error) {
-        if (live()) $("dashboardStatus").textContent = error.message;
+        if (live()) {
+          $("dashboardStatus").dataset.tone = "error";
+          $("dashboardStatus").textContent = error.message;
+        }
       } finally {
         loading = false;
         more.disabled = false;
