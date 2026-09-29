@@ -11,8 +11,6 @@ if (process.env.NATIVE_GATEWAY === "1") {
   const config = JSON.parse(
     readFileSync(temporary + "/native-config.json", "utf8"),
   );
-  if (config.history)
-    args.splice(0, 1, "--session", temporary + "/native-history.jsonl");
   args.push(
     "--provider",
     "katafit",
