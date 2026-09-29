@@ -887,6 +887,121 @@ header {
   border: 1px solid var(--line);
   color: var(--accent);
 }
+/* Offline map: land and pins are local DOM/SVG; no third-party tiles. */
+.dashboard-map-section {
+  border-top: 1px solid var(--line);
+  padding: 18px 0 24px;
+  min-width: 0;
+}
+.dashboard-map-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+.dashboard-map-heading h3 {
+  margin: 0;
+}
+.dashboard-map-heading label {
+  min-width: 160px;
+}
+.dashboard-map-heading input {
+  display: block;
+  max-width: 100%;
+}
+.dashboard-map {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  min-height: 170px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #132330;
+}
+.dashboard-map-canvas {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  transform-origin: center;
+}
+.dashboard-map-world {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.dashboard-map-pin-link,
+.dashboard-map-anchor {
+  position: absolute;
+  pointer-events: none;
+}
+.dashboard-map-pin-link {
+  height: 2px;
+  background: #fbbf24;
+  transform-origin: left center;
+}
+.dashboard-map-anchor {
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #fbbf24;
+  border: 1px solid #111;
+}
+.dashboard-map-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  box-sizing: border-box;
+  line-height: 1;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #0a0a0a;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+.dashboard-map-marker:focus-visible {
+  outline: 3px solid #8ed0ff;
+  outline-offset: 2px;
+  z-index: 1;
+}
+.dashboard-map-controls {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 0;
+}
+.dashboard-map-controls button {
+  padding: 0;
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+}
+.dashboard-map-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
+.dashboard-map-selection h4,
+.dashboard-map-selection p {
+  margin: 4px 0;
+  width: 100%;
+}
+.dashboard-map-selection button {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .dashboard-roster {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr));

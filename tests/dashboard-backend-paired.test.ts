@@ -93,6 +93,15 @@ test(
           { type_id: "fat_percentage", value: 101, unit: "%" },
         ],
       });
+      // Filed position is synthetic; the backend must independently authorize
+      // the Position audience as well as the metric activity audience.
+      metric.position = {
+        latitude: 42.3601,
+        longitude: -71.0589,
+        accuracy: 12,
+        source: "gps",
+        captured_at: now,
+      };
       const hc = row(
         "metric",
         {
@@ -149,6 +158,7 @@ test(
             media: ["dojo"],
             metric: ["dojo"],
             workout: ["dojo"],
+            position: ["dojo"],
           },
         },
       ]);
@@ -192,6 +202,104 @@ test(
       await store.init();
       await store.save({ ...store.publicConfig(), origin: b.origin, token });
       app = await admin(store, 0);
+      const mapHeaders = { Authorization: `Bearer ${store.secrets.admin}` };
+      const mapQuery = new URLSearchParams({
+        date: day,
+        start: `${day}T00:00:00.000Z`,
+        end: new Date(
+          Date.parse(`${day}T00:00:00.000Z`) + 86400000,
+        ).toISOString(),
+      });
+      const mapUrl = `${app.origin}/api/dashboard/map?${mapQuery}`;
+      const mapVisible = await fetch(mapUrl, { headers: mapHeaders });
+      assert.equal(mapVisible.status, 200);
+      const visibleFeed = (await mapVisible.json()) as any;
+      assert.deepEqual(
+        visibleFeed.activities.find((a: any) => a._id === String(metric._id))
+          ?.position?.latitude,
+        42.3601,
+      );
+      await b.db
+        .collection("users")
+        .updateOne(
+          { _id: owner },
+          { $set: { "privacy_settings.position": [] } },
+        );
+      assert.deepEqual(
+        (await b.db.collection("users").findOne({ _id: owner }))
+          ?.privacy_settings.position,
+        [],
+      );
+      const mapHidden = await fetch(mapUrl, { headers: mapHeaders });
+      assert.equal(mapHidden.status, 200);
+      const hiddenFeed = (await mapHidden.json()) as any;
+      assert.ok(
+        !hiddenFeed.activities.some((a: any) => a._id === String(metric._id)),
+        "Position revocation removes the activity from the map-specific read",
+      );
+      const hiddenDetail = await fetch(
+        `${app.origin}/api/dashboard/activity?id=${metric._id}`,
+        { headers: mapHeaders },
+      );
+      assert.equal(hiddenDetail.status, 200);
+      assert.equal(
+        ((await hiddenDetail.json()) as any).activity.position,
+        undefined,
+      );
+      await b.db
+        .collection("users")
+        .updateOne(
+          { _id: owner },
+          { $set: { "privacy_settings.position": ["dojo"] } },
+        );
+      const dstStart = "2026-03-08T05:00:00.000Z";
+      const dstEnd = "2026-03-09T04:00:00.000Z";
+      const justBeforeEnd = row(
+        "metric",
+        { measurements: [] },
+        {
+          position: { latitude: 42.3601, longitude: -71.0589 },
+          created_at: new Date(Date.parse(dstEnd) - 1),
+          completed_at: new Date(Date.parse(dstEnd) - 1),
+        },
+      );
+      const atEnd = row(
+        "metric",
+        { measurements: [] },
+        {
+          position: { latitude: 42.3601, longitude: -71.0589 },
+          created_at: new Date(dstEnd),
+          completed_at: new Date(dstEnd),
+        },
+      );
+      await b.db.collection("activities").insertMany([justBeforeEnd, atEnd]);
+      try {
+        const boundaryQuery = new URLSearchParams({
+          date: "2026-03-08",
+          start: dstStart,
+          end: dstEnd,
+        });
+        const boundary = await fetch(
+          `${app.origin}/api/dashboard/map?${boundaryQuery}`,
+          { headers: mapHeaders },
+        );
+        assert.equal(boundary.status, 200);
+        const ids = ((await boundary.json()) as any).activities.map(
+          (a: any) => a._id,
+        );
+        assert.ok(
+          ids.includes(String(justBeforeEnd._id)),
+          "DST local day includes last millisecond",
+        );
+        assert.ok(
+          !ids.includes(String(atEnd._id)),
+          "DST local day excludes exact next midnight",
+        );
+      } finally {
+        await b.db
+          .collection("activities")
+          .deleteMany({ _id: { $in: [justBeforeEnd._id, atEnd._id] } });
+      }
       const calls: string[] = [];
       b.server.prependListener("request", (req: any) => calls.push(req.url));
       browser = await chromium.launch({
@@ -201,12 +309,15 @@ test(
       });
       for (const width of [1440, 390, 320]) {
         const callStart = calls.length;
-        await b.db
-          .collection("users")
-          .updateOne(
-            { _id: owner },
-            { $set: { "privacy_settings.media": ["dojo"] } },
-          );
+        await b.db.collection("users").updateOne(
+          { _id: owner },
+          {
+            $set: {
+              "privacy_settings.media": ["dojo"],
+              "privacy_settings.position": ["dojo"],
+            },
+          },
+        );
         assert.deepEqual(
           (await b.db.collection("users").findOne({ _id: owner }))
             .privacy_settings.media,
@@ -214,6 +325,7 @@ test(
         );
         const context = await browser.newContext({
           viewport: { width, height: 900 },
+          timezoneId: "UTC",
         });
         try {
           const page = await context.newPage();
@@ -238,6 +350,58 @@ test(
                 .includes("loaded"),
             {},
             { timeout: 15000 },
+          );
+          await page.waitForFunction(
+            () =>
+              document.querySelectorAll("#dashboardMap .dashboard-map-marker")
+                .length === 1,
+            {},
+            { timeout: 15000 },
+          );
+          assert.match(
+            await page.locator("#dashboardMapStatus").innerText(),
+            /1 members with authorized position/,
+          );
+          await page.locator("#dashboardMap .dashboard-map-marker").click();
+          await page.waitForFunction(
+            () =>
+              document
+                .querySelector("#dashboardMapSelection")
+                ?.textContent?.includes("Synthetic QA check-in"),
+            {},
+            { timeout: 10000 },
+          );
+          assert.match(
+            await page.locator("#dashboardMapSelection").innerText(),
+            /metric/i,
+          );
+          const previousDay = new Date(
+            Date.parse(day + "T00:00:00.000Z") - 86400000,
+          )
+            .toISOString()
+            .slice(0, 10);
+          await page.locator("#dashboardMapDate").fill(previousDay);
+          await page.locator("#dashboardMapDate").dispatchEvent("change");
+          await page.waitForFunction(
+            (selected) =>
+              document
+                .querySelector("#dashboardMapStatus")
+                ?.textContent?.startsWith(selected + " activity creation date"),
+            previousDay,
+            { timeout: 10000 },
+          );
+          assert.equal(
+            await page.locator("#dashboardMap .dashboard-map-marker").count(),
+            0,
+          );
+          await page.locator("#dashboardMapDate").fill(day);
+          await page.locator("#dashboardMapDate").dispatchEvent("change");
+          await page.waitForFunction(
+            () =>
+              document.querySelectorAll("#dashboardMap .dashboard-map-marker")
+                .length === 1,
+            {},
+            { timeout: 10000 },
           );
           await page.waitForFunction(
             () =>
@@ -309,6 +473,13 @@ test(
               () => document.documentElement.scrollWidth <= innerWidth + 1,
             ),
           );
+          await page.locator("#dashboardMap .dashboard-map-marker").click();
+          await page.waitForFunction(() =>
+            document
+              .querySelector("#dashboardMapSelection")
+              ?.textContent?.includes("Synthetic QA check-in"),
+          );
+          await page.evaluate(() => window.scrollTo(0, 0));
           await page.screenshot({
             path: `${evidence}/paired-dashboard-${width}.png`,
             fullPage: true,
@@ -318,15 +489,23 @@ test(
             .evaluateAll((imgs) =>
               imgs.map((i) => (i as HTMLImageElement).src),
             );
-          await b.db
-            .collection("users")
-            .updateOne(
-              { _id: owner },
-              { $set: { "privacy_settings.media": [] } },
-            );
+          await b.db.collection("users").updateOne(
+            { _id: owner },
+            {
+              $set: {
+                "privacy_settings.media": [],
+                "privacy_settings.position": [],
+              },
+            },
+          );
           assert.deepEqual(
             (await b.db.collection("users").findOne({ _id: owner }))
               .privacy_settings.media,
+            [],
+          );
+          assert.deepEqual(
+            (await b.db.collection("users").findOne({ _id: owner }))
+              .privacy_settings.position,
             [],
           );
           const before = calls.length;
@@ -374,6 +553,18 @@ test(
               .includes("loaded"),
           );
           assert.equal(await page.locator("#dashboardRoster img").count(), 0);
+          await page.waitForFunction(
+            () =>
+              document
+                .querySelector("#dashboardMapStatus")
+                ?.textContent?.includes("0 members with authorized position"),
+            {},
+            { timeout: 10000 },
+          );
+          assert.equal(
+            await page.locator("#dashboardMap .dashboard-map-marker").count(),
+            0,
+          );
           assert.deepEqual(errors, []);
           console.log(
             JSON.stringify({

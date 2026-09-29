@@ -406,11 +406,13 @@ export async function admin(
         const allowed =
           url.pathname === "/api/dashboard"
             ? ["before"]
-            : url.pathname === "/api/dashboard/activity"
-              ? ["id"]
-              : url.pathname === "/api/dashboard/photo"
-                ? ["activity_id", "file_id"]
-                : [];
+            : url.pathname === "/api/dashboard/map"
+              ? ["date", "start", "end", "cursor"]
+              : url.pathname === "/api/dashboard/activity"
+                ? ["id"]
+                : url.pathname === "/api/dashboard/photo"
+                  ? ["activity_id", "file_id"]
+                  : [];
         if (
           !allowed.length ||
           [...params.keys()].some(
@@ -437,9 +439,48 @@ export async function admin(
             (before.length > 64 || !Number.isFinite(Date.parse(before)))
           )
             throw new SafeError("ARGUMENTS_REJECTED");
-          target =
-            "/api/friends/feed/dojo?limit=20" +
-            (before ? "&beforeDate=" + encodeURIComponent(before) : "");
+          if (url.pathname === "/api/dashboard/map") {
+            const date = params.get("date");
+            const start = params.get("start");
+            const end = params.get("end");
+            const cursor = params.get("cursor");
+            const day = date ? Date.parse(date + "T00:00:00.000Z") : NaN;
+            const startTime = start ? Date.parse(start) : NaN;
+            const endTime = end ? Date.parse(end) : NaN;
+            const hour = 60 * 60 * 1000;
+            if (
+              !date ||
+              !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+              !Number.isFinite(day) ||
+              new Date(day).toISOString().slice(0, 10) !== date ||
+              !start ||
+              !end ||
+              !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(start) ||
+              !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(end) ||
+              !Number.isFinite(startTime) ||
+              !Number.isFinite(endTime) ||
+              new Date(startTime).toISOString() !== start ||
+              new Date(endTime).toISOString() !== end ||
+              Math.abs(startTime - day) > 14 * hour ||
+              Math.abs(endTime - (day + 24 * hour)) > 14 * hour ||
+              endTime - startTime < 23 * hour ||
+              endTime - startTime > 25 * hour ||
+              (cursor &&
+                (cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(cursor)))
+            )
+              throw new SafeError("ARGUMENTS_REJECTED");
+            target =
+              "/api/friends/dojo/positioned-activities?start=" +
+              encodeURIComponent(start) +
+              "&end=" +
+              encodeURIComponent(end) +
+              "&limit=100" +
+              (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
+          } else {
+            target =
+              "/api/friends/feed/dojo?limit=20" +
+              (before ? "&beforeDate=" + encodeURIComponent(before) : "");
+          }
         }
         const token = store.secrets.token;
         if (!token) throw new SafeError("TOKEN_REQUIRED");

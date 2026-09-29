@@ -79,8 +79,9 @@
             <div>
               <h2>Dojo dashboard</h2>
               <p class="hint">
-                Data authorized when loaded; refresh makes new reads. Bounded
-                feed history, not complete roster coverage.
+                Data authorized when loaded; refresh makes new reads. Feed
+                history is bounded; the map below reads the selected date
+                separately.
               </p>
             </div>
             <button id="dashboardRefresh" class="secondary">Refresh</button>
@@ -89,6 +90,36 @@
             Open Dashboard to load shared data.
           </p>
           <div id="dashboardCoverage" class="dashboard-coverage" hidden></div>
+          <section
+            class="dashboard-map-section"
+            aria-labelledby="dashboardMapHeading"
+          >
+            <div class="dashboard-map-heading">
+              <div>
+                <h3 id="dashboardMapHeading">Shared activity map</h3>
+                <p class="hint">
+                  Pins reflect currently authorized activity positions, not
+                  every member or activity. Activity creation date in your
+                  device timezone.
+                </p>
+              </div>
+              <label for="dashboardMapDate"
+                >Activity creation date (your device timezone)
+                <input id="dashboardMapDate" type="date" required />
+              </label>
+            </div>
+            <p id="dashboardMapStatus" role="status" aria-live="polite"></p>
+            <div
+              id="dashboardMap"
+              class="dashboard-map"
+              aria-label="Offline world map"
+            ></div>
+            <div
+              id="dashboardMapSelection"
+              class="dashboard-map-selection"
+              aria-live="polite"
+            ></div>
+          </section>
           <h3>Latest completed check-in photos among loaded data</h3>
           <div id="dashboardRoster" class="dashboard-roster"></div>
           <div id="dashboardCharts"></div>
