@@ -16,7 +16,7 @@ import {
   startBackend,
   memoryBackendEnabled,
 } from "./helpers/memory-backend.js";
-import { restGet } from "../src/katafit/restGet.js";
+import { restRequest } from "../src/katafit/restGet.js";
 
 // Opt-in: actual backend authorization + Mongo + Coach transport; only object
 // storage is synthetic. No production credentials, database or images.
@@ -41,6 +41,7 @@ test(
         contentType: "image/jpeg",
       });
       app.use("/api", b.require("./routes/media"));
+      app.use("/api", b.require("./routes/coachDocs"));
       app.use("/api/friends", b.require("./routes/friends"));
       const authenticate = b.require("./middleware/authenticateJWT");
       app.get("/api/new-paired-route", authenticate, (req: any, res: any) =>
@@ -101,11 +102,31 @@ test(
       const { token, credential } = (await issued.json()) as any;
       assert.equal(credential.rest_user_access, true);
       const read = (path: string) =>
-        restGet(b.origin, token, { path }, new AbortController().signal, [
+        restRequest(
+          b.origin,
           token,
-        ]);
+          { method: "GET", path },
+          new AbortController().signal,
+          [token],
+        );
       const novel = await read("/api/new-paired-route");
       assert.equal(JSON.parse(novel.content![0].text!).user_id, String(viewer));
+      const index = JSON.parse(
+        (await read("/api/docs/coach")).content![0].text!,
+      );
+      assert.equal(index.version, 1);
+      const domain = index.domains.find(
+        (item: any) => item.id === "activities",
+      );
+      assert.ok(domain?.path);
+      const reference = JSON.parse((await read(domain.path)).content![0].text!);
+      assert.equal(reference.id, "activities");
+      assert.ok(
+        reference.operations.some(
+          (operation: any) =>
+            operation.method === "POST" && operation.path === "/api/activities",
+        ),
+      );
       const detail = await read(`/api/friends/activity/${activity}`);
       assert.equal(
         JSON.parse(detail.content![0].text!).activity.data.files.length,
@@ -169,11 +190,11 @@ test(
               tool_calls: [
                 {
                   index: 0,
-                  id: "call-katafit_rest_get",
+                  id: "call-katafit_rest_request",
                   type: "function",
                   function: {
-                    name: "katafit_rest_get",
-                    arguments: JSON.stringify({ path }),
+                    name: "katafit_rest_request",
+                    arguments: JSON.stringify({ method: "GET", path }),
                   },
                 },
               ],
@@ -318,7 +339,10 @@ test(
           );
           assert.equal(selection.stopReason, "toolUse");
           messages.push(selection);
-          const result = await extension.call("katafit_rest_get", { path });
+          const result = await extension.call("katafit_rest_request", {
+            method: "GET",
+            path,
+          });
           assert.ok(
             result.content.some((p: any) => p.type === "image"),
             "real backend pixels reached the shipped native extension",
@@ -331,8 +355,8 @@ test(
           );
           messages.push({
             role: "toolResult",
-            toolCallId: "call-katafit_rest_get",
-            toolName: "katafit_rest_get",
+            toolCallId: "call-katafit_rest_request",
+            toolName: "katafit_rest_request",
             content: await normalizeToolResultImages(result.content),
             isError: false,
             timestamp: Date.now(),

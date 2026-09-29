@@ -15,7 +15,7 @@ test("background task pins one relevant skill body while generation remains tool
     const body = JSON.parse(raw);
     bodies.push(body);
     const payload = JSON.stringify(body);
-    assert.ok(payload.includes("Review one recorded activity"));
+    assert.ok(payload.includes("Navigate documented account APIs"));
     assert.ok(payload.includes("scope: worker"));
     assert.ok(!payload.includes("Build an evidence-bounded view"));
     assert.ok(
@@ -71,7 +71,7 @@ test("background task pins one relevant skill body while generation remains tool
 });
 
 for (const mode of ["disabled", "customized"] as const) {
-  test(`day closure keeps fixed guidance with understand-progress ${mode}`, async () => {
+  test(`day closure keeps fixed guidance with katafit-api ${mode}`, async () => {
     const fixture = await taskFixture({
       evidence: {
         timezone: "America/New_York",
@@ -123,11 +123,9 @@ for (const mode of ["disabled", "customized"] as const) {
       provider.listen(0, "127.0.0.1", resolve),
     );
     const skills = stockSkills
-      .filter(
-        (skill) => mode !== "disabled" || skill.id !== "understand-progress",
-      )
+      .filter((skill) => mode !== "disabled" || skill.id !== "katafit-api")
       .map((skill) =>
-        mode === "customized" && skill.id === "understand-progress"
+        mode === "customized" && skill.id === "katafit-api"
           ? {
               ...structuredClone(skill),
               customized: true,
@@ -176,7 +174,7 @@ for (const mode of ["disabled", "customized"] as const) {
       );
       assert.match(first, /at most one next-day or recovery priority/);
       if (mode === "disabled") {
-        assert.ok(!first.includes("Build an evidence-bounded view"));
+        assert.ok(!first.includes("Navigate documented account APIs"));
       } else {
         assert.ok(first.includes("CUSTOM_DAY_CONFLICT"));
         assert.ok(

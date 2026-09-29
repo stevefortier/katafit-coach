@@ -34,11 +34,11 @@ for (const image of [false, true])
               tool_calls: [
                 {
                   index: 0,
-                  id: "call-katafit_rest_get",
+                  id: "call-katafit_rest_request",
                   type: "function",
                   function: {
-                    name: "katafit_rest_get",
-                    arguments: JSON.stringify({ path }),
+                    name: "katafit_rest_request",
+                    arguments: JSON.stringify({ method: "GET", path }),
                   },
                 },
               ],
@@ -80,7 +80,10 @@ for (const image of [false, true])
       const selected = await piTurn(relay, "approved-custom-model", messages);
       assert.equal(selected.stopReason, "toolUse");
       messages.push(selected);
-      const result = await ext.call("katafit_rest_get", { path });
+      const result = await ext.call("katafit_rest_request", {
+        method: "GET",
+        path,
+      });
       const { normalizeToolResultImages } = await import(
         new URL(
           "./utils/tool-result-images.js",
@@ -89,8 +92,8 @@ for (const image of [false, true])
       );
       messages.push({
         role: "toolResult",
-        toolCallId: "call-katafit_rest_get",
-        toolName: "katafit_rest_get",
+        toolCallId: "call-katafit_rest_request",
+        toolName: "katafit_rest_request",
         content: await normalizeToolResultImages(result.content),
         isError: false,
         timestamp: Date.now(),

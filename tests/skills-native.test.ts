@@ -18,12 +18,7 @@ test("native gateway exports enabled skills without host secrets and revokes its
     const catalog = await gateway.handle({ kind: "catalog" });
     assert.deepEqual(
       catalog.skills.map((skill: any) => skill.id),
-      [
-        "review-activity",
-        "understand-progress",
-        "change-plan",
-        "fetch-checkin-images",
-      ],
+      ["katafit-api"],
     );
     assert.match(catalog.skills[0].body, /Operator scope:/);
     assert.match(catalog.skills[0].body, /Worker scope:/);
@@ -53,17 +48,17 @@ test("native gateway exports enabled skills without host secrets and revokes its
 test("pinned Pi 0.86.1 discovers native SKILL.md metadata without injecting its body", async () => {
   const dir = await mkdtemp(tmpdir() + "/pi-native-skills-");
   try {
-    const skillDir = dir + "/review-activity";
+    const skillDir = dir + "/katafit-api";
     await mkdir(skillDir);
     await writeFile(
       skillDir + "/SKILL.md",
-      `---\nname: review-activity\ndescription: Review one authorized activity when relevant.\n---\n\nSYNTHETIC_NATIVE_BODY_SENTINEL\n`,
+      `---\nname: katafit-api\ndescription: Review one authorized activity when relevant.\n---\n\nSYNTHETIC_NATIVE_BODY_SENTINEL\n`,
     );
     const loaded = loadSkillsFromDir({ dir, source: "user" });
     assert.equal(loaded.diagnostics.length, 0);
     assert.equal(loaded.skills.length, 1);
     const prompt = formatSkillsForPrompt(loaded.skills, "read");
-    assert.match(prompt, /review-activity/);
+    assert.match(prompt, /katafit-api/);
     assert.match(prompt, /SKILL\.md/);
     assert.doesNotMatch(prompt, /SYNTHETIC_NATIVE_BODY_SENTINEL/);
   } finally {
@@ -83,7 +78,7 @@ test(
       requests.push(body);
       const messages = JSON.stringify(body.messages);
       const receivedSkill = messages.includes(
-        "A list row is not proof of unlisted sets",
+        "Compare like measures and intervals",
       );
       const receivedRoster = messages.includes("Synthetic Alice");
       if (!receivedSkill)
@@ -97,7 +92,7 @@ test(
                 function: {
                   name: "read",
                   arguments: JSON.stringify({
-                    path: "/home/node/.pi/agent/skills/review-activity/SKILL.md",
+                    path: "/home/node/.pi/agent/skills/katafit-api/SKILL.md",
                   }),
                 },
               },
@@ -161,11 +156,11 @@ test(
 
       assert.equal(requests.length, 3);
       const first = JSON.stringify(requests[0]);
-      assert.match(first, /review-activity/);
-      assert.doesNotMatch(first, /A list row is not proof of unlisted sets/);
+      assert.match(first, /katafit-api/);
+      assert.doesNotMatch(first, /Compare like measures and intervals/);
       assert.match(
         JSON.stringify(requests[1]),
-        /A list row is not proof of unlisted sets/,
+        /Compare like measures and intervals/,
       );
       assert.match(JSON.stringify(requests[2]), /Synthetic Alice/);
       assert.ok(

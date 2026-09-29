@@ -34,28 +34,13 @@ test("Skills save travels through authenticated Studio, immutable disk history, 
         skill.enabled,
         skill.status,
       ]),
-      [
-        ["review-activity", "Review an activity", true, "default"],
-        [
-          "understand-progress",
-          "Understand a member's progress",
-          true,
-          "default",
-        ],
-        ["change-plan", "Make and verify a plan change", true, "default"],
-        [
-          "fetch-checkin-images",
-          "Fetch and inspect check-in images",
-          true,
-          "default",
-        ],
-      ],
+      [["katafit-api", "Use the Kata.fit API", true, "default"]],
     );
     const edited = {
       ...initial.skills[0],
       purpose: editedPurpose,
     };
-    const saved = await call("skills/review-activity", {
+    const saved = await call("skills/katafit-api", {
       expectedRevision: initial.revision,
       enabled: edited.enabled,
       purpose: edited.purpose,

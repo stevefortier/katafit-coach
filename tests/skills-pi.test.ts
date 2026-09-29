@@ -77,7 +77,7 @@ test("actual worker Pi receives the relevant progress skill and uses only reques
     );
     assert.deepEqual(
       selected.map((skill) => skill.id),
-      ["understand-progress"],
+      ["katafit-api"],
     );
     const result = await complete(
       {
@@ -98,7 +98,7 @@ test("actual worker Pi receives the relevant progress skill and uses only reques
         .map((message: any) => message.content)
         .join("\n");
       assert.match(system, /scope: worker/);
-      assert.match(system, /Compare like with like/);
+      assert.match(system, /Compare like measures and intervals/);
       assert.doesNotMatch(
         system,
         /<coach_skill id="(?:review-activity|change-plan)"/,

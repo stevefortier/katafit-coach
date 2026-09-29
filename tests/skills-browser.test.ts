@@ -11,7 +11,7 @@ import { Worker } from "../src/worker/runner.js";
 import { taskFixture } from "./task-fixtures.js";
 
 for (const operation of ["save", "restore"] as const) {
-  test(`Skills ${operation} preserves unrelated drafts`, async () => {
+  test(`Skills ${operation} applies the unified skill and persists enabled state`, async () => {
     const dir = await mkdtemp(tmpdir() + "/skills-drafts-");
     const store = new Store(dir);
     await store.init();
@@ -27,9 +27,7 @@ for (const operation of ["save", "restore"] as const) {
       await page.goto(
         app.origin + "/settings?section=skills#" + store.secrets.admin,
       );
-      await page.locator("#skillPurpose").fill("Unrelated activity draft");
       await page.locator("#skillEnabled").uncheck();
-      await page.locator('[data-skill="understand-progress"]').click();
       await page
         .locator("#skillPurpose")
         .fill("Progress draft to apply or discard");
@@ -43,7 +41,7 @@ for (const operation of ["save", "restore"] as const) {
           .querySelector("#skillsRevision")
           ?.textContent?.includes("revision 2"),
       );
-      const saved: any = store.skills.view("understand-progress");
+      const saved: any = store.skills.view("katafit-api");
       assert.equal(
         await page.locator("#skillPurpose").inputValue(),
         saved.skill.purpose,
@@ -52,20 +50,14 @@ for (const operation of ["save", "restore"] as const) {
         saved.skill.purpose === "Progress draft to apply or discard",
         operation === "save",
       );
-      await page.locator('[data-skill="review-activity"]').click();
       assert.equal(
-        await page.locator("#skillPurpose").inputValue(),
-        "Unrelated activity draft",
+        await page.locator("#skillEnabled").isChecked(),
+        operation === "restore",
       );
-      assert.equal(await page.locator("#skillEnabled").isChecked(), false);
       const restarted = new Store(dir);
       await restarted.init();
-      assert.notEqual(
-        (restarted.skills.view("review-activity") as any).skill.purpose,
-        "Unrelated activity draft",
-      );
       assert.equal(
-        (restarted.skills.view("understand-progress") as any).skill.purpose,
+        (restarted.skills.view("katafit-api") as any).skill.purpose,
         saved.skill.purpose,
       );
     } finally {
@@ -97,11 +89,6 @@ test("two-tab stale Skills write requires refresh, review, then deliberate save"
       await page.locator("#skillPurpose").waitFor({ state: "visible" });
     }
     await second.locator("#skillPurpose").fill("Retained stale activity draft");
-    await second.locator('[data-skill="understand-progress"]').click();
-    await second
-      .locator("#skillPurpose")
-      .fill("Retained unrelated progress draft");
-    await second.locator('[data-skill="review-activity"]').click();
     await first.locator("#skillPurpose").fill("Saved from first tab");
     await first.locator("#saveSkill").click();
     await first.waitForFunction(() =>
@@ -116,7 +103,7 @@ test("two-tab stale Skills write requires refresh, review, then deliberate save"
     });
     const rejected = second.waitForResponse(
       (response) =>
-        response.url().endsWith("/api/skills/review-activity") &&
+        response.url().endsWith("/api/skills/katafit-api") &&
         response.status() === 409,
     );
     await second.locator("#saveSkill").click();
@@ -149,15 +136,9 @@ test("two-tab stale Skills write requires refresh, review, then deliberate save"
       await second.locator("#skillSavedSnapshot").innerText(),
       /Saved from first tab/,
     );
-    await second.locator('[data-skill="understand-progress"]').click();
-    assert.equal(
-      await second.locator("#skillPurpose").inputValue(),
-      "Retained unrelated progress draft",
-    );
-    await second.locator('[data-skill="review-activity"]').click();
     assert.equal(writes.length, 1, "refresh/review never retries the write");
     assert.equal(
-      (store.skills.view("review-activity") as any).skill.purpose,
+      (store.skills.view("katafit-api") as any).skill.purpose,
       "Saved from first tab",
     );
     await second.locator("#saveSkill").click();
@@ -173,12 +154,8 @@ test("two-tab stale Skills write requires refresh, review, then deliberate save"
     const restarted = new Store(dir);
     await restarted.init();
     assert.equal(
-      (restarted.skills.view("review-activity") as any).skill.purpose,
+      (restarted.skills.view("katafit-api") as any).skill.purpose,
       "Retained stale activity draft",
-    );
-    assert.notEqual(
-      (restarted.skills.view("understand-progress") as any).skill.purpose,
-      "Retained unrelated progress draft",
     );
   } finally {
     await browser?.close();
@@ -209,7 +186,7 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
     );
     await page.locator("#studio").waitFor({ state: "visible" });
     await page.locator("#skillList button").first().waitFor();
-    assert.equal(await page.locator("#skillList button").count(), 4);
+    assert.equal(await page.locator("#skillList button").count(), 1);
     assert.equal(await page.locator("#skillLabel").textContent(), "Default");
     const edited =
       '<img src=x onerror="window.skillInjected=1"> Evidence-bound review';
@@ -231,14 +208,14 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
 
     const restarted = new Store(dir);
     await restarted.init();
-    const disk: any = restarted.skills.view("review-activity");
+    const disk: any = restarted.skills.view("katafit-api");
     assert.equal(disk.revision, 2);
     assert.equal(disk.skill.purpose, edited);
     assert.equal(disk.skill.enabled, false);
     assert.ok(
       !restarted.skills
         .runtime()
-        .skills.some((skill) => skill.id === "review-activity"),
+        .skills.some((skill) => skill.id === "katafit-api"),
       "runtime consumes the restarted enabled state",
     );
 
@@ -252,7 +229,7 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
     assert.equal(await page.locator("#skillHistorySnapshot img").count(), 0);
     assert.match(
       (await page.locator("#skillDefaultStatus").textContent()) || "",
-      /Default version 2/,
+      /Default version 1/,
     );
 
     await mkdir(evidence, { recursive: true });
@@ -366,10 +343,10 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
         .join("\n");
       assert.ok(system.includes(marker));
       assert.match(system, /scope: worker/);
-      assert.match(system, /<coach_skill id="review-activity"/);
+      assert.match(system, /<coach_skill id="katafit-api"/);
       assert.doesNotMatch(
         system,
-        /<coach_skill id="(?:understand-progress|change-plan)"/,
+        /<coach_skill id="(?:review-activity|change-plan)"/,
       );
       assert.ok(
         !request.tools?.length,

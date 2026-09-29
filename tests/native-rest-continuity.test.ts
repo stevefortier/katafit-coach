@@ -39,22 +39,22 @@ test("ordinary REST image survives sharing change in actual Pi provider serializ
   try {
     relay = await startRelay(gateway);
     const ext = await loadExtension(relay);
-    const args = { path: "/api/media/activity/files/photo" };
-    const result = await ext.call("katafit_rest_get", args);
+    const args = { method: "GET", path: "/api/media/activity/files/photo" };
+    const result = await ext.call("katafit_rest_request", args);
     const images = result.content.filter((p: any) => p.type === "image");
     assert.equal(images.length, 1);
     const transcript = imageTranscript(images, "Inspect the acquired photo.");
     (transcript[1] as any).content = [
       {
         type: "toolCall",
-        id: "call-katafit_rest_get",
-        name: "katafit_rest_get",
+        id: "call-katafit_rest_request",
+        name: "katafit_rest_request",
         arguments: args,
       },
     ];
     Object.assign(transcript[2], {
-      toolCallId: "call-katafit_rest_get",
-      toolName: "katafit_rest_get",
+      toolCallId: "call-katafit_rest_request",
+      toolName: "katafit_rest_request",
       content: result.content,
     });
     // Initial provider may acquire optional memory once; continuation may not.
@@ -68,7 +68,7 @@ test("ordinary REST image survives sharing change in actual Pi provider serializ
       f.calls.slice(before).map((c) => c.path),
       ["/v1/chat/completions"],
     );
-    await assert.rejects(() => ext.call("katafit_rest_get", args), /403/);
+    await assert.rejects(() => ext.call("katafit_rest_request", args), /403/);
     assert.equal(f.calls.filter((c) => c.method === "GET").length, 2);
     assert.ok(
       !f.calls.some(
@@ -99,13 +99,15 @@ test("ordinary member native REST does not require a chief-only MCP session", as
     gateway = await openNativeGateway(f.store);
     relay = await startRelay(gateway);
     const ext = await loadExtension(relay);
-    const result = await ext.call("katafit_rest_get", {
+    const result = await ext.call("katafit_rest_request", {
+      method: "GET",
       path: "/api/new-member-route",
     });
     assert.match(result.content[0].text, /ordinaryMember/);
     assert.equal(f.calls.filter((c) => c.method !== "GET").length, 0);
     await assert.rejects(() => ext.call("studio_operator_list_members", {}));
-    const stillRead = await ext.call("katafit_rest_get", {
+    const stillRead = await ext.call("katafit_rest_request", {
+      method: "GET",
       path: "/api/new-member-route",
     });
     assert.match(stillRead.content[0].text, /ordinaryMember/);
@@ -144,7 +146,8 @@ test("acquired REST pixels can be sent to this operator without a new permission
   try {
     relay = await startRelay(gateway);
     const ext = await loadExtension(relay);
-    const result = await ext.call("katafit_rest_get", {
+    const result = await ext.call("katafit_rest_request", {
+      method: "GET",
       path: "/api/media/a/files/b",
     });
     const receipt = JSON.parse(result.content[0].text).image_receipt;

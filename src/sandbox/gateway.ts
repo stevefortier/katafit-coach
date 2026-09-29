@@ -18,7 +18,13 @@ import {
 import { providerFailure, safeError } from "../runtime/errors.js";
 import { complete as providerComplete } from "../runtime/piAdapter.js";
 import { backendWireBudget } from "../katafit/wireBudget.js";
-import { restGet, restGetTool } from "../katafit/restGet.js";
+import {
+  restGet,
+  restGetTool,
+  restRequest,
+  restRequestTool,
+  restRequestArgs,
+} from "../katafit/restGet.js";
 import { restSession } from "../katafit/restSession.js";
 import {
   commitMemory,
@@ -378,12 +384,16 @@ export async function openNativeGateway(
   let hostSeq = 0;
   let hostWorkSeq = 0;
   const actions = new Actions(store, hooks.onDiagnostic);
+  const restCalls = new Set<string | object>();
+  const restActions = new WeakMap<object, Parameters<Actions["save"]>[0]>();
   if (
     actions
       .snapshot()
       .some(
         (a) =>
-          (!hooks.resume || a.session_id === hooks.resumeSessionId) &&
+          (!hooks.resume ||
+            a.session_id === hooks.resumeSessionId ||
+            a.tool_name === restRequestTool.name) &&
           ["pending", "unknown"].includes(a.status),
       )
   )
@@ -813,10 +823,16 @@ export async function openNativeGateway(
       try {
         return await emitted(
           request,
-          (prior) =>
-            admit(request, requestSignal, prior, () => {
-              admitted = true;
-            }),
+          (prior, selected) =>
+            admit(
+              request,
+              requestSignal,
+              prior,
+              () => {
+                admitted = true;
+              },
+              selected,
+            ),
           requestSignal,
         );
       } catch (error) {
@@ -870,6 +886,7 @@ export async function openNativeGateway(
     requestSignal: AbortSignal | undefined,
     prior: Promise<void>,
     claim: () => void,
+    selected?: object,
   ) {
     check();
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
@@ -889,7 +906,7 @@ export async function openNativeGateway(
           }),
         ),
         tools: [
-          ...(secrets.token ? [restGetTool] : []),
+          ...(secrets.token ? [restRequestTool] : []),
           ...session.tools.map((t) => ({
             name: t.name,
             description: t.description,
@@ -937,7 +954,7 @@ export async function openNativeGateway(
     claim();
     client.requestSignal = requestSignal;
     try {
-      return await dispatch(request, requestSignal, prior);
+      return await dispatch(request, requestSignal, prior, selected);
     } catch (error) {
       settle(error);
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
@@ -969,7 +986,7 @@ export async function openNativeGateway(
   // execution; keep the active admission held until its emitted outcome seals.
   async function emitted(
     request: any,
-    operation: (prior: Promise<void>) => Promise<any>,
+    operation: (prior: Promise<void>, selected?: object) => Promise<any>,
     requestSignal?: AbortSignal,
   ) {
     check();
@@ -1004,7 +1021,7 @@ export async function openNativeGateway(
     }
     let result: any, proofResult: any, failure: NativeFailure | undefined;
     try {
-      result = await operation(prior);
+      result = await operation(prior, selected);
       if (request?.kind === "tool")
         proofResult = await normalizeHostToolImages(result);
     } catch (error) {
@@ -1044,6 +1061,13 @@ export async function openNativeGateway(
       if (selected) historyLog.release(selected);
       finish?.();
     }
+    const action = restActions.get(request);
+    if (action) {
+      // Completion includes host normalization and durable history sealing.
+      // A thrown seal leaves the pre-dispatch pending receipt intact.
+      actions.save({ ...action, status: failure ? "unknown" : "completed" });
+      restActions.delete(request);
+    }
     if (failure) throw failure;
     return result;
   }
@@ -1070,7 +1094,13 @@ export async function openNativeGateway(
       return as("NATIVE_CANCELLED");
     if (error instanceof NativeFailure) return error;
     if (message === "NATIVE_REQUEST_BUSY") return as("NATIVE_REQUEST_BUSY");
-    if (["NATIVE_REQUEST_REJECTED", "NATIVE_TOOL_REJECTED"].includes(message))
+    if (
+      [
+        "NATIVE_REQUEST_REJECTED",
+        "NATIVE_TOOL_REJECTED",
+        "REST_REQUEST_REJECTED",
+      ].includes(message)
+    )
       return as("NATIVE_REQUEST_REJECTED");
     if (kind === "tool") return as("NATIVE_TOOL_FAILED");
     if (message === "NATIVE_MODEL_REJECTED") return as("NATIVE_MODEL_REJECTED");
@@ -1098,6 +1128,7 @@ export async function openNativeGateway(
     request: any,
     requestSignal?: AbortSignal,
     prior?: Promise<void>,
+    selected?: object,
   ) {
     if (historyUnsafe) throw new Error("NATIVE_HISTORY_MISMATCH");
     if (session.archive) {
@@ -1105,15 +1136,62 @@ export async function openNativeGateway(
       await hooks.onBeforeDispatch?.();
     }
     if (request.kind === "tool") {
-      if (request.name === restGetTool.name && secrets.token) {
-        const result = await restGet(
-          config.origin,
-          secrets.token,
-          request.args,
-          requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
-          Object.values(secrets),
-        );
-        check();
+      if (
+        [restGetTool.name, restRequestTool.name].includes(request.name) &&
+        secrets.token
+      ) {
+        const legacy = request.name === restGetTool.name;
+        const args = legacy ? undefined : restRequestArgs(request.args);
+        assertNoSecrets(request.args, Object.values(secrets));
+        const mutation = args && args.method !== "GET";
+        // Provider IDs may repeat across continuations within one human turn.
+        // The canonical claimed object identifies the occurrence; direct host
+        // calls without a provider slot retain their conservative ID fence.
+        const key =
+          selected ??
+          `${session.continuity()?.turn_generation ?? 0}:${request.toolCallId}`;
+        if (
+          mutation &&
+          (restCalls.has(key) ||
+            actions
+              .snapshot()
+              .some((a) => ["pending", "unknown"].includes(a.status)))
+        )
+          throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
+        const action = mutation
+          ? {
+              session_id: session.session_id,
+              idempotency_key: randomUUID(),
+              tool_name: restRequestTool.name,
+              status: "pending" as const,
+            }
+          : undefined;
+        if (action) {
+          actions.save(action); // Durable before any possible dispatch.
+          restCalls.add(key);
+          restActions.set(request, action);
+        }
+        let result;
+        try {
+          result = await (legacy ? restGet : restRequest)(
+            config.origin,
+            secrets.token,
+            request.args,
+            requestSignal
+              ? AbortSignal.any([lifetime, requestSignal])
+              : lifetime,
+            Object.values(secrets),
+          );
+          check();
+        } catch (error) {
+          if (action) {
+            actions.save({ ...action, status: "unknown" });
+            throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
+          }
+          if ((error as Error).message === "REST_REQUEST_REJECTED")
+            throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+          throw error;
+        }
         const image = result.content?.find((part) => part.type === "image");
         if (owner && image && "data" in image) {
           const bytes = Buffer.from(image.data!, "base64");
@@ -1138,6 +1216,16 @@ export async function openNativeGateway(
           request.args,
           requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
         );
+      if (
+        actions
+          .snapshot()
+          .some(
+            (a) =>
+              a.tool_name === restRequestTool.name &&
+              ["pending", "unknown"].includes(a.status),
+          )
+      )
+        throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
       const tool = session.tools.find((t) => t.name === request.name);
       if (!tool) throw new Error("NATIVE_TOOL_REJECTED");
       lastImage = undefined;

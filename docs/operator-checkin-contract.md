@@ -1,11 +1,17 @@
 # Native Operator check-in media
 
-The native gateway opens the backend-authorized `dojo_operator` session without choosing a member. The negotiated catalog exposes only allowed reads/writes; models supply explicit member references on scoped calls and the host owns session/idempotency fields. See [the unified contract](operator-unified-contract.md) and [native continuity](native-continuity.md).
+The legacy native MCP adapter opens a backend-authorized `dojo_operator` session without choosing a member. Its negotiated catalog exposes only allowed reads/writes; models supply explicit member references on scoped calls and the host owns session/idempotency fields. See [the legacy unified contract](operator-unified-contract.md) and [native continuity](native-continuity.md). Ordinary account HTTP does not require this session.
 
 ## Image workflow and safe native failures
 
-The enabled `fetch-checkin-images` default is exported as native Pi skill metadata;
+The enabled `katafit-api` default is exported as native Pi skill metadata;
 Pi reads its `SKILL.md` body on demand through the existing launch/relay path.
+Its ordinary account HTTP image workflow uses docs → feed → detail → images,
+as described in [native bootstrap](native-bootstrap.md#ordinary-account-http-api).
+
+The remaining contract below describes the **legacy MCP image adapter**, not
+the generic HTTP tool. These references and quotas apply only when those legacy
+tools are actually offered; they are not prerequisites for ordinary REST images.
 Run roster, check-in listing, and image reads **sequentially**, waiting for each
 receipt. First obtain `studio_operator_list_dojo_checkins`; select the exact
 `member_ref` + `media_ref` pair from one shared row. A member roster entry or
@@ -46,12 +52,15 @@ this does not queue writes or change concurrency admission.
 
 ## Default-catalog upgrade and rollback
 
-Only the exact old three-skill catalog is accepted as legacy history. Initialization
-appends the new default without rewriting old hashed snapshots or customized/
-disabled entries; reload is idempotent. A legacy record after a four-skill record
-is rejected, as are arbitrary missing, duplicate, or unknown defaults.
+Only the exact old three- and four-skill catalogs are accepted as legacy history.
+Initialization archives their original content and enabled state in the existing
+hash-linked history and appends the unified `katafit-api` catalog. Custom or
+disabled legacy settings leave the new skill disabled for explicit review in
+Settings; unmodified enabled defaults migrate enabled. Reload is idempotent.
+Catalog generation cannot regress from unified to four/three or from four to
+three. Arbitrary missing, duplicate, unknown and future-version defaults fail closed.
 
-An old application cannot read a four-skill manifest. Existing startup-failure
+An old application cannot read a unified-skill manifest. Existing startup-failure
 rollback in `src/update/supervisor.ts` restores backed-up root JSON files, including
 `skills.json`; appended modern snapshots remain unreferenced and do not change the
 restored legacy hash chain (covered by a focused manifest-rollback fixture).

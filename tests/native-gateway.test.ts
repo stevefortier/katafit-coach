@@ -698,7 +698,7 @@ test("scoped native gateway negotiates MCP and never accepts a proxy destination
     assert.equal(catalog.model, "approved-custom-model");
     assert.deepEqual(
       catalog.tools.map((t: any) => t.name),
-      ["katafit_rest_get", "studio_operator_list_members"],
+      ["katafit_rest_request", "studio_operator_list_members"],
     );
     assert.doesNotMatch(
       JSON.stringify(catalog),

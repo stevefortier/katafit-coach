@@ -58,7 +58,7 @@ test("continuity negotiation hides host controls and reserved identity; host ses
     );
     const catalog = await h.gateway.handle({ kind: "catalog" });
     assert.deepEqual(catalog.tools.map((t: any) => t.name).sort(), [
-      "katafit_rest_get",
+      "katafit_rest_request",
       ROSTER,
       GENERIC,
       SEND,

@@ -57,9 +57,12 @@ test("real native relay and extension GET ordinary social, JPEG and unregistered
   try {
     relay = await startRelay(gateway);
     const ext = await loadExtension(relay);
-    assert.ok(ext.tools.has("katafit_rest_get"));
+    assert.ok(ext.tools.has("katafit_rest_request"));
     for (const [path, expected] of Object.entries(responses)) {
-      const result = await ext.call("katafit_rest_get", { path });
+      const result = await ext.call("katafit_rest_request", {
+        method: "GET",
+        path,
+      });
       assert.equal(result.isError, undefined);
       if (expected.type === "image/jpeg") {
         assert.equal(
@@ -117,12 +120,17 @@ test("REST refuses URLs, traversal, header injection and redirects without follo
       { path: "/api/x%2fy" },
       { path: "/api/x\r\nX-Evil: yes" },
       { path: "/api/x", headers: { "X-Custom": "yes" } },
-      { path: "/api/x", method: "POST" },
+      { path: "/api/x", method: "TRACE" },
     ])
-      await assert.rejects(() => ext!.call("katafit_rest_get", args));
+      await assert.rejects(() =>
+        ext!.call("katafit_rest_request", { method: "GET", ...args }),
+      );
     assert.equal(f.calls.filter((c) => c.method === "GET").length, 0);
     await assert.rejects(() =>
-      ext.call("katafit_rest_get", { path: "/api/redirect" }),
+      ext.call("katafit_rest_request", {
+        method: "GET",
+        path: "/api/redirect",
+      }),
     );
     assert.deepEqual(
       f.calls.filter((c) => c.method === "GET").map((c) => c.path),
@@ -142,7 +150,7 @@ test("REST tool uses the existing installation credential with no identity looku
   try {
     relay = await startRelay(gateway);
     const ext = await loadExtension(relay);
-    assert.equal(ext.tools.has("katafit_rest_get"), true);
+    assert.equal(ext.tools.has("katafit_rest_request"), true);
     assert.ok(ext.tools.has("studio_operator_list_members"));
     assert.equal(f.calls.filter((c) => c.method === "GET").length, 0);
   } finally {
@@ -174,13 +182,17 @@ test("REST rejects image MIME spoofing and oversized responses without returning
     const ext = await loadExtension(relay);
     for (const path of ["/api/spoof", "/api/large"])
       await assert.rejects(
-        () => ext.call("katafit_rest_get", { path }),
+        () => ext.call("katafit_rest_request", { method: "GET", path }),
         (e: any) =>
           !/not pixels|sensitive backend denial|xxxxx/.test(e.message),
       );
     for (const status of [401, 403, 404, 503])
       await assert.rejects(
-        () => ext.call("katafit_rest_get", { path: `/api/${status}` }),
+        () =>
+          ext.call("katafit_rest_request", {
+            method: "GET",
+            path: `/api/${status}`,
+          }),
         (e: any) =>
           e.message.includes(String(status)) &&
           !/sensitive backend denial/.test(e.message),
