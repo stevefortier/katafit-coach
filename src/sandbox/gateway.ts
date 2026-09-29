@@ -1015,7 +1015,8 @@ export async function openNativeGateway(
           `${session.continuity()?.turn_generation ?? 0}:${request.toolCallId}`;
         if (
           mutation &&
-          (restCalls.has(key) || uncertainRest.has(JSON.stringify(request.args)))
+          (restCalls.has(key) ||
+            uncertainRest.has(JSON.stringify(request.args)))
         )
           throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
         const action = mutation
@@ -1447,7 +1448,8 @@ export async function openNativeGateway(
 }
 type OpenedGateway = Awaited<ReturnType<typeof openNativeGateway>>;
 /** Runtime-facing surface; host-only members are optional for test stubs. */
-export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> & Partial<
+export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
+  Partial<
     Pick<
       OpenedGateway,
       | "confirmDelivery"

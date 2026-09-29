@@ -119,6 +119,23 @@ test(
           .querySelector("#nativeStatus")
           ?.textContent?.startsWith("Connected"),
       );
+      const beforeRestore = calls.filter(
+        (path) => path === "/api/terminal/ticket",
+      ).length;
+      await page.evaluate(() => {
+        dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+        dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      });
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#nativeStatus")
+          ?.textContent?.startsWith("Connected"),
+      );
+      assert.equal(
+        calls.filter((path) => path === "/api/terminal/ticket").length,
+        beforeRestore + 1,
+        "BFCache return must reattach without a manual button",
+      );
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();

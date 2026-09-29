@@ -102,7 +102,7 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
         watchdog = setTimeout(
           () =>
             markLost(
-              "Connection lost (no response from Studio). Reconnect within 30 seconds or workspace is erased.",
+              "Connection lost (no response from Studio). Reconnecting automatically; input is never replayed.",
             ),
           SILENCE_MS,
         );
@@ -185,7 +185,7 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
         // Policy close means the session ended; its attachments are gone.
         if (event.code === 1008 && socket === ws) attachments.clear();
         markLost(
-          "Disconnected. Reconnect within 30 seconds or workspace is erased. No input is replayed.",
+          "Disconnected. Reconnecting automatically; input is never replayed.",
         );
       };
       ws.onerror = () => {
@@ -206,13 +206,16 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
     }
   }
   window.addEventListener("offline", () =>
-    lose?.(
-      "Offline. Reconnect within 30 seconds of the last contact or workspace is erased.",
-    ),
+    lose?.("Offline. Reconnecting automatically when the connection returns."),
   );
   window.addEventListener("pagehide", () => {
     reset();
     observer.disconnect();
+  });
+  window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    observer.observe($("nativeTerminal"));
+    if (active()) void connect();
   });
   return { reset, connect, suspend: resetTerminal };
 }
@@ -223,7 +226,7 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
 function operatorAttachments($, fetchAttachment) {
   const MAX_BYTES = 8 * 1024 * 1024,
     MAX_ITEMS = 16,
-    // Matches the server's reconnect window for an unattended session.
+    // Browser-only privacy deadline for detached attachment previews.
     DETACH_MS = 30000,
     IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
   let session = "",
