@@ -68,7 +68,6 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
     await page.goto(h.app.origin + "/chat/operator");
     await page.locator("#adminKey").fill(h.f.store.secrets.admin);
     await page.locator("#unlock").click();
-    await page.locator("#nativeStart").click({ timeout: 5000 });
     await page.waitForFunction(() =>
       document
         .querySelector("#nativeStatus")
@@ -182,7 +181,7 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
 
     // Reconnect: snapshot reconciles with no duplicate cards and no refetch.
     const runtimes = h.runtimes.length;
-    await page.locator("#nativeStart").click();
+    h.dropSocket();
     await page.waitForFunction(() =>
       document
         .querySelector("#nativeStatus")
@@ -242,11 +241,10 @@ test("Operator attachment panel previews, enlarges and downloads beside the term
 
     // Stop erases the panel and revokes blob URLs.
     const blobUrl = (await preview.getAttribute("src"))!;
-    await page.locator("#nativeStop").click();
-    await page.waitForFunction(() =>
-      document
-        .querySelector("#nativeStatus")
-        ?.textContent?.startsWith("Stopped"),
+    await page.evaluate(() => api("terminal/stop", {}));
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll("#nativeAttachmentList > li").length === 0,
     );
     assert.equal(await cards.count(), 0);
     assert.equal(
@@ -291,7 +289,6 @@ test("a server-side session end (another tab or configuration change) clears the
     await page.goto(h.app.origin + "/chat/operator");
     await page.locator("#adminKey").fill(h.f.store.secrets.admin);
     await page.locator("#unlock").click();
-    await page.locator("#nativeStart").click({ timeout: 5000 });
     await page.waitForFunction(() =>
       document
         .querySelector("#nativeStatus")

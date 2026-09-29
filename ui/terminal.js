@@ -1,4 +1,4 @@
-function nativeTerminal({ api, authorized, fetchAttachment }) {
+function nativeTerminal({ api, authorized, active, fetchAttachment }) {
   const $ = (id) => document.getElementById(id);
   let terminal,
     fit,
@@ -6,107 +6,22 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     epoch = 0,
     pending = false,
     queued = 0,
-    lose;
+    lose,
+    retryTimer,
+    retryDelay = 1500,
+    stateNow = "stopped";
   // The server heartbeats every 10 s; longer silence means the link is dead.
   const SILENCE_MS = 25000;
   const attachments = operatorAttachments($, fetchAttachment);
-  let openTooltip,
-    pinned = false;
-  const closeTooltip = () => {
-    if (!openTooltip) return;
-    openTooltip.tip.hidden = true;
-    openTooltip.button.setAttribute("aria-expanded", "false");
-    openTooltip = undefined;
-    pinned = false;
-  };
-  const positionTooltip = () => {
-    if (!openTooltip) return;
-    const { button, tip } = openTooltip;
-    const viewport = window.visualViewport;
-    const left = viewport?.offsetLeft ?? 0;
-    const top = viewport?.offsetTop ?? 0;
-    const width = viewport?.width ?? innerWidth;
-    const height = viewport?.height ?? innerHeight;
-    tip.style.maxWidth = `${width - 16}px`;
-    tip.style.maxHeight = `${height - 16}px`;
-    const anchor = button.getBoundingClientRect();
-    const box = tip.getBoundingClientRect();
-    tip.style.left = `${Math.max(left + 8, Math.min(anchor.right - box.width, left + width - box.width - 8))}px`;
-    tip.style.top = `${Math.max(top + 8, Math.min(anchor.bottom, top + height - box.height - 8))}px`;
-  };
-  for (const id of ["nativeConnection", "nativeInfo"]) {
-    const button = $(id),
-      tip = $(id + "Tooltip");
-    const show = () => {
-      if (openTooltip?.button !== button) closeTooltip();
-      openTooltip = { button, tip };
-      tip.hidden = false;
-      button.setAttribute("aria-expanded", "true");
-      positionTooltip();
-    };
-    button.addEventListener("pointerenter", (event) => {
-      if (event.pointerType !== "touch") show();
-    });
-    button.addEventListener("focus", show);
-    button.addEventListener("click", () => {
-      if (openTooltip?.button === button && pinned) closeTooltip();
-      else {
-        show();
-        pinned = true;
-      }
-    });
-    const leave = (event) => {
-      if (openTooltip?.button !== button) return;
-      if (
-        button.contains(event.relatedTarget) ||
-        tip.contains(event.relatedTarget)
-      )
-        return;
-      if (
-        event.type === "pointerleave" &&
-        (pinned || document.activeElement === button)
-      )
-        return;
-      closeTooltip();
-    };
-    button.addEventListener("pointerleave", leave);
-    button.addEventListener("focusout", leave);
-    tip.addEventListener("pointerleave", leave);
-  }
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeTooltip();
-  });
-  document.addEventListener("pointerdown", (event) => {
-    if (
-      openTooltip &&
-      !openTooltip.button.contains(event.target) &&
-      !openTooltip.tip.contains(event.target)
-    )
-      closeTooltip();
-  });
-  window.addEventListener("resize", positionTooltip);
-  window.addEventListener("scroll", positionTooltip, true);
-  window.visualViewport?.addEventListener("resize", positionTooltip);
-  window.visualViewport?.addEventListener("scroll", positionTooltip);
   const status = (state, text) => {
-    const labels = {
-      stopped: ["Stopped", "■"],
-      starting: ["Starting", "◷"],
-      connected: ["Connected", "✓"],
-      disconnected: ["Disconnected", "○"],
-      error: ["Error", "!"],
-      unavailable: ["Unavailable", "×"],
-      overflow: ["Overflow", "!"],
-      stopping: ["Stopping", "◷"],
-      "stop-unconfirmed": ["Stop unconfirmed", "?"],
-    };
-    const [label, icon] = labels[state];
     $("nativeStatus").textContent = text;
-    $("nativeConnectionTooltip").textContent = text;
-    $("nativeConnection").dataset.state = state;
-    $("nativeConnection").setAttribute("aria-label", "Pi connection: " + label);
-    $("nativeStateIcon").textContent = icon;
-    positionTooltip();
+    stateNow = state;
+  };
+  const retry = () => {
+    if (!active()) return;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 15000);
   };
   function reset() {
     resetTerminal();
@@ -118,15 +33,11 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     // snapshot of the same session (after reconnecting) cancels it.
     if (socket) attachments.detached();
     lose = undefined;
-    closeTooltip();
-    if (
-      ["connected", "starting", "disconnected"].includes(
-        $("nativeConnection").dataset.state,
-      )
-    )
+    clearTimeout(retryTimer);
+    if (["connected", "starting", "disconnected"].includes(stateNow))
       status(
         "disconnected",
-        "Disconnected from this terminal. Start or reconnect Pi to check session availability. No input is replayed.",
+        "Disconnected from this terminal. Reconnecting on return to Coach; input is never replayed.",
       );
     socket?.close();
     socket = undefined;
@@ -136,7 +47,6 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     $("nativeTerminal").replaceChildren();
     pending = false;
     queued = 0;
-    $("nativeStart").disabled = false;
   }
   const resize = () => {
     if (!fit || !$("nativeTerminal").getClientRects().length) return;
@@ -152,19 +62,22 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
   };
   const observer = new ResizeObserver(resize);
   observer.observe($("nativeTerminal"));
-  $("nativeStart").onclick = async () => {
-    if (!authorized() || pending) return;
+  async function connect() {
+    if (
+      !authorized() ||
+      !active() ||
+      pending ||
+      socket?.readyState === WebSocket.OPEN
+    )
+      return;
     // Reconnect keeps already shown attachments; the snapshot reconciles them.
     resetTerminal();
     pending = true;
-    $("nativeStart").disabled = true;
     const generation = epoch;
     status("starting", "Starting isolated Pi…");
     try {
-      await history.prepareStart();
-      if (generation !== epoch || !authorized()) return;
       const ticket = await api("terminal/ticket", {});
-      if (generation !== epoch || !authorized()) return;
+      if (generation !== epoch || !authorized() || !active()) return;
       terminal = new window.Terminal({
         screenReaderMode: true,
         scrollback: 1000,
@@ -203,8 +116,8 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
         attachments.detached();
         if (generation === epoch) {
           pending = false;
-          $("nativeStart").disabled = false;
           if (!failed) status("disconnected", message);
+          retry();
         }
       };
       lose = markLost;
@@ -237,8 +150,8 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
         } else if (message.type === "ready") {
           failed = false;
           status("connected", "Connected to isolated Pi.");
+          retryDelay = 1500;
           pending = false;
-          $("nativeStart").disabled = false;
           resize();
           terminal.focus();
         } else if (message.type === "attachments")
@@ -264,7 +177,6 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
           status("connected", message.message);
           terminal.write("\r\n" + message.message + "\r\n");
         } else if (message.type === "error") {
-          if (message.historyReadOnly) void history.refresh();
           failed = true;
           status("error", message.message);
         }
@@ -285,30 +197,14 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     } catch {
       if (generation === epoch) {
         pending = false;
-        $("nativeStart").disabled = false;
+        retry();
         status(
           "unavailable",
           "Native Pi unavailable. Docker and the pinned sandbox image are required.",
         );
       }
     }
-  };
-  $("nativeStop").onclick = async () => {
-    reset();
-    status("stopping", "Stopping…");
-    try {
-      await api("terminal/stop", {});
-      status(
-        "stopped",
-        "Stopped · ephemeral workspace erased. Committed backend actions are not undone.",
-      );
-    } catch {
-      status(
-        "stop-unconfirmed",
-        "Stop unconfirmed. Do not retry a possibly committed action.",
-      );
-    }
-  };
+  }
   window.addEventListener("offline", () =>
     lose?.(
       "Offline. Reconnect within 30 seconds of the last contact or workspace is erased.",
@@ -318,192 +214,7 @@ function nativeTerminal({ api, authorized, fetchAttachment }) {
     reset();
     observer.disconnect();
   });
-  const history = operatorHistory($, api, authorized, reset);
-  return {
-    reset: () => {
-      history.clear();
-      reset();
-    },
-    refreshHistory: history.refresh,
-  };
-}
-
-function operatorHistory($, api, authorized, resetTerminal) {
-  let generation = 0,
-    selected = new URL(location.href).searchParams.get("conversation"),
-    timer,
-    expiry;
-  const clear = () => {
-    generation++;
-    clearTimeout(timer);
-    clearTimeout(expiry);
-    $("nativeHistoryLog").replaceChildren();
-    $("nativeHistorySnapshot").textContent = "";
-    $("nativeHistoryTitle").value = "";
-    $("nativeHistoryTitle").disabled = true;
-    $("nativeHistoryRename").disabled = true;
-  };
-  const notice = (text) => {
-    $("nativeHistoryNotice").textContent = text;
-  };
-  const open = () => {
-    $("nativeHistoryPanel").hidden = false;
-    $("nativeHistoryToggle").setAttribute("aria-expanded", "true");
-  };
-  const text = (value) =>
-    String(value)
-      .replace(
-        /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|\u001b[@-_]/g,
-        "",
-      )
-      .replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) =>
-        c === "\n" || c === "\t" ? c : "",
-      );
-  async function refresh() {
-    clear();
-    if (!authorized()) return;
-    const epoch = generation;
-    try {
-      const list = await api("terminal/history");
-      if (epoch !== generation || !authorized()) return;
-      if (selected === null) selected = list.selected;
-      const select = $("nativeHistorySelect");
-      select.replaceChildren(new Option("New conversation", ""));
-      for (const row of list.sessions || [])
-        select.add(new Option(row.title, row.id));
-      select.value = selected || "";
-      $("nativeHistoryDelete").disabled = !selected;
-      if (!selected) {
-        notice("New conversation uses current persona, skills and settings.");
-        return;
-      }
-      const view = await api("terminal/history/" + selected);
-      if (epoch !== generation || !authorized()) return;
-      open();
-      notice(
-        view.status !== "authorized"
-          ? view.reason
-          : (view.reason
-              ? "Read-only: " +
-                view.reason +
-                ". Start a new conversation to continue."
-              : "Saved conversation. Start Pi to resume; no interrupted input is replayed.") +
-              " " +
-              view.attachments,
-      );
-      if (view.status !== "authorized") return;
-      $("nativeHistoryTitle").value = view.title;
-      $("nativeHistoryTitle").disabled = false;
-      $("nativeHistoryRename").disabled = false;
-      $("nativeHistorySnapshot").textContent = text(
-        JSON.stringify(view.snapshot, null, 2),
-      );
-      for (const entry of view.entries || []) {
-        if (entry.type !== "message") continue;
-        const node = document.createElement("pre");
-        const message = entry.message;
-        node.textContent = text(
-          message.role +
-            (message.details?.provenance === "sandbox_local"
-              ? " · " + message.toolName + " · unverified sandbox output"
-              : "") +
-            "\n" +
-            (typeof message.content === "string"
-              ? message.content
-              : message.content
-                  .map((part) =>
-                    part.type === "text"
-                      ? part.text
-                      : JSON.stringify(part, null, 2),
-                  )
-                  .join("\n")),
-        );
-        $("nativeHistoryLog").append(node);
-      }
-      expiry = setTimeout(
-        () => {
-          clear();
-          notice("History hidden: refresh current authorization.");
-        },
-        Math.min(view.expiresAfterMs || 20000, 20000),
-      );
-      timer = setTimeout(
-        refresh,
-        Math.min(view.refreshAfterMs || 10000, 10000),
-      );
-    } catch {
-      if (epoch === generation) {
-        clear();
-        notice(
-          "History unavailable. Current authorization is required; retry or start a new conversation.",
-        );
-      }
-    }
-  }
-  async function choose(id) {
-    clear();
-    try {
-      await api("terminal/history/select", { id });
-      resetTerminal();
-      selected = id || "";
-      const url = new URL(location.href);
-      if (id) url.searchParams.set("conversation", id);
-      else url.searchParams.delete("conversation");
-      window.history.replaceState(null, "", url);
-      await refresh();
-    } catch {
-      notice("Stop Pi before changing conversations.");
-    }
-  }
-  $("nativeHistoryToggle").onclick = () => {
-    open();
-    refresh();
-  };
-  $("nativeHistorySelect").onchange = () =>
-    choose($("nativeHistorySelect").value || null);
-  $("nativeHistoryNew").onclick = () => choose(null);
-  $("nativeHistoryRename").onclick = async () => {
-    try {
-      await api("terminal/history/rename", {
-        id: selected,
-        title: $("nativeHistoryTitle").value,
-      });
-      notice("Renamed.");
-    } catch {
-      clear();
-      notice("Rename unavailable; current authorization is required.");
-    }
-  };
-  $("nativeHistoryDelete").onclick = async () => {
-    if (
-      !selected ||
-      !confirm(
-        "Delete this saved conversation permanently? Backend actions are not undone.",
-      )
-    )
-      return;
-    clear();
-    try {
-      await api("terminal/history/delete", { id: selected, confirm: true });
-      selected = "";
-      await refresh();
-    } catch {
-      notice("Delete failed. Stop Pi before deleting its conversation.");
-    }
-  };
-  window.addEventListener("offline", clear);
-  window.addEventListener("pagehide", clear);
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) clear();
-  });
-  async function prepareStart() {
-    if (selected === null) return;
-    const list = await api("terminal/history");
-    if (!authorized()) throw new Error("Locked");
-    if ((list.selected || "") !== selected)
-      await api("terminal/history/select", { id: selected || null });
-  }
-  return { clear, refresh, prepareStart };
+  return { reset, connect, suspend: resetTerminal };
 }
 
 // Attachments Pi sent with send_to_operator. Metadata arrives on the terminal

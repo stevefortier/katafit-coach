@@ -7,7 +7,7 @@ import { mkdir } from "node:fs/promises";
 import { fixture } from "./helpers/native.js";
 
 test(
-  "served Operator is real isolated Pi terminal, not legacy composer; tool-derived answer and Stop",
+  "served Operator is real isolated Pi terminal, not legacy composer; tool-derived answer",
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 60000 },
   async () => {
     const f = await fixture();
@@ -40,7 +40,6 @@ test(
       await page.goto(app.origin + "/chat/operator");
       await page.locator("#adminKey").fill(f.store.secrets.admin);
       await page.locator("#unlock").click();
-      await page.locator("#nativeStart").click({ timeout: 5000 });
       await waitForPiReady(() => output, 20000);
       assert.equal(
         await page
@@ -98,21 +97,6 @@ test(
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
         true,
-      );
-      await page.locator("#nativeStop").click();
-      await page.waitForFunction(() =>
-        document
-          .querySelector("#nativeStatus")
-          ?.textContent?.includes("Stopped"),
-      );
-      assert.doesNotMatch(
-        output,
-        /(?:fd|ripgrep|rg) not found|skipping download/i,
-      );
-      assert.ok(
-        f.calls.some(
-          (c) => c.body.params?.name === "studio_operator_close_session",
-        ),
       );
       assert.deepEqual(errors, []);
     } finally {

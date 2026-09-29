@@ -180,7 +180,6 @@ test(
       await page.goto(app.origin + "/chat/operator");
       await page.locator("#adminKey").fill(f.store.secrets.admin);
       await page.locator("#unlock").click();
-      await page.locator("#nativeStart").click({ timeout: 5000 });
       await waitOutput(PI_READY, 30000);
       owned = [...(await containers())].filter((id) => !before.has(id));
       assert.ok(owned.length >= 1, "a sandbox container is running");
@@ -248,7 +247,8 @@ test(
       assert.equal(fetched.length, 2);
 
       // Reconnect: same runtime, same cards, no duplicate fetches.
-      await page.locator("#nativeStart").click();
+      await page.reload();
+      await page.locator("#studio").waitFor({ state: "visible" });
       await page.waitForFunction(() =>
         document
           .querySelector("#nativeStatus")
@@ -287,15 +287,14 @@ test(
       }
 
       const url = new URL(fetched[0]).pathname;
-      await page.locator("#nativeStop").click();
+      await page.evaluate(() => api("terminal/stop", {}));
       await page.waitForFunction(
         () =>
-          document
-            .querySelector("#nativeStatus")
-            ?.textContent?.includes("Stopped"),
+          document.querySelectorAll("#nativeAttachmentList > li").length === 0,
         {},
         { timeout: 20000 },
       );
+      await page.locator("#settingsTab").click();
       assert.equal(await cards.count(), 0);
       const stale = await fetch(app.origin + url, {
         headers: { Authorization: "Bearer " + f.store.secrets.admin },

@@ -170,21 +170,14 @@ try {
     () => document.querySelector("#state")?.textContent === "IDLE",
   );
   await page.locator("#coachTab").click();
-  assert.equal(await page.locator("#nativeStart").isEnabled(), true);
+  assert.equal(await page.locator("#nativeTerminal").isVisible(), true);
   assert.equal(await page.locator("#operatorText").count(), 0);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Unsaved operator draft");
   await page.locator("#coachTab").click();
-  assert.match(
-    await page.locator("#operatorSnapshot").innerText(),
-    /saved.*revision|Saved.*revision/,
-  );
-  assert.doesNotMatch(
-    await page.locator("#operatorSnapshot").innerText(),
-    /Unsaved operator draft/,
-  );
+  assert.equal(await page.locator("#operatorSnapshot").count(), 0);
   assert.equal(await page.locator(".chat-assistant button").count(), 0);
   assert.equal(
     await page.locator(".chat-user button").count(),
@@ -247,14 +240,13 @@ try {
   );
   await page.goto(app.origin + "/chat/member/synthetic-person");
   await page.waitForURL("**/chat/operator");
-  assert.equal(await page.locator("#nativeStart").isVisible(), true);
+  assert.equal(await page.locator("#nativeTerminal").isVisible(), true);
   assert.deepEqual(
     memberCalls,
     [],
     "legacy links and operator UI never request member data",
   );
-  await page.locator("#nativeHistoryToggle").click();
-  assert.equal(await page.locator("#nativeHistoryPanel").isVisible(), true);
+  assert.equal(await page.locator("#nativeAttachments").isVisible(), true);
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Synthetic authority reload");
@@ -283,7 +275,7 @@ try {
   assert.equal(await page.locator("#settingsPanel").isVisible(), true);
   await page.locator("#coachTab").click();
   assert.equal(new URL(page.url()).pathname, "/chat/operator");
-  assert.equal(await page.locator("#nativeStart").isVisible(), true);
+  assert.equal(await page.locator("#nativeTerminal").isVisible(), true);
   await page.setViewportSize({ width: 1280, height: 1100 });
   await page.evaluate(() => {
     window.scrollTo(0, 0);

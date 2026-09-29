@@ -103,11 +103,10 @@ test(
           await page
             .locator("#nativeStart, #nativeStop, #nativeHistoryToggle")
             .count(),
-          3,
+          0,
         );
       }
-      await page.locator("#nativeHistoryToggle").click();
-      assert.equal(await page.locator("#nativeHistoryPanel").isVisible(), true);
+      assert.equal(await page.locator("#nativeAttachments").isVisible(), true);
       await page.locator("#settingsTab").click();
       await page.getByRole("tab", { name: "Persona", exact: true }).click();
       await page.locator("#name").fill("Warden");
@@ -122,10 +121,7 @@ test(
           document.querySelector("#coachTab")?.textContent?.trim() === "Warden",
       );
       await page.reload();
-      if (await page.locator("#login").isVisible()) {
-        await page.locator("#adminKey").fill(store.secrets.admin);
-        await page.locator("#unlock").click();
-      }
+      await page.locator("#studio").waitFor({ state: "visible" });
       await page.waitForFunction(
         () =>
           document.querySelector("#coachTab")?.textContent?.trim() === "Warden",

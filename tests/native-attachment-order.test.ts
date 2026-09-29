@@ -16,7 +16,7 @@ test("attachment presentation reverses acceptance order, not timestamps; snapsho
     await page.goto(h.app.origin + "/chat/operator");
     await page.locator("#adminKey").fill(h.f.store.secrets.admin);
     await page.locator("#unlock").click();
-    await page.locator("#nativeStart").waitFor();
+    await page.locator("#nativeAttachments").waitFor();
     await page.evaluate("window.__name = (fn) => fn");
     const result = await page.evaluate(() => {
       const w = window as any;

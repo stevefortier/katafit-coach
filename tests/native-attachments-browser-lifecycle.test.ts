@@ -66,7 +66,6 @@ async function open(
   return { page, context, errors };
 }
 async function connect(page: Page) {
-  await page.locator("#nativeStart").click({ timeout: 5000 });
   await page.waitForFunction(() =>
     document
       .querySelector("#nativeStatus")
@@ -111,6 +110,7 @@ test("an abnormal disconnect erases the panel by the detach deadline unless the 
     assert.equal(await count(page), 1, "re-authorized snapshot kept it");
 
     h.dropSocket();
+    await page.locator("#settingsTab").click();
     await page.waitForFunction(() =>
       document
         .querySelector("#nativeStatus")
@@ -230,7 +230,7 @@ test("a response arriving after Stop creates no object URL", async () => {
     );
     await h.send({ workspace_path: "a.png" });
     await waitCards(page, 1);
-    await page.locator("#nativeStop").click();
+    await page.evaluate(() => api("terminal/stop", {}));
     await waitCards(page, 0);
     release();
     await page.waitForTimeout(300);
@@ -362,7 +362,7 @@ test("a reconnect that cannot be re-authorized yet shows pending and keeps nothi
     });
     provider.catch(() => {});
     await new Promise((r) => setTimeout(r, 100));
-    await connect(page);
+    h.dropSocket();
     await page.waitForFunction(() =>
       /Pi is busy|waiting/i.test(
         document.querySelector("#nativeAttachmentsNotice")?.textContent ?? "",
