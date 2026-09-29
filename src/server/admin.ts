@@ -858,7 +858,8 @@ export async function admin(
           lifecycle,
           transition: busy,
           autoQuiesced,
-          autoQuiesceReady: autoQuiesced && !autoQuiescePending,
+          autoQuiesceReady:
+            autoQuiesced && !autoQuiescePending && terminal.idle,
           autoWasRunning: autoQuiesced && autoWasRunning,
         });
       if (req.method !== "POST") return send(404, { error: "NOT_FOUND" });
@@ -965,8 +966,8 @@ export async function admin(
         await reconcileForAutomaticUpdate();
         if (
           autoQuiesced &&
-          worker &&
-          (!worker.stopConfirmed || !worker.safeToReplace)
+          (!terminal.idle ||
+            (worker && (!worker.stopConfirmed || !worker.safeToReplace)))
         )
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
         autoQuiesced = false;
@@ -985,31 +986,36 @@ export async function admin(
         if (autoQuiesced) {
           try {
             await autoQuiescePending;
-            if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+            if (
+              !terminal.idle ||
+              (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+            )
               throw new Error("WORKER_STOP_UNCONFIRMED");
             return send(200, { wasRunning: autoWasRunning });
           } catch {
             return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
           }
         }
-        // Native Pi can SEND and write the action journal; defer rather than
-        // let the supervisor snapshot journals under live native work. The
-        // check and autoQuiesced are set synchronously, and terminal admission
-        // re-checks autoQuiesced, so no native work can begin afterwards.
+        // Fence new native admission before stopping Pi. The sandbox and its
+        // gateway must finish teardown (including action reconciliation) before
+        // the owner can snapshot protected journals or replace this process.
         if (
           updates.applying ||
           updates.recovering ||
           busy ||
           preview ||
-          !terminal.idle ||
           (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
         )
           return send(409, { error: "AUTO_UPDATE_BUSY" });
         autoQuiesced = true;
         autoWasRunning = !!worker && worker.state !== "stopped";
         const stopping = (async () => {
+          await terminal.stop();
           if (autoWasRunning) await worker!.stop();
-          if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+          if (
+            !terminal.idle ||
+            (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+          )
             throw new Error("WORKER_STOP_UNCONFIRMED");
         })();
         autoQuiescePending = stopping;
@@ -1217,12 +1223,9 @@ export async function admin(
             hint: "This older launcher cannot preserve running Coach across a manual update. Nothing was stopped or applied. Replace the stable launcher with a reviewed current build using the same Coach home; settings and preview restarts do not need this upgrade.",
           });
         }
-        // Fence native start/active/cleanup before any teardown or worker gate.
-        if (!terminal.idle) {
-          await cancelPrepared();
-          return send(409, { error: "AUTO_UPDATE_BUSY" });
-        }
-        // Fence claims synchronously so publication cannot start after admission.
+        // The confirmed upgrade closes Pi after the candidate is prepared.
+        // busy fences new native tickets before teardown; stop closes the
+        // gateway and reconciles its action journal before owner acceptance.
         if (wasRunning && !worker!.quiesceForUpdate()) {
           await cancelPrepared();
           return send(409, { error: "AUTO_UPDATE_BUSY" });
@@ -1230,6 +1233,7 @@ export async function admin(
         busy = true;
         try {
           await terminal.stop();
+          if (!terminal.idle) throw new Error("WORKER_STOP_UNCONFIRMED");
           if (wasRunning) await worker!.stop();
           if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
             throw new SafeError("WORKER_STOP_UNCONFIRMED");

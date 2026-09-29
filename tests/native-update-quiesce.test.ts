@@ -72,7 +72,7 @@ const connect = async (origin: string, ticket: string) => {
   return { ws, closed };
 };
 
-test("auto quiesce is refused while native Pi is starting and blocks every later native admission", async () => {
+test("auto quiesce closes a starting Pi under the admission fence", async () => {
   const h = held();
   heldStartup = h;
   const f = await fixture();
@@ -100,19 +100,16 @@ test("auto quiesce is refused while native Pi is starting and blocks every later
     const starting = await connect(app.origin, first.ticket);
     sockets.push(starting.ws);
     await h.started;
-    const busy = await post("/api/update/auto/quiesce");
-    assert.equal(busy.status, 409);
-    assert.deepEqual(await busy.json(), { error: "AUTO_UPDATE_BUSY" });
+    const quiesce = await post("/api/update/auto/quiesce");
+    assert.equal(quiesce.status, 200);
+    assert.deepEqual(await quiesce.json(), { wasRunning: false });
     h.release();
-    // No artifact is provisioned: the start fails and fully cleans up.
     assert.equal(await starting.closed, 1008);
-    let quiesce: Response | undefined;
-    for (let i = 0; i < 100; i++) {
-      quiesce = await post("/api/update/auto/quiesce");
-      if (quiesce.status === 200) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    assert.equal(quiesce!.status, 200);
+    const state = await (
+      await fetch(app.origin + "/api/status", { headers })
+    ).json();
+    assert.equal(state.nativeActive, false);
+    assert.equal(state.autoQuiesceReady, true);
     const calls = f.calls.length;
     assert.equal((await post("/api/terminal/ticket")).status, 409);
     const late = await connect(app.origin, spare.ticket);
@@ -134,7 +131,7 @@ test("auto quiesce is refused while native Pi is starting and blocks every later
   }
 });
 
-test("manual update defers native startup without teardown or acceptance", async () => {
+test("confirmed manual update closes a starting Pi after source validation", async () => {
   const h = held();
   heldStartup = h;
   const f = await fixture();
@@ -161,18 +158,10 @@ test("manual update defers native startup without teardown or acceptance", async
     ws = starting.ws;
     await h.started;
     pending = post("/api/update/apply", { confirm: true, sha: updates.latest });
-    const response = await Promise.race([
-      pending,
-      new Promise<undefined>((resolve) => setTimeout(resolve, 250)),
-    ]);
-    assert.equal(
-      response?.status,
-      409,
-      "reject immediately, do not await teardown of starting native work",
-    );
-    assert.deepEqual(await response!.json(), { error: "AUTO_UPDATE_BUSY" });
-    assert.equal(updates.lastOperation, undefined);
-    assert.equal(ws.readyState, WebSocket.OPEN);
+    const response = await pending;
+    assert.equal(response.status, 202);
+    assert.equal(await starting.closed, 1008);
+    assert.equal(updates.lastOperation?.sha, updates.latest);
   } finally {
     h.release();
     heldStartup = undefined;
@@ -183,10 +172,66 @@ test("manual update defers native startup without teardown or acceptance", async
   }
 });
 
+test("failed native teardown retains the admission fence and rejects idempotent quiesce and release", async () => {
+  const f = await fixture();
+  const setting = new AutoUpdateSetting(f.store.dir);
+  await setting.write(true);
+  const app = await admin(
+    f.store,
+    0,
+    undefined,
+    undefined,
+    new Updates(null, async () => {}),
+    setting,
+  );
+  const originalStop = NativeTerminal.prototype.stop;
+  let gatewayCloses = 0;
+  let terminal: NativeTerminal | undefined;
+  const headers = {
+    Authorization: "Bearer " + f.store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string) =>
+    fetch(app.origin + path, { method: "POST", headers, body: "{}" });
+  try {
+    NativeTerminal.prototype.stop = function () {
+      terminal = this;
+      if (!(this as any).gateway)
+        (this as any).gateway = {
+          close: async () => {
+            gatewayCloses++;
+            throw new Error("synthetic gateway disposal failure");
+          },
+        };
+      return originalStop.call(this);
+    };
+    assert.equal((await post("/api/update/auto/quiesce")).status, 409);
+    assert.equal(gatewayCloses, 1);
+    const status = await (
+      await fetch(app.origin + "/api/status", { headers })
+    ).json();
+    assert.equal(status.autoQuiesced, true);
+    assert.equal(status.autoQuiesceReady, false);
+    assert.equal((await post("/api/update/auto/quiesce")).status, 409);
+    assert.equal((await post("/api/update/auto/release")).status, 409);
+    assert.equal((await post("/api/terminal/ticket")).status, 409);
+  } finally {
+    NativeTerminal.prototype.stop = originalStop;
+    if (terminal) {
+      (terminal as any).gateway = undefined;
+      (terminal as any).cleanupFailed = false;
+    }
+    await app.close();
+    await f.close();
+  }
+});
+
 async function supervised(
   prefix: string,
   badTarget: string,
   holdStartup = false,
+  failActivation = true,
 ) {
   const { supervise, prepareLegacyNativeGateway } = await import(
     "./helpers/legacy-supervisor.js"
@@ -220,7 +265,7 @@ async function supervised(
     );
     await writeFile(
       join(root, "dist/server/admin.js"),
-      `import {admin as base} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export {updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export async function admin(...args){${target === badTarget ? `if(args[0].dir===${JSON.stringify(home)}) throw Error('candidate startup failed');` : ""}return base(...args);}`,
+      `import {admin as base} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export {updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)}; export async function admin(...args){${target === badTarget && failActivation ? `if(args[0].dir===${JSON.stringify(home)}) throw Error('candidate startup failed');` : ""}return base(...args);}`,
     );
     return root;
   };
@@ -277,9 +322,10 @@ async function supervised(
   };
 }
 
-test("supervised auto update prepares but defers activation while native Pi is starting", async () => {
+test("supervised auto update closes a starting Pi and activates the prepared candidate", async () => {
   const f = await fixture();
-  const s = await supervised("coach-native-defer-", "e".repeat(40), true);
+  const target = "e".repeat(40);
+  const s = await supervised("coach-native-close-", target, true, false);
   let ws: WebSocket | undefined;
   try {
     await s.configure(new URL(f.store.publicConfig().origin).origin);
@@ -306,14 +352,20 @@ test("supervised auto update prepares but defers activation while native Pi is s
     }
     assert.equal(ws.readyState, WebSocket.OPEN);
     await s.owner.auto.tick();
-    assert.equal(s.owner.updates.snapshot().autoOutcome?.state, "deferred");
+    assert.equal(s.owner.updates.snapshot().autoOutcome?.state, "stopped");
     assert.equal(
       s.prepares(),
       1,
-      "stable owner prepares before the child admission recheck",
+      "stable owner prepares before closing native Pi",
     );
-    assert.equal(s.owner.pid, pid);
-    assert.equal(s.owner.updates.snapshot().installed, "b".repeat(40));
+    assert.notEqual(s.owner.pid, pid);
+    assert.equal(s.owner.updates.snapshot().installed, target);
+    assert.equal(await started.closed, 1008);
+    const state = await (
+      await fetch(s.owner.origin + "/api/status", { headers: s.headers })
+    ).json();
+    assert.equal(state.nativeActive, false);
+    assert.equal(state.autoQuiesced, false);
   } finally {
     ws?.terminate();
     await s.close();
