@@ -431,17 +431,19 @@ export async function admin(
         const allowed =
           url.pathname === "/api/dashboard"
             ? ["before"]
-            : url.pathname === "/api/dashboard/map"
-              ? ["date", "start", "end", "cursor"]
-              : url.pathname === "/api/dashboard/activity"
-                ? ["id"]
-                : url.pathname === "/api/dashboard/avatar"
+            : url.pathname === "/api/dashboard/members"
+              ? []
+              : url.pathname === "/api/dashboard/map"
+                ? ["date", "start", "end", "cursor"]
+                : url.pathname === "/api/dashboard/activity"
                   ? ["id"]
-                  : url.pathname === "/api/dashboard/photo"
-                    ? ["activity_id", "file_id"]
-                    : [];
+                  : url.pathname === "/api/dashboard/avatar"
+                    ? ["id"]
+                    : url.pathname === "/api/dashboard/photo"
+                      ? ["activity_id", "file_id"]
+                      : [];
         if (
-          !allowed.length ||
+          (url.pathname !== "/api/dashboard/members" && !allowed.length) ||
           [...params.keys()].some(
             (k) => !allowed.includes(k) || params.getAll(k).length !== 1,
           )
@@ -463,6 +465,9 @@ export async function admin(
           if (!id || !/^[a-f0-9]{24}$/.test(id))
             throw new SafeError("ARGUMENTS_REJECTED");
           target = `/api/users/${id}/avatar/64`;
+        } else if (url.pathname === "/api/dashboard/members") {
+          if (params.size) throw new SafeError("ARGUMENTS_REJECTED");
+          target = "/api/friends/dojo/dashboard-members";
         } else if (url.pathname === "/api/dashboard/activity")
           target = `/api/friends/activity/${segment("id")}`;
         else {

@@ -420,13 +420,17 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           document.querySelector<HTMLElement>("#dashboardCoverage")!;
         const mapBox = map.getBoundingClientRect();
         const dateBox = date.getBoundingClientRect();
+        const layoutBox = document
+          .querySelector<HTMLElement>(".dashboard-map-layout")!
+          .getBoundingClientRect();
         return {
           dateName:
             date.getAttribute("aria-label") ||
             date.labels?.[0]?.textContent?.trim(),
           dateWidth: dateBox.width,
           gap: mapBox.top - dateBox.bottom,
-          aligned: dateBox.left >= mapBox.left && dateBox.right <= mapBox.right,
+          aligned:
+            dateBox.left >= layoutBox.left && dateBox.right <= layoutBox.right,
           statusWidth: status.getBoundingClientRect().width,
           feedStatusWidth: feedStatus.getBoundingClientRect().width,
           coverageWidth: coverage.getBoundingClientRect().width,
@@ -443,7 +447,10 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         dojoShell.gap >= 0 && dojoShell.gap <= 16,
         "date stays next to map",
       );
-      assert.ok(dojoShell.aligned && !dojoShell.overflow);
+      assert.ok(
+        dojoShell.aligned && !dojoShell.overflow,
+        JSON.stringify(dojoShell),
+      );
       assert.ok(dojoShell.statusWidth <= 1 && dojoShell.feedStatusWidth <= 1);
       assert.ok(
         dojoShell.coverageWidth <= 1,

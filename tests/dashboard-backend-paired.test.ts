@@ -211,6 +211,23 @@ test(
         ).toISOString(),
       });
       const mapUrl = `${app.origin}/api/dashboard/map?${mapQuery}`;
+      const rosterVisible = await fetch(`${app.origin}/api/dashboard/members`, {
+        headers: mapHeaders,
+      });
+      assert.equal(rosterVisible.status, 200);
+      const memberCards = (await rosterVisible.json()) as any;
+      assert.deepEqual(
+        memberCards.members.map((m: any) => m._id).sort(),
+        [String(viewer), String(owner)].sort(),
+      );
+      const authorizedCard = memberCards.members.find(
+        (m: any) => m._id === String(owner),
+      );
+      assert.equal(
+        authorizedCard.last_position?.activity_id,
+        String(metric._id),
+      );
+      assert.equal(authorizedCard.last_position?.position?.latitude, 42.3601);
       const mapVisible = await fetch(mapUrl, { headers: mapHeaders });
       assert.equal(mapVisible.status, 200);
       const visibleFeed = (await mapVisible.json()) as any;
@@ -232,6 +249,16 @@ test(
       );
       const mapHidden = await fetch(mapUrl, { headers: mapHeaders });
       assert.equal(mapHidden.status, 200);
+      const rosterHidden = await fetch(`${app.origin}/api/dashboard/members`, {
+        headers: mapHeaders,
+      });
+      assert.equal(rosterHidden.status, 200);
+      assert.equal(
+        (await rosterHidden.json()).members.find(
+          (m: any) => m._id === String(owner),
+        ).last_position,
+        null,
+      );
       const hiddenFeed = (await mapHidden.json()) as any;
       assert.ok(
         !hiddenFeed.activities.some((a: any) => a._id === String(metric._id)),
@@ -384,6 +411,20 @@ test(
           assert.match(
             await page.locator("#dashboardMapStatus").innerText(),
             /1 members with authorized position/,
+          );
+          await page
+            .locator("#dashboardMemberCards .dashboard-member-card")
+            .first()
+            .waitFor();
+          assert.equal(
+            await page
+              .locator("#dashboardMemberCards .dashboard-member-card")
+              .count(),
+            3,
+          );
+          assert.equal(
+            await page.locator("#dashboardMap .dashboard-member-pin").count(),
+            1,
           );
           assert.ok(
             requestedTiles.length > 0,
