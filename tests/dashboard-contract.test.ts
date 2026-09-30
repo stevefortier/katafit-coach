@@ -10,18 +10,43 @@ async function render(
   details = rows,
   pages?: any[],
   detailStatuses: Record<string, number> = {},
+  rosterMembers: any[] = [],
+  photoStatuses: Record<string, number> = {},
 ) {
   class Node {
+    constructor(public tagName = "") {}
     textContent = "";
     children: Node[] = [];
     attributes: any = {};
     dataset: Record<string, string> = {};
     hidden = false;
     listeners: any = {};
+    parent?: Node;
     append(...nodes: Node[]) {
+      for (const node of nodes) node.parent = this;
       this.children.push(...nodes);
     }
+    prepend(...nodes: Node[]) {
+      for (const node of nodes) node.parent = this;
+      this.children.unshift(...nodes);
+    }
+    querySelectorAll(selector: string): Node[] {
+      const className = selector.startsWith(".") ? selector.slice(1) : "";
+      const descend = (node: Node): Node[] =>
+        node.children.flatMap((child) => [
+          ...((className &&
+            String((child as any).className || "")
+              .split(/\s+/)
+              .includes(className)) ||
+          (!className && child.tagName === selector)
+            ? [child]
+            : []),
+          ...descend(child),
+        ]);
+      return descend(this);
+    }
     replaceChildren(...nodes: Node[]) {
+      for (const node of nodes) node.parent = this;
       this.children = nodes;
     }
     setAttribute(k: string, v: string) {
@@ -37,25 +62,41 @@ async function render(
     after(n: Node) {
       nodes.more = n;
     }
-    remove() {}
+    remove() {
+      if (this.parent)
+        this.parent.children = this.parent.children.filter((n) => n !== this);
+      this.parent = undefined;
+    }
   }
   const nodes: Record<string, Node> = {};
   const calls: string[] = [];
+  const revokedUrls: string[] = [];
   const context: any = {
     window: {},
     document: {
       getElementById: (id: string) => (nodes[id] ||= new Node()),
-      createElement: () => new Node(),
+      createElement: (tag: string) => new Node(tag),
       createElementNS: () => new Node(),
     },
     AbortController,
     URLSearchParams,
-    URL: { createObjectURL: () => "blob:synthetic", revokeObjectURL() {} },
+    URL: {
+      createObjectURL: () => "blob:synthetic",
+      revokeObjectURL: (url: string) => revokedUrls.push(url),
+    },
     fetch: async (url: string) => {
       calls.push(url);
+      if (url === "/api/dashboard/members")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ members: rosterMembers }),
+        };
+      const fileId = new URL(url, "http://fixture").searchParams.get("file_id");
       const id = new URL(url, "http://fixture").searchParams.get("id");
       const row = details.find((a) => a._id === id);
-      const status = (id && detailStatuses[id]) || 200;
+      const status =
+        (fileId && photoStatuses[fileId]) || (id && detailStatuses[id]) || 200;
       return {
         ok: status === 200,
         status,
@@ -71,6 +112,10 @@ async function render(
       };
     },
   };
+  if (rosterMembers.length) {
+    (nodes.dashboardMapDate = new Node() as any).type = "date";
+    (nodes.dashboardMapDate as any).value = "2026-09-28";
+  }
   vm.runInNewContext(
     await readFile(new URL("../ui/dashboard.js", import.meta.url), "utf8"),
     context,
@@ -80,6 +125,7 @@ async function render(
   return {
     nodes,
     calls,
+    revokedUrls,
     all,
     reload: () => context.window.CoachDashboard.load(null, "synthetic"),
     labels: () =>
@@ -97,6 +143,51 @@ const metric = (measurements: any[], extra = {}) => ({
   data: { measurements },
   ...extra,
 });
+test("feed detail 403 stays purged after the roster refresh it triggers", async () => {
+  const row = metric([{ type_id: "weight", value: 75, unit: "kg" }]);
+  const r = await render([row], [row], undefined, { m: 403 }, [
+    {
+      _id: "a",
+      display_name: "Synthetic Ada",
+      stats: { weight: { value: 75, unit: "kg" } },
+      last_position: {
+        position: { latitude: 40, longitude: -73 },
+        occurred_at: "2026-09-28T12:00:00Z",
+      },
+    },
+  ]);
+  for (
+    let i = 0;
+    i < 30 &&
+    r.calls.filter((url) => url === "/api/dashboard/members").length < 2;
+    i++
+  )
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.ok(
+    r.calls.filter((url) => url === "/api/dashboard/members").length >= 2,
+  );
+  assert.doesNotMatch(
+    r
+      .all(r.nodes.dashboardMemberCards)
+      .map((n: any) => n.textContent)
+      .join(" "),
+    /Synthetic Ada|75 kg/,
+    "fresh roster response cannot reintroduce a member after a same-load detail denial",
+  );
+});
+test("a later photo-byte 403 removes earlier rendered photos and revokes their URLs", async () => {
+  const row = metric([], {
+    type: "media",
+    data: { files: ["f1", "f2"].map((_id) => ({ _id, type: "image/jpeg" })) },
+  });
+  const r = await render([row], [row], undefined, {}, [], { f2: 403 });
+  assert.ok(r.calls.some((url) => url.includes("file_id=f1")));
+  assert.ok(r.calls.some((url) => url.includes("file_id=f2")));
+  assert.equal(r.nodes.dashboardRoster.children.length, 0);
+  assert.ok(r.revokedUrls.includes("blob:synthetic"));
+  assert.match(r.nodes.dashboardStatus.textContent, /denied \(403\)/i);
+});
 test("detail denials stay visible outside the gallery through page completion and reset on reload", async () => {
   const denial =
     "REST request denied (403). Renew the saved Coach credential with ordinary REST access if needed.";
@@ -108,14 +199,21 @@ test("detail denials stay visible outside the gallery through page completion an
           ? { files: [{ _id: "f", type: "image/jpeg" }] }
           : { measurements: [] },
     });
+    // After a true denial the denied member fails closed; another member's
+    // older metric still charts while the denial stays visible.
     const older = metric([{ type_id: "weight", value: 79, unit: "kg" }], {
       _id: "older",
+      user_id: "b",
+      created_at: "2026-09-20T12:00:00Z",
+    });
+    const deniedOlder = metric([{ type_id: "weight", value: 81, unit: "kg" }], {
+      _id: "denied-older",
       created_at: "2026-09-20T12:00:00Z",
     });
     const statuses = { m: 403 };
     const r = await render(
       [row],
-      [row, older],
+      [row, older, deniedOlder],
       [
         {
           users: [{ _id: "a", display_name: "Synthetic Ada" }],
@@ -123,12 +221,15 @@ test("detail denials stay visible outside the gallery through page completion an
           hasMore: true,
           oldestDate: row.created_at,
         },
-        { users: [], activities: [older], hasMore: false },
+        { users: [], activities: [older, deniedOlder], hasMore: false },
       ],
       statuses,
     );
     const assertFailure = () => {
-      assert.ok(r.nodes.dashboardStatus.textContent.includes(denial), type);
+      assert.ok(
+        r.nodes.dashboardStatus.textContent.includes(denial),
+        `${type}: ${r.nodes.dashboardStatus.textContent}`,
+      );
       assert.match(
         r.nodes.dashboardStatus.textContent,
         /(?:incomplete|partial).*detail/i,
@@ -141,6 +242,8 @@ test("detail denials stay visible outside the gallery through page completion an
       await new Promise((resolve) => setTimeout(resolve, 1));
     assert.equal(r.nodes.more.hidden, true);
     assert.ok(r.labels().some((s: string) => s.includes("79 kg")));
+    assert.ok(!r.labels().some((s: string) => s.includes("81 kg")));
+    assert.ok(!r.calls.some((url) => url.includes("id=denied-older")));
     assertFailure();
     statuses.m = 200;
     await r.reload();
@@ -149,6 +252,40 @@ test("detail denials stay visible outside the gallery through page completion an
       "Loaded bounded feed history; not a complete history.",
     );
   }
+});
+
+test("a true 403 purges that member's cached detail charts and photos; 429 does not", async () => {
+  const cached = metric([{ type_id: "weight", value: 77, unit: "kg" }], {
+    _id: "cached",
+  });
+  const photo = metric([], {
+    _id: "photo",
+    type: "media",
+    data: { files: [{ _id: "f", type: "image/jpeg" }] },
+  });
+  const other = metric([{ type_id: "weight", value: 66, unit: "kg" }], {
+    _id: "other",
+    user_id: "b",
+  });
+  const failing = metric([{ type_id: "weight", value: 78, unit: "kg" }], {
+    _id: "m",
+    created_at: "2026-09-29T12:00:00Z",
+  });
+  const rows = [cached, photo, other, failing];
+  const denied = await render(rows, rows, undefined, { m: 403 });
+  assert.ok(!denied.labels().some((s: string) => s.includes("77 kg")));
+  assert.ok(denied.labels().some((s: string) => s.includes("66 kg")));
+  assert.equal(denied.nodes.dashboardRoster.children.length, 0);
+  assert.match(denied.nodes.dashboardStatus.textContent, /denied \(403\)/);
+  const throttled = await render(rows, rows, undefined, { m: 429 });
+  assert.ok(throttled.labels().some((s: string) => s.includes("77 kg")));
+  assert.ok(throttled.labels().some((s: string) => s.includes("66 kg")));
+  assert.equal(throttled.nodes.dashboardRoster.children.length, 1);
+  assert.match(
+    throttled.nodes.dashboardStatus.textContent,
+    /partial.*detail.*failed \(429\)/i,
+  );
+  assert.doesNotMatch(throttled.nodes.dashboardStatus.textContent, /denied/i);
 });
 
 test("strict body numbers and explicit weight/fat limits, never arbitrary unit inference", async () => {

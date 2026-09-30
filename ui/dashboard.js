@@ -14,7 +14,24 @@ window.CoachDashboard = (() => {
   let leafletMap;
   let mapResizeObserver;
   const avatarUrls = [];
+  const avatarCache = new Map();
   const urls = [];
+  // Last successful authorized roster; kept only across transient failures.
+  let rosterCache = null;
+  // A confirmed same-load denial cannot be undone by a concurrent roster/map
+  // snapshot. A fresh dashboard load is required to recheck this member.
+  const suppressedMembers = new Set();
+  let selectedMember = null;
+  let mapMembers = new Map();
+  let feedMembers = new Map();
+  let filterFeed = () => {};
+  let filterMap = () => {};
+  let forgetMember = () => {};
+  // Only a true 401/403 means access was denied; 429, 5xx and network
+  // failures are transient and must never be treated as revoked sharing.
+  const httpError = (message, status) =>
+    Object.assign(new Error(message), { status });
+  const denied = (error) => error?.status === 401 || error?.status === 403;
   const text = (tag, value, className) => {
     const node = document.createElement(tag);
     node.textContent = value;
@@ -31,6 +48,15 @@ window.CoachDashboard = (() => {
     disposeMap();
     $("dashboardMap")?.replaceChildren();
     $("dashboardMapSelection")?.replaceChildren();
+    $("dashboardMemberCards")?.replaceChildren();
+    selectedMember = null;
+    mapMembers = new Map();
+    feedMembers = new Map();
+    rosterCache = null;
+    suppressedMembers.clear();
+    filterFeed = () => {};
+    filterMap = () => {};
+    forgetMember = () => {};
     if ($("dashboardMapStatus")) $("dashboardMapStatus").textContent = "";
     $("dashboardMapStatus")?.removeAttribute("data-tone");
     observer?.disconnect();
@@ -48,7 +74,99 @@ window.CoachDashboard = (() => {
     mapResizeObserver = undefined;
     leafletMap?.remove();
     leafletMap = undefined;
+    avatarCache.clear();
     for (const url of avatarUrls.splice(0)) URL.revokeObjectURL(url);
+  }
+  function renderMemberCards() {
+    const target = $("dashboardMemberCards");
+    if (!target) return;
+    const heading = $("dashboardMemberHeading");
+    if (heading)
+      heading.textContent = mapMembers.size
+        ? "Dojo members"
+        : "Members in loaded shared data";
+    target.replaceChildren();
+    const members = new Map(
+      [...feedMembers, ...mapMembers].filter(
+        ([id]) => !suppressedMembers.has(id),
+      ),
+    );
+    const stat = (value, unit, max) => {
+      if (
+        unit === "" &&
+        typeof value === "number" &&
+        Number.isInteger(value) &&
+        value > 0 &&
+        value <= max
+      )
+        return `${value}`;
+      if (
+        unit !== "" &&
+        unit !== "weight" &&
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        value > 0 &&
+        value <= max
+      )
+        return `${value} ${unit}`;
+      if (
+        unit === "weight" &&
+        value &&
+        typeof value === "object" &&
+        typeof value.value === "number" &&
+        Number.isFinite(value.value) &&
+        value.value > 0 &&
+        value.value <= max &&
+        ["kg", "lb", "lbs"].includes(value.unit)
+      )
+        return `${value.value} ${value.unit}`;
+      return "Unavailable";
+    };
+    const makeCard = (id, user, all = false) => {
+      const button = text(
+        "button",
+        "",
+        `dashboard-member-card${all ? " dashboard-member-all" : ""}`,
+      );
+      button.type = "button";
+      button.setAttribute("aria-pressed", String(selectedMember === id));
+      const name = all ? "All members" : user.display_name || "Member";
+      button.append(text("strong", name));
+      if (!all) {
+        const portrait = text("span", "", "dashboard-member-portrait");
+        portrait.dataset.memberId = id;
+        portrait.textContent = (name.match(/[\p{L}\p{N}]+/gu) || ["M"])
+          .slice(-2)
+          .map((s) => s[0].toUpperCase())
+          .join("");
+        const avatar = avatarCache.get(id);
+        if (avatar) {
+          const image = text("img", "", "dashboard-map-avatar");
+          image.alt = "";
+          image.src = avatar;
+          image.onerror = () => image.remove();
+          portrait.prepend(image);
+        }
+        button.prepend(portrait);
+        const stats = mapMembers.has(id) ? user.stats : undefined;
+        for (const [label, value] of [
+          ["Weight", stat(stats?.weight, "weight", 2000)],
+          ["Height", stat(stats?.height_cm, "cm", 300)],
+          ["Body fat", stat(stats?.body_fat_percent, "%", 100)],
+          ["Age", stat(stats?.age_years, "", 130)],
+        ])
+          button.append(text("span", `${label}: ${value}`));
+      }
+      button.addEventListener("click", () => {
+        selectedMember = id;
+        renderMemberCards();
+        filterMap();
+        filterFeed();
+      });
+      target.append(button);
+    };
+    makeCard(null, {}, true);
+    for (const [id, user] of members) makeCard(id, user);
   }
   function svg(tag, attributes) {
     const node = document.createElementNS(svgNS, tag);
@@ -205,15 +323,143 @@ window.CoachDashboard = (() => {
       status = $("dashboardMapStatus");
     if (!map || !selection || !status) return;
     disposeMap();
+    filterMap = () => {};
+    renderMemberCards();
     map.replaceChildren();
     selection.replaceChildren();
     status.removeAttribute("data-tone");
-    const date = $("dashboardMapDate").value;
-    if (!validDay(date)) {
+    const request = async (path) => {
+      const response = await fetch(`/api/${path}`, {
+        headers: { Authorization: `Bearer ${adminKey}` },
+        signal,
+        cache: "no-store",
+        redirect: "error",
+      });
+      if (!response.ok)
+        throw httpError(
+          denied(response)
+            ? `Authorized map read denied (${response.status}).`
+            : `Map read failed (${response.status}); try again shortly.`,
+          response.status,
+        );
+      return response.json();
+    };
+    const deniedMembers = new Set();
+    let avatarLimited = false;
+    const startAvatars = () => {
+      // No per-activity reads; bound requests per load and concurrent BFF reads.
+      // Remaining members retain their initials badge rather than silently requesting 5000 images.
+      const avatarMembers = [...mapMembers.keys()].filter((id) =>
+        /^[0-9a-f]{24}$/.test(id),
+      );
+      const avatarQueue = avatarMembers.slice(0, 80);
+      avatarLimited = avatarMembers.length > avatarQueue.length;
+      let avatarIndex = 0;
+      const readAvatar = async () => {
+        while (live() && avatarIndex < avatarQueue.length) {
+          const memberId = avatarQueue[avatarIndex++];
+          try {
+            const response = await fetch(
+              `/api/dashboard/avatar?${new URLSearchParams({ id: memberId })}`,
+              {
+                headers: { Authorization: `Bearer ${adminKey}` },
+                signal,
+                cache: "no-store",
+                redirect: "error",
+              },
+            );
+            if (
+              !response.ok ||
+              !/^image\/(jpeg|png|webp)$/.test(
+                response.headers.get("content-type")?.split(";")[0] || "",
+              )
+            )
+              continue;
+            const blob = await response.blob();
+            if (
+              !live() ||
+              deniedMembers.has(memberId) ||
+              !mapMembers.has(memberId) ||
+              blob.size > 1024 * 1024 ||
+              !blob.size
+            )
+              continue;
+            const url = URL.createObjectURL(blob);
+            avatarUrls.push(url);
+            avatarCache.set(memberId, url);
+            for (const pin of [
+              ...map.querySelectorAll(".dashboard-member-pin"),
+              ...$("dashboardMemberCards").querySelectorAll(
+                ".dashboard-member-portrait",
+              ),
+            ]) {
+              if (pin.dataset.memberId !== memberId) continue;
+              const image = text("img", "", "dashboard-map-avatar");
+              image.alt = "";
+              image.src = url;
+              image.onerror = () => image.remove();
+              pin.prepend(image);
+            }
+          } catch {
+            /* revoked access, aborted date, or unavailable image: initials remain */
+          }
+        }
+      };
+      for (let worker = 0; worker < Math.min(2, avatarQueue.length); worker++)
+        void readAvatar();
+    };
+    // The roster is not date-scoped: request it at once so authorized member
+    // cards never wait on, or disappear with, the map read or Leaflet. Only
+    // this separately authorized endpoint may create profile pins.
+    const rosterReady = request("dashboard/members")
+      .then((roster) => {
+        if (!Array.isArray(roster?.members))
+          throw new Error("Invalid member roster.");
+        return {
+          members: new Map(
+            roster.members
+              .filter((m) => typeof m?._id === "string")
+              .map((m) => [m._id, m]),
+          ),
+        };
+      })
+      .catch((error) => ({ error }))
+      .then(({ members, error }) => {
+        if (!live()) return { latestPositions: [], note: "" };
+        const code = error?.status ? ` (${error.status})` : "";
+        let note = "Member cards use the separately authorized roster.";
+        if (members) rosterCache = members;
+        else if (denied(error)) {
+          rosterCache = null;
+          note = `Member roster access denied${code}; roster stats and positions removed.`;
+        } else
+          note = rosterCache
+            ? `Member roster refresh failed${code}; showing previously loaded members and positions.`
+            : `Member roster unavailable${code}; member cards show loaded shared data only.`;
+        mapMembers = new Map(
+          [...(rosterCache || [])].filter(([id]) => !suppressedMembers.has(id)),
+        );
+        renderMemberCards();
+        startAvatars();
+        return {
+          fresh: !!members,
+          note,
+          latestPositions: [...mapMembers.values()].filter(
+            (m) =>
+              position(m.last_position?.position) &&
+              Number.isFinite(Date.parse(m.last_position.occurred_at)) &&
+              Date.parse(m.last_position.occurred_at) <= Date.now(),
+          ),
+        };
+      });
+    const fail = async (message) => {
       status.dataset.tone = "error";
-      status.textContent = "Choose a valid activity creation date.";
-      return;
-    }
+      status.textContent = message;
+      const { note } = await rosterReady;
+      if (live()) status.textContent = `${message} ${note}`;
+    };
+    const date = $("dashboardMapDate").value;
+    if (!validDay(date)) return fail("Choose a valid activity creation date.");
     const [year, month, day] = date.split("-").map(Number);
     const start = new Date(0);
     start.setFullYear(year, month - 1, day);
@@ -223,22 +469,7 @@ window.CoachDashboard = (() => {
     const startMs = start.getTime(),
       endMs = end.getTime();
     status.textContent = `Loading authorized positions for ${date} (activity creation date in your device timezone)…`;
-    const request = async (path) => {
-      const response = await fetch(`/api/${path}`, {
-        headers: { Authorization: `Bearer ${adminKey}` },
-        signal,
-        cache: "no-store",
-        redirect: "error",
-      });
-      if (!response.ok)
-        throw new Error(`Authorized map read denied (${response.status}).`);
-      return response.json();
-    };
-    if (!window.L) {
-      status.dataset.tone = "error";
-      status.textContent = "Map unavailable: Leaflet could not load.";
-      return;
-    }
+    if (!window.L) return fail("Map unavailable: Leaflet could not load.");
     const L = window.L;
     const instance = L.map(map, { zoomControl: true, worldCopyJump: true });
     leafletMap = instance;
@@ -310,6 +541,10 @@ window.CoachDashboard = (() => {
         cursor = data.hasMore ? next : undefined;
       } while (cursor && live());
       if (!live()) return;
+      // A date-scoped map cannot establish global last-known position.
+      const roster = await rosterReady;
+      if (!live()) return;
+      const { latestPositions } = roster;
       const entriesWithPins = [];
       const badges = new Map();
       const stillOnMap = (detail, entry) =>
@@ -426,57 +661,8 @@ window.CoachDashboard = (() => {
         );
         selection.replaceChildren(...rows);
       }
-      const avatarCache = new Map();
-      // No per-activity reads; bound requests per selected date and concurrent BFF reads.
-      // Remaining members retain their initials badge rather than silently requesting 5000 images.
-      const avatarMembers = [...byMember.keys()].filter((id) =>
-        /^[0-9a-f]{24}$/.test(id),
-      );
-      const avatarQueue = avatarMembers.slice(0, 80);
-      let avatarIndex = 0;
-      const readAvatar = async () => {
-        while (live() && avatarIndex < avatarQueue.length) {
-          const memberId = avatarQueue[avatarIndex++];
-          try {
-            const response = await fetch(
-              `/api/dashboard/avatar?${new URLSearchParams({ id: memberId })}`,
-              {
-                headers: { Authorization: `Bearer ${adminKey}` },
-                signal,
-                cache: "no-store",
-                redirect: "error",
-              },
-            );
-            if (
-              !response.ok ||
-              !/^image\/(jpeg|png|webp)$/.test(
-                response.headers.get("content-type")?.split(";")[0] || "",
-              )
-            )
-              continue;
-            const blob = await response.blob();
-            if (!live() || blob.size > 1024 * 1024 || !blob.size) continue;
-            const url = URL.createObjectURL(blob);
-            avatarUrls.push(url);
-            avatarCache.set(memberId, url);
-            for (const pin of overlay.querySelectorAll(
-              ".dashboard-map-marker",
-            )) {
-              if (pin.dataset.memberId !== memberId) continue;
-              const image = text("img", "", "dashboard-map-avatar");
-              image.alt = "";
-              image.src = url;
-              image.onerror = () => image.remove();
-              pin.prepend(image);
-            }
-          } catch {
-            /* revoked access, aborted date, or unavailable image: initials remain */
-          }
-        }
-      };
-      for (let worker = 0; worker < Math.min(2, avatarQueue.length); worker++)
-        void readAvatar();
       for (const [memberId, entries] of byMember) {
+        if (suppressedMembers.has(memberId)) continue;
         const name = users.get(memberId)?.display_name || "Member";
         const initials = (name.match(/[\p{L}\p{N}]+/gu) || ["M"])
           .slice(-2)
@@ -493,7 +679,11 @@ window.CoachDashboard = (() => {
             0) %
           360;
         for (const entry of entries) {
-          const marker = text("button", badge, "dashboard-map-marker");
+          const marker = text(
+            "button",
+            "•",
+            "dashboard-map-marker dashboard-activity-pin",
+          );
           marker.type = "button";
           marker.dataset.memberId = memberId;
           marker.style.backgroundColor = `hsl(${hue} 64% 28%)`;
@@ -501,14 +691,6 @@ window.CoachDashboard = (() => {
             "aria-label",
             `${name} activity: ${entry.name || entry.type || "Activity"}`,
           );
-          const photo = avatarCache.get(memberId);
-          if (photo) {
-            const image = text("img", "", "dashboard-map-avatar");
-            image.alt = "";
-            image.src = photo;
-            image.onerror = () => image.remove();
-            marker.prepend(image);
-          }
           marker.addEventListener("click", async () => {
             selectionEpoch++;
             const choiceId = selectionEpoch;
@@ -524,17 +706,59 @@ window.CoachDashboard = (() => {
                 envelope.owner?._id !== memberId ||
                 !stillOnMap(envelope.activity, entry)
               )
-                throw new Error("Position unavailable.");
+                throw Object.assign(new Error("Position unavailable."), {
+                  stale: true,
+                });
               showDetail(envelope.activity, name);
             } catch (error) {
-              if (!live() || choiceId !== selectionEpoch) return;
+              if (!live()) return;
+              // A confirmed denial must invalidate data even when the operator
+              // has selected a different pin since this request began.
+              if (denied(error)) {
+                suppressedMembers.add(memberId);
+                deniedMembers.add(memberId);
+                mapMembers.delete(memberId);
+                rosterCache?.delete(memberId);
+                const priorUrl = avatarCache.get(memberId);
+                if (priorUrl) {
+                  URL.revokeObjectURL(priorUrl);
+                  avatarCache.delete(memberId);
+                  const urlIndex = avatarUrls.indexOf(priorUrl);
+                  if (urlIndex !== -1) avatarUrls.splice(urlIndex, 1);
+                }
+                for (const pin of entriesWithPins.filter(
+                  ({ entry: item }) => item.user_id === memberId,
+                )) {
+                  pin.marker.remove();
+                  pin.anchor.remove();
+                  pin.link.remove();
+                }
+                forgetMember(memberId);
+                renderMemberCards();
+              }
+              // A stale response may purge revoked data, but it must never
+              // replace the newer activity/member selection message.
+              if (choiceId !== selectionEpoch) return;
+              if (!denied(error) && !error.stale) {
+                // Throttled, server or network failure: sharing is unknown,
+                // so keep every pin and card and let the operator retry.
+                selection.replaceChildren(
+                  text(
+                    "p",
+                    `Activity detail temporarily unavailable${error.status ? ` (${error.status})` : ""}. Pins and cards were kept; try again shortly.`,
+                  ),
+                );
+                return;
+              }
               marker.remove();
               anchor.remove();
               link.remove();
               selection.replaceChildren(
                 text(
                   "p",
-                  "Activity or position unavailable, denied, or location changed. Refresh the map to recheck sharing.",
+                  denied(error)
+                    ? `Activity access denied (${error.status}); this member's pins, card and loaded details were removed. Refresh the map to recheck sharing.`
+                    : "Activity or position unavailable or location changed. Refresh the map to recheck sharing.",
                 ),
               );
             }
@@ -545,13 +769,119 @@ window.CoachDashboard = (() => {
           entriesWithPins.push({ entry, marker, anchor, link });
         }
       }
+      for (const member of latestPositions) {
+        const name =
+          member.display_name ||
+          users.get(member._id)?.display_name ||
+          "Member";
+        const stamp = Date.parse(member.last_position.occurred_at);
+        const localDay = (date) =>
+          Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+        const elapsed = Math.max(
+          0,
+          Math.round(
+            (localDay(new Date()) - localDay(new Date(stamp))) / 86400000,
+          ),
+        );
+        const age =
+          elapsed === 0
+            ? "today"
+            : `${elapsed} day${elapsed === 1 ? "" : "s"} ago`;
+        const marker = text(
+          "button",
+          (name.match(/[\p{L}\p{N}]+/gu) || ["M"])
+            .slice(-2)
+            .map((s) => s[0].toUpperCase())
+            .join(""),
+          "dashboard-member-pin",
+        );
+        marker.type = "button";
+        marker.dataset.memberId = member._id;
+        marker.setAttribute(
+          "aria-label",
+          `${name} latest authorized position, from positioned activity ${age}`,
+        );
+        const avatar = avatarCache.get(member._id);
+        if (avatar) {
+          const image = text("img", "", "dashboard-map-avatar");
+          image.alt = "";
+          image.src = avatar;
+          image.onerror = () => image.remove();
+          marker.prepend(image);
+        }
+        // Inside the pin, so hiding, filtering or revoking it removes the note.
+        marker.append(
+          text(
+            "span",
+            `Position from activity ${age} · not live`,
+            "dashboard-member-pin-note",
+          ),
+        );
+        marker.addEventListener("click", () => {
+          selectedMember = member._id;
+          selectionEpoch++;
+          selection.replaceChildren(
+            text(
+              "p",
+              `${name} · position from activity ${age}. Select an activity pin for freshly authorized detail.`,
+            ),
+          );
+          renderMemberCards();
+          filterMap(false);
+          filterFeed();
+        });
+        const anchor = text("span", "", "dashboard-map-anchor");
+        const link = text("span", "", "dashboard-map-pin-link");
+        overlay.append(link, anchor, marker);
+        entriesWithPins.push({
+          entry: {
+            user_id: member._id,
+            position: member.last_position.position,
+          },
+          marker,
+          anchor,
+          link,
+        });
+      }
+      let initialView;
+      filterMap = (clearSelection = true) => {
+        if (clearSelection) {
+          selectionEpoch++;
+          selection.replaceChildren();
+        }
+        for (const { entry, marker, anchor, link } of entriesWithPins) {
+          const visible = !selectedMember || entry.user_id === selectedMember;
+          marker.classList.toggle("dashboard-filtered", !visible);
+          anchor.classList.toggle("dashboard-filtered", !visible);
+          link.classList.toggle("dashboard-filtered", !visible);
+        }
+        if (clearSelection && selectedMember) {
+          const latest = latestPositions.find((m) => m._id === selectedMember);
+          if (latest)
+            instance.setView(
+              [
+                latest.last_position.position.latitude,
+                latest.last_position.position.longitude,
+              ],
+              14,
+            );
+        } else if (clearSelection && initialView) {
+          instance.setView(initialView.center, initialView.zoom);
+        }
+        placePins();
+      };
       const placePins = () => {
         if (!live()) return;
         const placed = [];
         for (const { entry, marker, anchor, link } of entriesWithPins) {
-          if (!marker.isConnected) {
-            anchor.remove();
-            link.remove();
+          if (
+            !marker.isConnected ||
+            marker.classList.contains("dashboard-filtered")
+          ) {
+            if (!marker.isConnected) {
+              anchor.remove();
+              link.remove();
+            }
             continue;
           }
           const longitude =
@@ -624,50 +954,77 @@ window.CoachDashboard = (() => {
         }
       };
       instance.on("move zoom resize", placePins);
+      const fitPins = (pins) => {
+        if (!pins.length) return;
+        const longitudes = pins
+          .map(({ entry }) => (entry.position.longitude + 360) % 360)
+          .sort((a, b) => a - b);
+        let arcStart = longitudes[0];
+        if (longitudes.length > 1) {
+          let largestGap = -1;
+          for (let i = 0; i < longitudes.length; i++) {
+            const next =
+              i + 1 < longitudes.length
+                ? longitudes[i + 1]
+                : longitudes[0] + 360;
+            if (next - longitudes[i] > largestGap) {
+              largestGap = next - longitudes[i];
+              arcStart = next % 360;
+            }
+          }
+        }
+        const coords = pins.map(({ entry }) => {
+          const wrapped = (entry.position.longitude + 360) % 360;
+          return [
+            entry.position.latitude,
+            wrapped < arcStart ? wrapped + 360 : wrapped,
+          ];
+        });
+        if (coords.length === 1)
+          instance.setView(
+            [coords[0][0], pins[0].entry.position.longitude],
+            16,
+            { animate: false },
+          );
+        else
+          instance.fitBounds(L.latLngBounds(coords), {
+            padding: [48, 48],
+            maxZoom: 16,
+            animate: false,
+          });
+      };
       mapResizeObserver = new ResizeObserver(() => {
         instance.invalidateSize();
         placePins();
+        const active = entriesWithPins.filter(
+          ({ marker }) =>
+            marker.isConnected &&
+            !marker.classList.contains("dashboard-filtered"),
+        );
+        // A desktop fit may leave every marker offscreen when the map narrows.
+        // Refit only then, preserving deliberate user panning when one is visible.
+        if (active.length && active.every(({ marker }) => marker.hidden)) {
+          fitPins(active);
+          if (!selectedMember)
+            initialView = {
+              center: instance.getCenter(),
+              zoom: instance.getZoom(),
+            };
+          placePins();
+        }
       });
       mapResizeObserver.observe(map);
-      const longitudes = entriesWithPins
-        .map(({ entry }) => (entry.position.longitude + 360) % 360)
-        .sort((a, b) => a - b);
-      let arcStart = longitudes[0];
-      if (longitudes.length > 1) {
-        let largestGap = -1;
-        for (let i = 0; i < longitudes.length; i++) {
-          const next =
-            i + 1 < longitudes.length ? longitudes[i + 1] : longitudes[0] + 360;
-          if (next - longitudes[i] > largestGap) {
-            largestGap = next - longitudes[i];
-            arcStart = next % 360;
-          }
-        }
-      }
-      const coords = entriesWithPins.map(({ entry }) => {
-        const wrapped = (entry.position.longitude + 360) % 360;
-        return [
-          entry.position.latitude,
-          wrapped < arcStart ? wrapped + 360 : wrapped,
-        ];
-      });
-      if (coords.length === 1)
-        instance.setView(
-          [coords[0][0], entriesWithPins[0].entry.position.longitude],
-          16,
-        );
-      else if (coords.length)
-        instance.fitBounds(L.latLngBounds(coords), {
-          padding: [48, 48],
-          maxZoom: 16,
-        });
+      const boundsPins = entriesWithPins.filter(({ marker }) =>
+        marker.classList.contains("dashboard-activity-pin"),
+      );
+      const fittedPins = boundsPins.length ? boundsPins : entriesWithPins;
+      fitPins(fittedPins);
+      initialView = { center: instance.getCenter(), zoom: instance.getZoom() };
       placePins();
-      status.textContent = `${date} activity creation date (device timezone) · ${byMember.size} members with authorized position · ${count} activities · complete selected date as loaded (not live).${avatarMembers.length > avatarQueue.length ? " Profile pictures limited to the first 80 members; remaining pins show initials." : ""}`;
+      filterMap();
+      status.textContent = `${date} activity creation date (device timezone) · ${byMember.size} members with authorized position · ${count} activities · complete selected date as loaded (not live). ${roster.fresh ? "Latest profile pins are separately authorized and may be older than this date." : roster.note}${avatarLimited ? " Profile pictures limited to the first 80 members; remaining pins show initials." : ""}`;
     } catch (error) {
-      if (live()) {
-        status.dataset.tone = "error";
-        status.textContent = `Map unavailable: ${error.message}`;
-      }
+      if (live()) await fail(`Map unavailable: ${error.message}`);
     }
   }
   async function load(_api, adminKey) {
@@ -691,8 +1048,11 @@ window.CoachDashboard = (() => {
         redirect: "error",
       });
       if (!response.ok)
-        throw new Error(
-          `REST request denied (${response.status}). Renew the saved Coach credential with ordinary REST access if needed.`,
+        throw httpError(
+          denied(response)
+            ? `REST request denied (${response.status}). Renew the saved Coach credential with ordinary REST access if needed.`
+            : `REST request failed (${response.status}); try again shortly.`,
+          response.status,
         );
       return binary ? response.blob() : response.json();
     };
@@ -702,6 +1062,31 @@ window.CoachDashboard = (() => {
       latestPhotos = new Map(),
       photoTiles = new Map();
     let detailError = null;
+    const revoked = new Set();
+    forgetMember = (memberId) => {
+      suppressedMembers.add(memberId);
+      revoked.add(memberId);
+      users.delete(memberId);
+      feedMembers.delete(memberId);
+      for (const [key, activity] of activities)
+        if (activity.user_id === memberId) activities.delete(key);
+      for (const [key, value] of series)
+        if (value.member_id === memberId) series.delete(key);
+      latestPhotos.delete(memberId);
+      const tile = photoTiles.get(memberId);
+      if (tile) {
+        for (const image of tile.querySelectorAll("img")) {
+          const index = urls.indexOf(image.src);
+          if (index !== -1) {
+            URL.revokeObjectURL(image.src);
+            urls.splice(index, 1);
+          }
+        }
+        tile.remove();
+        photoTiles.delete(memberId);
+      }
+      filterFeed();
+    };
     const addPoint = (activity, label, unit, value, average = false) => {
       if (!Number.isFinite(value)) return;
       const stamp = activity.completed_at || activity.created_at;
@@ -710,6 +1095,7 @@ window.CoachDashboard = (() => {
       const key = JSON.stringify([activity.user_id, label, unit]);
       if (!series.has(key))
         series.set(key, {
+          member_id: activity.user_id,
           member_name: users.get(activity.user_id)?.display_name || "Member",
           label,
           unit,
@@ -732,7 +1118,8 @@ window.CoachDashboard = (() => {
         ),
       );
       const grid = text("div", "", "dashboard-graphs");
-      for (const s of series.values())
+      for (const s of series.values()) {
+        if (selectedMember && s.member_id !== selectedMember) continue;
         grid.append(
           chart({
             ...s,
@@ -744,8 +1131,9 @@ window.CoachDashboard = (() => {
               })),
           }),
         );
+      }
       graphs.append(grid);
-      if (!series.size)
+      if (!grid.childElementCount)
         graphs.append(
           text(
             "p",
@@ -755,7 +1143,9 @@ window.CoachDashboard = (() => {
         );
     }
     async function renderActivity(activity) {
+      if (revoked.has(activity.user_id)) return;
       const tile = text("article", "", "dashboard-tile");
+      tile.dataset.memberId = activity.user_id;
       tile.append(
         text("h4", users.get(activity.user_id)?.display_name || "Member"),
         text("p", activity.name || activity.type || "Activity"),
@@ -811,7 +1201,7 @@ window.CoachDashboard = (() => {
         const envelope = await request(
           "dashboard/activity?" + new URLSearchParams({ id: activity._id }),
         );
-        if (!live()) return;
+        if (!live() || revoked.has(activity.user_id)) return;
         const detail = envelope?.activity;
         if (
           !detail ||
@@ -894,6 +1284,7 @@ window.CoachDashboard = (() => {
         photoTiles.get(activity.user_id)?.remove();
         photoTiles.set(activity.user_id, tile);
         $("dashboardRoster").append(tile);
+        tile.hidden = !!selectedMember && selectedMember !== activity.user_id;
         const gallery = text("div", "", "dashboard-gallery");
         tile.append(gallery);
         for (const [index, photo] of photos.slice(0, 32).entries()) {
@@ -908,7 +1299,7 @@ window.CoachDashboard = (() => {
                 }),
               true,
             );
-            if (!live()) return;
+            if (!live() || revoked.has(activity.user_id)) return;
             const url = URL.createObjectURL(blob);
             urls.push(url);
             const image = document.createElement("img");
@@ -920,6 +1311,9 @@ window.CoachDashboard = (() => {
             });
             frame.append(image);
           } catch (error) {
+            // A confirmed media denial applies to this member's already
+            // rendered frames too; let the outer handler purge and revoke.
+            if (denied(error)) throw error;
             if (live()) frame.append(text("p", error.message));
           }
         }
@@ -932,6 +1326,17 @@ window.CoachDashboard = (() => {
           );
       } catch (error) {
         if (live()) {
+          if (denied(error)) {
+            // Fail closed: purge this member's cached detail-derived charts
+            // and photos, and skip their later details this load. The map
+            // snapshot may be stale too; drop it rather than retaining
+            // coordinates after a fresh authorization denial.
+            forgetMember(activity.user_id);
+            mapMembers.delete(activity.user_id);
+            rosterCache?.delete(activity.user_id);
+            renderMemberCards();
+            void loadMap(adminKey);
+          }
           detailError ||= error.message;
           $("dashboardStatus").dataset.tone = "error";
           $("dashboardStatus").textContent =
@@ -939,6 +1344,15 @@ window.CoachDashboard = (() => {
         }
       }
     }
+    filterFeed = () => {
+      if (!live()) return;
+      renderCharts();
+      for (const tile of $("dashboardRoster").querySelectorAll(
+        ".dashboard-tile",
+      ))
+        tile.hidden =
+          !!selectedMember && tile.dataset.memberId !== selectedMember;
+    };
     let before,
       loading = false;
     const more = text("button", "Load older activities", "secondary");
@@ -955,9 +1369,14 @@ window.CoachDashboard = (() => {
         if (!live()) return;
         if (!Array.isArray(data.users) || !Array.isArray(data.activities))
           throw new Error("Invalid feed response.");
-        for (const user of data.users) users.set(user._id, user);
+        for (const user of data.users)
+          if (!revoked.has(user._id)) users.set(user._id, user);
+        feedMembers = users;
+        renderMemberCards();
+        filterMap(false);
         const added = [];
         for (const activity of data.activities) {
+          if (revoked.has(activity.user_id)) continue;
           if (activities.has(activity._id)) continue;
           if (activities.size >= 200) break;
           activities.set(activity._id, activity);
