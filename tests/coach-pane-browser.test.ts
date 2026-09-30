@@ -144,6 +144,28 @@ async function shot(page: Page, name: string) {
 }
 
 test(
+  "reloading an expanded Coach pane never reads the covered Dojo",
+  { timeout: 60000 },
+  async () => {
+    const h = await harness();
+    try {
+      await h.unlock("/chat/operator");
+      await connected(h.page);
+      assert.equal(h.counts.members, 0);
+      await h.page.reload();
+      await h.page.locator("#studio").waitFor({ state: "visible" });
+      await connected(h.page);
+      await h.page.waitForTimeout(500);
+      assert.equal(await paneMode(h.page), "expanded");
+      assert.equal(h.counts.members, 0, "reload must not read a covered page");
+      assert.deepEqual(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+);
+
+test(
   "Dojo is the default view and the persona-named header launcher starts Pi lazily",
   { timeout: 60000 },
   async () => {

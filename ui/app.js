@@ -343,9 +343,10 @@ action("unlock", async () => {
   $("studio").hidden = false;
   $("lockStudio").hidden = false;
   const pane = restorePaneState();
-  restoreStudioRoute(true);
-  // A reload returns an open pane as it was; Lock clears this state.
+  // Restore coverage before selecting/loading the underlying route. Otherwise
+  // a reload briefly fetches Dojo data beneath an expanded/mobile Coach pane.
   if (pane.open && !paneOpen) openPane(pane.expanded === true);
+  restoreStudioRoute(true);
   void loadNativeReceipts();
   await status();
   await refreshUpdate(true);
