@@ -15,6 +15,18 @@
     <main>
       <header>
         <a class="brand" href="/">Kata.fit Coach</a
+        ><button
+          id="coachLauncher"
+          type="button"
+          class="secondary"
+          aria-controls="coachPane"
+          aria-expanded="false"
+          hidden
+        >
+          <span id="coachLauncherName">Coach</span
+          ><span id="coachLauncherIndicator" class="coach-new-output" hidden
+            ><span class="native-sr-only">New output</span></span
+          ></button
         ><span class="pill" id="state" data-tone="neutral">LOCKED</span>
         <button id="lockStudio" class="secondary" hidden>Lock studio</button>
       </header>
@@ -42,14 +54,10 @@
       </section>
       <div id="studio" hidden>
         <nav class="studio-tabs" aria-label="Studio sections">
-          <button id="coachTab" aria-controls="coachPanel" aria-pressed="true">
-            Coach
-          </button>
           <button
             id="dashboardTab"
-            class="secondary"
             aria-controls="dashboardPanel"
-            aria-pressed="false"
+            aria-pressed="true"
           >
             Dojo
           </button>
@@ -74,7 +82,6 @@
           id="dashboardPanel"
           class="card"
           aria-labelledby="dashboardTab"
-          hidden
         >
           <p
             id="dashboardStatus"
@@ -137,74 +144,6 @@
           <h3>Latest completed check-in photos among loaded data</h3>
           <div id="dashboardRoster" class="dashboard-roster"></div>
           <div id="dashboardCharts"></div>
-        </section>
-        <section id="coachPanel" class="card">
-          <div id="operatorView">
-            <span
-              id="nativeStatus"
-              class="native-sr-only"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-              >Pi disconnected.</span
-            >
-            <div class="native-workbench">
-              <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
-              <aside
-                id="nativeAttachments"
-                aria-labelledby="nativeAttachmentsTitle"
-              >
-                <h3 id="nativeAttachmentsTitle">
-                  Attachments from Pi
-                  <span id="nativeAttachmentCount"></span>
-                </h3>
-                <p id="nativeAttachmentsEmpty" class="hint">
-                  Images and files Pi sends with send_to_operator appear here.
-                  They are erased when the session ends.
-                </p>
-                <p
-                  id="nativeAttachmentsNotice"
-                  class="hint"
-                  role="status"
-                  hidden
-                ></p>
-                <ul
-                  id="nativeAttachmentList"
-                  aria-live="polite"
-                  aria-relevant="additions"
-                ></ul>
-              </aside>
-            </div>
-            <dialog
-              id="attachmentDialog"
-              aria-labelledby="attachmentDialogTitle"
-            >
-              <div class="attachment-dialog-bar">
-                <strong id="attachmentDialogTitle"></strong>
-                <a id="attachmentDialogDownload" class="button secondary"
-                  >Download</a
-                ><button
-                  id="attachmentDialogClose"
-                  type="button"
-                  class="secondary"
-                >
-                  Close
-                </button>
-              </div>
-              <img id="attachmentDialogImage" alt="" />
-              <p id="attachmentDialogCaption" class="hint"></p>
-            </dialog>
-            <p id="operatorStatus" role="status"></p>
-            <div id="operatorActions" role="status" aria-live="polite"></div>
-            <button
-              id="operatorReconcile"
-              type="button"
-              class="secondary"
-              hidden
-            >
-              Check delivery status
-            </button>
-          </div>
         </section>
         <section id="settingsPanel" hidden>
           <div
@@ -933,6 +872,97 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
         Check operation status
       </button>
     </main>
+    <aside id="coachPane" aria-labelledby="coachPaneName" hidden>
+      <div
+        id="coachDivider"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-controls="coachPane"
+        aria-label="Resize Coach pane"
+      ></div>
+      <div class="coach-pane-bar">
+        <button id="coachPaneBack" type="button" class="secondary">
+          Back to Dojo
+        </button>
+        <h2 id="coachPaneName">Coach</h2>
+        <span id="coachPaneStatus" class="coach-pane-status">Not started</span>
+        <button id="coachPaneStart" type="button" hidden>
+          Start new session
+        </button>
+        <button
+          id="coachPaneExpand"
+          type="button"
+          class="secondary"
+          aria-pressed="false"
+        >
+          Expand
+        </button>
+        <button id="coachPaneCollapse" type="button" class="secondary">
+          Collapse
+        </button>
+      </div>
+      <section id="coachPanel" class="card">
+        <div id="operatorView">
+          <span
+            id="nativeStatus"
+            class="native-sr-only"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            >Pi disconnected.</span
+          >
+          <div class="native-workbench">
+            <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
+            <aside
+              id="nativeAttachments"
+              aria-labelledby="nativeAttachmentsTitle"
+            >
+              <h3 id="nativeAttachmentsTitle">
+                Attachments from Pi
+                <span id="nativeAttachmentCount"></span>
+              </h3>
+              <p id="nativeAttachmentsEmpty" class="hint">
+                Images and files Pi sends with send_to_operator appear here.
+                They are erased when the session ends.
+              </p>
+              <p
+                id="nativeAttachmentsNotice"
+                class="hint"
+                role="status"
+                hidden
+              ></p>
+              <ul
+                id="nativeAttachmentList"
+                aria-live="polite"
+                aria-relevant="additions"
+              ></ul>
+            </aside>
+          </div>
+          <dialog id="attachmentDialog" aria-labelledby="attachmentDialogTitle">
+            <div class="attachment-dialog-bar">
+              <strong id="attachmentDialogTitle"></strong>
+              <a id="attachmentDialogDownload" class="button secondary"
+                >Download</a
+              ><button
+                id="attachmentDialogClose"
+                type="button"
+                class="secondary"
+              >
+                Close
+              </button>
+            </div>
+            <img id="attachmentDialogImage" alt="" />
+            <p id="attachmentDialogCaption" class="hint"></p>
+          </dialog>
+          <p id="operatorStatus" role="status"></p>
+          <div id="operatorActions" role="status" aria-live="polite"></div>
+          <button id="operatorReconcile" type="button" class="secondary" hidden>
+            Check delivery status
+          </button>
+        </div>
+      </section>
+    </aside>
     <script src="/terminal.js"></script>
     <script src="/backend-performance.js"></script>
     <script src="/leaflet.js"></script>

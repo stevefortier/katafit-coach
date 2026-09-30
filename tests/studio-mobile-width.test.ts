@@ -32,6 +32,10 @@ for (const width of [320, 390]) {
       await page.evaluate(() => {
         document.querySelector<HTMLElement>("#login")!.hidden = true;
         document.querySelector<HTMLElement>("#studio")!.hidden = false;
+        // The Coach pane is full-screen on narrow viewports.
+        const pane = document.querySelector<HTMLElement>("#coachPane")!;
+        pane.hidden = false;
+        pane.dataset.mode = "mobile";
         const terminal =
           document.querySelector<HTMLElement>("#nativeTerminal")!;
         terminal.textContent = "Native Pi terminal";
@@ -63,6 +67,10 @@ for (const width of [320, 390]) {
       assert.ok(measured.chat <= measured.chatClient, JSON.stringify(measured));
       assert.ok(
         measured.status <= measured.statusClient,
+        JSON.stringify(measured),
+      );
+      assert.ok(
+        measured.coach.width > 0 && measured.form.width > 0,
         JSON.stringify(measured),
       );
       for (const name of ["main", "coach", "form"] as const) {

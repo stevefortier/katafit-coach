@@ -52,7 +52,7 @@ pixels. `/api/activities/:id` remains owner-only. Dashboard uses the same routes
 retains chart presentation from available records, and labels bounded coverage.
 
 Native Pi conversations are not saved, read, or restored. While the application
-and runtime remain alive, re-entering the Coach tab attaches to the same Pi.
+and runtime remain alive, reopening the Coach pane attaches to the same Pi.
 Application restart, update, settings/credential change, or runtime teardown
 starts a fresh conversation with no old prompt/tool replay. Separate tenants
 still require separate protected Coach homes. Old native-history files remain

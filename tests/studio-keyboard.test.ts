@@ -111,6 +111,8 @@ test("Settings preview composer retains Enter, Shift+Enter and IME behavior", as
     await page.locator("#adminKey").fill("synthetic-admin");
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
+    // Studio opens on Dojo; Coach opens from the header launcher.
+    await page.locator("#coachLauncher").click();
     assert.equal(await page.locator("#operatorView h2").count(), 0);
     assert.equal(await page.locator("#nativeTerminal").isVisible(), true);
     assert.equal(await page.locator("#nativeAttachments").isVisible(), true);

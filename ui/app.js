@@ -342,6 +342,10 @@ action("unlock", async () => {
   $("login").hidden = true;
   $("studio").hidden = false;
   $("lockStudio").hidden = false;
+  const pane = restorePaneState();
+  // Restore coverage before selecting/loading the underlying route. Otherwise
+  // a reload briefly fetches Dojo data beneath an expanded/mobile Coach pane.
+  if (pane.open && !paneOpen) openPane(pane.expanded === true);
   restoreStudioRoute(true);
   void loadNativeReceipts();
   await status();
@@ -1786,17 +1790,276 @@ function renderCoachName() {
       ? config.persona.name.trim()
       : "";
   const label = name || "Coach";
-  $("coachTab").textContent = label;
-  $("coachTab").title = label;
+  $("coachLauncherName").textContent = label;
+  $("coachLauncher").title = label;
+  $("coachPaneName").textContent = label;
+  $("coachPaneName").title = label;
+}
+// Global Coach pane. The page underneath keeps its own route and history; the
+// pane only docks, expands or collapses around it and never owns a URL.
+const paneStateKey = "katafit-coach-pane",
+  paneMin = 360,
+  paneMax = 960,
+  pageMin = 480,
+  tabLabels = {
+    dashboard: "Dojo",
+    diagnostics: "Activity",
+    settings: "Settings",
+  };
+const dockedQuery = matchMedia("(min-width: 900px)");
+let paneOpen = false,
+  paneExpanded = false,
+  // Pi is wanted only after the pane was first opened in this unlock.
+  paneStarted = false,
+  paneNewOutput = false,
+  paneWidth = 520,
+  paneCovering = false,
+  paneScroll = 0,
+  studioTab,
+  dashboardPending = false;
+try {
+  const saved = JSON.parse(sessionStorage.getItem(paneStateKey) || "{}");
+  if (Number.isFinite(saved.width)) paneWidth = saved.width;
+} catch {}
+function savePaneState() {
+  try {
+    sessionStorage.setItem(
+      paneStateKey,
+      JSON.stringify({
+        width: paneWidth,
+        ...(paneOpen && { open: true, expanded: paneExpanded }),
+      }),
+    );
+  } catch {}
+}
+function restorePaneState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(paneStateKey) || "{}");
+  } catch {
+    return {};
+  }
+}
+function paneMode() {
+  if (!paneOpen || !key || $("studio").hidden) return "closed";
+  if (!dockedQuery.matches) return "mobile";
+  return paneExpanded ? "expanded" : "docked";
+}
+const paneShown = () => paneMode() !== "closed" && !document.hidden;
+const pageCovered = () => ["expanded", "mobile"].includes(paneMode());
+function paneBounds() {
+  const room = document.documentElement.clientWidth - pageMin;
+  return { min: paneMin, max: Math.max(paneMin, Math.min(paneMax, room)) };
+}
+// The rendered width: the preferred width clamped to the current viewport.
+function clampPaneWidth(width) {
+  const { min, max } = paneBounds();
+  return Math.round(Math.min(max, Math.max(min, width)));
+}
+function setPaneWidth(width, persist = true) {
+  const { min, max } = paneBounds();
+  const value = clampPaneWidth(width);
+  if (persist) paneWidth = value;
+  document.documentElement.style.setProperty(
+    "--coach-pane-width",
+    value + "px",
+  );
+  const divider = $("coachDivider");
+  divider.setAttribute("aria-valuemin", String(min));
+  divider.setAttribute("aria-valuemax", String(max));
+  divider.setAttribute("aria-valuenow", String(value));
+  divider.setAttribute("aria-valuetext", value + " pixels wide");
+  if (persist) savePaneState();
+}
+function syncPaneTop() {
+  // Expanded Coach fills the workspace below the header and any notice.
+  const header = document.querySelector("header").getBoundingClientRect();
+  const bar = $("noticeBar");
+  const top = bar.dataset.severity
+    ? Math.max(header.bottom, bar.getBoundingClientRect().bottom)
+    : header.bottom;
+  document.documentElement.style.setProperty(
+    "--coach-pane-top",
+    Math.max(0, Math.round(top)) + "px",
+  );
+}
+function renderPane() {
+  const mode = paneMode();
+  const unlocked = !!key && !$("studio").hidden;
+  $("coachLauncher").hidden = !unlocked;
+  $("coachLauncher").setAttribute("aria-expanded", String(mode !== "closed"));
+  if (mode !== "closed") paneNewOutput = false;
+  $("coachLauncherIndicator").hidden = !paneNewOutput;
+  if (paneNewOutput) $("coachLauncher").dataset.newOutput = "true";
+  else delete $("coachLauncher").dataset.newOutput;
+  $("coachPane").hidden = mode === "closed";
+  $("coachPane").dataset.mode = mode;
+  $("coachPaneExpand").textContent = mode === "expanded" ? "Restore" : "Expand";
+  $("coachPaneExpand").setAttribute(
+    "aria-pressed",
+    String(mode === "expanded"),
+  );
+  $("coachPaneBack").textContent =
+    "Back to " + (tabLabels[studioTab] || "Dojo");
+  setPaneWidth(paneWidth, false);
+  const covering = mode === "expanded" || mode === "mobile";
+  if (covering && !paneCovering) {
+    paneScroll = scrollY;
+    syncPaneTop();
+  }
+  document.body.classList.toggle("coach-docked", mode === "docked");
+  document.documentElement.classList.toggle("coach-covered", covering);
+  // Covered content is out of reach for pointer, keyboard and assistive tech.
+  // Focus inside newly covered content moves to the pane rather than <body>.
+  const focused = document.activeElement;
+  const covered =
+    mode === "mobile"
+      ? document.querySelector("main")
+      : mode === "expanded"
+        ? $("studio")
+        : undefined;
+  document.querySelector("main").inert = mode === "mobile";
+  $("studio").inert = mode === "expanded";
+  if (covered?.contains(focused))
+    (mode === "mobile" ? $("coachPaneBack") : $("coachPaneExpand")).focus();
+  if (covering === paneCovering) return;
+  paneCovering = covering;
+  if (!covering) {
+    scrollTo(scrollX, paneScroll);
+    if (dashboardPending && studioTab === "dashboard" && key) {
+      dashboardPending = false;
+      CoachDashboard.load(api, key);
+    }
+  }
+  // Covered pages stop polling; a docked pane leaves them running.
+  logVisibility();
+}
+function openPane(expand = false) {
+  paneOpen = true;
+  paneExpanded = expand;
+  paneStarted = true;
+  savePaneState();
+  renderPane();
+  if (key && !document.hidden) void native.connect();
+  if (native.started()) native.focus();
+  else
+    (dockedQuery.matches ? $("coachPaneCollapse") : $("coachPaneBack")).focus();
+}
+function collapsePane() {
+  paneOpen = false;
+  paneExpanded = false;
+  savePaneState();
+  renderPane();
+  $("coachLauncher").focus();
+}
+function closePaneForLock() {
+  paneOpen = false;
+  paneExpanded = false;
+  paneStarted = false;
+  paneNewOutput = false;
+  dashboardPending = false;
+  studioTab = undefined;
+  savePaneState();
+  renderPane();
+}
+$("coachLauncher").onclick = () =>
+  paneMode() === "closed" ? openPane() : collapsePane();
+$("coachPaneCollapse").onclick = collapsePane;
+$("coachPaneBack").onclick = collapsePane;
+// Deliberately starting again after a native Stop; nothing restarts on its own.
+$("coachPaneStart").onclick = () => {
+  if (key && !document.hidden) void native.connect();
+  $("coachPaneCollapse").focus();
+};
+$("coachPaneExpand").onclick = () => {
+  paneExpanded = !paneExpanded;
+  savePaneState();
+  renderPane();
+};
+// Escape on pane controls collapses; inside the terminal it stays Pi input.
+$("coachPane").addEventListener("keydown", (event) => {
+  if (
+    event.key === "Escape" &&
+    !event.defaultPrevented &&
+    !$("nativeTerminal").contains(event.target) &&
+    !event.target.closest("dialog")
+  ) {
+    event.preventDefault();
+    collapsePane();
+  }
+});
+$("coachDivider").addEventListener("keydown", (event) => {
+  const { min, max } = paneBounds();
+  const step = event.shiftKey ? 64 : 16;
+  // Adjust what is on screen, not a wider preference the viewport clamped.
+  const width = clampPaneWidth(paneWidth);
+  const next = {
+    ArrowLeft: width + step,
+    ArrowRight: width - step,
+    Home: min,
+    End: max,
+  }[event.key];
+  if (next === undefined) return;
+  event.preventDefault();
+  setPaneWidth(next);
+});
+$("coachDivider").addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const divider = $("coachDivider");
+  const startX = event.clientX,
+    startWidth = clampPaneWidth(paneWidth);
+  divider.setPointerCapture(event.pointerId);
+  divider.focus();
+  const move = (e) => setPaneWidth(startWidth + startX - e.clientX);
+  const end = () => {
+    divider.removeEventListener("pointermove", move);
+    divider.removeEventListener("pointerup", end);
+    divider.removeEventListener("pointercancel", end);
+  };
+  divider.addEventListener("pointermove", move);
+  divider.addEventListener("pointerup", end);
+  divider.addEventListener("pointercancel", end);
+});
+dockedQuery.addEventListener("change", renderPane);
+new ResizeObserver(() => {
+  if (paneCovering) syncPaneTop();
+}).observe($("noticeBar"));
+window.addEventListener("resize", () => setPaneWidth(paneWidth, false));
+function coachOutput() {
+  if (paneShown() || paneNewOutput) return;
+  paneNewOutput = true;
+  renderPane();
+}
+const paneStatusLabels = {
+  starting: "Starting…",
+  connected: "Connected",
+  disconnected: "Disconnected",
+  error: "Error",
+  unavailable: "Unavailable",
+  overflow: "Output overflow",
+  ended: "Session ended",
+};
+function coachStatus(state, text) {
+  const node = $("coachPaneStatus");
+  node.textContent = paneStatusLabels[state] || "Not started";
+  node.dataset.state = state;
+  node.title = text;
+  const start = $("coachPaneStart");
+  const focused = document.activeElement === start;
+  start.hidden = state !== "ended";
+  if (focused && start.hidden) native.focus();
 }
 function studioRoute() {
-  if (location.pathname === "/dashboard") return { tab: "dashboard" };
-  if (location.pathname === "/diagnostics")
+  const path = location.pathname;
+  // Former chat views open the pane over the page already shown, or Dojo.
+  if (path === "/chat/operator" || path.startsWith("/chat/member/"))
+    return { tab: studioTab || "dashboard", chat: true };
+  if (path === "/diagnostics")
     return {
       tab: "diagnostics",
       section: new URLSearchParams(location.search).get("section"),
     };
-  if (location.pathname === "/settings") {
+  if (path === "/settings") {
     const section =
       new URLSearchParams(location.search).get("section") ??
       (location.hash === "#logsView" ? "diagnostics" : location.hash.slice(1));
@@ -1804,10 +2067,14 @@ function studioRoute() {
       ? { tab: "diagnostics", legacy: true }
       : { tab: "settings", section };
   }
-  return {
-    tab: "coach",
-    legacy: location.pathname.startsWith("/chat/member/"),
-  };
+  return { tab: "dashboard" };
+}
+function studioPath(tab) {
+  return tab === "dashboard"
+    ? "/dashboard"
+    : tab === "diagnostics"
+      ? "/diagnostics?section=" + diagnosticsSection
+      : settingsPath();
 }
 function navigateStudio(path) {
   if (location.pathname + location.search + location.hash !== path)
@@ -1815,21 +2082,23 @@ function navigateStudio(path) {
 }
 function restoreStudioRoute(restartDiagnostics = false) {
   const route = studioRoute();
-  if (route.legacy)
-    history.replaceState(
-      null,
-      "",
-      route.tab === "coach" ? "/chat/operator" : "/diagnostics",
-    );
-  if (route.tab === "settings") selectSettingsSection(route.section, false);
-  if (route.tab === "diagnostics")
+  if (route.chat) {
+    // Expand before selecting so a covered Dojo defers its reads.
+    paneOpen = paneExpanded = true;
+    history.replaceState(null, "", studioPath(route.tab));
+  } else if (route.legacy) history.replaceState(null, "", "/diagnostics");
+  if (route.tab === "settings" && !route.chat)
+    selectSettingsSection(route.section, false);
+  if (route.tab === "diagnostics" && !route.chat)
     selectDiagnosticsSection(route.section, false);
   if (
-    restartDiagnostics ||
-    route.tab !== "diagnostics" ||
-    $("diagnostics").hidden
+    (route.chat ? studioTab !== route.tab : true) &&
+    (restartDiagnostics ||
+      route.tab !== "diagnostics" ||
+      $("diagnostics").hidden)
   )
     selectStudioTab(route.tab, false);
+  if (route.chat) openPane(true);
 }
 window.addEventListener("popstate", () => {
   if (key) restoreStudioRoute();
@@ -1843,15 +2112,13 @@ window.addEventListener("hashchange", () => {
     restoreStudioRoute();
 });
 function selectStudioTab(tab, navigate = true) {
-  const coach = tab === "coach";
   const dashboard = tab === "dashboard";
-  $("coachPanel").hidden = !coach;
+  studioTab = tab;
   $("dashboardPanel").hidden = !dashboard;
   $("settingsPanel").hidden = tab !== "settings";
   $("diagnostics").hidden = tab !== "diagnostics";
   if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
-    ["coachTab", coach],
     ["dashboardTab", dashboard],
     ["settingsTab", tab === "settings"],
     ["diagnosticsTab", tab === "diagnostics"],
@@ -1860,36 +2127,32 @@ function selectStudioTab(tab, navigate = true) {
     $(id).classList.toggle("secondary", !active);
   }
   logVisibility();
-  if (dashboard) CoachDashboard.load(api, key);
-  else CoachDashboard.clear();
-  if (coach && key && !document.hidden) void native.connect();
-  else native.suspend();
-  if (navigate)
-    navigateStudio(
-      coach
-        ? "/chat/operator"
-        : dashboard
-          ? "/dashboard"
-          : tab === "diagnostics"
-            ? "/diagnostics?section=" + diagnosticsSection
-            : settingsPath(),
-    );
+  dashboardPending = false;
+  CoachDashboard.clear();
+  if (dashboard && pageCovered()) dashboardPending = true;
+  else if (dashboard) CoachDashboard.load(api, key);
+  renderPane();
+  if (navigate) navigateStudio(studioPath(tab));
 }
-$("coachTab").onclick = () => selectStudioTab("coach");
 $("dashboardTab").onclick = () => selectStudioTab("dashboard");
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     CoachDashboard.clear();
+    if (key && !$("dashboardPanel").hidden) dashboardPending = true;
     native.suspend();
   } else {
-    if (key && !$("dashboardPanel").hidden) CoachDashboard.load(api, key);
-    if (key && !$("coachPanel").hidden) void native.connect();
+    if (dashboardPending && !pageCovered()) {
+      dashboardPending = false;
+      CoachDashboard.load(api, key);
+    }
+    if (key && paneStarted) native.resume();
   }
 });
 window.addEventListener("pagehide", () => CoachDashboard.clear());
 $("settingsTab").onclick = () => selectStudioTab("settings");
 $("diagnosticsTab").onclick = () => selectStudioTab("diagnostics");
-const logActive = () => key && !$("diagnostics").hidden && !document.hidden;
+const logActive = () =>
+  key && !$("diagnostics").hidden && !document.hidden && !pageCovered();
 function filteredLogs() {
   return logData.entries.filter(
     (e) =>
@@ -2741,6 +3004,7 @@ window.addEventListener("pagehide", () => {
 });
 function lockSession(message, severity) {
   CoachDashboard.clear();
+  closePaneForLock();
   if (key)
     void fetch("/api/terminal/stop", {
       method: "POST",
@@ -2822,6 +3086,7 @@ function lockSession(message, severity) {
   $("studio").hidden = true;
   $("login").hidden = false;
   $("lockStudio").hidden = true;
+  renderPane();
   $("state").textContent = "LOCKED";
   $("state").dataset.tone = "neutral";
   notice(message, severity);
@@ -2849,7 +3114,15 @@ async function loadNativeReceipts() {
 $("operatorReconcile").onclick = () => loadNativeReceipts();
 const native = nativeTerminal({
   api,
-  active: () => !!key && !document.hidden && !$("coachPanel").hidden,
+  active: () => !!key && !document.hidden && paneStarted,
+  visible: paneShown,
+  // Never steal focus from the page underneath a docked pane.
+  canFocus: () =>
+    paneShown() &&
+    (document.activeElement === document.body ||
+      $("coachPane").contains(document.activeElement)),
+  onStatus: coachStatus,
+  onOutput: coachOutput,
   // Private attachment bytes; bound to the key of the session that requested.
   fetchAttachment: (path, signal) =>
     fetch(path, {

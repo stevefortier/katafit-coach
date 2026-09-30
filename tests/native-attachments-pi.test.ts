@@ -289,7 +289,12 @@ test(
         {},
         { timeout: 20000 },
       );
-      await page.locator("#settingsTab").click();
+      // A native Stop is never undone automatically, even with Coach open.
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#coachPaneStatus")?.textContent ===
+          "Session ended",
+      );
       assert.equal(await cards.count(), 0);
       const stale = await fetch(app.origin + url, {
         headers: { Authorization: "Bearer " + f.store.secrets.admin },

@@ -35,6 +35,8 @@ const count = (page: Page) =>
 async function open(
   h: Awaited<ReturnType<typeof attachmentHarness>>,
   setup?: (page: Page) => Promise<unknown>,
+  // Legacy link: Coach expanded over Dojo. Other paths open it from the header.
+  path = "/chat/operator",
 ) {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
@@ -59,9 +61,10 @@ async function open(
     (window as any).__urls = { created, revoked };
   });
   await setup?.(page);
-  await page.goto(h.app.origin + "/chat/operator");
+  await page.goto(h.app.origin + path);
   await page.locator("#adminKey").fill(h.f.store.secrets.admin);
   await page.locator("#unlock").click();
+  if (path !== "/chat/operator") await page.locator("#coachLauncher").click();
   await connect(page);
   return { page, context, errors };
 }
@@ -93,7 +96,11 @@ test("an abnormal disconnect erases the panel by the detach deadline unless the 
   const h = await attachmentHarness();
   try {
     h.files.set("a.png", await png());
-    const { page, errors } = await open(h, (p) => p.clock.install());
+    const { page, errors } = await open(
+      h,
+      (p) => p.clock.install(),
+      "/settings",
+    );
     await h.send({ workspace_path: "a.png" });
     await waitPreview(page);
     h.dropSocket();
@@ -110,7 +117,8 @@ test("an abnormal disconnect erases the panel by the detach deadline unless the 
     assert.equal(await count(page), 1, "re-authorized snapshot kept it");
 
     h.dropSocket();
-    await page.locator("#settingsTab").click();
+    // A collapsed pane does not reconnect, so the detach deadline applies.
+    await page.locator("#coachPaneCollapse").click();
     await page.waitForFunction(() =>
       document
         .querySelector("#nativeStatus")
