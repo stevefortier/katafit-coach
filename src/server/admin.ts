@@ -6,7 +6,7 @@ import { contentDisposition } from "../sandbox/attachments.js";
 import { StudioReads } from "../katafit/studio.js";
 import { restGet } from "../katafit/restGet.js";
 import { Updates } from "../update/updates.js";
-import { AutoUpdateSetting } from "../update/auto.js";
+
 import { Diagnostics } from "../diagnostics/log.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
@@ -32,7 +32,6 @@ export async function admin(
   infer = complete,
   onShutdown?: () => void,
   updates = new Updates(null, null),
-  auto?: AutoUpdateSetting,
 ) {
   const logs = new Diagnostics(store.dir);
   const onBackendDiagnostic = (
@@ -57,17 +56,17 @@ export async function admin(
   let configurationUncertain = false;
   let closing = false;
   let lifecycleDone = Promise.resolve();
-  let autoQuiesced = false;
-  let autoWasRunning = false;
-  let autoQuiescePending: Promise<void> | undefined;
+  let updateQuiesced = false;
+  let updateWasRunning = false;
+  let updateQuiescePending: Promise<void> | undefined;
   let nextPublicationRecovery = 0;
   // Child-owned compatibility path: existing stable owners already call
   // quiesce/release. Never stop an idle worker just to inspect a receipt.
-  const reconcileForAutomaticUpdate = async () => {
+  const reconcileForUpdate = async () => {
     if (
-      autoQuiesced &&
+      updateQuiesced &&
       worker?.presenceStopRecovery === "pending" &&
-      !autoQuiescePending &&
+      !updateQuiescePending &&
       !busy &&
       !preview &&
       terminal.idle &&
@@ -314,16 +313,7 @@ export async function admin(
     }
   };
 
-  const updateSnapshot = async () => {
-    const state = updates.snapshot();
-    return {
-      ...state,
-      auto:
-        auto && state.supported
-          ? { ...(await auto.read()), available: true }
-          : { enabled: false, available: false },
-    };
-  };
+  const updateSnapshot = async () => updates.snapshot();
   const memberReads = new Set<AbortController>();
   const server = createServer(async (req, res) => {
     const ref = randomUUID();
@@ -623,7 +613,7 @@ export async function admin(
           configurationUncertain ||
           updates.applying ||
           updates.recovering ||
-          autoQuiesced
+          updateQuiesced
         )
           return send(409, { error: "OPERATION_IN_PROGRESS" });
         return send(200, terminal.ticket());
@@ -880,10 +870,10 @@ export async function admin(
           skillsRevision: store.skills.runtime().revision,
           lifecycle,
           transition: busy,
-          autoQuiesced,
-          autoQuiesceReady:
-            autoQuiesced && !autoQuiescePending && terminal.idle,
-          autoWasRunning: autoQuiesced && autoWasRunning,
+          updateQuiesced,
+          updateQuiesceReady:
+            updateQuiesced && !updateQuiescePending && terminal.idle,
+          updateWasRunning: updateQuiesced && updateWasRunning,
         });
       if (req.method !== "POST") return send(404, { error: "NOT_FOUND" });
       if (closing) return send(503, { error: "SERVICE_CLOSING" });
@@ -963,58 +953,40 @@ export async function admin(
         !["/api/stop", "/api/cancel", "/api/shutdown"].includes(path)
       )
         throw new SafeError("CONFIGURATION_STATE_UNCONFIRMED");
-      if (path === "/api/update/auto") {
-        if (!auto && updates.snapshot().supported)
-          return send(409, { error: "LAUNCHER_UPGRADE_REQUIRED" });
-        if (!auto || !updates.snapshot().supported)
-          return send(409, { error: "UNSUPPORTED_INSTALLATION" });
-        if ((updates.applying || updates.preparing) && body?.enabled !== false)
-          return send(409, { error: "UPDATE_IN_PROGRESS" });
-        if (
-          !body ||
-          Array.isArray(body) ||
-          Object.keys(body).join(",") !== "enabled" ||
-          typeof body.enabled !== "boolean"
-        )
-          return send(400, { error: "INVALID_AUTO_SETTING" });
-        await auto.write(body.enabled);
-        return send(200, { auto: await auto.read() });
-      }
-      if (path === "/api/update/auto/release" && auto) {
+      if (["/api/update/auto", "/api/update/auto/quiesce"].includes(path))
+        return send(410, { error: "AUTOMATIC_UPDATES_REMOVED" });
+      // Legacy release is recovery-only; it grants no installation authority.
+      if (["/api/update/release", "/api/update/auto/release"].includes(path)) {
         if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
         if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
         if (Object.keys(body).length)
           return send(400, { error: "ARGUMENTS_REJECTED" });
-        await autoQuiescePending?.catch(() => {});
-        await reconcileForAutomaticUpdate();
+        await updateQuiescePending?.catch(() => {});
+        await reconcileForUpdate();
         if (
-          autoQuiesced &&
+          updateQuiesced &&
           (!terminal.idle ||
             (worker && (!worker.stopConfirmed || !worker.safeToReplace)))
         )
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
-        autoQuiesced = false;
-        autoWasRunning = false;
+        updateQuiesced = false;
+        updateWasRunning = false;
         worker?.releaseUpdateQuiesce();
         return send(200, { ok: true });
       }
-      if (
-        path === "/api/update/auto/quiesce" &&
-        auto &&
-        updates.snapshot().supported
-      ) {
-        if (Object.keys(body).length)
-          return send(400, { error: "ARGUMENTS_REJECTED" });
-        await reconcileForAutomaticUpdate();
-        if (autoQuiesced) {
+      if (path === "/api/update/quiesce" && updates.snapshot().supported) {
+        if (body.confirm !== true || Object.keys(body).join(",") !== "confirm")
+          return send(400, { error: "CONFIRM_REQUIRED" });
+        await reconcileForUpdate();
+        if (updateQuiesced) {
           try {
-            await autoQuiescePending;
+            await updateQuiescePending;
             if (
               !terminal.idle ||
               (worker && (!worker.stopConfirmed || !worker.safeToReplace))
             )
               throw new Error("WORKER_STOP_UNCONFIRMED");
-            return send(200, { wasRunning: autoWasRunning });
+            return send(200, { wasRunning: updateWasRunning });
           } catch {
             return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
           }
@@ -1029,32 +1001,33 @@ export async function admin(
           preview ||
           (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
         )
-          return send(409, { error: "AUTO_UPDATE_BUSY" });
-        autoQuiesced = true;
-        autoWasRunning = !!worker && worker.state !== "stopped";
+          return send(409, { error: "UPDATE_BUSY" });
+        updateQuiesced = true;
+        updateWasRunning = !!worker && worker.state !== "stopped";
         const stopping = (async () => {
           await terminal.stop();
-          if (autoWasRunning) await worker!.stop();
+          if (updateWasRunning) await worker!.stop();
           if (
             !terminal.idle ||
             (worker && (!worker.stopConfirmed || !worker.safeToReplace))
           )
             throw new Error("WORKER_STOP_UNCONFIRMED");
         })();
-        autoQuiescePending = stopping;
+        updateQuiescePending = stopping;
         try {
           await stopping;
-          return send(200, { wasRunning: autoWasRunning });
+          return send(200, { wasRunning: updateWasRunning });
         } catch {
           // Keep the admission barrier and pre-stop intent until the owner
           // reads status and explicitly releases it, including lost replies.
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
         } finally {
-          if (autoQuiescePending === stopping) autoQuiescePending = undefined;
+          if (updateQuiescePending === stopping)
+            updateQuiescePending = undefined;
         }
       }
-      if (autoQuiesced && path !== "/api/worker/reconcile")
-        return send(409, { error: "AUTO_UPDATE_QUIESCED" });
+      if (updateQuiesced && path !== "/api/worker/reconcile")
+        return send(409, { error: "UPDATE_QUIESCED" });
       if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
       if (
         updates.recovering &&
@@ -1223,7 +1196,7 @@ export async function admin(
         };
         // Preparation can be slow. Recheck every mutable admission condition
         // before fencing claims or stopping a running worker.
-        if (autoQuiesced || busy || preview || updates.recovering) {
+        if (updateQuiesced || busy || preview || updates.recovering) {
           await cancelPrepared();
           return send(409, {
             error: "OPERATION_IN_PROGRESS",
@@ -1250,7 +1223,7 @@ export async function admin(
         // gateway and reconciles its action journal before owner acceptance.
         if (wasRunning && !worker!.quiesceForUpdate()) {
           await cancelPrepared();
-          return send(409, { error: "AUTO_UPDATE_BUSY" });
+          return send(409, { error: "UPDATE_BUSY" });
         }
         busy = true;
         try {
@@ -1392,7 +1365,7 @@ export async function admin(
             closing ||
             updates.applying ||
             updates.recovering ||
-            autoQuiesced ||
+            updateQuiesced ||
             configurationUncertain ||
             store.publicConfig().revision !== c.revision ||
             store.secrets.token !== token ||
@@ -1567,7 +1540,7 @@ export async function admin(
       !configurationUncertain &&
       !updates.applying &&
       !updates.recovering &&
-      !autoQuiesced,
+      !updateQuiesced,
     onBackendDiagnostic,
   );
   await new Promise<void>((resolve, reject) => {

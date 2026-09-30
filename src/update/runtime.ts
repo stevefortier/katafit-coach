@@ -1,5 +1,5 @@
 import { Updates } from "./updates.js";
-import { AutoUpdateSetting } from "./auto.js";
+
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 const [root, home, port, nonce] = process.argv.slice(2);
@@ -105,9 +105,12 @@ process.on("message", async (message: any) => {
     );
     if (typeof application.admin !== "function") throw new Error();
     updates.configureAdmin(application.updatePreparationProtocol);
+    if (message.data?.manualOnlySourceUpdates !== 1)
+      throw new Error("LAUNCHER_UPGRADE_REQUIRED");
     const store = new Store(
       home,
       message.data?.launcherSkillCatalog === 2 ? 2 : 1,
+      message.data?.manualOnlySourceUpdates === 1,
     );
     await store.init();
     app = await application.admin(
@@ -118,7 +121,6 @@ process.on("message", async (message: any) => {
         void rpc("shutdown");
       },
       updates,
-      new AutoUpdateSetting(home),
     );
     process.send?.({ type: "ready", origin: app.origin, nonce });
   } catch (error) {

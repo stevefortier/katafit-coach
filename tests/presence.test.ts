@@ -10,7 +10,6 @@ import { admin } from "../src/server/admin.js";
 import { Worker } from "../src/worker/runner.js";
 import { Client } from "../src/katafit/client.js";
 import { Updates } from "../src/update/updates.js";
-import { AutoUpdateSetting } from "../src/update/auto.js";
 import type { LogInput } from "../src/diagnostics/log.js";
 
 function deferred<T>() {
@@ -837,7 +836,7 @@ test("Studio on old backend marks presence unsupported but remains runnable", as
   }
 });
 
-test("auto quiesce rejects an unconfirmed stop and retains running intent across lost replies", async () => {
+test("confirmed quiesce rejects an unconfirmed stop and retains running intent across lost replies", async () => {
   const f = await backend({ refuseStopped: true });
   const dir = await mkdtemp(tmpdir() + "/auto-presence-");
   const store = new Store(dir);
@@ -854,7 +853,6 @@ test("auto quiesce rejects an unconfirmed stop and retains running intent across
     undefined,
     undefined,
     new Updates(null, async () => {}),
-    new AutoUpdateSetting(dir),
   );
   const headers = {
     Authorization: "Bearer " + store.secrets.admin,
@@ -862,7 +860,11 @@ test("auto quiesce rejects an unconfirmed stop and retains running intent across
     "Content-Type": "application/json",
   };
   const post = (path: string) =>
-    fetch(app.origin + "/api/" + path, { method: "POST", headers, body: "{}" });
+    fetch(app.origin + "/api/" + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(path.endsWith("quiesce") ? { confirm: true } : {}),
+    });
   const status = async () =>
     (await fetch(app.origin + "/api/status", { headers })).json();
   try {
@@ -871,35 +873,35 @@ test("auto quiesce rejects an unconfirmed stop and retains running intent across
       await new Promise((r) => setTimeout(r, 10));
     assert.equal((await status()).state, "idle");
     // Ignore the first body, as if its acknowledgment were lost in transit.
-    assert.equal((await post("update/auto/quiesce")).status, 409);
+    assert.equal((await post("update/quiesce")).status, 409);
     for (let i = 0; i < 2; i++) {
-      const retry = await post("update/auto/quiesce");
+      const retry = await post("update/quiesce");
       assert.equal(retry.status, 409, "stopped is not safe to replace");
       assert.equal((await retry.json()).error, "WORKER_STOP_UNCONFIRMED");
       const state = await status();
       assert.equal(state.state, "stopped");
       assert.equal(state.presence, "unconfirmed");
-      assert.equal(state.autoQuiesced, true);
+      assert.equal(state.updateQuiesced, true);
       assert.equal(
-        state.autoQuiesceReady,
+        state.updateQuiesceReady,
         true,
         "settled for owner recovery, not install approval",
       );
       assert.equal(
-        state.autoWasRunning,
+        state.updateWasRunning,
         true,
         "retain pre-stop intent until owner reads it",
       );
     }
     assert.equal((await post("terminal/ticket")).status, 409);
-    assert.equal((await post("update/auto/release")).status, 409);
-    assert.equal((await status()).autoWasRunning, true);
+    assert.equal((await post("update/release")).status, 409);
+    assert.equal((await status()).updateWasRunning, true);
     assert.equal(
       (await post("run")).status,
       409,
       "release retains the admission barrier until stop safety is confirmed",
     );
-    assert.equal((await post("update/auto/quiesce")).status, 409);
+    assert.equal((await post("update/quiesce")).status, 409);
     assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
   } finally {
     await app.close();
@@ -908,7 +910,7 @@ test("auto quiesce rejects an unconfirmed stop and retains running intent across
   }
 });
 
-test("lost stop acknowledgment recovers behind auto gate without a second worker", async () => {
+test("lost stop acknowledgment recovers behind update gate without a second worker", async () => {
   const backendState = { loseStoppedReply: true, unavailable: false };
   const f = await backend(backendState);
   const dir = await mkdtemp(tmpdir() + "/auto-presence-recovery-");
@@ -926,7 +928,6 @@ test("lost stop acknowledgment recovers behind auto gate without a second worker
     undefined,
     undefined,
     new Updates(null, async () => {}),
-    new AutoUpdateSetting(dir),
   );
   const headers = {
     Authorization: "Bearer " + store.secrets.admin,
@@ -934,7 +935,11 @@ test("lost stop acknowledgment recovers behind auto gate without a second worker
     "Content-Type": "application/json",
   };
   const post = (path: string) =>
-    fetch(app.origin + "/api/" + path, { method: "POST", headers, body: "{}" });
+    fetch(app.origin + "/api/" + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(path.endsWith("quiesce") ? { confirm: true } : {}),
+    });
   const status = async () =>
     (await fetch(app.origin + "/api/status", { headers })).json();
   try {
@@ -942,17 +947,17 @@ test("lost stop acknowledgment recovers behind auto gate without a second worker
     for (let i = 0; i < 100 && (await status()).state !== "idle"; i++)
       await new Promise((r) => setTimeout(r, 10));
     assert.equal((await status()).state, "idle");
-    assert.equal((await post("update/auto/quiesce")).status, 409);
+    assert.equal((await post("update/quiesce")).status, 409);
     assert.equal((await status()).presence, "unconfirmed");
-    assert.equal((await status()).autoWasRunning, true);
+    assert.equal((await status()).updateWasRunning, true);
     assert.equal((await status()).presenceStopRecovery, "pending");
     backendState.unavailable = true;
-    assert.equal((await post("update/auto/release")).status, 409);
+    assert.equal((await post("update/release")).status, 409);
     assert.equal((await status()).presenceStopRecovery, "pending");
-    assert.equal((await status()).autoWasRunning, true);
+    assert.equal((await status()).updateWasRunning, true);
     assert.equal((await post("run")).status, 409);
     backendState.unavailable = false;
-    assert.equal((await post("update/auto/release")).status, 200);
+    assert.equal((await post("update/release")).status, 200);
     assert.equal((await status()).presence, "reported");
     assert.equal((await status()).presenceStopRecovery, "none");
     const logs = await (
@@ -993,135 +998,109 @@ test("lost stop acknowledgment recovers behind auto gate without a second worker
   }
 });
 
-for (const loseReply of [false, true])
-  test(`owner retains unsafe auto-stop recovery after preparation (lost reply=${loseReply})`, async () => {
-    const { supervise } = await import("./helpers/legacy-supervisor.js");
-    const backendState = { refuseStopped: true };
-    const f = await backend(backendState);
-    const dir = await mkdtemp(tmpdir() + "/auto-owner-presence-");
-    const store = new Store(dir);
-    await store.init();
-    await store.save({
-      ...store.publicConfig(),
-      origin: f.origin,
-      token: "synthetic-token",
-      apiKey: "synthetic-provider-key",
-    });
-    let prepares = 0,
-      checks = 0;
-    const owner = await supervise(store, 0, undefined, {
-      prepare: async (target) => {
-        prepares++;
-        const candidate = join(dir, "versions", target);
-        await mkdir(join(candidate, "dist/config"), { recursive: true });
-        await mkdir(join(candidate, "dist/server"), { recursive: true });
-        await writeFile(join(candidate, "package.json"), '{"type":"module"}');
-        await writeFile(
-          join(candidate, "dist/build.json"),
-          JSON.stringify({ revision: target, protocol: 1 }),
-        );
-        await writeFile(
-          join(candidate, "dist/config/store.js"),
-          `export {Store} from ${JSON.stringify(pathToFileURL(resolve("dist/config/store.js")).href)};`,
-        );
-        await writeFile(
-          join(candidate, "dist/server/admin.js"),
-          `export {admin, updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)};`,
-        );
-        return candidate;
-      },
-      request: async (url) => {
-        checks++;
-        return new Response(
-          JSON.stringify(
-            String(url).includes("/compare/")
-              ? { status: "ahead", ahead_by: 1 }
-              : { object: { sha: "e".repeat(40) } },
-          ),
-        );
-      },
-    });
-    owner.updates.installed = "b".repeat(40);
-    const setting = new AutoUpdateSetting(dir);
-    await setting.write(true);
-    const headers = {
-      Authorization: "Bearer " + store.secrets.admin,
-      Origin: owner.origin,
-      "Content-Type": "application/json",
-    };
-    const originalFetch = globalThis.fetch;
-    try {
-      assert.equal(
-        (
-          await fetch(owner.origin + "/api/run", {
-            method: "POST",
-            headers,
-            body: "{}",
-          })
-        ).status,
-        200,
-      );
-      let state;
-      for (let i = 0; i < 100; i++) {
-        state = await (
-          await fetch(owner.origin + "/api/status", { headers })
-        ).json();
-        if (state.state === "idle") break;
-        await new Promise((r) => setTimeout(r, 10));
-      }
-      assert.equal(state.state, "idle");
-      if (loseReply)
-        globalThis.fetch = async (input, init) => {
-          const result = await originalFetch(input, init);
-          if (String(input).endsWith("/api/update/auto/quiesce"))
-            throw Error("synthetic lost stop reply");
-          return result;
-        };
-      await owner.auto.tick();
-      globalThis.fetch = originalFetch;
-      assert.equal(
-        owner.updates.snapshot().autoOutcome?.state,
-        "resume-failed",
-      );
-      const checksBefore = checks;
-      owner.updates.checkedAt = 0;
-      await owner.auto.tick();
-      assert.equal(
-        checks,
-        checksBefore,
-        "recover prior intent before source checks",
-      );
-      assert.equal(
-        owner.updates.snapshot().autoOutcome?.state,
-        "resume-failed",
-      );
-      assert.equal(prepares, 1);
-      assert.equal(await setting.failedTarget(), null);
-      assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
-      if (loseReply) {
-        backendState.refuseStopped = false;
-        await owner.auto.tick();
-        const recovered = await (
-          await fetch(owner.origin + "/api/status", { headers })
-        ).json();
-        assert.equal(recovered.autoQuiesced, false);
-        assert.equal(recovered.autoWasRunning, false);
-        assert.equal(recovered.presence, "reported");
-        assert.ok(["connecting", "idle"].includes(recovered.state));
-        assert.equal(f.reports.filter((r) => r.state === "running").length, 2);
-        assert.equal(
-          checks,
-          checksBefore,
-          "recovery does not start a source cycle",
-        );
-      }
-    } finally {
-      globalThis.fetch = originalFetch;
-      await owner.close();
-      await f.close();
-      await rm(dir, { recursive: true, force: true });
-    }
+test("manual preparation preserves source and presence safety on refused stop", async () => {
+  const { supervise } = await import("./helpers/legacy-supervisor.js");
+  const backendState = { refuseStopped: true };
+  const f = await backend(backendState);
+  const dir = await mkdtemp(tmpdir() + "/auto-owner-presence-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-provider-key",
   });
+  let prepares = 0,
+    checks = 0;
+  const owner = await supervise(store, 0, undefined, {
+    prepare: async (target) => {
+      prepares++;
+      const candidate = join(dir, "versions", target);
+      await mkdir(join(candidate, "dist/config"), { recursive: true });
+      await mkdir(join(candidate, "dist/server"), { recursive: true });
+      await writeFile(join(candidate, "package.json"), '{"type":"module"}');
+      await writeFile(
+        join(candidate, "dist/build.json"),
+        JSON.stringify({ revision: target, protocol: 1 }),
+      );
+      await writeFile(
+        join(candidate, "dist/config/store.js"),
+        `export {Store} from ${JSON.stringify(pathToFileURL(resolve("dist/config/store.js")).href)};`,
+      );
+      await writeFile(
+        join(candidate, "dist/server/admin.js"),
+        `export {admin, updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)};`,
+      );
+      return candidate;
+    },
+    request: async (url) => {
+      checks++;
+      return new Response(
+        JSON.stringify(
+          String(url).includes("/compare/")
+            ? { status: "ahead", ahead_by: 1 }
+            : { object: { sha: "e".repeat(40) } },
+        ),
+      );
+    },
+  });
+  owner.updates.installed = "b".repeat(40);
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: owner.origin,
+    "Content-Type": "application/json",
+  };
+  const originalFetch = globalThis.fetch;
+  try {
+    assert.equal(
+      (
+        await fetch(owner.origin + "/api/run", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    let state;
+    for (let i = 0; i < 100; i++) {
+      state = await (
+        await fetch(owner.origin + "/api/status", { headers })
+      ).json();
+      if (state.state === "idle") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(state.state, "idle");
+    assert.equal(
+      (
+        await fetch(owner.origin + "/api/update/check", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    const response = await fetch(owner.origin + "/api/update/apply", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sha: "e".repeat(40), confirm: true }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "WORKER_STOP_UNCONFIRMED");
+    assert.equal(owner.updates.installed, "b".repeat(40));
+    assert.equal(owner.updates.applying, false);
+    assert.equal(prepares, 1);
+    assert.equal(checks, 1, "no automatic check after refusal");
+    assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await owner.close();
+    await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 for (const refuseStopped of [false, true])
   test(`confirmed apply preserves presence fencing (stop refused=${refuseStopped})`, async () => {

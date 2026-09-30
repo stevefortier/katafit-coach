@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { Updates } from "../src/update/updates.js";
-import { AutoUpdater, AutoUpdateSetting } from "../src/update/auto.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
 for (const scenario of [
@@ -19,7 +18,7 @@ for (const scenario of [
   "stopped-denied",
   "held-archive",
 ])
-  test(`automatic cycle ${scenario}: archives invalidation before stop and resumes without replay`, async () => {
+  test(`confirmed maintenance ${scenario}: archives invalidation before stop and resumes without replay`, async () => {
     const options: any = {
       dropCompleteBeforeAcceptance: true,
       reconcileDenial: "TASK_SOURCE_CHANGED",
@@ -37,8 +36,6 @@ for (const scenario of [
       token: "synthetic-token",
       apiKey: "synthetic-key",
     });
-    const setting = new AutoUpdateSetting(home);
-    await setting.write(true);
     let applied = 0;
     const updates = new Updates("a".repeat(40), async () => {
       applied++;
@@ -53,38 +50,32 @@ for (const scenario of [
       (this as any).options.pollMs = 1000;
       return start.call(this);
     };
-    const app = await admin(store, 0, undefined, undefined, updates, setting);
+    const app = await admin(store, 0, undefined, undefined, updates);
     const headers = {
       Authorization: "Bearer " + store.secrets.admin,
       Origin: app.origin,
       "Content-Type": "application/json",
     };
     const post = (path: string) =>
-      fetch(app.origin + path, { method: "POST", headers, body: "{}" });
-    const scheduler = new AutoUpdater(setting, {
-      check: async () => ({
-        installed: updates.installed,
-        latest: updates.latest,
-      }),
-      isDescendant: async () => true,
-      apply: async (sha) => {
-        const paused = await post("/api/update/auto/quiesce");
-        if (!paused.ok) {
-          assert.equal(paused.status, 409);
-          return;
-        }
-        const { wasRunning } = await paused.json();
-        assert.equal(owned!.safeToReplace, true);
-        assert.equal(owned!.state, "stopped");
-        assert.equal(
-          (await readdir(home + "/task-terminal-receipts")).length,
-          1,
-        );
-        await updates.apply(sha);
-        assert.equal((await post("/api/update/auto/release")).status, 200);
-        if (wasRunning) assert.equal((await post("/api/run")).status, 200);
-      },
-    });
+      fetch(app.origin + path, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(path.endsWith("quiesce") ? { confirm: true } : {}),
+      });
+    const confirmedMaintenance = async () => {
+      const paused = await post("/api/update/quiesce");
+      if (!paused.ok) {
+        assert.equal(paused.status, 409);
+        return;
+      }
+      const { wasRunning } = await paused.json();
+      assert.equal(owned!.safeToReplace, true);
+      assert.equal(owned!.state, "stopped");
+      assert.equal((await readdir(home + "/task-terminal-receipts")).length, 1);
+      await updates.apply(updates.latest);
+      assert.equal((await post("/api/update/release")).status, 200);
+      if (wasRunning) assert.equal((await post("/api/run")).status, 200);
+    };
     const now = Date.now;
     try {
       await post("/api/run");
@@ -172,7 +163,7 @@ for (const scenario of [
         const reads = () =>
           f.calls.filter((c) => c.name === "coach_read_task_receipt").length;
         const before = reads();
-        await scheduler.tick();
+        await confirmedMaintenance();
         assert.equal(applied, 0);
         assert.equal(owned, original);
         assert.equal(
@@ -183,16 +174,15 @@ for (const scenario of [
         assert.equal(original.safeToReplace, false);
         assert.equal(original.incidents[0].digest, digest);
         assert.equal(reads(), before + 1);
-        await scheduler.tick();
-        await scheduler.tick();
+        await confirmedMaintenance();
+        await confirmedMaintenance();
         assert.equal(
           reads(),
           before + 1,
           "owner retries must not hot-loop receipt reads",
         );
-        assert.equal(await setting.failedTarget(), null);
         if (scenario === "stopped-denied") {
-          assert.equal((await post("/api/update/auto/release")).status, 409);
+          assert.equal((await post("/api/update/release")).status, 409);
           assert.equal((await post("/api/terminal/ticket")).status, 409);
           assert.equal(reads(), before + 1);
         }
@@ -202,7 +192,7 @@ for (const scenario of [
           await rm(home + "/task-terminal-receipts");
         Date.now = () => now() + 61000;
         if (scenario === "stopped-denied") {
-          assert.equal((await post("/api/update/auto/release")).status, 200);
+          assert.equal((await post("/api/update/release")).status, 200);
           assert.equal(original.safeToReplace, true);
           assert.equal(original.state, "stopped");
         }
@@ -224,7 +214,7 @@ for (const scenario of [
           await gate;
           await originalArchive(value);
         };
-        const cycle = scheduler.tick();
+        const cycle = confirmedMaintenance();
         try {
           await inside;
           const before = f.calls.length;
@@ -240,7 +230,7 @@ for (const scenario of [
           release();
           await cycle;
         }
-      } else await scheduler.tick();
+      } else await confirmedMaintenance();
       assert.equal(applied, 1);
       if (scenario.startsWith("stopped")) {
         assert.equal(owned, original);

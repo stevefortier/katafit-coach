@@ -664,17 +664,11 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               </p>
               <p class="hint" id="updateChecked">Not checked yet.</p>
               <p id="updateOutcome" class="hint" role="status" hidden></p>
-              <label class="hint update-auto-control" for="updateAuto">
-                <input type="checkbox" id="updateAuto" disabled />
-                <span>Automatically install newer main source</span>
-              </label>
-              <p class="hint" id="updateAutoStatus" role="status">
-                Off. When enabled, upgrades may close an active native Pi
-                session, interrupting its turn and losing its live transcript or
-                unsent draft. A previously running worker is restarted; check
-                its status afterward.
+              <p class="hint">
+                Source is checked only when you open Updates or press Check for
+                updates. Every installation requires your confirmation.
               </p>
-              <p class="hint" id="updateSchedule"></p>
+              <p class="hint" id="updateCheckStatus" role="status"></p>
               <div class="log-controls">
                 <button id="updateCheck" class="secondary">
                   Check for updates

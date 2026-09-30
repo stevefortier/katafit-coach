@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Updates } from "../src/update/updates.js";
 
-test("late ref body cannot clear a newer comparison rate limit", async () => {
+test("late ref body cannot clear a newer transport rate limit", async () => {
   let body!: ReadableStreamDefaultController<Uint8Array>;
   let refStarted!: () => void;
   const started = new Promise<void>((resolve) => {
@@ -15,7 +15,7 @@ test("late ref body cannot clear a newer comparison rate limit", async () => {
     async (input) => {
       const url = String(input);
       requests.push(url);
-      if (url.includes("/compare/"))
+      if (requests.length === 2)
         return new Response("", {
           status: 429,
           headers: { "retry-after": "3600" },
@@ -34,7 +34,7 @@ test("late ref body cannot clear a newer comparison rate limit", async () => {
   try {
     await assert.rejects(
       updates.sourceRequest(
-        `https://api.github.com/repos/stevefortier/katafit-coach/compare/${"a".repeat(40)}...${"b".repeat(40)}`,
+        "https://api.github.com/repos/stevefortier/katafit-coach/git/ref/heads/main",
       ),
       /RATE_LIMITED/,
     );

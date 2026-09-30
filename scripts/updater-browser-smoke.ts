@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { Updates } from "../src/update/updates.js";
-import { AutoUpdateSetting } from "../src/update/auto.js";
 import type { Operation } from "../src/update/journal.js";
 const home = await mkdtemp(tmpdir() + "/coach-update-browser-");
 const store = new Store(home);
@@ -39,14 +38,7 @@ const updates = new BrowserUpdates(
     return new Response(JSON.stringify({ object: { sha: latest } }));
   },
 );
-const app = await admin(
-  store,
-  0,
-  undefined,
-  undefined,
-  updates,
-  new AutoUpdateSetting(home),
-);
+const app = await admin(store, 0, undefined, undefined, updates);
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   browser = await chromium.launch({
@@ -67,33 +59,20 @@ try {
   await page.locator("#studio").waitFor({ state: "visible" });
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Updates", exact: true }).click();
-  const savedAuto = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/api/update/auto") &&
-      response.request().method() === "POST",
+  assert.equal(
+    await page
+      .locator("#updateAuto, #updateSchedule, #updateAutoStatus")
+      .count(),
+    0,
   );
-  await page.locator("#updateAuto").check();
-  assert.equal((await savedAuto).status(), 200);
-  await page.waitForFunction(
-    () =>
-      document.querySelector<HTMLInputElement>("#updateAuto")?.checked === true,
-  );
-  assert.equal((await new AutoUpdateSetting(home).read()).enabled, true);
   for (const width of [320, 360]) {
     await page.setViewportSize({ width, height: 800 });
-    const layout = await page.evaluate(() => {
-      const input = document
-        .querySelector("#updateAuto")!
-        .getBoundingClientRect();
-      const text = document
-        .querySelector(".update-auto-control span")!
-        .getBoundingClientRect();
-      return {
-        aligned: text.left > input.right && Math.abs(text.top - input.top) < 12,
-        noOverflow: document.documentElement.scrollWidth <= innerWidth,
-      };
-    });
-    assert.deepEqual(layout, { aligned: true, noOverflow: true });
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
   }
   await page.setViewportSize({ width: 1280, height: 1000 });
   assert.equal(
@@ -106,7 +85,7 @@ try {
       .querySelector("#updateLatest")
       ?.textContent?.includes("bbbbbbbbbbbb"),
   );
-  assert.equal(checks, 1, "unlock automatically checks GitHub once");
+  assert.equal(checks, 1, "Updates entry checks GitHub once");
   assert.equal(applies, 0, "check never installs");
   assert.match(
     await page.locator("#updateInstalled").innerText(),
@@ -259,13 +238,12 @@ try {
     false,
   );
   // Old owners may only supply a failed receipt and stale deferred status.
-  updates.autoOutcome = { sha: latest, state: "deferred" };
   updates.checkedAt = 0;
   await page.locator("#updateCheck").click();
   await page.waitForFunction(() =>
     document
       .querySelector("#updateStatus")
-      ?.textContent?.includes("Main differs"),
+      ?.textContent?.includes("New source available"),
   );
   assert.equal(
     await page.locator("#updateOutcome").getAttribute("role"),
@@ -286,15 +264,14 @@ try {
     /reason was not recorded/i,
   );
   assert.doesNotMatch(
-    await page.locator("#updateAutoStatus").innerText(),
+    await page.locator("#updateCheckStatus").innerText(),
     /was deferred|will verify/,
   );
   assert.doesNotMatch(
     await page.locator("#updateStatus").innerText(),
     /will verify/,
   );
-  for (const state of ["failed", "suppressed", "restored-running"] as const) {
-    updates.autoOutcome = { sha: latest, state };
+  {
     fixtureOperation = {
       ...fixtureOperation!,
       reason: "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED",
@@ -312,7 +289,7 @@ try {
       /outside Pi/,
     );
     assert.doesNotMatch(
-      await page.locator("#updateAutoStatus").innerText(),
+      await page.locator("#updateCheckStatus").innerText(),
       /was deferred/,
     );
   }
@@ -377,7 +354,6 @@ try {
     state: "succeeded",
     reason: undefined,
   };
-  updates.autoOutcome = undefined;
   await page.locator("#updateCheck").click();
   await page.waitForFunction(() =>
     document
@@ -565,16 +541,12 @@ try {
     await legacyPage.getByRole("tab", { name: "Updates", exact: true }).click();
     await legacyPage.waitForFunction(
       () =>
-        document
-          .querySelector("#updateAutoStatus")
-          ?.textContent?.includes("launcher"),
-      null,
-      { timeout: 3000 },
+        document.querySelector("#updateLatest")?.textContent?.trim() !==
+        "Not available",
     );
-    assert.equal(await legacyPage.locator("#updateAuto").isDisabled(), true);
-    assert.match(
-      await legacyPage.locator("#updateAutoStatus").innerText(),
-      /launcher/i,
+    assert.equal(
+      await legacyPage.locator("#updateAuto, #updateSchedule").count(),
+      0,
     );
     await legacyPage.setViewportSize({ width: 360, height: 800 });
     await legacyPage.locator("#updates").screenshot({
@@ -588,7 +560,7 @@ try {
   console.log(
     JSON.stringify({
       updateBrowser: "passed",
-      automaticCheck: true,
+      updatesEntryCheck: true,
       explicitConfirmation: true,
       reconnectVerified: true,
       reloadAuthentication: true,
