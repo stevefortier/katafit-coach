@@ -81,24 +81,48 @@ function nativeTerminal({
     pending = false;
     queued = 0;
   }
+  let resizeVersion = 0;
+  // Genuine interaction takes precedence over a queued layout correction.
+  for (const event of ["wheel", "touchstart", "pointerdown", "keydown"])
+    $("nativeTerminal").addEventListener(event, () => resizeVersion++, {
+      capture: true,
+      passive: true,
+    });
   const resize = () => {
     if (!fit || !$("nativeTerminal").getClientRects().length) return;
-    // Pane layout changes refit in place; a view following the prompt keeps
-    // following it (growing rows would otherwise leave it a line short).
     const buffer = terminal.buffer.active;
-    const following = buffer.viewportY >= buffer.baseY;
+    const viewport = terminal.element?.querySelector(".xterm-viewport");
+    // Growing the pane can clamp DOM scroll before ResizeObserver runs and
+    // make xterm's still-old row model look scrolled up. Physical bottom is
+    // also following; tolerate one CSS pixel of scrollbar rounding.
+    const following =
+      buffer.viewportY >= buffer.baseY ||
+      (viewport &&
+        Math.abs(
+          viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
+        ) <= 1);
+    const current = terminal;
+    const version = ++resizeVersion;
     fit.fit();
     if (following) {
-      const current = terminal;
-      terminal.scrollToBottom();
-      // xterm's viewport resyncs its DOM scroll a frame later and can pull
-      // the view back up; pin it again once that settled.
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => {
-          if (terminal === current) current.scrollToBottom();
-        }),
-      );
+      const pinBottom = () => {
+        if (
+          terminal !== current ||
+          resizeVersion !== version ||
+          !$("nativeTerminal").getClientRects().length
+        )
+          return;
+        current.scrollToBottom();
+        // A matching model makes scrollToBottom a no-op, even if the DOM
+        // viewport resync still holds the pre-fit pixel offset.
+        if (viewport)
+          viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+      };
+      pinBottom();
+      requestAnimationFrame(() => requestAnimationFrame(pinBottom));
     }
+    // Let xterm reflow a history reader's viewport; restoring its old numeric
+    // row would select different text when the column count changes.
     if (socket?.readyState === WebSocket.OPEN)
       socket.send(
         JSON.stringify({

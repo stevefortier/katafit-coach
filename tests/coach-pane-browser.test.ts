@@ -166,6 +166,78 @@ test(
 );
 
 test(
+  "pane fits retain history without pinning its reader to the prompt",
+  { timeout: 60000 },
+  async () => {
+    const h = await harness();
+    try {
+      const { page } = h;
+      await (
+        await page.context().newCDPSession(page)
+      ).send("Emulation.setCPUThrottlingRate", { rate: 4 });
+      await h.unlock("/");
+      await page.evaluate(() => {
+        const Base = (window as any).Terminal;
+        (window as any).Terminal = class extends Base {
+          constructor(options: any) {
+            super(options);
+            (window as any).__scrollTestTerminal = this;
+          }
+        };
+      });
+      await page.locator("#coachLauncher").click();
+      await connected(page);
+      for (let i = 1; i <= 80; i++) h.output(`history-${i}\r\n`);
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#nativeTerminal")
+          ?.textContent?.includes("history-80"),
+      );
+      await page.locator("#nativeTerminal .xterm-screen").hover();
+      await page.mouse.wheel(0, -2000);
+      await page.waitForFunction(() => {
+        const terminal = (window as any).__scrollTestTerminal;
+        return (
+          terminal.buffer.active.viewportY === 0 &&
+          document.querySelector("#nativeTerminal .xterm-viewport")
+            ?.scrollTop === 0
+        );
+      });
+      await page.locator("#coachPaneExpand").click();
+      await page.locator("#coachPaneExpand").click();
+      await page.locator("#coachPaneCollapse").click();
+      await page.locator("#coachLauncher").click();
+      await page.setViewportSize({ width: 390, height: 900 });
+      await page.waitForTimeout(150);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.waitForTimeout(2000);
+      assert.ok(
+        await page.evaluate(() => {
+          const buffer = (window as any).__scrollTestTerminal.buffer.active;
+          return buffer.viewportY < buffer.baseY;
+        }),
+        "fits must not drag a reader back to the prompt",
+      );
+      assert.deepEqual(
+        await page.evaluate(() => {
+          const buffer = (window as any).__scrollTestTerminal.buffer.active;
+          return Array.from({ length: buffer.length }, (_, i) =>
+            buffer.getLine(i).translateToString(true),
+          ).filter(Boolean);
+        }),
+        Array.from({ length: 80 }, (_, i) => `history-${i + 1}`),
+        "all ordered history survives xterm's native reflow",
+      );
+      assert.equal(h.counts.tickets, 1);
+      assert.equal(h.counts.sockets, 1);
+      assert.deepEqual(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+);
+
+test(
   "Dojo is the default view and the persona-named header launcher starts Pi lazily",
   { timeout: 60000 },
   async () => {
@@ -229,6 +301,9 @@ test(
     const h = await harness();
     try {
       const { page } = h;
+      // Slow rendering exposes asynchronous xterm viewport resync after fits.
+      const rendering = await page.context().newCDPSession(page);
+      await rendering.send("Emulation.setCPUThrottlingRate", { rate: 4 });
       await h.unlock("/");
       await page.locator("#coachLauncher").click();
       await connected(page);
