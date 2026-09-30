@@ -1,8 +1,17 @@
 import { createHash } from "node:crypto";
 import { History, type Message } from "./history.js";
 import { Store, assertNoSecrets } from "../config/store.js";
-import type { OperatorAction } from "../katafit/operatorTools.js";
-import { Client } from "../katafit/client.js";
+type RecordedAction = {
+  session_id: string;
+  idempotency_key: string;
+  status: "pending" | "delivered" | "completed" | "unknown" | "not_found";
+  tool_name?: string;
+  recipient_id?: string;
+  member_ref?: string; // retained only for private historical receipts
+  turn_generation?: number;
+  action_id?: string;
+  message_id?: string;
+};
 
 export class Actions {
   private storage: History;
@@ -23,7 +32,7 @@ export class Actions {
       )
       .digest("hex");
   }
-  private decode(text: string): OperatorAction {
+  private decode(text: string): RecordedAction {
     const v = JSON.parse(text);
     if (
       !v ||
@@ -36,6 +45,7 @@ export class Actions {
             "action_id",
             "message_id",
             "member_ref",
+            "recipient_id",
             "tool_name",
             "turn_generation",
           ].includes(k),
@@ -74,9 +84,16 @@ export class Actions {
         v.member_ref.length > 256)
     )
       throw new Error("UNSAFE_STORAGE");
+    if (
+      v.recipient_id !== undefined &&
+      (typeof v.recipient_id !== "string" ||
+        !/^[a-zA-Z0-9_-]{1,128}$/.test(v.recipient_id))
+    )
+      throw new Error("UNSAFE_STORAGE");
     return v;
   }
-  save(action: OperatorAction, scope = this.scope()) {
+  save(action: RecordedAction, scope = this.scope()) {
+    this.decode(JSON.stringify(action));
     assertNoSecrets(action, Object.values(this.store.secrets));
     // Writers share one installation process; reload synchronously before a write.
     this.rows = this.storage.load();
@@ -107,7 +124,10 @@ export class Actions {
         { role: "assistant", text: JSON.stringify(action) },
       );
     } else {
-      if (this.decode(next[index].text).member_ref !== action.member_ref)
+      if (
+        this.decode(next[index].text).member_ref !== action.member_ref ||
+        this.decode(next[index].text).recipient_id !== action.recipient_id
+      )
         throw new Error("UNSAFE_STORAGE");
       if (
         ["delivered", "completed"].includes(
@@ -129,7 +149,35 @@ export class Actions {
   }
   recorder() {
     const scope = this.scope();
-    return (action: OperatorAction) => this.save(action, scope);
+    return (action: RecordedAction) => this.save(action, scope);
+  }
+  async reconcileMemberReceipts(
+    lookup: (recipient: string, key: string) => Promise<string>,
+  ) {
+    this.rows = this.storage.load();
+    const scope = this.scope();
+    const pending = this.rows.flatMap((row, index) => {
+      if (index % 2 !== 1 || this.rows[index - 1].text !== scope) return [];
+      const action = this.decode(row.text);
+      return action.tool_name === "katafit_rest_request" &&
+        action.recipient_id &&
+        ["pending", "unknown"].includes(action.status)
+        ? [action]
+        : [];
+    });
+    for (const action of pending) {
+      try {
+        const message_id = await lookup(
+          action.recipient_id!,
+          action.idempotency_key,
+        );
+        if (typeof message_id !== "string" || !message_id) continue;
+        this.save({ ...action, status: "delivered", message_id }, scope);
+      } catch {
+        // A denial, absent receipt or transport fault is not proof of failure.
+        // Preserve the original durable fence; never replay the POST.
+      }
+    }
   }
   snapshot() {
     this.rows = this.storage.load();
@@ -147,74 +195,5 @@ export class Actions {
     });
     assertNoSecrets(actions, Object.values(this.store.secrets));
     return actions;
-  }
-  async reconcile(sessionId?: string) {
-    const record = this.recorder();
-    const client = new Client(
-      this.store.publicConfig().origin,
-      this.store.secrets.token,
-      AbortSignal.timeout(10000),
-      this.onDiagnostic,
-    );
-    for (const action of this.snapshot().filter(
-      (a) =>
-        (!sessionId || a.session_id === sessionId) &&
-        (a.status === "pending" || a.status === "unknown"),
-    )) {
-      if (action.tool_name === "katafit_rest_request") continue; // No MCP receipt contract; retain original scope/status. Never replay.
-      try {
-        // Close serializes with any in-flight delivery before readback.
-        const closed = await client.call("studio_operator_close_session", {
-          session_id: action.session_id,
-        });
-        if (
-          closed.schema_version !== 1 ||
-          closed.session_id !== action.session_id ||
-          closed.status !== "closed"
-        )
-          throw new Error("RESULT_REJECTED");
-        // Generic capability receipts have no implicit SEND lookup contract.
-        // Keep unknown durable until its backend provides an explicit readback;
-        // never invent not_found or replay the mutation on refresh/restart.
-        if (action.tool_name) {
-          record({ ...action, status: "unknown" });
-          continue;
-        }
-        const v = await client.call("studio_operator_get_action", {
-          session_id: action.session_id,
-          idempotency_key: action.idempotency_key,
-          ...(action.member_ref ? { member_ref: action.member_ref } : {}),
-        });
-        assertNoSecrets(v, Object.values(this.store.secrets));
-        if (
-          v.schema_version !== 1 ||
-          v.session_id !== action.session_id ||
-          (v.member_ref !== undefined && v.member_ref !== action.member_ref)
-        )
-          throw new Error("RESULT_REJECTED");
-        if (v.status === "not_found")
-          record({ ...action, status: "not_found" });
-        else if (
-          v.status === "delivered" &&
-          typeof v.action_id === "string" &&
-          v.action_id &&
-          typeof v.message_id === "string" &&
-          v.message_id
-        )
-          record(
-            this.decode(
-              JSON.stringify({
-                ...action,
-                status: "delivered",
-                action_id: v.action_id,
-                message_id: v.message_id,
-              }),
-            ),
-          );
-        else throw new Error("RESULT_REJECTED");
-      } catch {
-        record({ ...action, status: "unknown" });
-      }
-    }
   }
 }

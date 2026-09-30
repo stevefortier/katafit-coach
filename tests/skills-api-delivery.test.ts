@@ -7,7 +7,7 @@ import { SkillStore, stockSkills } from "../src/config/skills.js";
 
 test("current API guidance requires explicit panel delivery, not image acquisition alone", () => {
   const skill = stockSkills[0];
-  assert.equal(skill.defaultVersion, 2);
+  assert.equal(skill.defaultVersion, 3);
   assert.match(skill.instructions, /send_to_operator/);
   assert.match(skill.instructions, /image_receipt/);
   assert.match(skill.instructions, /not proof.*display/i);
@@ -46,7 +46,7 @@ for (const customized of [false, true]) {
       const store = new SkillStore(dir, () => []);
       await store.init();
       const current = store.view().skills[0];
-      assert.equal(current.defaultVersion, 2);
+      assert.equal(current.defaultVersion, 3);
       assert.equal(current.enabled, old.enabled);
       assert.equal(
         current.instructions,

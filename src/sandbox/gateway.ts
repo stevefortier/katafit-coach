@@ -2,20 +2,9 @@ import { randomUUID, createHash } from "node:crypto";
 import { nativeToolResultTooLarge } from "../../sandbox/katafit.mjs";
 import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
-import {
-  Client,
-  ToolFailure,
-  type BackendLogger,
-  type ResponseDecoder,
-} from "../katafit/client.js";
-import {
-  ImageReadFailure,
-  openOperatorTools,
-} from "../katafit/operatorTools.js";
+import { ToolFailure, type BackendLogger } from "../katafit/client.js";
 import { providerFailure } from "../runtime/errors.js";
 import {
-  restGet,
-  restGetTool,
   restRequest,
   restRequestTool,
   restRequestArgs,
@@ -48,10 +37,6 @@ import {
   NativeFailure,
   type NativeFailureCode,
 } from "./failures.js";
-
-const IMAGE = "studio_operator_read_dojo_checkin_image";
-const ACTIVITY_IMAGE = "studio_operator_read_activity_image";
-const DETAIL = "studio_operator_read_activity";
 
 /**
  * Authoritative admission of the untrusted sandbox provider body, strictly on
@@ -134,68 +119,6 @@ async function upstreamErrorCode(response: Response): Promise<unknown> {
   }
 }
 
-class NativeClient extends Client {
-  requestSignal?: AbortSignal;
-  override fetch(
-    path: string,
-    body?: unknown,
-    budget?: number,
-    limit?: number,
-    decode?: ResponseDecoder,
-  ) {
-    return super
-      .withSignal(this.requestSignal)
-      .fetch(path, body, budget, limit, decode);
-  }
-  override async rpc(
-    method: string,
-    params?: unknown,
-    notification = false,
-    budget?: number,
-    limit?: number,
-    validate?: (value: any) => any,
-  ): Promise<any> {
-    if (method !== "tools/list")
-      return super.rpc(method, params, notification, budget, limit, validate);
-    const tools: any[] = [];
-    const cursors = new Set<string>();
-    const names = new Set<string>();
-    let cursor: string | undefined;
-    for (let page = 0; page < 20; page++) {
-      const value = await super.rpc(
-        "tools/list",
-        cursor ? { cursor } : {},
-        false,
-        budget,
-        limit,
-      );
-      if (!Array.isArray(value?.tools)) throw new Error("MCP_CATALOG_REJECTED");
-      for (const tool of value.tools) {
-        if (typeof tool?.name !== "string" || names.has(tool.name))
-          throw new Error("MCP_CATALOG_REJECTED");
-        names.add(tool.name);
-        tools.push(tool);
-      }
-      if (
-        tools.length > 1000 ||
-        Buffer.byteLength(JSON.stringify(tools)) > 1024 * 1024
-      )
-        throw new Error("MCP_CATALOG_REJECTED");
-      if (value.nextCursor === undefined) return { tools };
-      if (
-        typeof value.nextCursor !== "string" ||
-        !value.nextCursor ||
-        value.nextCursor.length > 8192 ||
-        cursors.has(value.nextCursor)
-      )
-        throw new Error("MCP_CATALOG_REJECTED");
-      cursor = value.nextCursor;
-      cursors.add(value.nextCursor);
-    }
-    throw new Error("MCP_CATALOG_REJECTED");
-  }
-}
-
 export interface NativeGatewayHooks {
   onDiagnostic?: BackendLogger;
   /**
@@ -249,50 +172,46 @@ export async function openNativeGateway(
   const owner = hooks.attachments;
   const receipts = new ImageReceipts();
   const attachments = new OperatorAttachments();
-  let lastImage:
-    | { bytes: Buffer; mime_type: string; sha256: string }
-    | undefined;
+
   // Host-initiated disclosure authorizations: never cached, only coalesced
   // onto one that started after the waiting disclosure was admitted.
   let hostWork: Promise<void> | undefined;
   let hostSeq = 0;
   let hostWorkSeq = 0;
   const actions = new Actions(store, hooks.onDiagnostic);
-
-  const client = new NativeClient(
-    config.origin,
-    secrets.token,
-    lifetime,
-    hooks.onDiagnostic,
-  );
-  const openLegacy = () =>
-    openOperatorTools(client, undefined, {
-      secrets: Object.values(secrets),
-      current,
-      onAction: actions.recorder(),
-      // Close/receipt lookups must outlive request cancellation and the gateway
-      // lifetime for the whole retained window; each call keeps its wire budget.
-      control: new Client(
-        config.origin,
-        secrets.token,
-        new AbortController().signal,
-        hooks.onDiagnostic,
-      ),
-      continuity: true,
-
-      onImage: (image) => {
-        lastImage = owner
-          ? {
-              bytes: image.bytes,
-              mime_type: image.mime_type,
-              sha256: image.sha256,
-            }
-          : undefined;
+  // An HTTP response is not yet a deliverable native result. Keep its action
+  // fenced until emitted() validates the actual Pi-facing result budget.
+  const completionByResult = new WeakMap<
+    object,
+    Parameters<Actions["save"]>[0]
+  >();
+  // A POST may have committed before this process died. Reconcile its exact
+  // recorded recipient/key with a read-only REST request, never a second POST.
+  await actions.reconcileMemberReceipts(async (recipient, key) => {
+    const receipt = await restRequest(
+      config.origin,
+      secrets.token,
+      {
+        method: "GET",
+        path: `/api/coach/member-messages/${recipient}/receipts/${key}`,
       },
-    });
-  // Opening REST conversations requires no MCP grant. Explicit legacy actions
-  // are independent new requests.
-  const session = restSession(current, openLegacy);
+      lifetime,
+      Object.values(secrets),
+    );
+    const value = JSON.parse(receipt.content?.[0]?.text ?? "null");
+    if (
+      value?.status !== "delivered" ||
+      value?.recipient_id !== recipient ||
+      value?.idempotency_key !== key ||
+      typeof value?.message_id !== "string" ||
+      !value.message_id
+    )
+      throw new Error("REST_RECEIPT_UNVERIFIED");
+    return value.message_id;
+  });
+
+  // Native Pi never opens an Operator MCP session; worker MCP remains separate.
+  const session = restSession(current);
   const check = () => {
     if (!current()) throw new Error("NATIVE_SESSION_REVOKED");
   };
@@ -592,7 +511,6 @@ export async function openNativeGateway(
       } finally {
         if (admitted) {
           active = false;
-          client.requestSignal = undefined;
         }
       }
     },
@@ -657,11 +575,7 @@ export async function openNativeGateway(
         ),
         tools: [
           ...(secrets.token ? [restRequestTool] : []),
-          ...session.tools.map((t) => ({
-            name: t.name,
-            description: t.description,
-            parameters: t.parameters,
-          })),
+
           ...(owner ? [attachmentTool()] : []),
         ],
       };
@@ -691,8 +605,8 @@ export async function openNativeGateway(
       // deliberately omitted: the pending request may still consume it.
       if (
         request.kind === "tool" &&
-        [IMAGE, ACTIVITY_IMAGE].includes(request.name) &&
-        session.tools.some((tool) => tool.name === request.name)
+        request.name === restRequestTool.name &&
+        request.args?.method === "GET"
       ) {
         settle(undefined);
         check();
@@ -702,29 +616,13 @@ export async function openNativeGateway(
     }
     active = true;
     claim();
-    client.requestSignal = requestSignal;
+
     try {
       return await dispatch(request, requestSignal, prior);
     } catch (error) {
       settle(error);
       if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
-      if (error instanceof ImageReadFailure) {
-        check();
-        return { imageReadError: error.safe };
-      }
-      // Only a classified backend read refusal on this exact read may become
-      // actionable native guidance. settle() above preserves revocation teardown.
-      if (
-        request.kind === "tool" &&
-        request.name === DETAIL &&
-        error instanceof ToolFailure &&
-        ["READ_LIMIT", "HISTORY_CHANGED", "OPERATOR_NOT_AUTHORIZED"].includes(
-          error.code ?? "",
-        )
-      ) {
-        check();
-        return { operatorReadError: { code: error.code } };
-      }
+
       if (owner && error instanceof AttachmentFailure) {
         check();
         return { attachmentError: { code: error.code } };
@@ -754,6 +652,13 @@ export async function openNativeGateway(
     )
       failure = new NativeFailure("NATIVE_RESULT_TOO_LARGE");
     if (failure) throw failure;
+    if (result && typeof result === "object") {
+      const completion = completionByResult.get(result);
+      if (completion) {
+        actions.save(completion);
+        completionByResult.delete(result);
+      }
+    }
     return result;
   }
   // Map any failure to one fixed code. Session state dominates: a revoked or
@@ -815,27 +720,121 @@ export async function openNativeGateway(
     prior?: Promise<void>,
   ) {
     if (request.kind === "tool") {
-      if (
-        [restGetTool.name, restRequestTool.name].includes(request.name) &&
-        secrets.token
-      ) {
-        const legacy = request.name === restGetTool.name;
-        const args = legacy ? undefined : restRequestArgs(request.args);
+      if (request.name === restRequestTool.name && secrets.token) {
+        const args = restRequestArgs(request.args);
         assertNoSecrets(request.args, Object.values(secrets));
-        const mutation = args && args.method !== "GET";
-        let result;
-        try {
-          result = await (legacy ? restGet : restRequest)(
+        const mutation = args.method !== "GET";
+        const send =
+          mutation &&
+          args.method === "POST" &&
+          /^\/api\/coach\/member-messages\/[^/?]+$/.test(args.path);
+        const recipient = send
+          ? decodeURIComponent(
+              args.path.slice("/api/coach/member-messages/".length),
+            )
+          : "";
+        if (
+          send &&
+          (!request.args.body ||
+            typeof request.args.body !== "object" ||
+            Array.isArray(request.args.body) ||
+            Object.keys(request.args.body).join() !== "text" ||
+            typeof request.args.body.text !== "string" ||
+            !request.args.body.text.trim())
+        )
+          throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+        const key = send
+          ? createHash("sha256")
+              .update(
+                JSON.stringify([
+                  "member-message-v1",
+                  recipient.toLowerCase(),
+                  request.args.body.text.trim(),
+                ]),
+              )
+              .digest("hex")
+          : randomUUID();
+        const pending = {
+          session_id: session.session_id,
+          idempotency_key: key,
+          tool_name: restRequestTool.name,
+          ...(send ? { recipient_id: recipient } : {}),
+          status: "pending" as const,
+        };
+        const receiptPath = `${args.path}/receipts/${key}`;
+        const lookup = async () => {
+          const receipt = await restRequest(
             config.origin,
             secrets.token,
-            request.args,
+            { method: "GET", path: receiptPath },
+            lifetime,
+            Object.values(secrets),
+          );
+          const value = JSON.parse(receipt.content?.[0]?.text ?? "null");
+          if (
+            value.status !== "delivered" ||
+            value.recipient_id !== recipient ||
+            value.idempotency_key !== key ||
+            typeof value.message_id !== "string" ||
+            !value.message_id
+          )
+            throw new Error("REST_RECEIPT_UNVERIFIED");
+          return value;
+        };
+        if (mutation) {
+          if (
+            actions
+              .snapshot()
+              .some((a) => ["pending", "unknown"].includes(a.status))
+          )
+            throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
+          actions.save(pending);
+        }
+        let result;
+        try {
+          result = await restRequest(
+            config.origin,
+            secrets.token,
+            send
+              ? {
+                  ...request.args,
+                  body: { text: request.args.body.text, idempotency_key: key },
+                }
+              : request.args,
             requestSignal
               ? AbortSignal.any([lifetime, requestSignal])
               : lifetime,
             Object.values(secrets),
           );
           check();
+          if (send) {
+            const sent = JSON.parse(result.content?.[0]?.text ?? "null");
+            const checked = await lookup();
+            if (sent.message_id !== checked.message_id)
+              throw new Error("REST_RECEIPT_UNVERIFIED");
+          }
+          if (mutation)
+            completionByResult.set(result, { ...pending, status: "completed" });
         } catch (error) {
+          // A committed send may lose its POST acknowledgement. Read only the
+          // exact host-generated receipt; absence is never proof of noncommit.
+          if (send && current()) {
+            try {
+              const recovered = await lookup();
+              const recoveredResult = {
+                content: [{ type: "text", text: JSON.stringify(recovered) }],
+              };
+              completionByResult.set(recoveredResult, {
+                ...pending,
+                status: "delivered",
+                message_id: recovered.message_id,
+              });
+              return recoveredResult;
+            } catch {
+              /* preserve unknown, never repeat POST */
+            }
+          }
+          if (mutation) actions.save({ ...pending, status: "unknown" });
           if ((error as Error).message === "REST_REQUEST_REJECTED")
             throw new NativeFailure("NATIVE_REQUEST_REJECTED");
           // A lost response leaves a write's outcome unknown. No automatic retry.
@@ -867,34 +866,7 @@ export async function openNativeGateway(
           requestSignal ? AbortSignal.any([lifetime, requestSignal]) : lifetime,
         );
 
-      const tool = session.tools.find((t) => t.name === request.name);
-      if (!tool) throw new Error("NATIVE_TOOL_REJECTED");
-      lastImage = undefined;
-      const result: any = await tool.execute(
-        randomUUID(),
-        request.args,
-        abort.signal,
-      );
-      check();
-      // Set by the onImage hook during execute(); TS cannot see that write.
-      const image = lastImage as
-        | { bytes: Buffer; mime_type: string; sha256: string }
-        | undefined;
-      lastImage = undefined;
-      // Mint an opaque host receipt for pixels this validated read delivered.
-      if (owner && [IMAGE, ACTIVITY_IMAGE].includes(request.name) && image) {
-        const text = result?.content?.[0];
-        if (text?.type !== "text") throw new Error("RESULT_REJECTED");
-        const summary = JSON.parse(text.text);
-        summary.image_receipt = receipts.add(
-          image.bytes,
-          image.mime_type,
-          image.sha256,
-          request.name === ACTIVITY_IMAGE ? "activity" : "checkin",
-        );
-        text.text = JSON.stringify(summary);
-      }
-      return result;
+      throw new Error("NATIVE_TOOL_REJECTED");
     }
     try {
       assertNoSecrets(request.body, Object.values(secrets));

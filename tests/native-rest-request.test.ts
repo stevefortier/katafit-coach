@@ -7,7 +7,7 @@ import { openNativeGateway } from "../src/sandbox/gateway.js";
 
 import { Actions } from "../src/chat/actions.js";
 
-test("actual relay exposes REST mutations without a Coach journal or automatic retry", async () => {
+test("actual relay journals REST mutations without automatic retry", async () => {
   const calls: string[] = [];
   const server = createServer((req, res) => {
     calls.push(req.method + " " + req.url);
@@ -41,12 +41,14 @@ test("actual relay exposes REST mutations without a Coach journal or automatic r
       });
     }
     await tool.execute("POST", { method: "POST", path: "/api/success" });
-    await gateway.handle({
-      kind: "tool",
-      name: "katafit_rest_get",
-      args: { path: "/api/compat" },
-      toolCallId: "compat",
-    });
+    await assert.rejects(() =>
+      gateway.handle({
+        kind: "tool",
+        name: "katafit_rest_get",
+        args: { path: "/api/compat" },
+        toolCallId: "compat",
+      }),
+    );
     await assert.rejects(
       () =>
         tool.execute("write", {
@@ -56,7 +58,7 @@ test("actual relay exposes REST mutations without a Coach journal or automatic r
         }),
       /outcome is unknown.*do not replay/i,
     );
-    assert.deepEqual(new Actions(f.store).snapshot(), []);
+    assert.equal(new Actions(f.store).snapshot().at(-1)?.status, "unknown");
     // An unknown acknowledgement does not trigger an automatic REST replay.
     assert.deepEqual(calls, [
       "GET /api/docs/coach",
@@ -65,7 +67,7 @@ test("actual relay exposes REST mutations without a Coach journal or automatic r
       "PATCH /api/success",
       "DELETE /api/success",
       "POST /api/success",
-      "GET /api/compat",
+
       "PATCH /api/lost",
     ]);
     await gateway.close();
@@ -152,10 +154,12 @@ test("actual Pi continuations may reuse a mutation ID for distinct canonical occ
     const answer = await piTurn(relay, "approved-custom-model", messages);
     assert.equal(answer.stopReason, "stop", JSON.stringify(answer));
     assert.deepEqual(writes, [args.body, args.body]);
-    assert.deepEqual(new Actions(f.store).snapshot(), []);
+    assert.equal(new Actions(f.store).snapshot().length, 2);
     // Distinct provider selections dispatched despite reusing the same ID.
     assert.equal(writes.length, 2);
-    assert.equal(new Actions(f.store).snapshot().length, 0);
+    assert.ok(
+      new Actions(f.store).snapshot().every((a) => a.status === "completed"),
+    );
   } finally {
     await relay?.close();
     await gateway?.close();
@@ -280,7 +284,10 @@ for (const lost of [false, true])
       const answer = await piTurn(relay, "approved-custom-model", messages);
       assert.equal(answer.stopReason, "stop", JSON.stringify(answer));
       assert.equal(mutations, 1);
-      assert.deepEqual(new Actions(f.store).snapshot(), []);
+      assert.equal(
+        new Actions(f.store).snapshot().at(-1)?.status,
+        lost ? "unknown" : "completed",
+      );
       assert.equal(mutations, 1);
     } finally {
       await relay?.close();
