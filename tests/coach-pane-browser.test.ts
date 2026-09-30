@@ -35,6 +35,9 @@ async function harness(viewport = { width: 1440, height: 900 }) {
   const browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
     headless: true,
+    // Keep native tracks visible in evidence instead of Chromium's headless
+    // default --hide-scrollbars; ownership must be visible as well as measured.
+    ignoreDefaultArgs: ["--hide-scrollbars"],
     args: ["--no-sandbox"],
   });
   const page = await browser.newPage({ viewport });
@@ -142,6 +145,323 @@ async function shot(page: Page, name: string) {
   await mkdir(evidence, { recursive: true });
   await page.screenshot({ path: `${evidence}/${name}.png` });
 }
+
+test(
+  "workspace and Coach own independent wheel scroll regions without a root scrollbar",
+  { timeout: 60000 },
+  async () => {
+    const h = await harness({ width: 1440, height: 700 });
+    try {
+      const { page } = h;
+      await h.unlock("/settings?section=persona");
+      await page.locator("#name").fill("Synthetic retained draft");
+      // Tall synthetic content exercises ownership, not production records.
+      await page.locator("#settingsPanel").evaluate((panel) => {
+        const fixture = document.createElement("div");
+        fixture.setAttribute("aria-label", "Synthetic scroll fixture");
+        for (let i = 1; i <= 60; i++) {
+          const row = document.createElement("p");
+          row.textContent = `Synthetic workspace row ${i} — local scroll-ownership evidence, not production data.`;
+          row.style.padding = "16px";
+          row.style.borderBottom = "1px solid #303030";
+          fixture.append(row);
+        }
+        panel.append(fixture);
+      });
+      await page.evaluate(() => scrollTo(0, 800));
+      await page.locator("#coachLauncher").click();
+      await connected(page);
+      assert.equal(
+        await page.locator("#workspaceScroll").getAttribute("tabindex"),
+        "0",
+        "docked workspace is keyboard scrollable",
+      );
+      const geometry = await page.evaluate(() => {
+        const workspace = document.querySelector("#workspaceScroll")!;
+        const pane = document.querySelector("#coachPane")!;
+        return {
+          rootHeight: document.documentElement.scrollHeight,
+          height: innerHeight,
+          workspaceRight: workspace?.getBoundingClientRect().right,
+          paneLeft: pane.getBoundingClientRect().left,
+          scroll: workspace?.scrollTop,
+        };
+      });
+      assert.equal(
+        geometry.rootHeight,
+        geometry.height,
+        "no document scrollbar while docked",
+      );
+      assert.equal(
+        geometry.workspaceRight,
+        geometry.paneLeft,
+        "left scroll track is at divider",
+      );
+      assert.equal(
+        geometry.scroll,
+        800,
+        "document offset transfers to workspace",
+      );
+      const positions = () =>
+        page.evaluate(() => ({
+          root: scrollY,
+          left: document.querySelector("#workspaceScroll")!.scrollTop,
+          right: document.querySelector(".xterm-viewport")!.scrollTop,
+        }));
+      for (let i = 1; i <= 120; i++) h.output(`synthetic-history-${i}\r\n`);
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#nativeTerminal")
+          ?.textContent?.includes("synthetic-history-120"),
+      );
+      await page.waitForTimeout(250);
+      let before = await positions();
+      await page.locator("#workspaceScroll").focus();
+      await page.keyboard.press("PageDown");
+      await page.waitForTimeout(250);
+      let after = await positions();
+      assert.ok(after.left > before.left, "keyboard scrolls focused workspace");
+      assert.equal(after.right, before.right);
+      assert.equal(after.root, 0);
+      before = after;
+      await page.mouse.move(200, 500);
+      await page.mouse.wheel(0, 400);
+      await page.waitForTimeout(250);
+      after = await positions();
+      assert.ok(after.left > before.left, "left wheel scrolls workspace");
+      assert.equal(
+        after.right,
+        before.right,
+        "left wheel does not scroll Coach",
+      );
+      assert.equal(after.root, 0);
+      before = after;
+      await page.locator("#nativeTerminal .xterm-screen").hover();
+      await page.mouse.wheel(0, -1000);
+      await page.waitForTimeout(250);
+      after = await positions();
+      assert.ok(
+        after.right < before.right,
+        "right wheel scrolls real xterm history",
+      );
+      assert.equal(
+        after.left,
+        before.left,
+        "right wheel does not scroll workspace",
+      );
+      assert.equal(after.root, 0);
+      await page.locator("#workspaceScroll").evaluate((owner) => {
+        owner.scrollTop = owner.scrollHeight;
+      });
+      before = await positions();
+      await page.mouse.move(200, 500);
+      await page.mouse.wheel(0, 400);
+      await page.waitForTimeout(150);
+      after = await positions();
+      assert.deepEqual(
+        after,
+        before,
+        "left wheel at bottom cannot chain into root or Coach",
+      );
+      await page
+        .locator("#workspaceScroll")
+        .evaluate((owner) => (owner.scrollTop = 1200));
+      await page.locator("#nativeTerminal .xterm-screen").hover();
+      await page.mouse.wheel(0, -10000);
+      await page.waitForTimeout(250);
+      before = await positions();
+      assert.equal(before.right, 0, "real terminal is at its history boundary");
+      await page.mouse.wheel(0, -400);
+      await page.waitForTimeout(150);
+      assert.deepEqual(
+        await positions(),
+        before,
+        "right wheel at top cannot chain into workspace or root",
+      );
+      after = await positions();
+      await page.evaluate(() => {
+        // Render a labeled synthetic notice through the real shared surface.
+        const bar = document.querySelector<HTMLElement>("#noticeBar")!;
+        bar.dataset.severity = "info";
+        document.querySelector("#notice")!.textContent =
+          "Synthetic scroll-ownership verification — local fixture only.";
+      });
+      await page.waitForTimeout(100);
+      const chrome = await page.evaluate(() => {
+        const header = document
+          .querySelector("header")!
+          .getBoundingClientRect();
+        const notice = document
+          .querySelector("#noticeBar")!
+          .getBoundingClientRect();
+        return {
+          headerTop: header.top,
+          headerBottom: header.bottom,
+          noticeTop: notice.top,
+          noticeBottom: notice.bottom,
+        };
+      });
+      assert.equal(chrome.headerTop, 0, "workspace header remains sticky");
+      assert.ok(
+        chrome.noticeTop >= chrome.headerBottom && chrome.noticeBottom < 200,
+        "notice sticks beneath header",
+      );
+      await page
+        .locator("#workspaceScroll")
+        .evaluate((owner) => (owner as HTMLElement).blur());
+      await shot(page, "independent-scroll-docked-1440-synthetic");
+      const offset = after.left;
+      await page.locator("#coachPaneExpand").click();
+      await page.locator("#coachPaneExpand").click();
+      assert.equal(
+        (await positions()).left,
+        offset,
+        "expand/restore preserves workspace offset",
+      );
+      await page.locator("#workspaceScroll").focus();
+      for (const width of [1000, 390, 1440]) {
+        await page.setViewportSize({ width, height: 700 });
+        await page.waitForTimeout(150);
+        if (width === 390) {
+          assert.equal(
+            await page.locator("#workspaceScroll").getAttribute("tabindex"),
+            null,
+          );
+          assert.equal(
+            await page
+              .locator("#workspaceScroll")
+              .evaluate((owner) => (owner as HTMLElement).inert),
+            true,
+          );
+          assert.equal(
+            await page
+              .locator("#coachPaneBack")
+              .evaluate((button) => button === document.activeElement),
+            true,
+            "newly covered scroll-region focus moves into Coach",
+          );
+          await shot(page, "independent-scroll-mobile-390-synthetic");
+        }
+      }
+      assert.equal(
+        (await positions()).left,
+        offset,
+        "resize and mobile round trip preserves workspace offset",
+      );
+      await page.locator("#coachPaneCollapse").click();
+      assert.equal(
+        await page.evaluate(() => scrollY),
+        offset,
+        "collapse restores document scrolling",
+      );
+      await page.mouse.move(200, 500);
+      await page.mouse.wheel(0, 200);
+      await page.waitForTimeout(250);
+      assert.ok(
+        (await page.evaluate(() => scrollY)) > offset,
+        "collapsed page scrolls normally",
+      );
+      const collapsedOffset = await page.evaluate(() => scrollY);
+      // Coordinate click the already-visible sticky launcher. Playwright's
+      // locator click may scroll it before pointerdown, changing the very
+      // document offset this ownership regression is meant to preserve.
+      const launcherBox = (await page.locator("#coachLauncher").boundingBox())!;
+      await page.mouse.click(
+        launcherBox.x + launcherBox.width / 2,
+        launcherBox.y + launcherBox.height / 2,
+      );
+      assert.equal(
+        (await positions()).left,
+        collapsedOffset,
+        "reopen transfers current document offset",
+      );
+      assert.equal(
+        await page.locator("#name").inputValue(),
+        "Synthetic retained draft",
+      );
+      assert.equal(h.counts.tickets, 1);
+      assert.equal(h.counts.sockets, 1);
+      assert.deepEqual(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+);
+
+test(
+  "short dock and mobile keep Coach overflow inside its own accessible viewport",
+  { timeout: 60000 },
+  async () => {
+    const h = await harness({ width: 1440, height: 260 });
+    try {
+      const { page } = h;
+      await h.unlock("/settings?section=persona");
+      await page.locator("#coachLauncher").click();
+      await connected(page);
+      for (const viewport of [
+        { width: 1440, height: 260 },
+        { width: 390, height: 568 },
+        { width: 320, height: 568 },
+      ]) {
+        await page.setViewportSize(viewport);
+        await page.waitForTimeout(200);
+        const geometry = await page.evaluate(() => {
+          const panel = document.querySelector("#coachPanel")!;
+          const pane = document
+            .querySelector("#coachPane")!
+            .getBoundingClientRect();
+          const terminal = document
+            .querySelector("#nativeTerminal")!
+            .getBoundingClientRect();
+          const attachments = document
+            .querySelector("#nativeAttachments")!
+            .getBoundingClientRect();
+          return {
+            rootHeight: document.documentElement.scrollHeight,
+            rootWidth: document.documentElement.scrollWidth,
+            height: innerHeight,
+            width: innerWidth,
+            paneBottom: pane.bottom,
+            panelBottom: panel.getBoundingClientRect().bottom,
+            overflow: getComputedStyle(panel).overflowY,
+            overlap: terminal.bottom > attachments.top,
+          };
+        });
+        assert.equal(geometry.rootHeight, geometry.height);
+        assert.equal(geometry.rootWidth, geometry.width);
+        assert.equal(geometry.paneBottom, geometry.height);
+        assert.ok(geometry.panelBottom <= geometry.height);
+        assert.equal(geometry.overflow, "auto");
+        assert.equal(
+          geometry.overlap,
+          false,
+          "attachments remain below terminal",
+        );
+        const download = page
+          .locator("#nativeAttachmentList")
+          .getByRole("button", { name: "Download", exact: true });
+        await download.scrollIntoViewIfNeeded();
+        await download.focus();
+        const downloadBox = (await download.boundingBox())!;
+        assert.ok(
+          downloadBox.y >= 0 &&
+            downloadBox.y + downloadBox.height <= viewport.height,
+          "attachment action remains visibly reachable even in a short pane",
+        );
+        assert.equal(await page.evaluate(() => scrollY), 0);
+        await shot(
+          page,
+          `scroll-contained-${viewport.width}x${viewport.height}-synthetic`,
+        );
+      }
+      assert.equal(h.counts.tickets, 1);
+      assert.equal(h.counts.sockets, 1);
+      assert.deepEqual(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+);
 
 test(
   "reloading an expanded Coach pane never reads the covered Dojo",
@@ -597,9 +917,13 @@ test(
       await page.locator("#settingsTab").click();
       await page.getByRole("tab", { name: "Persona", exact: true }).click();
       await page.locator("#name").fill("Unsaved pane draft");
-      await page.evaluate(() => scrollTo(0, 400));
-      const y = await page.evaluate(() => scrollY);
-      assert.ok(y > 100, "page scrolls");
+      await page
+        .locator("#workspaceScroll")
+        .evaluate((owner) => owner.scrollTo(0, 400));
+      const y = await page
+        .locator("#workspaceScroll")
+        .evaluate((owner) => owner.scrollTop);
+      assert.ok(y > 100, "workspace scrolls");
       await page.locator("#coachPaneExpand").click();
       assert.equal(await paneMode(page), "expanded");
       assert.equal(
@@ -619,7 +943,13 @@ test(
       await shot(page, "expanded-1440");
       await page.locator("#coachPaneExpand").click();
       assert.equal(await paneMode(page), "docked");
-      assert.equal(await page.evaluate(() => scrollY), y, "scroll restored");
+      assert.equal(
+        await page
+          .locator("#workspaceScroll")
+          .evaluate((owner) => owner.scrollTop),
+        y,
+        "scroll restored",
+      );
       assert.ok(
         await page
           .locator("#coachPaneExpand")
