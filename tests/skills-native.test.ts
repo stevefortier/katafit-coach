@@ -67,61 +67,88 @@ test("pinned Pi 0.86.1 discovers native SKILL.md metadata without injecting its 
 });
 
 test(
-  "network-none native Pi reads one relevant skill before its authorized workflow",
+  "network-none native Pi reads one relevant skill before its ordinary REST workflow",
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 60000 },
   async () => {
     const requests: any[] = [];
+    const skillSentinel =
+      "Discover before acting; never guess undocumented routes, fields or verbs.";
     const completion = (delta: unknown, finish: "stop" | "tool_calls") =>
       `data: ${JSON.stringify({ id: "native-skill", choices: [{ index: 0, delta, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: "native-skill", choices: [{ index: 0, delta: {}, finish_reason: finish }] })}\n\ndata: [DONE]\n\n`;
-    const f = await fixture((name, result, body) => {
-      if (name !== "provider") return result;
-      requests.push(body);
-      const messages = JSON.stringify(body.messages);
-      const receivedSkill = messages.includes(
-        "Compare like measures and intervals",
-      );
-      const receivedRoster = messages.includes("Synthetic Alice");
-      if (!receivedSkill)
-        return completion(
-          {
-            tool_calls: [
-              {
-                index: 0,
-                id: "read_review_skill",
-                type: "function",
-                function: {
-                  name: "read",
-                  arguments: JSON.stringify({
-                    path: "/home/node/.pi/agent/skills/katafit-api/SKILL.md",
-                  }),
-                },
-              },
-            ],
-          },
-          "tool_calls",
+    const f = await fixture(
+      (name, result, body) => {
+        if (name !== "provider") return result;
+        requests.push(body);
+        const receivedSkill = body.messages.some(
+          (message: any) =>
+            message.role === "tool" &&
+            message.tool_call_id === "read_review_skill" &&
+            message.content.includes(skillSentinel),
         );
-      if (!receivedRoster)
-        return completion(
-          {
-            tool_calls: [
-              {
-                index: 0,
-                id: "read_authorized_members",
-                type: "function",
-                function: {
-                  name: "studio_operator_list_members",
-                  arguments: "{}",
-                },
-              },
-            ],
-          },
-          "tool_calls",
+        const receivedProfile = body.messages.some(
+          (message: any) =>
+            message.role === "tool" &&
+            message.tool_call_id === "read_authorized_profile" &&
+            message.content.includes("Synthetic Alice"),
         );
-      return completion(
-        { content: "NATIVE_SKILL_AND_AUTHORITY_VERIFIED" },
-        "stop",
-      );
-    });
+        if (!receivedSkill)
+          return completion(
+            {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "read_review_skill",
+                  type: "function",
+                  function: {
+                    name: "read",
+                    arguments: JSON.stringify({
+                      path: "/home/node/.pi/agent/skills/katafit-api/SKILL.md",
+                    }),
+                  },
+                },
+              ],
+            },
+            "tool_calls",
+          );
+        if (!receivedProfile)
+          return completion(
+            {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "read_authorized_profile",
+                  type: "function",
+                  function: {
+                    name: "katafit_rest_request",
+                    arguments: JSON.stringify({
+                      method: "GET",
+                      path: "/api/user",
+                    }),
+                  },
+                },
+              ],
+            },
+            "tool_calls",
+          );
+        return completion(
+          { content: "NATIVE_SKILL_AND_AUTHORITY_VERIFIED" },
+          "stop",
+        );
+      },
+      (path, headers) => {
+        assert.equal(
+          headers.authorization,
+          "Bearer synthetic-backend-credential",
+        );
+        assert.equal(path, "/api/user");
+        return {
+          body: JSON.stringify({
+            _id: "fixture-user",
+            display_name: "Synthetic Alice",
+          }),
+        };
+      },
+    );
     const gateway = await openNativeGateway(f.store);
     const runtime = new NativeRuntime(
       process.env.SKILLS_NATIVE_TEST_IMAGE ?? "katafit-pi:0.86.1",
@@ -150,27 +177,33 @@ test(
           (mount: any) => !["bind", "volume"].includes(mount.Type),
         ),
       );
-      gateway.noteHumanInput?.("Review an authorized activity for Alex.\r");
-      runtime.input("Review an authorized activity for Alex.\r");
+      gateway.noteHumanInput?.("Read my authorized profile.\r");
+      runtime.input("Read my authorized profile.\r");
       await waitFor("NATIVE_SKILL_AND_AUTHORITY_VERIFIED");
 
       assert.equal(requests.length, 3);
       const first = JSON.stringify(requests[0]);
       assert.match(first, /katafit-api/);
-      assert.doesNotMatch(first, /Compare like measures and intervals/);
-      assert.match(
-        JSON.stringify(requests[1]),
-        /Compare like measures and intervals/,
-      );
+      assert.ok(!first.includes(skillSentinel));
+      assert.ok(JSON.stringify(requests[1]).includes(skillSentinel));
       assert.match(JSON.stringify(requests[2]), /Synthetic Alice/);
-      assert.ok(
-        f.calls.some(
-          (call) =>
-            call.body.params?.name === "studio_operator_list_members" &&
-            call.body.params.arguments.session_id === "native-fixture-session",
-        ),
+      const backendCalls = f.calls.filter(
+        (call) => call.path !== "/v1/chat/completions",
       );
+      assert.equal(backendCalls.length, 1);
+      assert.equal(backendCalls[0].method, "GET");
+      assert.equal(backendCalls[0].path, "/api/user");
       for (const request of requests) {
+        assert.ok(
+          request.tools.some(
+            (tool: any) => tool.function.name === "katafit_rest_request",
+          ),
+        );
+        assert.ok(
+          !request.tools.some((tool: any) =>
+            tool.function.name.startsWith("studio_operator_"),
+          ),
+        );
         const wire = JSON.stringify(request);
         assert.equal(wire.includes(f.store.secrets.token), false);
         assert.equal(wire.includes(f.store.secrets.apiKey), false);
