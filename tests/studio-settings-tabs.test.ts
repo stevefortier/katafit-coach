@@ -159,8 +159,8 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       await page.getByRole("tab", { selected: true }).innerText(),
       "Preview",
     );
-    await page.locator("#coachTab").click();
-    assert.equal(new URL(page.url()).pathname, "/chat/operator");
+    await page.locator("#dashboardTab").click();
+    assert.equal(new URL(page.url()).pathname, "/dashboard");
     await page.goBack();
     assert.equal(
       await page.getByRole("tab", { selected: true }).innerText(),

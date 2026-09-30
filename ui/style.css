@@ -1010,6 +1010,9 @@ header {
 }
 .dashboard-map {
   position: relative;
+  /* Contain Leaflet's internal z-indices (panes 400, controls 1000) so the
+     map never paints over the sticky header or the Coach pane. */
+  isolation: isolate;
   width: 100%;
   height: clamp(280px, 48vw, 520px);
   overflow: hidden;
@@ -1490,4 +1493,214 @@ header {
 #performanceWindow,
 #performanceSelection {
   overflow-wrap: anywhere;
+}
+/* Global Coach pane: a header launcher and one persistent terminal pane that
+   docks right (the page shrinks), expands over the workspace, or covers the
+   screen on narrow viewports. */
+#coachLauncher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(360px, 45vw);
+  min-height: 44px;
+  margin: 0 auto 0 0;
+  padding: 8px 14px;
+}
+#coachLauncher[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: #303030;
+  color: var(--accent);
+}
+#coachLauncherName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coach-new-output {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+}
+html.coach-covered {
+  overflow: hidden;
+}
+/* Layout follows the viewport in CSS so it never lags the JS mode switch:
+   narrow screens get a full-screen pane, wide ones dock or expand. */
+#coachPane {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--panel);
+  overscroll-behavior: contain;
+  /* Outside <main>, so restate its long-token wrapping. */
+  overflow-wrap: anywhere;
+}
+@media (min-width: 900px) {
+  body.coach-docked {
+    padding-right: var(--coach-pane-width, 520px);
+  }
+  #coachPane {
+    left: auto;
+    width: var(--coach-pane-width, 520px);
+  }
+  #coachPane[data-mode="expanded"] {
+    top: var(--coach-pane-top, 0px);
+    left: 0;
+    width: auto;
+    border-top: 1px solid var(--line);
+  }
+  #coachPane[data-mode="expanded"] #coachDivider,
+  #coachPaneBack {
+    display: none;
+  }
+}
+@media (max-width: 899.98px) {
+  #coachDivider,
+  #coachPaneExpand,
+  #coachPaneCollapse {
+    display: none;
+  }
+}
+#coachDivider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  z-index: 1;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+#coachDivider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 1px;
+  background: var(--line);
+}
+#coachDivider:hover::after,
+#coachDivider:focus-visible::after {
+  left: 4px;
+  width: 3px;
+  background: var(--accent);
+}
+#coachDivider:focus-visible {
+  outline: none;
+}
+.coach-pane-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.coach-pane-bar button {
+  flex: none;
+  min-height: 40px;
+  margin: 0;
+  padding: 8px 12px;
+}
+#coachPaneName {
+  flex: 1 1 6rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coach-pane-status {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.coach-pane-status[data-state="connected"] {
+  color: #86efac;
+}
+.coach-pane-status[data-state="starting"] {
+  color: #93c5fd;
+}
+.coach-pane-status[data-state="disconnected"],
+.coach-pane-status[data-state="ended"] {
+  color: #fcd34d;
+}
+.coach-pane-status[data-state="error"],
+.coach-pane-status[data-state="unavailable"],
+.coach-pane-status[data-state="overflow"] {
+  color: #fca5a5;
+}
+#coachPane #coachPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  padding: 12px;
+}
+#coachPane #operatorView {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#coachPane .native-workbench {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* Stretch: a content-sized terminal would shrink on every fit. */
+  align-items: stretch;
+  gap: 12px;
+  margin: 0;
+}
+#coachPane #nativeTerminal {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 160px;
+  margin: 0;
+}
+#coachPane #nativeAttachments {
+  flex: 0 1 auto;
+  max-height: 30%;
+}
+@media (min-width: 900px) {
+  #coachPane[data-mode="expanded"] .native-workbench {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+    align-items: stretch;
+  }
+  #coachPane[data-mode="expanded"] #nativeAttachments {
+    max-height: none;
+  }
+}
+#coachPane #operatorStatus,
+#coachPane #operatorActions,
+#coachPane #operatorReconcile {
+  flex: none;
+}
+#coachPane #operatorStatus {
+  margin: 8px 0 0;
+}
+#coachPane #operatorStatus:empty,
+#coachPane #operatorActions:empty {
+  display: none;
+}
+#coachPane #operatorActions {
+  max-height: 20vh;
+  overflow-y: auto;
+}
+@media (max-width: 600px) {
+  #coachPane #coachPanel {
+    padding: 8px;
+  }
 }

@@ -64,7 +64,7 @@ async function neutralSurfaces(page: Page) {
       // Deliberate status/warning/error colors are not decorative accents.
       if (
         el.matches(
-          '#modelDraftStatus, #models .saved-badge, [data-tone="error"], #nativeStatus[data-state="error"], #nativeStatus[data-state="unavailable"], #nativeStatus[data-state="overflow"], .log-error, .log-warn',
+          '#modelDraftStatus, #models .saved-badge, [data-tone="error"], #nativeStatus[data-state="error"], #nativeStatus[data-state="unavailable"], #nativeStatus[data-state="overflow"], #coachPaneStatus[data-state], .log-error, .log-warn',
         )
       )
         continue;
@@ -355,22 +355,26 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
             els.map((el) => [el.tagName, el.textContent?.trim()]),
           ),
         [
-          ["BUTTON", "Synthetic preview Coach"],
           ["BUTTON", "Dojo"],
           ["BUTTON", "Activity"],
           ["BUTTON", "Settings"],
         ],
         "primary route controls keep their existing semantics with Settings last",
       );
+      assert.equal(
+        await page.locator("header #coachLauncherName").innerText(),
+        "Synthetic preview Coach",
+        "the saved persona names the header Coach launcher",
+      );
       const primaryGeometry = await page
         .locator(".studio-tabs")
         .evaluate((nav) => {
-          const [coach, dashboard, activity, settings] = Array.from(
-            nav.children,
-          ).map((el) => el.getBoundingClientRect());
+          const [dashboard, activity, settings] = Array.from(nav.children).map(
+            (el) => el.getBoundingClientRect(),
+          );
           const row = nav.getBoundingClientRect();
           return {
-            coachRight: coach.right,
+            rowLeft: row.left,
             activityLeft: activity.left,
             activityRight: activity.right,
             dashboardLeft: dashboard.left,
@@ -380,7 +384,10 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
             rowRight: row.right,
           };
         });
-      assert.ok(primaryGeometry.coachRight <= primaryGeometry.dashboardLeft);
+      assert.ok(
+        Math.abs(primaryGeometry.dashboardLeft - primaryGeometry.rowLeft) <= 2,
+        "Dojo starts the navigation",
+      );
       assert.ok(primaryGeometry.dashboardRight <= primaryGeometry.activityLeft);
       assert.ok(
         primaryGeometry.settingsLeft - primaryGeometry.activityRight >=
@@ -392,11 +399,18 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         "Settings reaches the right edge of the navigation",
       );
       assert.equal(
-        await page.locator("#coachTab").getAttribute("aria-pressed"),
+        await page.locator("#dashboardTab").getAttribute("aria-pressed"),
         "true",
+        "Dojo is the default view",
       );
-      await primaryContrast(page, "#coachTab");
-      await capture("coach-chat");
+      await primaryContrast(page, "#dashboardTab");
+      await primaryContrast(page, "#coachLauncher");
+      await page.locator("#coachLauncher").click();
+      await page.locator("#coachPane").waitFor({ state: "visible" });
+      await capture("coach-pane");
+      await page
+        .locator(width < 900 ? "#coachPaneBack" : "#coachPaneCollapse")
+        .click();
       await page.locator("#dashboardTab").click();
       assert.equal(await page.locator("#dashboardTab").innerText(), "Dojo");
       assert.equal(
@@ -523,13 +537,20 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         await page.getByRole("tab", { name: section, exact: true }).click();
         await capture("settings-" + section.toLowerCase());
       }
-      await page.locator("#coachTab").focus();
+      await page.locator("#coachLauncher").focus();
+      await page.keyboard.press("Tab");
+      assert.ok(
+        await page
+          .locator("#lockStudio")
+          .evaluate((el) => el === document.activeElement),
+        "header controls precede the primary navigation",
+      );
       await page.keyboard.press("Tab");
       assert.ok(
         await page
           .locator("#dashboardTab")
           .evaluate((el) => el === document.activeElement),
-        "Dojo follows Coach in keyboard order",
+        "Dojo starts the primary navigation in keyboard order",
       );
       await page.keyboard.press("Tab");
       assert.ok(
@@ -570,8 +591,8 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         await page.locator("#name").inputValue(),
         "Unsaved synthetic draft",
       );
-      await page.locator("#coachTab").click();
-      assert.equal(new URL(page.url()).pathname, "/chat/operator");
+      await page.locator("#dashboardTab").click();
+      assert.equal(new URL(page.url()).pathname, "/dashboard");
       await page.goBack();
       await page
         .getByRole("tabpanel", { name: "Persona", exact: true })
@@ -581,7 +602,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         "Unsaved synthetic draft",
       );
       await page.goForward();
-      assert.equal(new URL(page.url()).pathname, "/chat/operator");
+      assert.equal(new URL(page.url()).pathname, "/dashboard");
       await page.locator("#settingsTab").click();
       await page.reload();
       await page

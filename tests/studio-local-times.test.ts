@@ -254,8 +254,10 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
         await page.locator("#updateOutcome").textContent(),
         `Last upgrade succeeded · ${operation.sha.slice(0, 12)} · ${expected[2]}`,
       );
-      await page.locator("#coachTab").click();
-      assert.equal(new URL(page.url()).pathname, "/chat/operator");
+      await page.locator("#coachLauncher").click();
+      await page.locator("#coachPane").waitFor({ state: "visible" });
+      // The pane opens over the current page without owning a route.
+      assert.equal(new URL(page.url()).pathname, "/settings");
       assert.equal(await page.locator("#operatorMessages").count(), 0);
       assert.deepEqual(errors, []);
     } finally {

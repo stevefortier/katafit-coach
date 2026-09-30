@@ -137,18 +137,24 @@ try {
   await mkdir(evidence, { recursive: true });
   await page.screenshot({ path: evidence + "/nav-settings-mobile.png" });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.locator("#coachTab").click();
-  assert.equal(new URL(page.url()).pathname, "/chat/operator");
+  await page.locator("#dashboardTab").click();
+  assert.equal(new URL(page.url()).pathname, "/dashboard");
   await page.goBack();
   assert.equal(await page.locator("#settingsPanel").isVisible(), true);
   await page.goForward();
+  assert.equal(await page.locator("#dashboardPanel").isVisible(), true);
+  // Coach opens from the header over the current page and owns no URL.
+  await page.locator("#coachLauncher").click();
   assert.equal(await page.locator("#operatorView").isVisible(), true);
+  assert.equal(new URL(page.url()).pathname, "/dashboard");
+  await page.locator("#coachPaneCollapse").click();
   await page.goto(app.origin + "/settings");
   await page.locator("#studio").waitFor({ state: "visible" });
   assert.equal(await page.locator("#settingsPanel").isVisible(), true);
   await page.goto(app.origin + "/chat/operator");
   await page.locator("#studio").waitFor({ state: "visible" });
   assert.equal(await page.locator("#operatorView").isVisible(), true);
+  await page.waitForURL("**/dashboard");
   assert.equal((await fetch(app.origin + "/not-a-view")).status, 401);
   assert.equal(
     (
@@ -166,8 +172,15 @@ try {
   );
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 700 });
-    for (const panel of ["coachTab", "settingsTab"]) {
-      await page.locator("#" + panel).click();
+    for (const panel of ["coachPane", "settingsTab"]) {
+      const open = await page.locator("#coachPane").isVisible();
+      if (panel === "coachPane" && !open)
+        await page.locator("#coachLauncher").click();
+      if (panel === "settingsTab") {
+        // Narrow Coach is full-screen; Back returns to the page.
+        if (open) await page.locator("#coachPaneBack").click();
+        await page.locator("#settingsTab").click();
+      }
       const overflow = await page.evaluate(() => ({
         viewport: document.documentElement.clientWidth,
         document: document.documentElement.scrollWidth,

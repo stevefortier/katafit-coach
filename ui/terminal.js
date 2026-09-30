@@ -1,4 +1,19 @@
-function nativeTerminal({ api, authorized, active, fetchAttachment }) {
+// One terminal for the page: its session outlives pane layout, collapse and
+// Studio navigation. `active` means the session is wanted; `visible` means the
+// pane is on screen. Only a visible pane reconnects automatically (checked
+// again when a queued retry fires), so a collapsed pane never silently
+// restarts Pi or reclaims another tab's session. A native Stop ends the
+// session for good: only a deliberate start (connect) begins another.
+function nativeTerminal({
+  api,
+  authorized,
+  active,
+  visible = active,
+  canFocus = visible,
+  onStatus = () => {},
+  onOutput = () => {},
+  fetchAttachment,
+}) {
   const $ = (id) => document.getElementById(id);
   let terminal,
     fit,
@@ -9,6 +24,9 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
     lose,
     retryTimer,
     retryDelay = 1500,
+    // Set when the server stopped the session; suppresses every automatic
+    // reconnect until a deliberate start (connect).
+    ended = false,
     stateNow = "stopped";
   // The server heartbeats every 10 s; longer silence means the link is dead.
   const SILENCE_MS = 25000;
@@ -17,14 +35,28 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
     $("nativeStatus").textContent = text;
     $("nativeStatus").dataset.state = state;
     stateNow = state;
+    onStatus(state, text);
   };
+  const away =
+    "Disconnected. Reconnects when you open Coach; input is never replayed.";
   const retry = () => {
-    if (!active()) return;
+    if (!active() || !visible() || ended) return;
     clearTimeout(retryTimer);
-    retryTimer = setTimeout(connect, retryDelay);
+    retryTimer = setTimeout(reconnect, retryDelay);
     retryDelay = Math.min(retryDelay * 2, 15000);
   };
+  // Automatic reattachment: the pane may have been collapsed, or Pi stopped,
+  // since this was queued.
+  function reconnect() {
+    if (active() && visible() && !ended) void connect({ automatic: true });
+    else if (stateNow === "disconnected") status("disconnected", away);
+  }
+  // Lock/auth reset: also forgets a Stop, since the next unlock starts lazily.
   function reset() {
+    teardown();
+    ended = false;
+  }
+  function teardown() {
     resetTerminal();
     attachments.clear();
   }
@@ -51,7 +83,22 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
   }
   const resize = () => {
     if (!fit || !$("nativeTerminal").getClientRects().length) return;
+    // Pane layout changes refit in place; a view following the prompt keeps
+    // following it (growing rows would otherwise leave it a line short).
+    const buffer = terminal.buffer.active;
+    const following = buffer.viewportY >= buffer.baseY;
     fit.fit();
+    if (following) {
+      const current = terminal;
+      terminal.scrollToBottom();
+      // xterm's viewport resyncs its DOM scroll a frame later and can pull
+      // the view back up; pin it again once that settled.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (terminal === current) current.scrollToBottom();
+        }),
+      );
+    }
     if (socket?.readyState === WebSocket.OPEN)
       socket.send(
         JSON.stringify({
@@ -63,7 +110,8 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
   };
   const observer = new ResizeObserver(resize);
   observer.observe($("nativeTerminal"));
-  async function connect() {
+  async function connect({ automatic = false } = {}) {
+    ended = false;
     if (
       !authorized() ||
       !active() ||
@@ -78,6 +126,11 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
     status("starting", "Starting isolated Pi…");
     try {
       const ticket = await api("terminal/ticket", {});
+      if (generation === epoch && automatic && !visible()) {
+        pending = false;
+        status("disconnected", away);
+        return;
+      }
       if (generation !== epoch || !authorized() || !active()) return;
       terminal = new window.Terminal({
         screenReaderMode: true,
@@ -108,7 +161,7 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
           SILENCE_MS,
         );
       };
-      const markLost = (message) => {
+      const markLost = (message, hidden = away) => {
         if (lost) return;
         lost = true;
         clearTimeout(watchdog);
@@ -117,7 +170,13 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
         attachments.detached();
         if (generation === epoch) {
           pending = false;
-          if (!failed) status("disconnected", message);
+          if (ended)
+            status(
+              "ended",
+              "Pi session ended. Start a new session or reopen Coach to begin again; input is never replayed.",
+            );
+          else if (!failed)
+            status("disconnected", visible() ? message : hidden);
           retry();
         }
       };
@@ -148,13 +207,14 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
           terminal.write(message.data, () => {
             queued -= message.data.length;
           });
+          onOutput();
         } else if (message.type === "ready") {
           failed = false;
           status("connected", "Connected to isolated Pi.");
           retryDelay = 1500;
           pending = false;
           resize();
-          terminal.focus();
+          if (canFocus()) terminal.focus();
         } else if (message.type === "attachments")
           attachments.snapshot(
             message.session,
@@ -182,6 +242,14 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
       ws.onclose = (event) => {
         // Policy close means the session ended; its attachments are gone.
         if (event.code === 1008 && socket === ws) attachments.clear();
+        // An explicit native Stop is never undone automatically.
+        if (
+          event.code === 1008 &&
+          event.reason === "Session stopped" &&
+          socket === ws &&
+          generation === epoch
+        )
+          ended = true;
         markLost(
           "Disconnected. Reconnecting automatically; input is never replayed.",
         );
@@ -207,15 +275,29 @@ function nativeTerminal({ api, authorized, active, fetchAttachment }) {
     lose?.("Offline. Reconnecting automatically when the connection returns."),
   );
   window.addEventListener("pagehide", () => {
-    reset();
+    // Clears the terminal and attachments but keeps a Stop latched, so a
+    // back/forward cache return cannot restart Pi on its own.
+    teardown();
     observer.disconnect();
   });
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
     observer.observe($("nativeTerminal"));
-    if (active()) void connect();
+    resume();
   });
-  return { reset, connect, suspend: resetTerminal };
+  // Reattach after the page was hidden, only while the pane is on screen and
+  // Pi was not stopped. A collapsed pane waits for a deliberate open.
+  function resume() {
+    if (active() && visible() && !ended) void connect({ automatic: true });
+  }
+  return {
+    reset,
+    connect,
+    resume,
+    suspend: resetTerminal,
+    focus: () => terminal?.focus(),
+    started: () => !!terminal,
+  };
 }
 
 // Attachments Pi sent with send_to_operator. Metadata arrives on the terminal

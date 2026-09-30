@@ -7,7 +7,7 @@ import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 
 test(
-  "served Studio has one persona-named operator panel and canonicalizes legacy member links without member reads",
+  "served Studio has one persona-named Coach pane and canonicalizes legacy member links without member reads",
   { timeout: 90000 },
   async () => {
     const dir = await mkdtemp(tmpdir() + "/operator-only-studio-");
@@ -57,9 +57,18 @@ test(
         { timeout: 3000 },
       );
       assert.equal(await page.locator("#operatorReconcile").isVisible(), true);
-      await page.waitForURL("**/chat/operator");
+      // Legacy member links open Coach expanded over Dojo, not a member view.
+      await page.waitForURL("**/dashboard");
       assert.equal(
-        await page.locator("#coachTab").innerText(),
+        await page.locator("#coachPane").getAttribute("data-mode"),
+        "expanded",
+      );
+      assert.equal(
+        await page.locator("#coachLauncherName").innerText(),
+        store.publicConfig().persona.name,
+      );
+      assert.equal(
+        await page.locator("#coachPaneName").innerText(),
         store.publicConfig().persona.name,
       );
       assert.equal(
@@ -75,9 +84,9 @@ test(
         history.pushState(null, "", "/chat/member/legacy-forward"),
       );
       await page.goBack();
-      await page.waitForURL("**/chat/operator");
+      await page.waitForURL("**/dashboard");
       await page.goForward();
-      await page.waitForURL("**/chat/operator");
+      await page.waitForURL("**/dashboard");
       assert.deepEqual(
         memberCalls,
         [],
@@ -107,26 +116,32 @@ test(
         );
       }
       assert.equal(await page.locator("#nativeAttachments").isVisible(), true);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.locator("#coachPaneExpand").click();
       await page.locator("#settingsTab").click();
       await page.getByRole("tab", { name: "Persona", exact: true }).click();
       await page.locator("#name").fill("Warden");
       assert.notEqual(
-        await page.locator("#coachTab").innerText(),
+        await page.locator("#coachLauncherName").innerText(),
         "Warden",
         "unsaved draft must not rename navigation",
       );
       await page.locator("#save").click();
       await page.waitForFunction(
         () =>
-          document.querySelector("#coachTab")?.textContent?.trim() === "Warden",
+          document.querySelector("#coachLauncherName")?.textContent?.trim() ===
+          "Warden",
       );
       await page.reload();
       await page.locator("#studio").waitFor({ state: "visible" });
       await page.waitForFunction(
         () =>
-          document.querySelector("#coachTab")?.textContent?.trim() === "Warden",
+          document.querySelector("#coachLauncherName")?.textContent?.trim() ===
+          "Warden",
       );
-      await page.locator("#coachTab").click();
+      // A reload returns the pane as it was left (docked open).
+      await page.locator("#coachPane").waitFor({ state: "visible" });
+      assert.equal(await page.locator("#coachPaneName").innerText(), "Warden");
       const evidence = process.env.COACH_EVIDENCE_DIR;
       if (evidence) {
         await mkdir(evidence, { recursive: true });
@@ -143,20 +158,23 @@ test(
       const longName = "Persona " + "W".repeat(7990);
       await page.getByRole("tab", { name: "Persona", exact: true }).click();
       await page.locator("#name").fill(longName);
-      assert.equal(await page.locator("#coachTab").innerText(), "Warden");
+      assert.equal(
+        await page.locator("#coachLauncherName").innerText(),
+        "Warden",
+      );
       await page.locator("#save").click();
       await page.waitForFunction(
-        (name) => document.querySelector("#coachTab")?.textContent === name,
+        (name) =>
+          document.querySelector("#coachLauncherName")?.textContent === name,
         longName,
       );
-      await page.locator("#coachTab").click();
       await page.setViewportSize({ width: 320, height: 900 });
       assert.equal(
-        await page.locator("#coachTab").getAttribute("title"),
+        await page.locator("#coachLauncher").getAttribute("title"),
         longName,
       );
       assert.equal(
-        await page.locator("#coachTab").getAttribute("aria-pressed"),
+        await page.locator("#coachLauncher").getAttribute("aria-expanded"),
         "true",
       );
       assert.equal(
@@ -165,20 +183,31 @@ test(
         ),
         false,
       );
+      await page.locator("#coachPaneBack").click();
+      await page.setViewportSize({ width: 1440, height: 900 });
       await page.locator("#settingsTab").click();
       await page.getByRole("tab", { name: "Persona", exact: true }).click();
       await page.locator("#name").fill("Unsaved restoration draft");
-      assert.equal(await page.locator("#coachTab").innerText(), longName);
+      assert.equal(
+        await page.locator("#coachLauncherName").innerText(),
+        longName,
+      );
       await page.locator("#personaHistory summary").click();
       await page.getByRole("button", { name: /Revision 2 ·/ }).click();
       page.once("dialog", (dialog) => dialog.accept());
       await page.locator("#restorePersona").click();
       await page.waitForFunction(
-        () => document.querySelector("#coachTab")?.textContent === "Warden",
+        () =>
+          document.querySelector("#coachLauncherName")?.textContent ===
+          "Warden",
       );
       assert.equal(await page.locator("#name").inputValue(), "Warden");
       await page.locator("#lockStudio").click();
-      assert.equal(await page.locator("#coachTab").innerText(), "Coach");
+      assert.equal(
+        await page.locator("#coachLauncherName").textContent(),
+        "Coach",
+      );
+      assert.equal(await page.locator("#coachLauncher").isVisible(), false);
       assert.deepEqual(memberCalls, []);
       assert.deepEqual(errors, []);
     } finally {

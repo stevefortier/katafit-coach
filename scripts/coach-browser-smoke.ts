@@ -145,38 +145,52 @@ try {
     "Kata.fit Coach",
   );
   await page.screenshot({ path: evidence + "/navigation-before.png" });
+  // Coach is a header launcher over every page; it opens only when asked.
+  const openCoach = async () => {
+    if (
+      (await page.locator("#coachLauncher").getAttribute("aria-expanded")) !==
+      "true"
+    )
+      await page.locator("#coachLauncher").click();
+    await page.locator("#coachPane").waitFor({ state: "visible" });
+  };
+  assert.equal(await page.locator("#coachTab").count(), 0, "no Coach tab");
   assert.equal(
-    await page.locator("#coachTab").count(),
-    1,
-    "Coach-first navigation is present",
+    await page.locator("header #coachLauncher").isVisible(),
+    true,
+    "persona-named Coach launcher is in the header",
   );
-  assert.equal(await page.locator("#coachPanel").isVisible(), true);
+  assert.equal(await page.locator("#dashboardPanel").isVisible(), true);
+  assert.equal(await page.locator("#coachPanel").isVisible(), false);
   assert.equal(await page.locator("#settingsPanel").isVisible(), false);
   await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#katafit").isVisible(), true);
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.waitForTimeout(200);
+  await openCoach();
+  await page.locator("#coachPaneExpand").click();
+  await page.waitForTimeout(200);
   let logs = 0;
   page.on("request", (r) => {
     if (r.url().endsWith("/api/logs")) logs++;
   });
-  await page.locator("#coachTab").click();
   await page.waitForTimeout(2300);
-  assert.equal(logs, 0, "Settings-hidden logs do not poll");
+  assert.equal(logs, 0, "Activity covered by expanded Coach does not poll");
+  await page.locator("#coachPaneExpand").click();
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Worker", exact: true }).click();
   await page.locator("#run").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent === "IDLE",
   );
-  await page.locator("#coachTab").click();
+  await openCoach();
   assert.equal(await page.locator("#nativeTerminal").isVisible(), true);
   assert.equal(await page.locator("#operatorText").count(), 0);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Unsaved operator draft");
-  await page.locator("#coachTab").click();
+  await openCoach();
   assert.equal(await page.locator("#operatorSnapshot").count(), 0);
   assert.equal(await page.locator(".chat-assistant button").count(), 0);
   assert.equal(
@@ -190,7 +204,7 @@ try {
   await page.getByText("Advanced Markdown", { exact: true }).click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#markdown").fill("Explicit Settings rule");
-  await page.locator("#coachTab").click();
+  await openCoach();
   assert.equal(await page.locator(".chat-user button").count(), 0);
   assert.equal(
     store.publicConfig().revision,
@@ -216,7 +230,7 @@ try {
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent === "STOPPED",
   );
-  await page.locator("#coachTab").click();
+  await openCoach();
   await page.screenshot({ path: evidence + "/coach-desktop.png" });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
@@ -235,11 +249,13 @@ try {
     0,
   );
   assert.equal(
-    await page.locator("#coachTab").innerText(),
+    await page.locator("#coachLauncherName").innerText(),
     store.publicConfig().persona.name,
   );
+  await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto(app.origin + "/chat/member/synthetic-person");
-  await page.waitForURL("**/chat/operator");
+  // Legacy links open Coach expanded over Dojo; covered Dojo defers reads.
+  await page.waitForURL("**/dashboard");
   assert.equal(await page.locator("#nativeTerminal").isVisible(), true);
   assert.deepEqual(
     memberCalls,
@@ -247,17 +263,18 @@ try {
     "legacy links and operator UI never request member data",
   );
   assert.equal(await page.locator("#nativeAttachments").isVisible(), true);
+  await page.locator("#coachPaneExpand").click();
   await page.locator("#settingsTab").click();
   await page.getByRole("tab", { name: "Persona", exact: true }).click();
   await page.locator("#name").fill("Synthetic authority reload");
   assert.notEqual(
-    await page.locator("#coachTab").innerText(),
+    await page.locator("#coachLauncherName").innerText(),
     "Synthetic authority reload",
   );
   await page.locator("#save").click();
   await page.waitForFunction(
     () =>
-      document.querySelector("#coachTab")?.textContent ===
+      document.querySelector("#coachLauncherName")?.textContent ==
       "Synthetic authority reload",
   );
   assert.deepEqual(memberCalls, []);
@@ -273,8 +290,8 @@ try {
   await page.locator("#studio").waitFor({ state: "visible" });
   assert.equal(new URL(page.url()).pathname, "/settings");
   assert.equal(await page.locator("#settingsPanel").isVisible(), true);
-  await page.locator("#coachTab").click();
-  assert.equal(new URL(page.url()).pathname, "/chat/operator");
+  await openCoach();
+  assert.equal(new URL(page.url()).pathname, "/settings", "Coach owns no URL");
   assert.equal(await page.locator("#nativeTerminal").isVisible(), true);
   await page.setViewportSize({ width: 1280, height: 1100 });
   await page.evaluate(() => {
@@ -292,7 +309,7 @@ try {
   assert.equal((await page.content()).includes(inactiveKey), false);
   assert.equal(store.secrets.apiKey, "synthetic-private-key");
   console.log(
-    "Coach browser PASS: navigation, hidden logs, native terminal entry while worker runs, Settings edits, mobile geometry, operator-only UI and no member reads. Actual Docker Pi covered separately by native-browser tests.",
+    "Coach browser PASS: Dojo-first navigation with header Coach pane, covered logs pause, native terminal entry while worker runs, Settings edits, mobile geometry, operator-only UI and no member reads. Actual Docker Pi covered separately by native-browser tests.",
   );
 } finally {
   await browser?.close();
