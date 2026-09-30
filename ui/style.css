@@ -1524,8 +1524,21 @@ header {
   height: 8px;
   background: var(--accent);
 }
-html.coach-covered {
+/* One explicit workspace owner while Coach is open. The ordinary document
+   remains the owner when collapsed; main retains its existing content layout. */
+html.coach-open {
   overflow: hidden;
+}
+.coach-open #workspaceScroll {
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  scroll-padding-top: var(--notice-offset, 0px);
+}
+html.coach-covered #workspaceScroll {
+  overflow-y: hidden;
 }
 /* Layout follows the viewport in CSS so it never lags the JS mode switch:
    narrow screens get a full-screen pane, wide ones dock or expand. */
@@ -1542,8 +1555,8 @@ html.coach-covered {
   overflow-wrap: anywhere;
 }
 @media (min-width: 900px) {
-  body.coach-docked {
-    padding-right: var(--coach-pane-width, 520px);
+  body.coach-docked #workspaceScroll {
+    right: var(--coach-pane-width, 520px);
   }
   #coachPane {
     left: auto;
@@ -1646,6 +1659,8 @@ html.coach-covered {
   flex-direction: column;
   border: 0;
   padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 #coachPane #operatorView {
   flex: 1 1 auto;
@@ -1671,6 +1686,9 @@ html.coach-covered {
 }
 #coachPane #nativeAttachments {
   flex: 0 1 auto;
+  /* Leave room for a full attachment action in short panes. Any excess
+     belongs to coachPanel's scroll viewport, never the document. */
+  min-height: 80px;
   max-height: 30%;
 }
 @media (min-width: 900px) {

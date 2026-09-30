@@ -1902,15 +1902,34 @@ function renderPane() {
     "Back to " + (tabLabels[studioTab] || "Dojo");
   setPaneWidth(paneWidth, false);
   const covering = mode === "expanded" || mode === "mobile";
-  if (covering && !paneCovering) {
-    paneScroll = scrollY;
-    syncPaneTop();
-  }
+  const workspace = $("workspaceScroll");
+  const owned = document.documentElement.classList.contains("coach-open");
+  const open = mode !== "closed";
+  // Read the old owner before changing layout. Covered content retains its
+  // logical offset even if a narrower/shorter layout temporarily clamps it.
+  const offset = paneCovering
+    ? paneScroll
+    : owned
+      ? workspace.scrollTop
+      : scrollY;
+  if (covering && !paneCovering) paneScroll = offset;
   document.body.classList.toggle("coach-docked", mode === "docked");
+  document.documentElement.classList.toggle("coach-open", open);
   document.documentElement.classList.toggle("coach-covered", covering);
+  if (open) {
+    if (!owned || paneCovering !== covering) workspace.scrollTop = offset;
+    if (!owned) scrollTo(0, 0);
+  } else if (owned) {
+    scrollTo(0, offset);
+    workspace.scrollTop = 0;
+  }
+  if (covering) syncPaneTop();
   // Covered content is out of reach for pointer, keyboard and assistive tech.
   // Focus inside newly covered content moves to the pane rather than <body>.
   const focused = document.activeElement;
+  if (mode === "docked") workspace.setAttribute("tabindex", "0");
+  else workspace.removeAttribute("tabindex");
+  workspace.inert = mode === "mobile";
   const covered =
     mode === "mobile"
       ? document.querySelector("main")
@@ -1919,12 +1938,11 @@ function renderPane() {
         : undefined;
   document.querySelector("main").inert = mode === "mobile";
   $("studio").inert = mode === "expanded";
-  if (covered?.contains(focused))
+  if (covered?.contains(focused) || (covering && focused === workspace))
     (mode === "mobile" ? $("coachPaneBack") : $("coachPaneExpand")).focus();
   if (covering === paneCovering) return;
   paneCovering = covering;
   if (!covering) {
-    scrollTo(scrollX, paneScroll);
     if (dashboardPending && studioTab === "dashboard" && key) {
       dashboardPending = false;
       CoachDashboard.load(api, key);
@@ -1949,7 +1967,7 @@ function collapsePane() {
   paneExpanded = false;
   savePaneState();
   renderPane();
-  $("coachLauncher").focus();
+  $("coachLauncher").focus({ preventScroll: true });
 }
 function closePaneForLock() {
   paneOpen = false;
