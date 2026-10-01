@@ -133,6 +133,11 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
                     weight: { value: 68, unit: "kg" },
                     height_cm: 170,
                     body_fat_percent: 21,
+                    body_fat_estimate: {
+                      source: "ai",
+                      estimated: true,
+                      value: 21,
+                    },
                     age_years: 30,
                   },
                   last_position: {
@@ -404,7 +409,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
       );
       assert.match(
         await page.locator("#dashboardMemberCards").innerText(),
-        /Weight: 68 kg.*Height: 170 cm.*Body fat: 21 %.*Age: 30.*Weight: Unavailable.*Height: Unavailable.*Body fat: Unavailable.*Age: Unavailable/s,
+        /Weight: 68 kg.*Height: 170 cm.*Body fat \(photo estimate\): 21 %.*Age: 30.*Weight: Unavailable.*Height: Unavailable.*Body fat \(photo estimate\): Unavailable.*Age: Unavailable/s,
       );
       assert.match(
         (await page
@@ -1333,6 +1338,7 @@ test("roster cards load independently when the map endpoint fails or Leaflet is 
                 weight: { value: 68, unit: "kg" },
                 height_cm: 170,
                 body_fat_percent: 21,
+                body_fat_estimate: { source: "ai", estimated: true, value: 21 },
                 age_years: 30,
               },
               last_position: {
@@ -1377,7 +1383,7 @@ test("roster cards load independently when the map endpoint fails or Leaflet is 
       });
       // Cards arrive while the date-scoped map read is still pending.
       await page.waitForFunction(() =>
-        /Synthetic Ada.*Weight: 68 kg.*Height: 170 cm.*Body fat: 21 %.*Age: 30.*Synthetic Bob.*Weight: Unavailable/s.test(
+        /Synthetic Ada.*Weight: 68 kg.*Height: 170 cm.*Body fat \(photo estimate\): 21 %.*Age: 30.*Synthetic Bob.*Weight: Unavailable/s.test(
           (document.querySelector("#dashboardMemberCards") as HTMLElement)
             ?.innerText || "",
         ),

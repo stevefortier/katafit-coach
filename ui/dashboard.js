@@ -187,7 +187,7 @@ window.CoachDashboard = (() => {
         value > 0 &&
         value <= max
       )
-        return `${value} ${unit}`;
+        return `${unit === "%" ? Number(value.toFixed(1)) : value} ${unit}`;
       if (
         unit === "weight" &&
         value &&
@@ -231,7 +231,18 @@ window.CoachDashboard = (() => {
         for (const [label, value] of [
           ["Weight", stat(stats?.weight, "weight", 2000)],
           ["Height", stat(stats?.height_cm, "cm", 300)],
-          ["Body fat", stat(stats?.body_fat_percent, "%", 100)],
+          [
+            "Body fat (photo estimate)",
+            stat(
+              stats?.body_fat_estimate?.source === "ai" &&
+                stats?.body_fat_estimate?.estimated === true &&
+                stats?.body_fat_estimate?.value === stats?.body_fat_percent
+                ? stats.body_fat_percent
+                : null,
+              "%",
+              100,
+            ),
+          ],
           ["Age", stat(stats?.age_years, "", 130)],
         ])
           button.append(text("span", `${label}: ${value}`));
@@ -262,7 +273,13 @@ window.CoachDashboard = (() => {
     card.append(
       text("h4", `${series.member_name} — ${series.label} (${series.unit})`),
     );
-    const points = series.points;
+    const points =
+      series.label === "Body fat (photo estimate)"
+        ? series.points.map((p) => ({
+            ...p,
+            value: Number(p.value.toFixed(1)),
+          }))
+        : series.points;
     if (!points.length) {
       card.append(text("p", "No shared data in this period.", "hint"));
       return card;
@@ -1461,7 +1478,7 @@ window.CoachDashboard = (() => {
         text("h3", "Activity trends"),
         text(
           "p",
-          "Loaded activities only, not a complete history or adherence. UTC completion day (creation-date fallback). Nutrition uses available recorded summaries; missing values are not zero. Body points use explicit recorded units or verified Health Connect stored lb; units are never inferred from photos.",
+          "Loaded activities only, not a complete history or adherence. UTC completion day (creation-date fallback). Nutrition uses available recorded summaries; missing values are not zero. Weight uses explicit recorded units or verified Health Connect stored lb. Body fat is a photo-inferred range midpoint estimate, not a manual measurement.",
           "hint",
         ),
       );
@@ -1505,11 +1522,7 @@ window.CoachDashboard = (() => {
           "hint",
         ),
       );
-      if (
-        activity.type === "media" &&
-        latestPhotos.get(activity.user_id)?._id !== activity._id
-      )
-        return;
+
       if (["complete", "completed"].includes(activity.status)) {
         if (activity.type === "workout") {
           addPoint(activity, "Completed workouts", "workouts", 1);
@@ -1617,14 +1630,85 @@ window.CoachDashboard = (() => {
                 ...detail,
                 completed_at: `${leaf.date}T00:00:00Z`,
               };
-            } else if (
-              !(m.type_id === "fat_percentage" && unit === "%" && value <= 100)
-            )
-              continue;
+            } else continue;
             addPoint(pointActivity, m.type_id, unit, value, true);
           }
           return;
         }
+        // Match Stats' canonical photoBodyFatReadings semantics. REST serializes
+        // its Date as a string; do not use best_estimate or manual fat metrics.
+        const stamp = detail.completed_at || detail.created_at;
+        if (
+          detail.is_template !== true &&
+          typeof stamp === "string" &&
+          Number.isFinite(Date.parse(stamp))
+        ) {
+          for (const file of Array.isArray(detail.data.files)
+            ? detail.data.files
+            : []) {
+            if (
+              !(
+                file?.type === "image" ||
+                ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(
+                  file?.type,
+                )
+              ) ||
+              file.isPlaceholder ||
+              (file.inferenceStatus != null &&
+                file.inferenceStatus !== "completed")
+            )
+              continue;
+            const inferences = Array.isArray(file.inferences)
+              ? file.inferences
+              : [];
+            const result = inferences.at(-1)?.result;
+            const range =
+              result?.estimated_body_fat_range || result?.estimated_body_fat;
+            const namedFile = result?.photo_validation?.file_id;
+            const sessionFiles = result?._session?.file_ids;
+            if (
+              (namedFile != null && String(namedFile) !== String(file._id)) ||
+              (sessionFiles != null &&
+                (!Array.isArray(sessionFiles) ||
+                  !sessionFiles.map(String).includes(String(file._id)))) ||
+              !range ||
+              typeof range !== "object" ||
+              Array.isArray(range)
+            )
+              continue;
+            const valid = (n) =>
+              typeof n === "number" && Number.isFinite(n) && n > 0 && n <= 100;
+            const number = (n) =>
+              typeof n === "string" &&
+              n.length <= 24 &&
+              /^[+]?(?:\d+\.?\d*|\.\d+)$/.test(n.trim())
+                ? Number(n.trim())
+                : n;
+            const lo = number(range.lower_bound),
+              hi = number(range.upper_bound);
+            if ((lo != null && !valid(lo)) || (hi != null && !valid(hi)))
+              continue;
+            const lower = lo ?? hi;
+            const upper = hi ?? lo;
+            if (
+              !valid(lower) ||
+              !valid(upper) ||
+              lower > upper ||
+              lower <= 1 !== upper <= 1
+            )
+              continue;
+            const midpoint = (lower + upper) / 2;
+            addPoint(
+              detail,
+              "Body fat (photo estimate)",
+              "%",
+              (midpoint * 100) / (midpoint > 1 ? 100 : 1),
+              true,
+            );
+          }
+        }
+        // Accumulate all loaded chart inputs; only the latest check-in is a gallery.
+        if (latestPhotos.get(activity.user_id)?._id !== activity._id) return;
         const photos = (
           Array.isArray(detail.data.files) ? detail.data.files : []
         ).filter(isPhoto);

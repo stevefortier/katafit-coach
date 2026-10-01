@@ -32,6 +32,7 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
         weight: { value: 68 + i * 5, unit: "kg" },
         height_cm: 170 + i * 5,
         body_fat_percent: 20,
+        body_fat_estimate: { source: "ai", estimated: true, value: 20 },
         age_years: 30 + i,
       },
       last_position: {

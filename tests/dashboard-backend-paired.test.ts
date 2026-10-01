@@ -59,6 +59,18 @@ test(
         _id: String(new b.ObjectId()),
         type: "image/jpeg",
         name: "SYNTHETIC-32px.jpg",
+        inferenceStatus: "completed",
+        inferences: [
+          {
+            result: {
+              estimated_body_fat_range: {
+                lower_bound: 0.1,
+                upper_bound: 0.13,
+                best_estimate: 0.12,
+              },
+            },
+          },
+        ],
       }));
       files.forEach((file, i) => storage.set(file._id, jpegs[i]));
       const row = (type: string, data: any, extra: any = {}) => ({
@@ -500,9 +512,10 @@ test(
               dots.map((d) => d.getAttribute("aria-label")),
             );
           assert.deepEqual(points, [
+            `Synthetic Ada: ${oldDate.toISOString().slice(0, 10)}, 11.5 %`,
+            `Synthetic Ada: ${day}, 11.5 %`,
             `Synthetic Ada: ${day}, 80.5 kg`,
             `Synthetic Ada: ${day}, 177 lb`,
-            `Synthetic Ada: ${day}, 20 %`,
           ]);
           assert.deepEqual(mediaResponses, [200, 200, 200, 200]);
           const pixels = await page
@@ -529,7 +542,8 @@ test(
             files.map((file) => `/api/media/${photo._id}/files/${file._id}`),
           );
           assert.ok(calls.includes(`/api/friends/activity/${photo._id}`));
-          assert.ok(!calls.includes(`/api/friends/activity/${oldPhoto._id}`));
+          // Older completed check-ins contribute chart inference, not gallery bytes.
+          assert.ok(calls.includes(`/api/friends/activity/${oldPhoto._id}`));
           assert.ok(!calls.includes(`/api/friends/activity/${pending._id}`));
           assert.ok(!calls.includes(`/api/friends/activity/${missed._id}`));
           assert.match(
