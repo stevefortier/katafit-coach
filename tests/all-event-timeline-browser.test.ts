@@ -114,7 +114,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
         JSON.stringify({
           users: [{ _id: member, display_name: "Fixture Ada" }],
           events: (paged ? kinds.slice(0, 1) : kinds).map((event_type, i) => ({
-            id: `event-${paged ? offset : i}`,
+            id: (1 + (paged ? offset : i)).toString(16).padStart(24,"0"),
             user_id: member,
             occurred_at: new Date(Date.parse(start) + 9000000).toISOString(),
             event_type,
@@ -212,8 +212,8 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
             },
             actor_type: "member",
             source: "interactive",
-          })),
-          hasMore: paged && offset < 11,
+          })).filter(e => !new URL(req.url!, "http://fixture").searchParams.has("event_id") || e.id === new URL(req.url!, "http://fixture").searchParams.get("event_id")),
+          hasMore: !new URL(req.url!,"http://fixture").searchParams.has("event_id") && paged && offset < 11,
           nextCursor: paged && offset < 11 ? `${offset + 1}.signature` : null,
           coverage: { historical_aggregates: true },
         }),
@@ -249,7 +249,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
     await page.goto(app.origin + "/dashboard");
     assert.match(
       await page.locator('label[for="dashboardMapDate"]').innerText(),
-      /event occurrence/,
+      /event occurrence/i,
     );
     await page.evaluate(async (key) => {
       document.getElementById("studio")!.hidden = false;
@@ -302,7 +302,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
       "future_event",
     ]) {
       const i = kinds.indexOf(kind);
-      await selectEvent(`event-${i}`);
+      await selectEvent((i+1).toString(16).padStart(24,"0"));
       const detail = await page.locator("#dashboardMapSelection").innerText();
       assert.match(detail, /Fixture Ada/);
       assert.ok(detail.includes(kind.replace(/[._]/g, " ")));
@@ -372,7 +372,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
         "meal.food_updated",
         "workout.completed",
       ]) {
-        await selectEvent(`event-${kinds.indexOf(kind)}`);
+        await selectEvent((kinds.indexOf(kind)+1).toString(16).padStart(24,"0"));
         await page.locator("#dashboardMapSelection").screenshot({
           path: `${evidence}/fixture-detail-${kind}-${width}.png`,
         });
@@ -385,7 +385,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
       await page.locator(".dashboard-timeline-mark").count(),
       kinds.length,
     );
-    await selectEvent("event-0");
+    await selectEvent("000000000000000000000001");
     status = 200;
     await page.getByRole("button", { name: "Retry timeline" }).click();
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
@@ -396,15 +396,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
     );
     paged = true;
     await page.locator("#dashboardMapDate").dispatchEvent("change");
-    await page
-      .getByRole("button", { name: "Load more events" })
-      .waitFor({ timeout: 3000 });
-    assert.equal(await page.locator(".dashboard-timeline-mark").count(), 10);
-    assert.match(
-      await page.locator("#dashboardTimeline").innerText(),
-      /More events available/,
-    );
-    await page.getByRole("button", { name: "Load more events" }).click();
+    // Canonical GPS chronology requires automatically loading to the terminal cursor.
     await page.waitForFunction(
       () => document.querySelectorAll(".dashboard-timeline-mark").length === 12,
     );

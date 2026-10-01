@@ -182,7 +182,7 @@ for (const cluster of [false, true])
           await page.waitForFunction(() =>
             document
               .querySelector("#dashboardTimeline > p")
-              ?.textContent?.includes("Timeline unavailable"),
+              ?.textContent?.match(/Timeline unavailable|Timeline read failed/),
           );
           if (status === 403) {
             assert.equal(
@@ -209,7 +209,7 @@ for (const cluster of [false, true])
           } else {
             assert.match(
               await page.locator("#dashboardTimeline > p").innerText(),
-              /stale/i,
+              /stale|partial day/i,
             );
             // Recovery reattaches the real ResizeObserver; settle its initial
             // layout notification before deliberate focus opens the inspector.
@@ -246,7 +246,7 @@ for (const cluster of [false, true])
             await page.waitForFunction(() =>
               document
                 .querySelector("#dashboardTimeline > p")
-                ?.textContent?.includes("Timeline unavailable"),
+                ?.textContent?.match(/Timeline unavailable|Timeline read failed/),
             );
             // Recovery reattaches the real ResizeObserver; settle its initial
             // layout notification before deliberate focus opens the inspector.

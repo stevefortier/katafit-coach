@@ -96,9 +96,12 @@ window.CoachDashboard = (() => {
   let selectionEpoch = 0;
   let timelineEpoch = 0;
   let timelinePending = false;
+  // HTTP status of the last failed shared day-events read, if any.
+  let ledgerFailure = null;
   let timelineInteraction = () => {};
   let timelineController;
   let filterTimeline = () => {};
+  let reconcileTimelineSelection = () => {};
   let timelineResize = null;
   // Canonical day ledger shared by map and timeline: {date,start,end,items,users,complete}.
   let ledger = null;
@@ -1002,8 +1005,8 @@ window.CoachDashboard = (() => {
         generation === ledgerGeneration
       )
         withholdMember(item.user_id);
-      if (!current()) return;
       if (!exact) throw httpError("Event unavailable", 404);
+      if (!current()) return;
     } catch (error) {
       // A denial applies even after the selection changed; never across a reload.
       // Purging redraws the timeline, so decide whether to report it first.
@@ -1035,20 +1038,27 @@ window.CoachDashboard = (() => {
           );
         return;
       }
-      if (!current()) return;
-      if (error.status === 404) {
-        // Empty exact reads do not disclose why; the event leaves both views.
+      if (
+        error.status === 404 &&
+        loadId === epoch &&
+        day === mapEpoch &&
+        generation === ledgerGeneration
+      ) {
+        // Empty exact reads do not disclose why; the event leaves both views,
+        // even behind a newer selection, which is left as it is.
         ledger?.items.delete(item.id);
         filterTimeline();
         syncMap();
-        selection.replaceChildren(
-          text(
-            "p",
-            "Event unavailable (404); it was removed from the map and timeline.",
-          ),
-        );
+        if (shown)
+          selection.replaceChildren(
+            text(
+              "p",
+              "Event unavailable (404); it was removed from the map and timeline.",
+            ),
+          );
         return;
       }
+      if (!current()) return;
       selection.replaceChildren(
         ...eventSnapshot(item, name),
         text(
@@ -1683,6 +1693,19 @@ window.CoachDashboard = (() => {
       }
     };
     filterTimeline = draw;
+    reconcileTimelineSelection = (item) => {
+      if (!interactive()) return;
+      if (selectedMember && selectedMember !== item.user_id) {
+        selectedMember = null;
+        renderMemberCards();
+        filterFeed();
+        filterMap(false);
+      }
+      if (selectedCategory && selectedCategory !== category(item)) {
+        selectedCategory = null;
+        draw();
+      }
+    };
     draw();
     // Recompute collision distances after viewport changes, with no leaked observers.
     timelineResize?.disconnect();
@@ -1711,6 +1734,7 @@ window.CoachDashboard = (() => {
     if (restarts) highlightEvent(null);
     const id = ++timelineEpoch;
     timelinePending = true;
+    ledgerFailure = null;
     timelineInteraction(false);
     timelineController?.abort();
     timelineController = new AbortController();
@@ -1737,7 +1761,6 @@ window.CoachDashboard = (() => {
       // A new page-one read never mixes with an older inventory or geometry.
       ledgerGeneration++;
       ledger = null;
-      withheldMembers.clear();
     }
     syncMap();
     const status = text("p", "Loading authorized day events…", "hint");
@@ -1755,7 +1778,7 @@ window.CoachDashboard = (() => {
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
     const users = new Map(resume?.users),
-      items = new Map(resume?.items);
+      items = resume?.items || new Map();
     let cursor = resume?.cursor,
       coverage = resume?.coverage,
       pages = 0;
@@ -1835,8 +1858,10 @@ window.CoachDashboard = (() => {
           typeof data.hasMore !== "boolean"
         )
           throw new Error("Invalid timeline response");
+        if (!resume && pages === 0) withheldMembers.clear();
         coverage = data.coverage || coverage;
         for (const user of data.users) users.set(user._id, user);
+        const newlyPrivate = new Set();
         for (const item of data.events) {
           const stamp = Date.parse(item.occurred_at);
           if (
@@ -1849,7 +1874,9 @@ window.CoachDashboard = (() => {
           )
             throw new Error("Invalid timeline event");
           items.set(item.id, item);
+          if (item.position?.availability === "unavailable" && item.position.reason === "private" && !withheldMembers.has(item.user_id)) newlyPrivate.add(item.user_id);
         }
+        for (const memberId of newlyPrivate) withholdMember(memberId);
         pages++;
         if (
           data.hasMore &&
@@ -1881,7 +1908,11 @@ window.CoachDashboard = (() => {
       )
         return publish(error);
       timelinePending = false;
+      ledgerFailure = error.status || 0;
       if (denied(error) || error.status === 409) {
+        ledgerGeneration++;
+        ledger = null;
+        highlightEvent(null);
         $("dashboardMapSelection").replaceChildren();
         selectionEpoch++;
         filterTimeline = () => {};
@@ -2135,24 +2166,28 @@ window.CoachDashboard = (() => {
       if (!live()) return;
       const day = scoped();
       status.removeAttribute("data-tone");
-      if (!day)
+      if (!day) {
+        if (!timelinePending && ledgerFailure !== null)
+          status.dataset.tone = "error";
         status.textContent = timelinePending
           ? `Loading authorized event locations for ${date} (event occurrence time in your device timezone)…${rosterNote}`
-          : `Event locations unavailable for ${date}; the day's authorized events could not be loaded.${rosterNote}`;
-      else {
+          : `Event locations ${denied({ status: ledgerFailure }) ? "denied" : "unavailable"}${ledgerFailure ? ` (${ledgerFailure})` : ""} for ${date}; the day's authorized events could not be loaded.${rosterNote}`;
+      } else {
         const total = [...day.items.values()].filter(
           (item) => !suppressedMembers.has(item.user_id),
         ).length;
         status.textContent = `${date} event occurrence time (device timezone) · ${dots.length} of ${total} authorized events have a shared location${day.complete ? " · complete day as loaded (not live)." : " · partial day: not every event is loaded, so event connections are hidden."}${rosterNote}`;
       }
     };
-    const choose = (item) => {
-      if (!live() || suppressedMembers.has(item.user_id)) return;
+    const choose = (original, generation) => {
+      const item = scoped()?.items.get(original.id);
+      if (!live() || generation !== ledgerGeneration || !item || !eventPosition(item) || suppressedMembers.has(item.user_id)) return;
+      reconcileTimelineSelection(item);
       void selectEvent(item, adminKey);
       revealTimelineEvent(item.id);
     };
     const openChooser = (group) => {
-      if (!live()) return;
+      if (!live() || group.generation !== ledgerGeneration || !group.pins.some(({item}) => eventPosition(scoped()?.items.get(item.id)))) return;
       closeChooser(false);
       chooserOwner = group.marker;
       chooser.hidden = false;
@@ -2183,7 +2218,7 @@ window.CoachDashboard = (() => {
         choice.onclick = () => {
           if (!live()) return;
           closeChooser();
-          choose(item);
+          choose(item, group.generation);
         };
         chooser.append(choice);
       }
@@ -2198,6 +2233,7 @@ window.CoachDashboard = (() => {
       closeChooser(false);
       overlay.replaceChildren();
       const day = scoped();
+      const generation = ledgerGeneration;
       const ordered = day
         ? [...day.items.values()]
             .filter((item) => !suppressedMembers.has(item.user_id))
@@ -2238,7 +2274,7 @@ window.CoachDashboard = (() => {
           "aria-pressed",
           String(item.id === selectedEventId),
         );
-        marker.onclick = () => choose(item);
+        marker.onclick = () => choose(item, generation);
         const dot = { item, fix, marker };
         dots.push(dot);
         const key = `${fix.latitude},${fix.longitude}`;
@@ -2274,7 +2310,7 @@ window.CoachDashboard = (() => {
           "dashboard-map-marker dashboard-map-group",
         );
         marker.type = "button";
-        const group = { fix: pins[0].fix, pins, marker };
+        const group = { fix: pins[0].fix, pins, marker, generation };
         marker.onclick = () => openChooser(group);
         groups.push(group);
       }

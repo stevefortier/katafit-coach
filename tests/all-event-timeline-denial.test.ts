@@ -21,16 +21,17 @@ test("late live-map detail denial purges a newer selected event snapshot of the 
           users: [{ _id: member, display_name: "Fixture Ada" }],
           events: [
             {
-              id: "event-one",
+              id: "eeeeeeeeeeeeeeeeeeeeeeee",
               user_id: member,
               occurred_at: new Date(
                 Date.parse(url.searchParams.get("start")!) + 3600000,
               ).toISOString(),
               event_type: "workout.set_completed",
-              subject: { type: "workout", id: "source" },
+              subject: { type: "workout", id: "111111111111111111111111" },
               details: { exercise_index: 0, set_index: 0 },
               actor_type: "member",
               source: "interactive",
+              position: {availability:"available",latitude:42,longitude:-71},
             },
           ],
           hasMore: false,
@@ -42,7 +43,7 @@ test("late live-map detail denial purges a newer selected event snapshot of the 
           users: [{ _id: member, display_name: "Fixture Ada" }],
           activities: [
             {
-              _id: "source",
+              _id: "111111111111111111111111",
               user_id: member,
               type: "workout",
               status: "complete",
@@ -91,9 +92,9 @@ test("late live-map detail denial purges a newer selected event snapshot of the 
       document.getElementById("login")!.hidden = true;
       await (window as any).CoachDashboard.load(null, key);
     }, store.secrets.admin);
-    await page.locator(".dashboard-activity-pin").waitFor();
+    await page.locator(".dashboard-event-dot").waitFor();
     await page.locator(".dashboard-timeline-mark").waitFor();
-    await page.locator(".dashboard-activity-pin").click();
+    await page.locator(".dashboard-event-dot").click();
     await began;
     await page.locator(".dashboard-timeline-mark").click();
     assert.match(
@@ -102,13 +103,13 @@ test("late live-map detail denial purges a newer selected event snapshot of the 
     );
     assert.equal(
       await page
-        .locator(".dashboard-activity-pin")
+        .locator(".dashboard-event-dot")
         .getAttribute("aria-pressed"),
-      "false",
+      "true",
     );
     const response = page.waitForResponse(
       (r) =>
-        r.url().includes("/api/dashboard/activity?id=source") &&
+        r.url().includes("/api/dashboard/activity?id=111111111111111111111111") &&
         r.status() === 403,
     );
     release();
@@ -117,7 +118,7 @@ test("late live-map detail denial purges a newer selected event snapshot of the 
       () => document.querySelectorAll(".dashboard-timeline-mark").length === 0,
     );
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
-    assert.equal(await page.locator(".dashboard-activity-pin").count(), 0);
+    assert.equal(await page.locator(".dashboard-event-dot").count(), 0);
     assert.equal(
       await page.locator(".dashboard-timeline-count").textContent(),
       "0 visible · 0 loaded events across all members",

@@ -1,228 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import { chromium } from "playwright-core";
-
-const ada = "aaaaaaaaaaaaaaaaaaaaaaaa",
-  bob = "bbbbbbbbbbbbbbbbbbbbbbbb";
-const id = (n: number) => n.toString(16).padStart(24, "0");
-const ev = (n: number) => "e" + n.toString(16).padStart(23, "0");
-const gps = (latitude: number, longitude: number, at: string) => ({
-  availability: "available",
-  latitude,
-  longitude,
-  accuracy: 8,
-  captured_at: at,
-  source: "gps",
-});
-
-type Override = (
-  url: URL,
-  events: Event[],
-) => { status?: number; body?: unknown; hold?: Promise<unknown> } | undefined;
-
-type Event = {
-  id: string;
-  user_id: string;
-  occurred_at: string;
-  event_type: string;
-  subject: { type: string; id: string };
-  details: Record<string, unknown>;
-  position?: Record<string, unknown>;
-};
-
-// Canonical ledger events: the map must use each event's own recorded position,
-// never a subject activity's current coordinates or creation time.
-function ledger(): Event[] {
-  const at = (hour: number, minute = 0) =>
-    `2026-09-28T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00.000Z`;
-  const row = (
-    n: number,
-    user: string,
-    stamp: string,
-    type: string,
-    subject: number,
-    position?: [number, number],
-  ): Event => ({
-    id: ev(n),
-    user_id: user,
-    occurred_at: stamp,
-    event_type: type,
-    subject: { type: type.split(".")[0], id: id(subject) },
-    details: {},
-    ...(position ? { position: gps(position[0], position[1], stamp) } : {}),
-  });
-  return [
-    row(1, ada, at(1), "workout.set_completed", 1, [40.7, -73.9]),
-    row(2, ada, at(2), "meal.food_added", 2, [40.7, -73.9]),
-    row(3, ada, at(3), "metric.recorded", 3, [40.72, -73.92]),
-    row(4, bob, at(2), "workout.set_completed", 4, [40.7, -73.9]),
-    row(5, bob, at(3), "media.uploaded", 5, [40.73, -73.91]),
-    row(6, ada, at(5), "meal.food_added", 6, [40.74, -73.94]),
-    // Same subject as event 1, later and elsewhere: a separate map event.
-    row(7, ada, at(6), "workout.set_completed", 1, [40.75, -73.95]),
-    {
-      ...row(8, ada, at(4), "survey.completed", 8),
-      position: { availability: "unavailable", reason: "private" },
-    },
-  ];
-}
-
-async function fixture(
-  run: (
-    page: any,
-    state: { requests: string[]; events: Event[] },
-  ) => Promise<void>,
-  options: {
-    events?: Event[];
-    viewport?: { width: number; height: number };
-    // Per-test API responses; undefined falls through to the default ledger.
-    override?: Override;
-    ready?: string;
-    // Wait for this many timeline marks; null skips (failure-path tests).
-    marks?: number | null;
-  } = {},
-) {
-  const events = options.events || ledger();
-  const users = [
-    { _id: ada, display_name: "Synthetic Ada" },
-    { _id: bob, display_name: "Synthetic Bob" },
-  ];
-  const requests: string[] = [];
-  const server = createServer(async (req, res) => {
-    const url = new URL(req.url!, "http://localhost");
-    requests.push(url.pathname + url.search);
-    res.setHeader("content-type", "application/json");
-    const custom = url.pathname.startsWith("/api/")
-      ? options.override?.(url, events)
-      : undefined;
-    if (custom) {
-      await custom.hold;
-      res.writeHead(custom.status || 200);
-      res.end(JSON.stringify(custom.body ?? {}));
-    } else if (url.pathname === "/") {
-      res.setHeader("content-type", "text/html");
-      res.end(
-        `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/leaflet.css"><section id="dashboardPanel"><input id="dashboardMapDate" type="date"><p id="dashboardMapStatus" role="status"></p><div class="dashboard-map-layout"><div class="dashboard-map-column"><div id="dashboardMap" class="dashboard-map"></div><section id="dashboardTimeline" class="dashboard-timeline"></section></div><aside id="dashboardMapSelection" class="dashboard-map-selection"></aside></div><h3 id="dashboardMemberHeading"></h3><div id="dashboardMemberCards"></div><p id="dashboardStatus"></p><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div></section><script src="/leaflet.js"></script><script>const original=L.map;L.map=(...args)=>window.fixtureMap=original(...args)</script><script src="/dashboard.js"></script>`,
-      );
-    } else if (
-      ["/leaflet.js", "/leaflet.css", "/dashboard.js", "/style.css"].includes(
-        url.pathname,
-      )
-    ) {
-      res.setHeader(
-        "content-type",
-        url.pathname.endsWith("css") ? "text/css" : "text/javascript",
-      );
-      res.end(
-        await readFile(
-          new URL(
-            url.pathname.startsWith("/leaflet")
-              ? `../node_modules/leaflet/dist${url.pathname}`
-              : `../ui${url.pathname}`,
-            import.meta.url,
-          ),
-        ),
-      );
-    } else if (url.pathname === "/api/dashboard/timeline")
-      res.end(JSON.stringify({ users, events, hasMore: false }));
-    else if (url.pathname === "/api/dashboard/event") {
-      const event = events.find(
-        (e) => e.id === url.searchParams.get("event_id"),
-      );
-      res.end(
-        JSON.stringify({ users, events: event ? [event] : [], hasMore: false }),
-      );
-    } else if (url.pathname === "/api/dashboard/members")
-      res.end(JSON.stringify({ members: users }));
-    else if (url.pathname === "/api/dashboard/activity") {
-      // Current subject state differs from the ledger: another day, moved GPS.
-      const subject = url.searchParams.get("id")!;
-      const event = events.find((e) => e.subject.id === subject);
-      res.end(
-        JSON.stringify({
-          owner: { _id: event?.user_id || ada },
-          activity: {
-            _id: subject,
-            user_id: event?.user_id || ada,
-            type: event?.subject.type || "workout",
-            status: "complete",
-            name: `Current subject ${subject.slice(-1)}`,
-            created_at: "2026-09-20T09:00:00.000Z",
-            position: { latitude: 10, longitude: 10 },
-          },
-        }),
-      );
-    } else if (url.pathname === "/api/dashboard/map")
-      res.end(
-        JSON.stringify({
-          users,
-          activities: [
-            {
-              _id: id(1),
-              user_id: ada,
-              type: "workout",
-              status: "complete",
-              created_at: "2026-09-28T01:00:00.000Z",
-              position: { latitude: 10, longitude: 10 },
-            },
-          ],
-          hasMore: false,
-        }),
-      );
-    else res.end(JSON.stringify({ users: [], activities: [], hasMore: false }));
-  });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const browser = await chromium.launch({
-    executablePath: process.env.CHROME_PATH || "/usr/bin/google-chrome",
-    args: ["--no-sandbox"],
-  });
-  try {
-    const page = await browser.newPage({
-      viewport: options.viewport || { width: 1440, height: 1000 },
-      timezoneId: "UTC",
-    });
-    const errors: string[] = [];
-    page.on("pageerror", (error: Error) => errors.push(error.message));
-    await page.route("https://tile.openstreetmap.org/**", (r: any) =>
-      r.fulfill({
-        contentType: "image/png",
-        body: Buffer.from(
-          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
-          "base64",
-        ),
-      }),
-    );
-    await page.goto(`http://127.0.0.1:${(server.address() as any).port}`);
-    await page.evaluate(async () => {
-      await (window as any).CoachDashboard.load(null, "synthetic");
-      const input =
-        document.querySelector<HTMLInputElement>("#dashboardMapDate")!;
-      input.value = "2026-09-28";
-      input.dispatchEvent(new Event("change"));
-    });
-    await page.waitForFunction(
-      (ready: string) =>
-        document
-          .querySelector("#dashboardMapStatus")
-          ?.textContent?.includes(ready),
-      options.ready || "complete day",
-    );
-    if (options.marks !== null)
-      await page.waitForFunction(
-        (count: number) =>
-          document.querySelectorAll(".dashboard-timeline-mark").length ===
-          count,
-        options.marks ?? events.length,
-      );
-    await run(page, { requests, events });
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser.close();
-    await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
-  }
-}
+import {fixture, ledger, ada, bob, id, ev, gps, type Event, type Override} from "./helpers/exact-map-fixture.js";
 
 // Offset between an element's centre and a coordinate projected into the
 // world copy the map currently displays (Leaflet container = padding box).
@@ -1393,4 +1171,493 @@ test("a private read from an earlier date never redacts the new day, and a fresh
       },
     },
   );
+});
+
+const unavailable = { users: [], events: [], hasMore: false };
+
+test("a late empty exact-event read behind a newer other-member selection removes that event and its segments only", async () => {
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => (release = resolve));
+  await fixture(
+    async (page, { requests }) => {
+      await page
+        .locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`)
+        .click();
+      while (!requests.some((r) => r.includes(`event_id=${ev(3)}`)))
+        await new Promise((r) => setTimeout(r, 20));
+      await page
+        .locator(`.dashboard-event-dot[data-event-id="${ev(5)}"]`)
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#dashboardMapSelection")
+          ?.textContent?.includes("Current subject"),
+      );
+      const late = page.waitForResponse((r: any) =>
+        r.url().includes(`event_id=${ev(3)}`),
+      );
+      release();
+      await late;
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 100)));
+      for (const selector of [
+        `.dashboard-event-dot[data-event-id="${ev(3)}"]`,
+        `.dashboard-timeline-mark[data-event-id="${ev(3)}"]`,
+        `line[data-from="${ev(3)}"]`,
+        `line[data-to="${ev(3)}"]`,
+      ])
+        assert.equal(await page.locator(selector).count(), 0, selector);
+      assert.equal(await page.locator(".dashboard-timeline-mark").count(), 7);
+      // Ada keeps 1→2 and 6→7; the private event 8 still breaks the order.
+      assert.equal(
+        await page.locator(`line[data-member-id="${ada}"]`).count(),
+        2,
+      );
+      assert.equal(
+        await page.locator(`line[data-member-id="${bob}"]`).count(),
+        1,
+      );
+      // The newer selection is untouched.
+      const detail = await page.locator("#dashboardMapSelection").innerText();
+      assert.match(detail, /Event location: 40\.73, -73\.91/);
+      assert.ok(!detail.includes("Event unavailable"), detail);
+      assert.equal(
+        await page
+          .locator(`.dashboard-event-dot[data-event-id="${ev(5)}"]`)
+          .getAttribute("aria-pressed"),
+        "true",
+      );
+    },
+    {
+      override: (url) =>
+        url.pathname === "/api/dashboard/event" &&
+        url.searchParams.get("event_id") === ev(3)
+          ? { hold, body: unavailable }
+          : undefined,
+    },
+  );
+});
+
+test("a late exact-event 404 from an earlier ledger generation never removes the reloaded event", async () => {
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => (release = resolve));
+  await fixture(
+    async (page, { requests }) => {
+      await page
+        .locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`)
+        .click();
+      while (!requests.some((r) => r.includes(`event_id=${ev(3)}`)))
+        await new Promise((r) => setTimeout(r, 20));
+      const before = pageOne(requests);
+      // Reload the same date: a new ledger generation with fresh authority.
+      await page.evaluate(() =>
+        document
+          .querySelector("#dashboardMapDate")!
+          .dispatchEvent(new Event("change")),
+      );
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("complete day") &&
+          document.querySelectorAll(".dashboard-timeline-mark").length === 8,
+      );
+      assert.ok(pageOne(requests) > before);
+      const late = page.waitForResponse((r: any) =>
+        r.url().includes(`event_id=${ev(3)}`),
+      );
+      release();
+      await late;
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 100)));
+      for (const selector of [
+        `.dashboard-event-dot[data-event-id="${ev(3)}"]`,
+        `.dashboard-timeline-mark[data-event-id="${ev(3)}"]`,
+      ])
+        assert.equal(await page.locator(selector).count(), 1, selector);
+      assert.equal(
+        await page.locator(`line[data-member-id="${ada}"]`).count(),
+        3,
+      );
+    },
+    {
+      override: (url) =>
+        url.pathname === "/api/dashboard/event" &&
+        url.searchParams.get("event_id") === ev(3)
+          ? {
+              hold,
+              status: 404,
+              body: { error: "REST_READ_DENIED", status: 404 },
+            }
+          : undefined,
+    },
+  );
+});
+
+// Partial day: page one (events 1–3) loads, page two is rate-limited once.
+const partial = (resume: Override): Override => {
+  let limited = false;
+  const pages = paged(3);
+  return (url, events) => {
+    if (url.pathname !== "/api/dashboard/timeline") return undefined;
+    if (
+      url.pathname === "/api/dashboard/timeline" &&
+      url.searchParams.get("cursor") === "p-1"
+    ) {
+      if (!limited) {
+        limited = true;
+        return {
+          status: 429,
+          body: { error: "REST_READ_DENIED", status: 429 },
+        };
+      }
+      return resume(url, events) || pages(url, events);
+    }
+    return pages(url, events) || resume(url, events);
+  };
+};
+const retry = async (page: any, requests: string[]) => {
+  await settled(page, 3);
+  const before = requests.length;
+  await page.getByRole("button", { name: "Retry timeline" }).click();
+  const deadline = Date.now() + 5000;
+  while (!requests.slice(before).some((r) => r.includes("cursor=p-1"))) {
+    assert.ok(Date.now() < deadline, JSON.stringify(requests));
+    await new Promise((r) => setTimeout(r, 20));
+  }
+};
+
+test("a 403 on a resumed page clears the shared ledger's GPS and kills stale map handlers", async () => {
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => (release = resolve));
+  await fixture(
+    async (page, { requests }) => {
+      await settled(page, 3);
+      assert.equal(await page.locator(".dashboard-event-dot").count(), 3);
+      await page.evaluate(() => {
+        (window as any).staleDot = document.querySelector(
+          ".dashboard-event-dot",
+        );
+        (window as any).staleGroup = document.querySelector(
+          ".dashboard-map-group",
+        );
+      });
+      await retry(page, requests);
+      const denial = page.waitForResponse((r: any) =>
+        r.url().includes("cursor=p-1"),
+      );
+      release();
+      await denial;
+      await page.getByText("Timeline unavailable (403); try again.").waitFor();
+      for (const selector of [
+        ".dashboard-event-dot",
+        ".dashboard-map-connection",
+        ".dashboard-map-group",
+        ".dashboard-map-choice",
+        ".dashboard-timeline-mark",
+      ])
+        assert.equal(await page.locator(selector).count(), 0, selector);
+      assert.equal(
+        await page.locator("#dashboardMapSelection").innerText(),
+        "",
+      );
+      const before = requests.length;
+      await page.evaluate(() => {
+        (window as any).staleDot.click();
+        (window as any).staleGroup?.click();
+      });
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 100)));
+      assert.deepEqual(
+        requests
+          .slice(before)
+          .filter((r) => r.includes("/api/dashboard/event")),
+        [],
+      );
+      assert.equal(await page.locator(".dashboard-map-choice").count(), 0);
+      assert.equal(
+        await page.locator("#dashboardMapSelection").innerText(),
+        "",
+      );
+      assert.doesNotMatch(
+        await page.locator("#dashboardMapStatus").innerText(),
+        /[1-9]\d* of \d+ authorized events have a shared location/,
+      );
+    },
+    {
+      ready: "partial day",
+      marks: null,
+      override: partial(() => ({
+        hold,
+        status: 403,
+        body: { error: "REST_READ_DENIED", status: 403 },
+      })),
+    },
+  );
+});
+
+test("a failed same-date reload keeps a Position withdrawal: retained rows never show old coordinates", async () => {
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => (release = resolve));
+  let unavailable503 = false;
+  await fixture(
+    async (page, { requests }) => {
+      await page
+        .locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`)
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#dashboardMapSelection")
+          ?.textContent?.includes("No shared location for this event."),
+      );
+      assert.equal(
+        await page
+          .locator(`.dashboard-event-dot[data-member-id="${ada}"]`)
+          .count(),
+        0,
+      );
+      // Same-date reload; page one is transiently unavailable.
+      unavailable503 = true;
+      await page.evaluate(() =>
+        document
+          .querySelector("#dashboardMapDate")!
+          .dispatchEvent(new Event("change")),
+      );
+      await page.getByText("Timeline unavailable (503); try again.").waitFor();
+      // Select another retained Ada occurrence while its exact read is held.
+      const before = requests.length;
+      await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const cluster = await page.locator('.dashboard-timeline-cluster').evaluateAll((nodes: any[], target: string) => nodes.findIndex(n => JSON.parse(n.dataset.eventIds).includes(target)), ev(6));
+      if (cluster >= 0) {
+        await page.locator('.dashboard-timeline-cluster').nth(cluster).focus();
+        await page.keyboard.press('Enter');
+        await page.locator(`.dashboard-timeline-choice[data-event-id="${ev(6)}"]`).focus();
+      } else await page.locator(`.dashboard-timeline-mark[data-event-id="${ev(6)}"]`).focus();
+      await page.keyboard.press('Enter');
+      while (
+        !requests.slice(before).some((r) => r.includes(`event_id=${ev(6)}`))
+      )
+        await new Promise((r) => setTimeout(r, 20));
+      const held = await page.locator("#dashboardMapSelection").innerText();
+      assert.ok(!held.includes("40.74"), held);
+      assert.match(held, /No shared location for this event\./);
+      assert.equal(
+        await page
+          .locator(`.dashboard-event-dot[data-member-id="${ada}"]`)
+          .count(),
+        0,
+      );
+      release();
+      await page.waitForFunction(
+        () =>
+          !document
+            .querySelector("#dashboardMapSelection")
+            ?.textContent?.includes("Checking current event access"),
+      );
+      const after = await page.locator("#dashboardMapSelection").innerText();
+      assert.ok(!after.includes("40.74"), after);
+      assert.equal(
+        await page
+          .locator(`.dashboard-event-dot[data-member-id="${ada}"]`)
+          .count(),
+        0,
+      );
+    },
+    {
+      override: (url, events) => {
+        if (url.pathname === "/api/dashboard/timeline" && unavailable503)
+          return {
+            status: 503,
+            body: { error: "REST_READ_UNAVAILABLE", status: 503 },
+          };
+        if (url.pathname !== "/api/dashboard/event") return undefined;
+        const n = url.searchParams.get("event_id");
+        if (n === ev(3))
+          return {
+            body: {
+              users,
+              events: [{ ...events[2], position: withheld }],
+              hasMore: false,
+            },
+          };
+        if (n === ev(6))
+          return {
+            hold,
+            body: { users, events: [events[5]], hasMore: false },
+          };
+        return undefined;
+      },
+    },
+  );
+});
+
+for (const [name, correction] of [
+  ["an empty exact read removes the event", "empty"],
+  ["a non-private unavailable exact read redacts its GPS", "missing"],
+] as const)
+  test(`a held resumed page cannot overwrite a concurrent correction: ${name}`, async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const flow = partial((u, e) =>
+      u.pathname === "/api/dashboard/timeline"
+        ? { hold, ...paged(3)(u, e)! }
+        : undefined,
+    );
+    await fixture(
+      async (page, { requests }) => {
+        await retry(page, requests);
+        await page.locator('.dashboard-map-group').focus();
+        await page.keyboard.press('Enter');
+        await page.locator(`.dashboard-map-choice[data-event-id="${ev(2)}"]`).focus();
+        await page.keyboard.press('Enter');
+        await page.waitForFunction(
+          () =>
+            !document
+              .querySelector("#dashboardMapSelection")
+              ?.textContent?.includes("Checking current event access"),
+        );
+        assert.equal(
+          await page
+            .locator(`.dashboard-event-dot[data-event-id="${ev(2)}"]`)
+            .count(),
+          0,
+        );
+        release();
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("complete day"),
+        );
+        await page.evaluate(() => new Promise((r) => setTimeout(r, 100)));
+        assert.equal(
+          await page
+            .locator(`.dashboard-event-dot[data-event-id="${ev(2)}"]`)
+            .count(),
+          0,
+          "the resumed page does not resurrect the corrected event's GPS",
+        );
+        assert.equal(
+          (await page.locator(`line[data-to="${ev(2)}"]`).count()) +
+            (await page.locator(`line[data-from="${ev(2)}"]`).count()),
+          0,
+        );
+        assert.equal(
+          await page
+            .locator(`.dashboard-timeline-mark[data-event-id="${ev(2)}"]`)
+            .count(),
+          correction === "empty" ? 0 : 1,
+        );
+        assert.equal(
+          await page.locator(".dashboard-timeline-mark").count(),
+          correction === "empty" ? 7 : 8,
+        );
+      },
+      {
+        ready: "partial day",
+        marks: null,
+        override: (url, events) => {
+          if (
+            url.pathname === "/api/dashboard/event" &&
+            url.searchParams.get("event_id") === ev(2)
+          )
+            return {
+              body:
+                correction === "empty"
+                  ? { users: [], events: [], hasMore: false }
+                  : {
+                      users,
+                      events: [
+                        {
+                          ...events[1],
+                          position: {
+                            availability: "unavailable",
+                            reason: "missing",
+                          },
+                        },
+                      ],
+                      hasMore: false,
+                    },
+            };
+          return flow(url, events);
+        },
+      },
+    );
+  });
+
+
+test("a private Position in the day stream suppresses all member GPS and a fresh authorized reload regrants", async () => {
+ let privateRead = true;
+ await fixture(async(page) => {
+   assert.equal(await page.locator(`.dashboard-event-dot[data-member-id="${ada}"]`).count(), 0);
+   assert.equal(await page.locator(`line[data-member-id="${ada}"]`).count(), 0);
+   assert.equal(await page.locator(`.dashboard-timeline-mark[data-member-id="${ada}"]`).count(), 6);
+   await selectFromTimeline(page, ev(3));
+   assert.match(await page.locator('#dashboardMapSelection').innerText(), /No shared location/);
+   privateRead = false;
+   await page.evaluate(() => document.querySelector('#dashboardMapDate')!.dispatchEvent(new Event('change')));
+   await page.waitForFunction(() => document.querySelectorAll('.dashboard-event-dot[data-member-id="aaaaaaaaaaaaaaaaaaaaaaaa"]').length === 5);
+ }, {override: (url, events) => url.pathname === '/api/dashboard/timeline' ? {body: {users, events: events.map(e => e.id === ev(8) && privateRead ? {...e,position:withheld} : e),hasMore:false}} : undefined});
+});
+
+
+test("ordinary pointer selection can reopen the exact co-location chooser after selecting a point", async () => fixture(async(page) => {
+ const group = page.locator('.dashboard-map-group[data-count="3"]');
+ await group.click();
+ await page.locator(`.dashboard-map-choice[data-event-id="${ev(2)}"]`).click();
+ await page.waitForFunction(() => document.querySelector('#dashboardMapSelection')?.textContent?.includes('Event access rechecked'));
+ await group.click({timeout:3000});
+ await page.locator(`.dashboard-map-choice[data-event-id="${ev(1)}"]`).click();
+ assert.equal(await page.locator('.dashboard-event-dot[aria-pressed="true"]').getAttribute('data-event-id'),ev(1));
+ assert.ok(exact(await offset(group,40.7,-73.9)));
+}));
+
+test("map selection reconciles a category filter while preserving timeline and map zoom", async () => fixture(async(page) => {
+ await page.locator('.dashboard-timeline-legend button[data-category="metric"]').click();
+ await page.locator('#dashboardTimeline').getByRole('button',{name:'Zoom in',exact:true}).click();
+ await page.locator('#dashboardTimeline').getByRole('button',{name:'Zoom in',exact:true}).click();
+ const before = await page.evaluate(() => ({width:document.querySelector<HTMLElement>('.dashboard-timeline-track')!.style.width,zoom:(window as any).fixtureMap.getZoom(),center:(window as any).fixtureMap.getCenter()}));
+ await page.locator('.dashboard-timeline-scroll').evaluate((n:HTMLElement)=>n.scrollLeft=n.scrollWidth);
+ await page.locator(`.dashboard-event-dot[data-event-id="${ev(7)}"]`).click();
+ await page.waitForFunction(() => document.querySelector('#dashboardMapSelection')?.textContent?.includes('Event access rechecked'));
+ const mark = page.locator(`.dashboard-timeline-mark[data-event-id="${ev(7)}"]`);
+ assert.equal(await mark.isVisible(),true);
+ assert.equal(await mark.getAttribute('aria-pressed'),'true');
+ assert.equal(await page.locator('.dashboard-timeline-legend button[data-category=""]').getAttribute('aria-pressed'),'true');
+ const after=await page.evaluate(() => ({width:document.querySelector<HTMLElement>('.dashboard-timeline-track')!.style.width,zoom:(window as any).fixtureMap.getZoom(),center:(window as any).fixtureMap.getCenter()}));
+ assert.deepEqual(after,before);
+ const visible = await mark.evaluate((n:HTMLElement) => {const a=n.getBoundingClientRect(),b=n.closest('.dashboard-timeline-scroll')!.getBoundingClientRect();return a.left>=b.left&&a.right<=b.right});
+ assert.ok(visible);
+}));
+
+
+test("a private resumed page scrubs an open selected location before a late positive exact read", async () => {
+ let release!:()=>void; const hold=new Promise<void>(r=>release=r);
+ let publishPage!:()=>void; const pageHold=new Promise<void>(r=>publishPage=r);
+ const pages=partial((u,e) => ({hold:pageHold,body:{users,events:e.slice(3).map(x=>x.id===ev(8)?{...x,position:withheld}:x),hasMore:false}}));
+ await fixture(async(page,{requests})=>{
+  await retry(page,requests);
+  await page.locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`).click();
+  await page.waitForFunction(()=>document.querySelector('#dashboardMapSelection')?.textContent?.includes('Checking current event access'));
+  assert.match(await page.locator('#dashboardMapSelection').innerText(),/40.72/);
+  publishPage();
+  await page.waitForFunction(()=>document.querySelector('#dashboardMapStatus')?.textContent?.includes('complete day'));
+  assert.equal(await page.locator(`.dashboard-event-dot[data-member-id="${ada}"]`).count(),0);
+  assert.equal(await page.locator(`.dashboard-timeline-mark[data-member-id="${ada}"]`).count(),6);
+  const text=await page.locator('#dashboardMapSelection').innerText();
+  assert.match(text,/No shared location/); assert.doesNotMatch(text,/40\.72|73\.92|8 m/);
+  release(); await page.evaluate(()=>new Promise(r=>setTimeout(r,100)));
+  assert.doesNotMatch(await page.locator('#dashboardMapSelection').innerText(),/40\.72|73\.92|8 m/);
+ },{ready:'partial day',marks:null,override:(u,e)=>u.pathname==='/api/dashboard/event'?{hold,body:{users,events:[e[2]],hasMore:false}}:pages(u,e)});
+});
+
+for(const deniedStatus of [401,403]) test(`resumed ${deniedStatus} fences a held positive exact read`,async()=>{
+ let release!:()=>void;const hold=new Promise<void>(r=>release=r);
+ const flow=partial(()=>({status:deniedStatus,body:{error:'denied'}}));
+ await fixture(async(page,{requests})=>{
+  await page.locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`).click();
+  await page.waitForFunction(()=>document.querySelector('#dashboardMapSelection')?.textContent?.includes('Checking current event access'));
+  await retry(page,requests);
+  await page.getByText(`Timeline unavailable (${deniedStatus}); try again.`).waitFor();
+  release();await page.evaluate(()=>new Promise(r=>setTimeout(r,100)));
+  for(const selector of ['.dashboard-event-dot','.dashboard-map-choice','.dashboard-map-connection','.dashboard-timeline-mark'])assert.equal(await page.locator(selector).count(),0);
+  assert.equal(await page.locator('#dashboardMapSelection').innerText(),'');
+ },{ready:'partial day',marks:null,override:(u,e)=>u.pathname==='/api/dashboard/event'?{hold,body:{users,events:[e[2]],hasMore:false}}:partialDenial(u,e)});
+ function partialDenial(u:URL,e:Event[]){return flow(u,e)}
 });

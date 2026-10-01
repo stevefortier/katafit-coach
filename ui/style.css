@@ -1256,7 +1256,10 @@ header {
   font-size: 0;
   border-width: 2px;
 }
-.dashboard-map-group {
+.dashboard-map-marker.dashboard-map-group,
+.dashboard-map-marker.dashboard-map-group:hover,
+.dashboard-map-marker.dashboard-map-group:focus-visible {
+  z-index: 4; /* The exact-location chooser remains pointer-accessible over selection. */
   width: 24px;
   height: 24px;
   min-width: 24px;
