@@ -1,59 +1,128 @@
 name: Verify coach pilot
-on: [push, pull_request]
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: coach-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
-  verify:
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node: [22, 24]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Real frozen protocol-1 launcher compatibility matrix.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci --ignore-scripts
+          # Qualify the unchanged PR head, not GitHub's moving synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # Frozen protocol-1 launcher compatibility history.
+      - uses: ./.github/actions/prepare
       - run: npm run format:check
-      - run: npm test
-      - run: npm run build
-      - name: Build exact native sandbox artifact outside Pi
-        shell: bash
-        run: |
-          FP=$(node -p 'JSON.parse(require("fs").readFileSync("dist/build.json")).fingerprint')
-          docker build --pull=false -f sandbox/Dockerfile \
-            --build-arg KATAFIT_BUILD_REVISION="$(git rev-parse HEAD)" \
-            --build-arg KATAFIT_NATIVE_FINGERPRINT="$FP" \
-            --iidfile "$RUNNER_TEMP/native-image-id" .
-          printf 'NATIVE_TEST_IMAGE=%s\n' "$(node -p 'require("fs").readFileSync(process.env.RUNNER_TEMP+"/native-image-id","utf8").trim()')" >> "$GITHUB_ENV"
-      - run: npm run test:package
+      - name: Verify dynamic shard inventory
+        run: npm run test:inventory
+      - run: npm audit --omit=dev --audit-level=high
+  tests:
+    name: Serial tests (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Qualify the unchanged PR head, not GitHub's moving synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # Frozen protocol-1 launcher compatibility history.
+      - uses: ./.github/actions/prepare
+      - run: npm run test:shard -- ${{ matrix.shard }}
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Qualify the unchanged PR head, not GitHub's moving synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # Frozen protocol-1 launcher compatibility history.
+      - uses: ./.github/actions/prepare
+      - uses: ./.github/actions/native-image
       - name: Verify real immutable native pair and isolated runtime
         run: SKILLS_NATIVE_TEST_IMAGE="$NATIVE_TEST_IMAGE" NATIVE_DOCKER_TEST=1 npx tsx --test --test-concurrency=1 tests/native-deployment.test.ts tests/native-runtime.test.ts tests/native-startup-tools.test.ts tests/native-pi-path.test.ts tests/native-terminal.test.ts tests/skills-native.test.ts tests/native-attachments-runtime.test.ts tests/native-attachments-pi.test.ts tests/native-session-docker.test.ts
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Qualify the unchanged PR head, not GitHub's moving synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # Frozen protocol-1 launcher compatibility history.
+      - uses: ./.github/actions/prepare
+      - uses: ./.github/actions/native-image
+      - run: npm run test:package
+  updater:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Qualify the unchanged PR head, not GitHub's moving synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # Frozen protocol-1 launcher compatibility history.
+      - uses: ./.github/actions/prepare
+      - uses: ./.github/actions/native-image
       - name: Verify packed source upgrade, rollback and restart
         run: node scripts/updater-package-smoke.mjs
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Qualify the unchanged PR head, not GitHub's moving synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # Frozen protocol-1 launcher compatibility history.
+      - uses: ./.github/actions/prepare
+      # Keep browser fixtures serial within their isolated runner.
       - run: npm run test:browser
-        if: matrix.node == 22
       - run: npm run test:coach-browser
-        if: matrix.node == 22
       - run: npm run test:updates-browser
-        if: matrix.node == 22
       - name: Verify update status and owner-schedule browser fixtures
         run: npx tsx scripts/update-status-browser-smoke.ts
-        if: matrix.node == 22
       - name: Verify non-disruptive preview beside live Coach
         run: npx tsx scripts/preview-browser-smoke.ts
-        if: matrix.node == 22
-      - run: npm audit --omit=dev --audit-level=high
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Qualify the unchanged PR head, not GitHub's moving synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0 # Frozen protocol-1 launcher compatibility history.
+      - uses: ./.github/actions/prepare
+      - uses: ./.github/actions/native-image
       - name: Build private non-root Docker image
-        if: matrix.node == 22
         shell: bash
         run: |
           git archive HEAD | docker build \
             --build-arg KATAFIT_BUILD_REVISION="$(git rev-parse HEAD)" \
             -t katafit-coach:qa -
       - name: Verify Docker ownership and persistent restart
-        if: matrix.node == 22
         run: COACH_EXPECTED_REVISION="$(git rev-parse HEAD)" node scripts/docker-smoke.mjs
+  verify:
+    # Stable required check: skipped, cancelled and failed dependencies all fail.
+    if: always()
+    needs: [build, tests, native, package, updater, browser, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every qualification gate
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==7 and all(job["result"]=="success" for job in results.values()), results'

@@ -1,0 +1,13 @@
+name: Build exact native sandbox artifact
+description: Provision the immutable image paired to this source revision and fingerprint.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        FP=$(node -p 'JSON.parse(require("fs").readFileSync("dist/build.json")).fingerprint')
+        docker build --pull=false -f sandbox/Dockerfile \
+          --build-arg KATAFIT_BUILD_REVISION="$(git rev-parse HEAD)" \
+          --build-arg KATAFIT_NATIVE_FINGERPRINT="$FP" \
+          --iidfile "$RUNNER_TEMP/native-image-id" .
+        printf 'NATIVE_TEST_IMAGE=%s\n' "$(node -p 'require("fs").readFileSync(process.env.RUNNER_TEMP+"/native-image-id","utf8").trim()')" >> "$GITHUB_ENV"

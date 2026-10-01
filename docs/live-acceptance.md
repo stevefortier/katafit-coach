@@ -6,7 +6,7 @@ This is real **installed package → authenticated loopback admin → Worker →
 
 ## Reproduce
 
-Prerequisites: Node 22.19+, Python 3, this repository's `npm ci --ignore-scripts`, and a separately installed Kata.fit backend checkout containing the Clear fence from [app PR 771](https://github.com/stevefortier/regimen/pull/771). Its `node_modules` must include its ordinary dependencies plus `mongodb-memory-server`; Mongo 7.0.14 must be usable on the host. An existing dependency directory can be temporarily symlinked into an isolated backend checkout; remove only your own symlink afterward. Do not change backend source or use a production `DB_URL`.
+Prerequisites: Node 26.10+ (major 26 only), Python 3, this repository's `npm ci --ignore-scripts`, and a separately installed Kata.fit backend checkout containing the Clear fence from [app PR 771](https://github.com/stevefortier/regimen/pull/771). Its `node_modules` must include its ordinary dependencies plus `mongodb-memory-server`; Mongo 7.0.14 must be usable on the host. An existing dependency directory can be temporarily symlinked into an isolated backend checkout; remove only your own symlink afterward. Do not change backend source or use a production `DB_URL`.
 
 Supply `UBUNTU3090_LM_STUDIO_BASE_URL` and `UBUNTU3090_LM_STUDIO_TOKEN` through an authorized secret environment, never command literals. The successful authorized endpoint is `https://lmstudio-3090.munchlax.net/v1`. No token value belongs in a receipt, log or repository. Discovery is authenticated with an explicit User-Agent; the installed Pi adapter uses its actual default transport. The script never loads/unloads/administers models and runs at most one inference at once.
 

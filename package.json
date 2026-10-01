@@ -14,11 +14,13 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=26.10.0 <27"
   },
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc && node scripts/build-metadata.mjs",
-    "test": "npm run build && tsx --test --test-concurrency=1 --test-force-exit tests/*.test.ts",
+    "test": "npm run build && tsx scripts/test-shards.ts all",
+    "test:inventory": "tsx scripts/test-shards.ts inventory",
+    "test:shard": "tsx scripts/test-shards.ts run",
     "prepack": "npm run build",
     "test:browser": "tsx scripts/browser-smoke.ts",
     "test:coach-browser": "tsx scripts/coach-browser-smoke.ts",
