@@ -108,7 +108,54 @@
               aria-label="Shared activity map"
             >
               <div class="dashboard-map-date">
-                <label for="dashboardMapDate">
+                <div class="dashboard-date-selects">
+                  <label
+                    >Month
+                    <select id="dashboardMapMonth" aria-label="Month"></select
+                  ></label>
+                  <label
+                    >Year
+                    <select id="dashboardMapYear" aria-label="Year"></select
+                  ></label>
+                </div>
+                <button id="dashboardMapToday" type="button">Today</button>
+                <output
+                  id="dashboardSelectedDate"
+                  aria-live="polite"
+                  aria-label="Selected date"
+                ></output>
+                <div class="dashboard-day-navigation">
+                  <button
+                    id="dashboardMapPrevious"
+                    type="button"
+                    aria-label="Previous day"
+                  >
+                    ←
+                  </button>
+                  <div class="dashboard-day-track">
+                    <input
+                      id="dashboardMapDay"
+                      type="range"
+                      min="1"
+                      max="31"
+                      step="1"
+                      aria-label="Day of month"
+                    />
+                    <div
+                      id="dashboardDayTicks"
+                      class="dashboard-day-ticks"
+                      aria-hidden="true"
+                    ></div>
+                  </div>
+                  <button
+                    id="dashboardMapNext"
+                    type="button"
+                    aria-label="Next day"
+                  >
+                    →
+                  </button>
+                </div>
+                <label for="dashboardMapDate" class="dashboard-date-fallback">
                   <span class="dashboard-assistive"
                     >Day (device timezone; map: activity creation date,
                     timeline: event occurrence)</span

@@ -114,7 +114,220 @@ window.CoachDashboard = (() => {
     if (className) node.className = className;
     return node;
   };
+  let clearDateNavigation = () => {};
+  // Local civil dates: never parse YYYY-MM-DD as UTC or add 24-hour durations.
+  function civilDate(year, month, day) {
+    const date = new Date(0);
+    date.setFullYear(year, month - 1, day);
+    date.setHours(12, 0, 0, 0);
+    return date;
+  }
+  function dateValue(date) {
+    return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+  function bindDateNavigation(adminKey) {
+    const input = $("dashboardMapDate");
+    const month = $("dashboardMapMonth")?.options
+        ? $("dashboardMapMonth")
+        : null,
+      year = $("dashboardMapYear")?.options ? $("dashboardMapYear") : null;
+    const range = $("dashboardMapDay"),
+      ticks = $("dashboardDayTicks");
+    const output = $("dashboardSelectedDate");
+    const previous = $("dashboardMapPrevious"),
+      next = $("dashboardMapNext"),
+      today = $("dashboardMapToday");
+    let committedDate = input.value,
+      previewInvalidated = false;
+    const loadId = epoch;
+    const live = () => loadId === epoch;
+    function parts() {
+      return input.value.split("-").map(Number);
+    }
+    function sync() {
+      const [y, m, d] = parts();
+      if (!y || !m || !d) return;
+      const length = civilDate(y, m + 1, 0).getDate();
+      if (month) month.value = String(m);
+      if (
+        year &&
+        ![...year.options].some((option) => option.value === String(y))
+      ) {
+        const years = new Set(
+          [...year.options].map((option) => Number(option.value)),
+        );
+        for (let n = Math.max(1, y - 10); n <= Math.min(9999, y + 10); n++)
+          years.add(n);
+        year.replaceChildren(
+          ...[...years]
+            .sort((a, b) => a - b)
+            .map((n) => {
+              const option = text("option", String(n));
+              option.value = String(n);
+              return option;
+            }),
+        );
+      }
+      if (year) year.value = String(y);
+      if (range) {
+        range.max = String(length);
+        range.value = String(d);
+      }
+      if (output)
+        output.textContent = civilDate(y, m, d).toLocaleDateString(undefined, {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        });
+      if (range)
+        range.setAttribute(
+          "aria-valuetext",
+          output?.textContent || input.value,
+        );
+      if (ticks && ticks.childElementCount !== length) {
+        ticks.replaceChildren(
+          ...Array.from({ length }, (_, i) => {
+            const tick = text("div", "", "dashboard-day-tick");
+            tick.append(text("span", String(i + 1)));
+            return tick;
+          }),
+        );
+      }
+    }
+    function commit(force = false) {
+      if (!live()) return;
+      sync();
+      if (!force && input.value === committedDate && !previewInvalidated)
+        return;
+      committedDate = input.value;
+      previewInvalidated = false;
+      void loadMap(adminKey);
+    }
+    function preview() {
+      if (!live()) return;
+      const [y, m] = parts();
+      const value = dateValue(civilDate(y, m, Number(range.value)));
+      if (value === input.value) return;
+      input.value = value;
+      sync();
+      // Fence pending old-date reads immediately, without dispatching new ones
+      // while the native slider is being dragged. Member selection is retained.
+      previewInvalidated = true;
+      mapEpoch++;
+      mapController?.abort();
+      timelineEpoch++;
+      timelineController?.abort();
+      timelinePending = false;
+      timelineInteraction(false);
+      timelineResize?.disconnect();
+      timelineResize = null;
+      selectionEpoch++;
+      linkActivity = () => {};
+      filterMap = () => {};
+      filterTimeline = () => {};
+      disposeMap();
+      $("dashboardMap")?.replaceChildren();
+      $("dashboardTimeline")?.replaceChildren();
+      $("dashboardMapSelection")?.replaceChildren();
+      if ($("dashboardMapStatus"))
+        $("dashboardMapStatus").textContent = `Release to load ${value}.`;
+    }
+    function stepDay(amount) {
+      if (!live()) return;
+      const [y, m, d] = parts();
+      const date = civilDate(y, m, d);
+      date.setDate(date.getDate() + amount);
+      if (date.getFullYear() < 1 || date.getFullYear() > 9999) return;
+      input.value = dateValue(date);
+      commit();
+    }
+    function changePeriod() {
+      if (!live()) return;
+      const [y, m, d] = parts();
+      const nextYear = Number(year?.value || y),
+        nextMonth = Number(month?.value || m);
+      input.value = dateValue(
+        civilDate(
+          nextYear,
+          nextMonth,
+          Math.min(d, civilDate(nextYear, nextMonth + 1, 0).getDate()),
+        ),
+      );
+      commit();
+    }
+    if (month) {
+      month.replaceChildren(
+        ...Array.from({ length: 12 }, (_, i) => {
+          const option = text(
+            "option",
+            civilDate(2000, i + 1, 1).toLocaleDateString(undefined, {
+              month: "long",
+            }),
+          );
+          option.value = String(i + 1);
+          return option;
+        }),
+      );
+      month.onchange = changePeriod;
+    }
+    if (year) {
+      year.replaceChildren();
+      const current = new Date().getFullYear();
+      for (
+        let y = Math.max(1, current - 100);
+        y <= Math.min(9999, current + 10);
+        y++
+      ) {
+        const option = text("option", String(y));
+        option.value = String(y);
+        year.append(option);
+      }
+      year.onchange = changePeriod;
+    }
+    if (previous) previous.onclick = () => stepDay(-1);
+    if (next) next.onclick = () => stepDay(1);
+    if (today)
+      today.onclick = () => {
+        if (!live()) return;
+        input.value = dateValue(new Date());
+        commit();
+      };
+    if (range) {
+      range.oninput = preview;
+      range.onchange = () => {
+        preview();
+        commit();
+      };
+      range.onpointerup = () => {
+        preview();
+        commit();
+      };
+      range.onpointercancel = () => {
+        preview();
+        commit();
+      };
+    }
+    // Preserve the native date fallback's explicit same-date Reload semantics.
+    input.onchange = () => commit(true);
+    clearDateNavigation = () => {
+      input.onchange = null;
+      if (month) month.onchange = null;
+      if (year) year.onchange = null;
+      for (const button of [previous, next, today])
+        if (button) button.onclick = null;
+      if (range)
+        range.oninput =
+          range.onchange =
+          range.onpointerup =
+          range.onpointercancel =
+            null;
+    };
+    sync();
+  }
   function clear() {
+    clearDateNavigation();
+    clearDateNavigation = () => {};
     if ($("dashboardMapDate")) $("dashboardMapDate").onchange = null;
     epoch++;
     controller?.abort();
@@ -2038,7 +2251,7 @@ window.CoachDashboard = (() => {
       const dateInput = $("dashboardMapDate");
       const today = new Date();
       dateInput.value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-      dateInput.onchange = () => void loadMap(adminKey);
+      bindDateNavigation(adminKey);
       void loadMap(adminKey);
     }
     const id = epoch;
