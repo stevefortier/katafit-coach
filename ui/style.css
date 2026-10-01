@@ -909,10 +909,21 @@ header {
   }
 }
 .dashboard-member-cards {
+  position: sticky;
+  top: calc(var(--header-offset, 0px) + var(--notice-offset, 0px));
+  z-index: 8;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(270px, 1fr);
   gap: 12px;
   margin: 14px 0 22px;
+  padding: 8px 0;
+  background: #151515;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.dashboard-member-cards:empty {
+  display: none;
 }
 .dashboard-member-card {
   display: grid;
