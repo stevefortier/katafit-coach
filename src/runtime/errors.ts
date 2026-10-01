@@ -156,6 +156,8 @@ export const hints = {
     "Enter a nonempty sample question of at most 8000 characters.",
   REQUEST_FAILED:
     "The operation failed. Check local configuration and connectivity; raw errors are intentionally withheld.",
+  MEMBER_DELIVERY_NAMESPACE_UNVERIFIED:
+    "An older delivery ledger has opaque origin markers that cannot be safely normalized. New member messages are blocked and earlier markers are preserved. A supported ledger migration is required; do not delete storage or change identifiers to retry.",
   MEMBER_DELIVERY_LEDGER_FULL:
     "The bounded member-message ledger is full. This new message was not sent. Old delivery markers are preserved; use a supported ledger migration rather than deleting storage or retrying with changed identifiers.",
   MEMBER_DELIVERY_RECOVERY_LIMITED:

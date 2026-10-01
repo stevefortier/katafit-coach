@@ -39,78 +39,96 @@ function canonicalJson(value: unknown): string | undefined {
 
 /**
  * Tool calls of one COMPLETED provider response, assembled the way pinned Pi
- * assembles them (choices[0] only; deltas joined by stream index, else id).
- * Truncated, filtered, errored or malformed bodies select nothing.
+ * assembles them: Pi always streams, decodes with the pinned OpenAI SDK SSE
+ * framing and joins deltas by stream index, else id (choices[0] only).
+ * Truncated, filtered, errored, malformed or nonstandard bodies (unframed
+ * JSON, named events, lone CR, unterminated final event, index/ID
+ * reassignment, non-string fields) select nothing.
  */
 export function providerToolCalls(
   body: string,
   type: string,
 ): ProviderCall[] | undefined {
+  if (type !== "text/event-stream") return;
+  type Block = {
+    id: string;
+    name: string;
+    raw: string;
+    custom: boolean;
+    index: number | undefined;
+  };
   let finish: string | undefined;
-  const blocks: { id: string; name: string; raw: string; custom: boolean }[] =
-    [];
-  const byIndex = new Map<number, (typeof blocks)[number]>();
-  const byId = new Map<string, (typeof blocks)[number]>();
+  const blocks: Block[] = [];
+  const byIndex = new Map<number, Block>();
+  const byId = new Map<string, Block>();
+  const optional = (value: unknown) =>
+    value === undefined || value === null || typeof value === "string";
   const absorb = (choice: any) => {
-    if (!choice || typeof choice !== "object") return;
+    if (!choice || typeof choice !== "object") return true;
     if (choice.finish_reason) finish = choice.finish_reason;
     for (const call of choice.delta?.tool_calls ?? []) {
       if (!call || typeof call !== "object") return false;
+      const id: string | undefined = call.id || undefined;
+      const name = call.function?.name ?? call.custom?.name;
+      if (
+        !optional(id) ||
+        !optional(name) ||
+        !optional(call.function?.arguments || undefined)
+      )
+        return false;
       const index = typeof call.index === "number" ? call.index : undefined;
-      let block =
-        (index !== undefined ? byIndex.get(index) : undefined) ??
-        (call.id ? byId.get(call.id) : undefined);
+      const atIndex = index !== undefined ? byIndex.get(index) : undefined;
+      const atId = id !== undefined ? byId.get(id) : undefined;
+      // Pi would silently re-point or split these; never guess which won.
+      if (
+        (atIndex && atId && atIndex !== atId) ||
+        (atIndex && id !== undefined && atIndex.id && atIndex.id !== id) ||
+        (atId &&
+          index !== undefined &&
+          atId.index !== undefined &&
+          atId.index !== index)
+      )
+        return false;
+      let block = atIndex ?? atId;
       if (!block) {
-        block = { id: "", name: "", raw: "", custom: false };
+        block = { id: id ?? "", name: "", raw: "", custom: false, index };
         blocks.push(block);
       }
-      if (index !== undefined) byIndex.set(index, block);
-      if (typeof call.id === "string" && call.id) {
-        block.id ||= call.id;
-        byId.set(call.id, block);
+      if (index !== undefined) {
+        block.index = index;
+        byIndex.set(index, block);
       }
-      const name = call.function?.name ?? call.custom?.name;
-      if (!block.name && typeof name === "string") block.name = name;
-      if (typeof call.function?.arguments === "string")
-        block.raw += call.function.arguments;
+      if (id !== undefined) {
+        block.id ||= id;
+        byId.set(id, block);
+      }
+      if (!block.name && name) block.name = name;
+      if (call.function?.arguments) block.raw += call.function.arguments;
       if (call.custom) block.custom = true;
     }
     return true;
   };
   try {
-    if (type === "text/event-stream") {
-      // SSE events are separated by blank lines; data lines join with "\n".
-      for (const event of body.replace(/\r\n?/g, "\n").split("\n\n")) {
-        const data = event
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).replace(/^ /, ""));
-        if (!data.length) continue;
-        const text = data.join("\n");
-        if (text === "[DONE]") break;
-        const chunk = JSON.parse(text);
-        if (chunk && typeof chunk === "object" && chunk.error) return;
-        if (
-          !chunk ||
-          typeof chunk !== "object" ||
-          !Array.isArray(chunk.choices)
-        )
-          continue;
-        if (absorb(chunk.choices[0]) === false) return;
+    const text = body.replace(/\r\n/g, "\n");
+    if (text.includes("\r")) return;
+    const frames = text.split("\n\n");
+    // A final event without its blank line is never dispatched by Pi.
+    if (!/^\n*$/.test(frames.pop()!)) return;
+    for (const frame of frames) {
+      const data: string[] = [];
+      for (const line of frame.split("\n")) {
+        if (!line || line.startsWith(":")) continue;
+        if (!line.startsWith("data:")) return;
+        data.push(line.slice(5).replace(/^ /, ""));
       }
-    } else {
-      const value = JSON.parse(body);
-      const choice = value?.choices?.[0];
-      if (value?.error || !choice) return;
-      finish = choice.finish_reason;
-      for (const call of choice.message?.tool_calls ?? [])
-        blocks.push({
-          id: typeof call?.id === "string" ? call.id : "",
-          name: call?.function?.name ?? "",
-          raw: call?.function?.arguments ?? "",
-          custom:
-            !!call?.custom || typeof call?.function?.arguments !== "string",
-        });
+      if (!data.length) continue;
+      const payload = data.join("\n");
+      if (payload.startsWith("[DONE]")) break;
+      const chunk = JSON.parse(payload);
+      if (chunk && typeof chunk === "object" && chunk.error) return;
+      if (!chunk || typeof chunk !== "object" || !Array.isArray(chunk.choices))
+        continue;
+      if (!absorb(chunk.choices[0])) return;
     }
   } catch {
     return;

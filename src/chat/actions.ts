@@ -43,6 +43,8 @@ export type MemberDelivery = MemberBinding & {
 // Row-pair markers. Legacy rows carry a 64-hex credential scope instead.
 const MEMBER_ROW = "member-delivery-v2";
 const RETIRED_ROW = "member-delivery-retired-v1";
+const LEGACY_RETIRED_FORMAT = "member-delivery-retired-v1";
+const RETIRED_FORMAT = "member-delivery-retired-v2";
 // Installation lineage: retired digests are only meaningful inside it, so it
 // lives in this journal and is never evicted.
 const INSTALLATION_ROW = "member-installation-v1";
@@ -85,22 +87,54 @@ export function validBinding(value: unknown): boolean {
     ID_PATTERN.test(v.account_owner_id)
   );
 }
+/**
+ * The origin a supported backend URL resolves to in the REST transport:
+ * scheme/host case, a default port and the root slash are not identity.
+ */
+export function canonicalOrigin(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.pathname !== "/"
+    )
+      return;
+    return url.origin;
+  } catch {
+    return;
+  }
+}
+const originKey = (origin: string) => canonicalOrigin(origin) ?? origin;
 const sameBinding = (a: MemberBinding, b: MemberBinding) =>
   a.installation_id === b.installation_id &&
-  a.origin === b.origin &&
+  originKey(a.origin) === originKey(b.origin) &&
   a.account_owner_id === b.account_owner_id;
-const retiredDigest = (binding: MemberBinding, occurrence: string) =>
+const retiredDigest = (
+  binding: MemberBinding,
+  occurrence: string,
+  origin = originKey(binding.origin),
+) =>
   createHash("sha256")
     .update(
       JSON.stringify([
         binding.installation_id,
-        binding.origin,
+        origin,
         binding.account_owner_id,
         occurrence,
       ]),
     )
     .digest("hex")
     .slice(0, 32);
+
+/** Legacy credential scope: the exact configured origin spelling and secrets. */
+export const legacyScope = (origin: string, secrets: object) =>
+  createHash("sha256")
+    .update(JSON.stringify([origin, secrets]))
+    .digest("hex");
 
 export class Actions {
   private storage: History;
@@ -114,11 +148,7 @@ export class Actions {
     this.validate(this.rows);
   }
   private scope() {
-    return createHash("sha256")
-      .update(
-        JSON.stringify([this.store.publicConfig().origin, this.store.secrets]),
-      )
-      .digest("hex");
+    return legacyScope(this.store.publicConfig().origin, this.store.secrets);
   }
   // Every row is read explicitly as one known format; anything else fails closed.
   private validate(rows: Message[]) {
@@ -248,7 +278,7 @@ export class Actions {
       !v ||
       typeof v !== "object" ||
       Object.keys(v).sort().join() !== "format,occurrences" ||
-      v.format !== RETIRED_ROW ||
+      ![RETIRED_FORMAT, LEGACY_RETIRED_FORMAT].includes(v.format) ||
       !Array.isArray(v.occurrences) ||
       v.occurrences.length > RETIRED_LIMIT ||
       v.occurrences.some(
@@ -305,20 +335,26 @@ export class Actions {
         { role: "user", text: RETIRED_ROW },
         {
           role: "assistant",
-          text: JSON.stringify({ format: RETIRED_ROW, occurrences: [] }),
+          text: JSON.stringify({ format: RETIRED_FORMAT, occurrences: [] }),
         },
       );
       index = next.length - 2;
     }
     const occurrences = this.decodeRetired(next[index + 1].text);
+    const hadOpaqueMarkers = occurrences.length > 0;
     const digest = retiredDigest(record, record.occurrence_id!);
     if (!occurrences.includes(digest)) {
       if (occurrences.length >= RETIRED_LIMIT)
         throw new Error("MEMBER_DELIVERY_LEDGER_FULL");
       occurrences.push(digest);
     }
+    const previousFormat = JSON.parse(next[index + 1].text).format;
     next[index + 1].text = JSON.stringify({
-      format: RETIRED_ROW,
+      // Never relabel opaque pre-canonical markers as canonical provenance.
+      format:
+        previousFormat === LEGACY_RETIRED_FORMAT && hadOpaqueMarkers
+          ? LEGACY_RETIRED_FORMAT
+          : RETIRED_FORMAT,
       occurrences,
     });
   }
@@ -363,22 +399,26 @@ export class Actions {
     const scope = this.scope();
     return (action: RecordedAction) => this.save(action, scope);
   }
-  /** Legacy same-credential-scope receipt recovery (no binding available). */
+  /**
+   * Legacy same-credential-scope receipt recovery (no binding available).
+   * `scopes` must be spellings of the scope whose credentials `lookup` uses.
+   */
   async reconcileMemberReceipts(
     lookup: (recipient: string, key: string) => Promise<string>,
+    scopes = [this.scope()],
   ) {
     this.load();
-    const scope = this.scope();
     const pending = this.rows.flatMap((row, index) => {
-      if (index % 2 !== 1 || this.rows[index - 1].text !== scope) return [];
+      const scope = this.rows[index - 1]?.text;
+      if (index % 2 !== 1 || !scopes.includes(scope)) return [];
       const action = this.decode(row.text);
       return action.tool_name === "katafit_rest_request" &&
         action.recipient_id &&
         ["pending", "unknown"].includes(action.status)
-        ? [action]
+        ? [{ action, scope }]
         : [];
     });
-    for (const action of pending) {
+    for (const { action, scope } of pending) {
       try {
         const message_id = await lookup(
           action.recipient_id!,
@@ -480,10 +520,13 @@ export class Actions {
   /**
    * Admit one occurrence. The host key is minted and durably saved before the
    * caller may dispatch; reuse never mints another key or permits a new POST.
+   * `spellings` are configured spellings of the binding's origin under which
+   * older tombstones may have been digested.
    */
   admitMemberDelivery(
     binding: MemberBinding,
     intent: MemberDeliveryIntent,
+    spellings: string[] = [],
   ): { mode: "send" | "recover" | "delivered"; record: MemberDelivery } {
     if (
       !validBinding(binding) ||
@@ -517,13 +560,33 @@ export class Actions {
     const retired = next.findIndex(
       (m, i) => i % 2 === 0 && m.text === RETIRED_ROW,
     );
-    if (
-      retired >= 0 &&
-      this.decodeRetired(next[retired + 1].text).includes(
-        retiredDigest(binding, intent.occurrence_id),
+    if (retired >= 0) {
+      const ledger = this.decodeRetired(next[retired + 1].text);
+      const origin = originKey(binding.origin);
+      const aliases = new Set(
+        [
+          origin,
+          binding.origin,
+          ...spellings,
+          ...this.memberDeliveries().map((r) => r.origin),
+        ].filter((spelling) => originKey(spelling) === origin),
+      );
+      if (
+        [...aliases].some((spelling) =>
+          ledger.includes(
+            retiredDigest(binding, intent.occurrence_id, spelling),
+          ),
+        )
       )
-    )
-      throw new Error("OCCURRENCE_CONSUMED");
+        throw new Error("OCCURRENCE_CONSUMED");
+      // A v1 marker could belong to an origin spelling no longer retained in
+      // cache/live records. A missed hash is not proof of a fresh occurrence.
+      if (
+        ledger.length &&
+        JSON.parse(next[retired + 1].text).format === LEGACY_RETIRED_FORMAT
+      )
+        throw new Error("BINDING_UNAVAILABLE");
+    }
     if (this.unresolved()) throw new Error("DELIVERY_UNVERIFIED");
     const record: MemberDelivery = {
       format: "member-delivery-v2",
@@ -563,17 +626,17 @@ export class Actions {
     this.commit(next);
   }
   /**
-   * Bind unresolved legacy sends written under the CURRENT credential scope to
-   * the binding the backend just attested for that same credential. Keys,
-   * recipients and uncertainty are preserved; no occurrence is invented.
+   * Bind unresolved legacy sends written under `scopes` (default: the current
+   * credential scope) to the binding the backend attested for that same
+   * credential. Keys, recipients and uncertainty are preserved; no
+   * occurrence is invented.
    */
-  attestLegacyMemberSends(binding: MemberBinding) {
+  attestLegacyMemberSends(binding: MemberBinding, scopes = [this.scope()]) {
     if (!validBinding(binding)) unsafe();
     const next = this.load();
-    const scope = this.scope();
     let count = 0;
     for (let i = 1; i < next.length; i += 2) {
-      if (next[i - 1].text !== scope) continue;
+      if (!scopes.includes(next[i - 1].text)) continue;
       const action = this.decode(next[i].text);
       if (
         action.tool_name !== "katafit_rest_request" ||

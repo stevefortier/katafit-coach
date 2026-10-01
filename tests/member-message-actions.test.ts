@@ -394,3 +394,139 @@ test("retired ledger saturation never forgets an old occurrence or mutates stora
     await j.close();
   }
 });
+
+test("records and tombstones written under another spelling of the same origin are corroborated, never re-sent", async () => {
+  const j = await journal();
+  try {
+    const spelled = { ...binding, origin: "HTTPS://Backend.Example:443" };
+    const canonical = { ...binding, origin: "https://backend.example" };
+    const actions = new Actions(j.store);
+    for (let i = 0; i < 30; i++) {
+      const admitted = actions.admitMemberDelivery(spelled, intent("e" + i));
+      actions.settleMemberDelivery(admitted.record.idempotency_key, {
+        status: "delivered",
+        message_id: "m" + i,
+      });
+    }
+    const pending = actions.admitMemberDelivery(spelled, intent("open"));
+    const reader = new Actions(j.store);
+    // The unresolved record is recoverable under the canonical spelling.
+    assert.deepEqual(
+      reader
+        .recoverableMemberDeliveries(canonical)
+        .map((r) => r.idempotency_key),
+      [pending.record.idempotency_key],
+    );
+    assert.equal(reader.memberDeliverySummary(canonical).current_unresolved, 1);
+    reader.settleMemberDelivery(pending.record.idempotency_key, {
+      status: "delivered",
+      message_id: "m-open",
+    });
+    assert.equal(
+      reader.admitMemberDelivery(canonical, intent("e29")).mode,
+      "delivered",
+    );
+    assert.throws(
+      () => reader.admitMemberDelivery(canonical, intent("e0")),
+      /OCCURRENCE_CONSUMED/,
+    );
+    // A genuinely different origin is separate in a proven current ledger.
+    const other = { ...binding, origin: "https://other.example" };
+    const otherDelivery = reader.admitMemberDelivery(other, intent("e29"));
+    assert.equal(otherDelivery.mode, "send");
+    reader.settleMemberDelivery(otherDelivery.record.idempotency_key, {
+      status: "delivered",
+      message_id: "synthetic-other",
+    });
+    // A tombstone digested under the old spelling still matches it.
+    const file = j.dir + "/operator-actions.json";
+    const rows = JSON.parse(await readFile(file, "utf8"));
+    const old = createHash("sha256")
+      .update(
+        JSON.stringify([
+          spelled.installation_id,
+          spelled.origin,
+          spelled.account_owner_id,
+          "old-spelling",
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 32);
+    const retired = rows.findIndex(
+      (m: any, i: number) => i % 2 === 1 && JSON.parse(m.text).occurrences,
+    );
+    const value = JSON.parse(rows[retired].text);
+    value.format = "member-delivery-retired-v1";
+    value.occurrences.push(old);
+    rows[retired].text = JSON.stringify(value);
+    await writeFile(file, JSON.stringify(rows), { mode: 0o600 });
+    assert.throws(
+      () =>
+        new Actions(j.store).admitMemberDelivery(
+          canonical,
+          intent("old-spelling"),
+          [spelled.origin],
+        ),
+      /OCCURRENCE_CONSUMED/,
+    );
+  } finally {
+    await j.close();
+  }
+});
+
+test("opaque pre-canonical tombstones cannot authorize replay after their origin spelling is lost", async () => {
+  const j = await journal();
+  try {
+    const actions = new Actions(j.store);
+    for (let i = 0; i < 30; i++) {
+      const admitted = actions.admitMemberDelivery(
+        binding,
+        intent("seed-" + i),
+      );
+      actions.settleMemberDelivery(admitted.record.idempotency_key, {
+        status: "delivered",
+        message_id: "synthetic-seed-" + i,
+      });
+    }
+    const file = j.dir + "/operator-actions.json";
+    const source = JSON.parse(await readFile(file, "utf8"));
+    const rows = [];
+    for (let i = 0; i < source.length; i += 2) {
+      const value = JSON.parse(source[i + 1].text);
+      if (value.format === "member-delivery-v2") continue;
+      if (Array.isArray(value.occurrences)) {
+        // Exact raw-origin digest emitted by e61f294. This is a labeled
+        // synthetic historical journal, not a fabricated backend receipt.
+        value.format = "member-delivery-retired-v1";
+        value.occurrences = [
+          createHash("sha256")
+            .update(
+              JSON.stringify([
+                binding.installation_id,
+                "HTTPS://Backend.Example:443",
+                binding.account_owner_id,
+                "historical-event",
+              ]),
+            )
+            .digest("hex")
+            .slice(0, 32),
+        ];
+        source[i + 1].text = JSON.stringify(value);
+      }
+      rows.push(source[i], source[i + 1]);
+    }
+    await writeFile(file, JSON.stringify(rows), { mode: 0o600 });
+    const before = await readFile(file, "utf8");
+    assert.throws(
+      () =>
+        new Actions(j.store).admitMemberDelivery(
+          binding,
+          intent("historical-event"),
+        ),
+      /BINDING_UNAVAILABLE|OCCURRENCE_CONSUMED/,
+    );
+    assert.equal(await readFile(file, "utf8"), before);
+  } finally {
+    await j.close();
+  }
+});

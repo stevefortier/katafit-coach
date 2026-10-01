@@ -147,6 +147,142 @@ test("truncated, filtered, failed or malformed provider bodies never admit a sen
   }
 });
 
+test("framing and tool-call assembly that actual Pi would not execute never admit a send", async () => {
+  const args = sendArgs("Synthetic framing differential");
+  const raw = JSON.stringify(args);
+  const chunk = (delta: unknown, finish_reason: string | null = null) =>
+    `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+  const standard = sse([{ id: "selected", args }]);
+  // [name, body, content type, actual Pi executes, host admits]
+  const variants: [string, string, string, boolean, boolean][] = [
+    ["standard", standard, "text/event-stream", true, true],
+    ["extra blank line", standard + "\n", "text/event-stream", true, true],
+    [
+      "CRLF framing",
+      standard.replaceAll("\n", "\r\n"),
+      "text/event-stream",
+      true,
+      true,
+    ],
+    [
+      "thread.* event names",
+      standard.replaceAll("data:", "event: thread.message.delta\ndata:"),
+      "text/event-stream",
+      false,
+      false,
+    ],
+    // Pi executes the next two; the host fails closed on nonstandard framing.
+    [
+      "other event names",
+      standard.replaceAll("data:", "event: message\ndata:"),
+      "text/event-stream",
+      true,
+      false,
+    ],
+    [
+      "lone carriage-return framing",
+      standard.replaceAll("\n", "\r"),
+      "text/event-stream",
+      true,
+      false,
+    ],
+    [
+      "unterminated final event",
+      standard.replace(/\n\ndata: \[DONE\]\n\n$/, ""),
+      "text/event-stream",
+      false,
+      false,
+    ],
+    [
+      "index reassigned to an existing ID",
+      chunk({
+        tool_calls: [
+          {
+            index: 0,
+            id: "selected",
+            function: { name: "katafit_rest_request", arguments: "" },
+          },
+        ],
+      }) +
+        chunk({
+          tool_calls: [
+            {
+              index: 1,
+              id: "selected",
+              function: { arguments: raw.slice(0, 20) },
+            },
+          ],
+        }) +
+        chunk({
+          tool_calls: [{ index: 1, function: { arguments: raw.slice(20) } }],
+        }) +
+        chunk({}, "tool_calls") +
+        "data: [DONE]\n\n",
+      "text/event-stream",
+      false,
+      false,
+    ],
+    [
+      "unframed JSON completion",
+      JSON.stringify({
+        choices: [
+          {
+            index: 0,
+            finish_reason: "tool_calls",
+            message: {
+              tool_calls: [
+                {
+                  id: "selected",
+                  type: "function",
+                  function: { name: "katafit_rest_request", arguments: raw },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      "application/json",
+      false,
+      false,
+    ],
+  ];
+  const observed: unknown[] = [];
+  const expected: unknown[] = [];
+  for (const [name, body, type, pi, host] of variants) {
+    const h = await nativeSendHarness();
+    let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
+    try {
+      h.reply = () => ({ body, type });
+      const gateway = await h.open();
+      relay = await startRelay(gateway);
+      const ext = await loadExtension(relay);
+      const selected = await piTurn(relay, MODEL, [
+        { role: "user", content: "Synthetic differential", timestamp: 1 },
+      ]);
+      const calls = selected.content.filter((c: any) => c.type === "toolCall");
+      const piExecutes =
+        selected.stopReason === "toolUse" &&
+        calls.length === 1 &&
+        calls[0].id === "selected" &&
+        JSON.stringify(calls[0].arguments) === raw;
+      // The shipped extension dispatches the disputed call regardless.
+      await ext.tools
+        .get("katafit_rest_request")
+        .execute("selected", args)
+        .catch(() => {});
+      const posts = h.backend.posts().length;
+      observed.push([name, piExecutes, posts]);
+      expected.push([name, pi, host ? 1 : 0]);
+      // The host never admits what actual Pi did not select.
+      assert.ok(posts === 0 || piExecutes, name);
+    } finally {
+      await relay?.close();
+      await h.close();
+    }
+  }
+  assert.deepEqual(observed, expected);
+});
+
 test("duplicate concurrent dispatches of one selected slot post once", async () => {
   const h = await nativeSendHarness();
   try {

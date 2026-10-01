@@ -526,3 +526,61 @@ test("an older backend without the context contract keeps same-scope legacy rece
     await h.close();
   }
 });
+
+test("rotation during account-context acquisition cancels recovery; the new account's legacy record stays unknown", async () => {
+  const h = await nativeSendHarness({
+    "token-a": OWNER,
+    "token-b": OTHER_OWNER,
+  });
+  const original = globalThis.fetch;
+  try {
+    // Same key under both accounts (the old content-derived formula); only
+    // account A ever sent it.
+    const key = "b".repeat(64);
+    await original(h.backend.origin + `/api/coach/member-messages/${ALICE}`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + "token-a",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ text: "Same words", idempotency_key: key }),
+    });
+    await h.store.save({ ...h.store.publicConfig(), token: "token-b" });
+    new Actions(h.store).save({
+      session_id: "legacy-b",
+      tool_name: "katafit_rest_request",
+      recipient_id: ALICE,
+      idempotency_key: key,
+      status: "unknown",
+    });
+    await h.store.save({ ...h.store.publicConfig(), token: "token-a" });
+    const setup = h.backend.calls.length;
+    let rotated = false;
+    globalThis.fetch = async (...args: Parameters<typeof fetch>) => {
+      const response = await original(...args);
+      if (
+        !rotated &&
+        String(args[0]).endsWith("/api/coach/member-messages/context")
+      ) {
+        rotated = true;
+        await h.store.save({ ...h.store.publicConfig(), token: "token-b" });
+      }
+      return response;
+    };
+    await assert.rejects(h.open(), { code: "DELIVERY_CANCELLED" });
+    assert.ok(rotated);
+    const [record] = new Actions(h.store).snapshot() as any[];
+    assert.equal(record.status, "unknown");
+    assert.equal(record.message_id, undefined);
+    assert.equal(record.legacy, undefined);
+    assert.equal(new Actions(h.store).unresolved(), true);
+    const after = h.backend.calls.slice(setup);
+    assert.deepEqual(
+      after.map((c) => [c.method, c.path]),
+      [["GET", "/api/coach/member-messages/context"]],
+    );
+  } finally {
+    globalThis.fetch = original;
+    await h.close();
+  }
+});

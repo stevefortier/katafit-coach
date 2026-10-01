@@ -117,6 +117,27 @@ export class History {
       unlinkSync(path);
     }
   }
+  // The rename is durable only once the containing directory is flushed.
+  private syncDirectory() {
+    const fd = openSync(
+      resolve(this.dir),
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    let failed = false;
+    try {
+      if (!fstatSync(fd).isDirectory()) throw new Error("UNSAFE_STORAGE");
+      fsyncSync(fd);
+    } catch (e) {
+      failed = true;
+      throw e;
+    } finally {
+      try {
+        closeSync(fd);
+      } catch (e) {
+        if (!failed) throw e;
+      }
+    }
+  }
   save(messages: Message[]) {
     validate(messages);
     const data = JSON.stringify(messages);
@@ -152,6 +173,7 @@ export class History {
       const check = this.open();
       if (check !== undefined) closeSync(check);
       renameSync(tmp, this.path);
+      this.syncDirectory();
     } catch (e) {
       failed = true;
       throw e;

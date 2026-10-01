@@ -3,6 +3,8 @@ import { History } from "../chat/history.js";
 import {
   Actions,
   OCCURRENCE_PATTERN,
+  canonicalOrigin,
+  legacyScope,
   validBinding,
   type MemberBinding,
   type MemberDelivery,
@@ -215,9 +217,18 @@ export function openMemberMessages(
   store: Store,
   options: MemberMessagesOptions = {},
 ) {
-  const origin = options.origin ?? store.publicConfig().origin;
+  const configured = options.origin ?? store.publicConfig().origin;
+  // One spelling-independent namespace for transport, cache, records and
+  // tombstones; an unsupported URL stays as is and the transport rejects it.
+  const origin = canonicalOrigin(configured) ?? configured;
   const secrets = { ...(options.secrets ?? store.secrets) };
   const token = secrets.token;
+  // Legacy records are selected by the transport's own captured scope, never
+  // by what the mutable store holds later. The store saves the configured
+  // spelling minus one root slash; both spellings name this same backend.
+  const scopes = [...new Set([configured, configured.replace(/\/$/, "")])].map(
+    (spelling) => legacyScope(spelling, secrets),
+  );
   const values = () => Object.values(secrets).filter((v): v is string => !!v);
   const lifetime = options.signal ?? new AbortController().signal;
   const actions = new Actions(store, options.onDiagnostic);
@@ -381,13 +392,24 @@ export function openMemberMessages(
         throw new MemberMessageFailure("DELIVERY_CANCELLED");
       let admitted: ReturnType<Actions["admitMemberDelivery"]>;
       try {
-        admitted = actions.admitMemberDelivery(bound, {
-          occurrence_id: intent.occurrenceId,
-          recipient_id: recipient,
-          payload_sha256: createHash("sha256").update(text).digest("hex"),
-        });
+        admitted = actions.admitMemberDelivery(
+          bound,
+          {
+            occurrence_id: intent.occurrenceId,
+            recipient_id: recipient,
+            payload_sha256: createHash("sha256").update(text).digest("hex"),
+          },
+          [configured],
+        );
       } catch (error) {
         const message = (error as Error).message;
+        if (message === "BINDING_UNAVAILABLE")
+          options.onDiagnostic?.({
+            source: "studio",
+            stage: "operation-failed",
+            level: "warn",
+            ref: "MEMBER_DELIVERY_NAMESPACE_UNVERIFIED",
+          });
         if (message === "MEMBER_DELIVERY_LEDGER_FULL")
           options.onDiagnostic?.({
             source: "studio",
@@ -472,30 +494,59 @@ export function openMemberMessages(
     }
     const visible = actions
       .memberDeliveries()
-      .filter((r) => r.status !== "delivered" && r.origin === origin);
+      .filter(
+        (r) =>
+          r.status !== "delivered" &&
+          (canonicalOrigin(r.origin) ?? r.origin) === origin,
+      );
     const legacy = actions.memberDeliverySummary().legacy_unbound;
     if (!visible.length && !legacy && !cached) return summary(undefined);
     let bound: MemberBinding | undefined = cached;
     try {
       if (!readable) throw new MemberMessageFailure("BINDING_UNAVAILABLE");
       bound ??= await binding();
-    } catch {
+    } catch (error) {
+      // Cancelled or stale credentials are never "an older backend".
+      if (
+        lifetime.aborted ||
+        (error instanceof MemberMessageFailure &&
+          error.code === "DELIVERY_CANCELLED")
+      )
+        throw new MemberMessageFailure("DELIVERY_CANCELLED");
+      fence();
       // Older backend or unavailable: keep the same-scope legacy behavior.
-      await actions.reconcileMemberReceipts((recipient_id, idempotency_key) =>
-        receipt({ recipient_id, idempotency_key } as MemberDelivery, lifetime),
+      await actions.reconcileMemberReceipts(
+        async (recipient_id, idempotency_key) => {
+          const message_id = await receipt(
+            { recipient_id, idempotency_key } as MemberDelivery,
+            lifetime,
+          );
+          fence();
+          return message_id;
+        },
+        scopes,
       );
+      fence();
       return summary(undefined);
     }
-    actions.attestLegacyMemberSends(bound);
+    fence();
+    actions.attestLegacyMemberSends(bound, scopes);
     for (const record of actions.recoverableMemberDeliveries(bound)) {
+      let message_id: string;
       try {
-        const message_id = await receipt(record, lifetime);
+        message_id = await receipt(record, lifetime);
+      } catch {
+        // Denied/absent receipts or transport faults keep the fence.
+        continue;
+      }
+      fence();
+      try {
         actions.settleMemberDelivery(record.idempotency_key, {
           status: "delivered",
           message_id,
         });
       } catch {
-        // Denied/absent receipts or transport faults keep the fence.
+        /* A pending record is equally unresolved; never erase it. */
       }
     }
     return summary(bound);

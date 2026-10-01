@@ -1,6 +1,9 @@
 import { test } from "node:test";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, readFile, chmod, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { Actions } from "../src/chat/actions.js";
@@ -10,6 +13,7 @@ import { memberBackend } from "./helpers/member-backend.js";
 const OWNER = "64b7f0c2a1b2c3d4e5f60718";
 const ALICE = "64b7f0c2a1b2c3d4e5f60799";
 const BOB = "64b7f0c2a1b2c3d4e5f6079a";
+const OTHER = "64b7f0c2a1b2c3d4e5f60000";
 
 async function setup(accounts: Record<string, string> = { "token-a": OWNER }) {
   const backend = await memberBackend(accounts);
@@ -486,6 +490,291 @@ test("a saturated ledger reports a fixed diagnostic without dispatching a new PO
       before,
     );
     assert.equal(diagnostics.at(-1)?.ref, "MEMBER_DELIVERY_LEDGER_FULL");
+  } finally {
+    await s.close();
+  }
+});
+
+test("pre-captured credentials bind legacy migration and recovery to their own scope, never the rotated store", async () => {
+  for (const contextMissing of [false, true]) {
+    const s = await setup({ "token-a": OWNER, "token-b": OTHER });
+    try {
+      s.backend.state.contextMissing = contextMissing;
+      const [shared, own] = ["c".repeat(64), "d".repeat(64)];
+      for (const key of [shared, own])
+        await fetch(s.backend.origin + `/api/coach/member-messages/${ALICE}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer " + "token-a",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ text: "Same words", idempotency_key: key }),
+        });
+      const legacy = (key: string) => ({
+        session_id: "legacy",
+        tool_name: "katafit_rest_request",
+        recipient_id: ALICE,
+        idempotency_key: key,
+        status: "unknown" as const,
+      });
+      new Actions(s.store).save(legacy(own));
+      const captured = {
+        // The supported option spelling with the root slash.
+        origin: s.store.publicConfig().origin + "/",
+        secrets: { ...s.store.secrets },
+      };
+      await s.store.save({ ...s.store.publicConfig(), token: "token-b" });
+      new Actions(s.store).save(legacy(shared));
+      await openMemberMessages(s.store, captured).reconcile();
+      // Account A's view lists its own records; unresolved ones show anyway.
+      await s.store.save({ ...s.store.publicConfig(), token: "token-a" });
+      const records = new Actions(s.store).snapshot() as any[];
+      const status = (key: string) =>
+        records.find((r) => r.idempotency_key === key)?.status;
+      assert.equal(status(own), "delivered", String(contextMissing));
+      assert.equal(status(shared), "unknown", String(contextMissing));
+      assert.ok(
+        records.every((r) => r.idempotency_key !== shared || !r.legacy),
+      );
+      assert.equal(s.backend.posts().length, 2);
+      assert.ok(
+        s.backend.calls
+          .filter((c) => c.method !== "POST")
+          .every((c) => c.method === "GET" && c.auth === "Bearer token-a"),
+      );
+    } finally {
+      await s.close();
+    }
+  }
+});
+
+test("equivalent backend origin spellings share one occurrence namespace; a different origin stays isolated", async () => {
+  const s = await setup();
+  const other = await memberBackend({ "token-a": OWNER });
+  const original = globalThis.fetch;
+  // "localhost" on the default port reaches the loopback fixture.
+  globalThis.fetch = (input: any, init?: any) =>
+    original(
+      String(input).replace(/^http:\/\/localhost\//, s.backend.origin + "/"),
+      init,
+    );
+  try {
+    const intent = {
+      occurrenceId: "event:stable:slot:0",
+      recipientId: ALICE,
+      text: "Synthetic same origin event",
+    };
+    const use = (origin: string) =>
+      s.store.save({ ...s.store.publicConfig(), origin });
+    await use("http://localhost:80");
+    const first = await openMemberMessages(s.store).deliver(intent);
+    for (const spelling of ["HTTP://LocalHost", "http://LOCALHOST:80"]) {
+      await use(spelling);
+      assert.deepEqual(
+        await openMemberMessages(s.store).deliver(intent),
+        first,
+        spelling,
+      );
+    }
+    // A supported pre-captured option may carry the trailing slash.
+    assert.deepEqual(
+      await openMemberMessages(s.store, {
+        origin: "http://localhost/",
+        secrets: { ...s.store.secrets },
+      }).deliver(intent),
+      first,
+    );
+    assert.equal(s.backend.posts().length, 1);
+    assert.equal(s.backend.contexts().length, 1);
+    // A genuinely different origin is its own namespace and backend.
+    await use(other.origin);
+    await openMemberMessages(s.store).deliver(intent);
+    assert.equal(other.posts().length, 1);
+    await use("http://localhost");
+    assert.deepEqual(await openMemberMessages(s.store).deliver(intent), first);
+    assert.equal(s.backend.posts().length, 1);
+    assert.deepEqual(
+      new Actions(s.store).memberDeliveries().map((r) => r.origin),
+      ["http://localhost", other.origin],
+    );
+  } finally {
+    globalThis.fetch = original;
+    await other.close();
+    await s.close();
+  }
+});
+
+test("a failed journal directory sync closes admission before any POST", async () => {
+  const s = await setup();
+  const fsync = fs.fsyncSync;
+  const failure = Object.assign(new Error("synthetic directory sync failure"), {
+    code: "EIO",
+  });
+  try {
+    const service = openMemberMessages(s.store);
+    await service.deliver({
+      occurrenceId: "dirsync:0",
+      recipientId: ALICE,
+      text: "Durable first",
+    });
+    const trace: string[] = [];
+    s.backend.state.onPost = () => trace.push("POST");
+    Object.assign(fs, {
+      fsyncSync: (fd: number) => {
+        const directory = fs.fstatSync(fd).isDirectory();
+        trace.push(directory ? "fsync-directory" : "fsync-file");
+        if (directory) throw failure;
+        return fsync(fd);
+      },
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(
+      service.deliver({
+        occurrenceId: "dirsync:1",
+        recipientId: ALICE,
+        text: "Never posted",
+      }),
+      unverified,
+    );
+    assert.deepEqual(trace, ["fsync-file", "fsync-directory"]);
+    assert.equal(s.backend.posts().length, 1);
+  } finally {
+    Object.assign(fs, { fsyncSync: fsync });
+    syncBuiltinESMExports();
+    await s.close();
+  }
+});
+
+test("journal and binding renames are directory-synced before the first POST", async () => {
+  const s = await setup();
+  const originals = { fsyncSync: fs.fsyncSync, renameSync: fs.renameSync };
+  const trace: string[] = [];
+  try {
+    Object.assign(fs, {
+      fsyncSync: (fd: number) => {
+        if (fs.fstatSync(fd).isDirectory()) trace.push("fsync-directory");
+        return originals.fsyncSync(fd);
+      },
+      renameSync: (from: any, to: any) => {
+        trace.push("rename");
+        return originals.renameSync(from, to);
+      },
+    });
+    syncBuiltinESMExports();
+    s.backend.state.onPost = () => trace.push("POST");
+    await openMemberMessages(s.store).deliver({
+      occurrenceId: "dirsync:order",
+      recipientId: ALICE,
+      text: "Ordered",
+    });
+    const beforePost = trace.slice(0, trace.indexOf("POST"));
+    assert.ok(beforePost.length >= 6, trace.join());
+    assert.equal(
+      beforePost.join(),
+      Array(beforePost.length / 2)
+        .fill("rename,fsync-directory")
+        .join(),
+    );
+  } finally {
+    Object.assign(fs, originals);
+    syncBuiltinESMExports();
+    await s.close();
+  }
+});
+
+test("a stored origin that keeps a root slash still recovers its own legacy sends", async () => {
+  const s = await setup();
+  try {
+    await s.store.save({
+      ...s.store.publicConfig(),
+      origin: s.backend.origin + "//",
+    });
+    assert.equal(s.store.publicConfig().origin, s.backend.origin + "/");
+    const key = "e".repeat(64);
+    await fetch(s.backend.origin + `/api/coach/member-messages/${ALICE}`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + "token-a",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ text: "Old", idempotency_key: key }),
+    });
+    new Actions(s.store).save({
+      session_id: "legacy",
+      tool_name: "katafit_rest_request",
+      recipient_id: ALICE,
+      idempotency_key: key,
+      status: "unknown",
+    });
+    await openMemberMessages(s.store).reconcile();
+    const [record] = new Actions(s.store).snapshot() as any[];
+    assert.equal(record.status, "delivered");
+    assert.equal(record.legacy, true);
+    assert.equal(s.backend.posts().length, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test("lost cache and evicted rows cannot resend a pre-canonical opaque occurrence", async () => {
+  const s = await setup();
+  const intent = {
+    occurrenceId: "historical-event",
+    recipientId: ALICE,
+    text: "Same",
+  };
+  try {
+    const service = openMemberMessages(s.store);
+    const bound = await service.binding();
+    await service.deliver(intent);
+    const file = s.dir + "/operator-actions.json";
+    const source = JSON.parse(await readFile(file, "utf8"));
+    const rows = [];
+    for (let i = 0; i < source.length; i += 2) {
+      if (JSON.parse(source[i + 1].text).format === "member-delivery-v2")
+        continue;
+      rows.push(source[i], source[i + 1]);
+    }
+    // Simulate the exact pre-canonical digest after older row retention.
+    // The canonical fixture message above is real; this historical state is seeded.
+    const old = createHash("sha256")
+      .update(
+        JSON.stringify([
+          bound.installation_id,
+          s.backend.origin.replace(/^http:/, "HTTP:"),
+          bound.account_owner_id,
+          intent.occurrenceId,
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 32);
+    rows.push(
+      { role: "user", text: "member-delivery-retired-v1" },
+      {
+        role: "assistant",
+        text: JSON.stringify({
+          format: "member-delivery-retired-v1",
+          occurrences: [old],
+        }),
+      },
+    );
+    await writeFile(file, JSON.stringify(rows), { mode: 0o600 });
+    await rm(s.dir + "/member-message-binding.json");
+    const before = await readFile(file, "utf8");
+    const notices: any[] = [];
+    await assert.rejects(
+      openMemberMessages(s.store, {
+        onDiagnostic: (event) => notices.push(event),
+      }).deliver(intent),
+      { code: "BINDING_UNAVAILABLE" },
+    );
+    assert.ok(
+      notices.some(
+        (event) => event.ref === "MEMBER_DELIVERY_NAMESPACE_UNVERIFIED",
+      ),
+    );
+    assert.equal(s.backend.posts().length, 1);
+    assert.equal(await readFile(file, "utf8"), before);
   } finally {
     await s.close();
   }
