@@ -1517,7 +1517,7 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
       await page.waitForFunction(
         (day) =>
           document
-            .querySelector("#dashboardTimeline > p")
+            .querySelector(".dashboard-timeline-heading")
             ?.textContent?.includes(day) &&
           document.querySelectorAll(".dashboard-timeline-mark").length === 3,
         day,
@@ -1537,7 +1537,11 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
             top: (n as HTMLElement).style.top,
           })),
         );
-      assert.equal(new Set(geometry.map((g) => g.top)).size, 3);
+      assert.equal(new Set(geometry.map((g) => g.top)).size, 1);
+      assert.equal(
+        await page.locator(".dashboard-timeline-cluster").textContent(),
+        "3",
+      );
       assert.ok(
         Math.abs(parseFloat(geometry[0].left) - (2.5 / hours) * 100) < 0.001,
       );
@@ -1558,7 +1562,10 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
           rects[i].left >= rects[i - 1].right,
           "tick labels do not overlap",
         );
-      await page.locator('[data-event-id="point-0"]').click();
+      await page.locator(".dashboard-timeline-cluster").click();
+      await page
+        .locator('.dashboard-timeline-choice[data-event-id="point-0"]')
+        .click();
       assert.match(
         await page.locator("#dashboardMapSelection").innerText(),
         /set index: 0/,

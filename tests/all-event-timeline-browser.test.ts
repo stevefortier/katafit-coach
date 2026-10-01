@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 
-test("served timeline retains every occurrence and renders deleted/nonactivity event snapshots without live detail", async () => {
+test("served timeline retains every occurrence and preserves deleted/nonactivity snapshots independently of live detail", async () => {
   const home = await mkdtemp(tmpdir() + "/coach-events-");
   const member = "aaaaaaaaaaaaaaaaaaaaaaaa";
   // Snapshot of the backend EVENT_DETAILS catalog, plus an unknown future kind.
@@ -278,7 +278,20 @@ test("served timeline retains every occurrence and renders deleted/nonactivity e
         })),
       );
     assert.equal(new Set(geometry.map((g) => g.x)).size, 1);
-    assert.equal(new Set(geometry.map((g) => g.y)).size, kinds.length);
+    assert.equal(new Set(geometry.map((g) => g.y)).size, 1);
+    assert.equal(await page.locator(".dashboard-timeline-cluster").count(), 1);
+    const selectEvent = async (id: string) => {
+      const mark = page.locator(
+        `.dashboard-timeline-mark[data-event-id="${id}"]`,
+      );
+      if (await mark.isVisible()) await mark.click();
+      else {
+        await page.locator(".dashboard-timeline-cluster").click();
+        await page
+          .locator(`.dashboard-timeline-choice[data-event-id="${id}"]`)
+          .click();
+      }
+    };
     for (const kind of [
       "workout.set_completed",
       "meal.food_updated",
@@ -289,7 +302,7 @@ test("served timeline retains every occurrence and renders deleted/nonactivity e
       "future_event",
     ]) {
       const i = kinds.indexOf(kind);
-      await page.locator(`[data-event-id="event-${i}"]`).click();
+      await selectEvent(`event-${i}`);
       const detail = await page.locator("#dashboardMapSelection").innerText();
       assert.match(detail, /Fixture Ada/);
       assert.ok(detail.includes(kind.replace(/[._]/g, " ")));
@@ -327,7 +340,7 @@ test("served timeline retains every occurrence and renders deleted/nonactivity e
     );
     assert.equal(
       calls.filter((c) => c.startsWith("/api/friends/activity/")).length,
-      0,
+      4,
     );
     assert.equal(await page.locator("#dashboardMapSelection img").count(), 0);
     assert.match(
@@ -359,9 +372,7 @@ test("served timeline retains every occurrence and renders deleted/nonactivity e
         "meal.food_updated",
         "workout.completed",
       ]) {
-        await page
-          .locator(`[data-event-id="event-${kinds.indexOf(kind)}"]`)
-          .click();
+        await selectEvent(`event-${kinds.indexOf(kind)}`);
         await page.locator("#dashboardMapSelection").screenshot({
           path: `${evidence}/fixture-detail-${kind}-${width}.png`,
         });
@@ -374,7 +385,7 @@ test("served timeline retains every occurrence and renders deleted/nonactivity e
       await page.locator(".dashboard-timeline-mark").count(),
       kinds.length,
     );
-    await page.locator(`[data-event-id="event-0"]`).click();
+    await selectEvent("event-0");
     status = 200;
     await page.getByRole("button", { name: "Retry timeline" }).click();
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
@@ -402,7 +413,7 @@ test("served timeline retains every occurrence and renders deleted/nonactivity e
       0,
     );
     assert.match(
-      await page.locator("#dashboardTimeline").innerText(),
+      await page.locator("#dashboardTimeline > p").textContent(),
       /Complete loaded pages/,
     );
     status = 403;

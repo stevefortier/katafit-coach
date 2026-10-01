@@ -1,27 +1,33 @@
-# Dojo day activity timeline
+# Dojo day event timeline
 
-The human Studio timeline sits directly under the selected-date map, with the shared activity detail pane to its right on desktop and below on phones. It reads published activities independently of the map and Leaflet; an unavailable map does not prevent timeline selection.
+The Studio timeline sits below the selected-date map, beside the shared detail pane on desktop and above it on phones. It loads authorized events independently of Leaflet and map positions; missing GPS or an unavailable map never prevents historical event selection.
 
-## Read contract
+## Read contract and time semantics
 
-`GET /api/dashboard/timeline?date=YYYY-MM-DD&start=<UTC ISO>&end=<UTC ISO>&cursor=<opaque cursor>` uses the same authenticated admin BFF, strict date/window/cursor validation and no-store transport as the map. It proxies only `/api/friends/dojo/day-activities?start=...&end=...&limit=100&cursor=...`, preserving `{users, activities, hasMore, nextCursor}`. Activity `position` is optional and separately authorized upstream. The frontend does not invent location permission or broaden category sharing. This requires the backend day-activities endpoint; an older backend produces a visible retryable timeline failure.
+`GET /api/dashboard/timeline?date=YYYY-MM-DD&start=<UTC ISO>&end=<UTC ISO>&cursor=<opaque cursor>` uses the authenticated admin BFF, strict date/window/cursor validation and no-store transport. It proxies the backend's authorized `/api/friends/dojo/day-events` read and preserves `{users, events, hasMore, nextCursor, coverage}`. It does not broaden category sharing, reconstruct omitted event details, or infer location permission.
 
-The selected map date is browser-local. Bounds are local midnight to the next local midnight, serialized as exact UTC instants; DST dates may contain 23 or 25 elapsed hours. Each narrow point's x-coordinate is its exact `created_at` instant divided by that actual day length, not its completion time or duration. Local-time ticks include an explicit next-midnight endpoint. Names identify member, category, activity and local creation time (including seconds and timezone). No inferred duration or ledger events are shown.
+Each unique event ID is retained, including repeated changes to the same subject and unknown future kinds. The x-coordinate comes from `occurred_at`, not activity creation/completion time or inferred duration. Browser-local midnight bounds are serialized as exact UTC instants; DST days can contain 23 or 25 elapsed hours. The ruler includes next midnight. Today has a quiet Now marker and dimmed future events.
 
-Fixed functional category colors follow Kata.fit: workout red, meal green, media purple, metric blue, survey amber, and `status_change` neutral gray labeled **Status/Readiness**. The backend's existing self-only status-sharing rule remains unchanged. Map pins retain their member identity colors. The monochrome decorative audit exempts only timeline mark/swatch background color, not surrounding surfaces, text, outlines or borders.
+## One-row navigation
 
-Tied and nearby activities occupy separate non-overlapping lanes. Lane allocation uses the conservative minimum track width (640px), so resizing cannot compress targets into collisions. The whole day fits the desktop map column; phones scroll only the timeline track horizontally, not the page. Member filters apply to timeline, map and loaded feed together.
+All visible ticks and clusters share one horizontal track. Nearby pixel positions form fixed-width count pills with bounded category-color stripes; every underlying event remains individually reachable through the chooser. Clusters are anchored at a real occurrence time, never shown as activity-duration bars. Zoom and resize recalculate collisions without changing timestamps. Exact same-time events remain in a chooser at every zoom level.
 
-## Fresh selection and failures
+Category chips filter occurrences; existing member selection remains synchronized with the map and feed. Counts distinguish visible from loaded events across members. Partial paging stays visible and offers Load more; advancing cursors and page/date fences prevent stale or misleading completeness. Full day resets zoom, while zoom and horizontal pan allow dense periods to be explored without widening the page.
 
-Timeline marks and selected-date map pins use one fresh authorized ordinary activity-detail read (`{activity, owner}`). Both carry `data-activity-id`, member IDs and `aria-pressed`. A positioned timeline selection pans the matching map pin and highlights both representations. An absent/withdrawn/changed position removes a stale pin but never hides still-authorized same-day published detail; the pane explicitly reports an unavailable position.
+Hover and keyboard focus show viewport-clamped, floating historical previews without shifting the page. Click/tap on a cluster opens a bounded chooser with readable snapshot differences. Arrow keys navigate the track and chooser; Enter selects, Escape dismisses, and close restores trigger focus. Touch does not depend on hover.
 
-Fresh detail must still match identity, selected creation day and publication status (complete/completed, or ongoing within the current selected day). A moved-day or unpublished activity is invalidated. A 404 removes that activity only. A confirmed 401/403 purges its member's map, timeline, roster, feed and loaded detail even after a newer selection. A prior-date 404 cannot delete a newly authorized representation on another date. Selection/date epochs fence stale success and UI messages, independently of map availability.
+Functional colors follow Kata.fit: workouts red, meals green, media purple, metrics blue, surveys amber and readiness gray; unknown categories remain labeled and selectable. Application chrome stays monochrome. Historical DTOs do not contain activity names or avatar URLs, so those fields are not invented.
 
-429, server and network detail errors retain prior authorized marks/pins/cards and offer Retry. A failed same-date timeline refresh retains loaded points; a different date clears the old day's points immediately. Pagination follows advancing opaque cursors and rejects incomplete/unsafe display limits rather than silently claiming complete coverage.
+## Selection, authorization and failures
 
-## Evidence
+Selecting an occurrence displays its safe historical snapshot. For supported activity subjects with valid IDs, selection automatically requests the existing authorized ordinary activity detail (`{activity, owner}`), checks identity, and links the permitted map pin. Current detail enriches rather than replaces the historical snapshot. Hover never fetches live activity detail.
 
-Focused tests reuse `dashboard-map-browser.test.ts`, `rest-dashboard.test.ts`, `dashboard-contract.test.ts` and `studio-monochrome.test.ts`. New browser coverage serves the actual admin HTML/CSP and checks missing Leaflet, 320/390/1440 geometry, six categories, tied targets, exact 23/25-hour scales, next-midnight labels, filtering, detail 403/404/429, publication/day changes, member-selection races and prior-date denial fencing. Existing map coverage retains fresh pin detail, late denial, map date races and member identity colors. The independent real Mongo/Express/BFF/browser paired test is maintained separately.
+Missing/deleted current subjects retain their historical event and snapshot. Map-pin selection separately retains its creation-day/publication checks. Missing or withdrawn positions never imply live tracking. Confirmed 401/403 purges the member's timeline, previews/chooser, map, roster, feed and loaded detail, including denials arriving after a newer selection. Selection/date epochs fence stale successes; filtering clears a now-hidden selection. Transient 429/server/network failures do not become permanent member denial.
 
-Synthetic screenshots and RED/GREEN logs belong outside the checkout, under `/tmp/coach-day-timeline/`; they are fixture evidence, not live member data. The parent qualification owns the full suite, final build and independent review.
+Snapshots use safe text DOM and an explicit bounded scalar DTO-field union, not raw source documents, HTML or arbitrary media URLs.
+
+## Qualification
+
+`timeline-redesign-browser.test.ts` exercises dense mixed-category clusters, non-overlapping targets, nearby-time zoom, previews without layout shifts, keyboard/touch selection, category/member filters, related activity reads and historical 404/denial behavior. Existing catalog, unknown-kind, paging, DST, map, sticky-roster and monochrome tests remain; real Mongo/Express/BFF/browser paired tests select clustered occurrences and verify persisted IDs and snapshot fields.
+
+Synthetic screenshots and RED/GREEN logs stay outside the checkout and are labeled fixture evidence. Local candidate UI using live read-only APIs is not a deployed release. Production delivery additionally requires reviewed exact-head CI, a supported pinned upgrade, exact installed revision and served-asset readback, fresh authenticated browser verification, and resource cleanup.

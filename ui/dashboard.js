@@ -94,8 +94,11 @@ window.CoachDashboard = (() => {
   let filterMap = () => {};
   let selectionEpoch = 0;
   let timelineEpoch = 0;
+  let timelinePending = false;
+  let timelineInteraction = () => {};
   let timelineController;
   let filterTimeline = () => {};
+  let timelineResize = null;
   let linkActivity = () => {};
   let purgeMapMember = () => {};
   let removeMapActivity = () => {};
@@ -120,7 +123,13 @@ window.CoachDashboard = (() => {
     mapController?.abort();
     mapController = undefined;
     timelineEpoch++;
+    timelinePending = false;
+    timelineInteraction(false);
+    timelineInteraction = () => {};
     timelineController?.abort();
+    timelineResize?.disconnect();
+    timelineResize = null;
+    if ($("dashboardTimeline")) $("dashboardTimeline").onkeydown = null;
     selectionEpoch++;
     $("dashboardTimeline")?.replaceChildren();
     filterTimeline = () => {};
@@ -524,7 +533,13 @@ window.CoachDashboard = (() => {
         String(mark.dataset.activityId === activityId),
       );
   }
-  async function selectActivity(entry, name, adminKey, pan = false) {
+  async function selectActivity(
+    entry,
+    name,
+    adminKey,
+    pan = false,
+    historical = null,
+  ) {
     const choice = ++selectionEpoch,
       day = mapEpoch,
       loadId = epoch;
@@ -537,7 +552,16 @@ window.CoachDashboard = (() => {
     end.setDate(end.getDate() + 1);
     const selection = $("dashboardMapSelection");
     highlightActivity(entry._id);
-    selection.replaceChildren(text("p", "Checking current activity access…"));
+    if (historical)
+      for (const mark of document.querySelectorAll(".dashboard-timeline-mark"))
+        mark.setAttribute(
+          "aria-pressed",
+          String(mark.dataset.eventId === historical.id),
+        );
+    selection.replaceChildren(
+      ...(historical ? eventSnapshot(historical, name) : []),
+      text("p", "Checking current activity access…"),
+    );
     try {
       const response = await dashboardFetch(
         `/api/dashboard/activity?${new URLSearchParams({ id: entry._id })}`,
@@ -562,19 +586,25 @@ window.CoachDashboard = (() => {
       const fresh = envelope.activity,
         stamp = Date.parse(fresh.created_at);
       if (
-        !Number.isFinite(stamp) ||
-        stamp < +start ||
-        stamp >= +end ||
-        !(
-          ["complete", "completed"].includes(fresh.status) ||
-          (fresh.status === "ongoing" &&
-            Date.now() >= +start &&
-            Date.now() < +end)
-        )
+        !historical &&
+        (!Number.isFinite(stamp) ||
+          stamp < +start ||
+          stamp >= +end ||
+          !(
+            ["complete", "completed"].includes(fresh.status) ||
+            (fresh.status === "ongoing" &&
+              Date.now() >= +start &&
+              Date.now() < +end)
+          ))
       )
         throw httpError("Activity unavailable", 404);
       if (suppressedMembers.has(entry.user_id)) return;
       showDetail(envelope.activity, name);
+      if (historical)
+        selection.prepend(
+          ...eventSnapshot(historical, name),
+          text("h3", "Current authorized activity"),
+        );
       linkActivity(envelope.activity, pan);
     } catch (error) {
       if (loadId !== epoch) return;
@@ -600,6 +630,9 @@ window.CoachDashboard = (() => {
       }
       if (day !== mapEpoch || choice !== selectionEpoch) return;
       selection.replaceChildren(
+        ...(historical && !denied(error)
+          ? eventSnapshot(historical, name)
+          : []),
         text(
           "p",
           denied(error)
@@ -612,7 +645,8 @@ window.CoachDashboard = (() => {
       if (!denied(error) && error.status !== 404) {
         const retry = text("button", "Retry activity detail");
         retry.type = "button";
-        retry.onclick = () => void selectActivity(entry, name, adminKey, pan);
+        retry.onclick = () =>
+          void selectActivity(entry, name, adminKey, pan, historical);
         selection.append(retry);
       }
     }
@@ -628,7 +662,7 @@ window.CoachDashboard = (() => {
   function eventLabel(kind) {
     return typeof kind === "string" ? kind.replace(/[._]/g, " ") : "Event";
   }
-  function showEvent(item, name) {
+  function showEvent(item, name, adminKey) {
     if (suppressedMembers.has(item.user_id)) return;
     selectionEpoch++;
     highlightActivity(null);
@@ -637,6 +671,22 @@ window.CoachDashboard = (() => {
         "aria-pressed",
         String(mark.dataset.eventId === item.id),
       );
+    $("dashboardMapSelection").replaceChildren(...eventSnapshot(item, name));
+    if (
+      adminKey &&
+      Object.hasOwn(activityColors, item.subject?.type) &&
+      /^[0-9a-f]{24}$/.test(item.subject?.id || "")
+    ) {
+      void selectActivity(
+        { _id: item.subject.id, user_id: item.user_id },
+        name,
+        adminKey,
+        true,
+        item,
+      );
+    }
+  }
+  function eventSnapshot(item, name) {
     const heading = text(
       "h3",
       `${name} · ${eventLabel(item.event_type)}`,
@@ -738,7 +788,492 @@ window.CoachDashboard = (() => {
         "hint",
       ),
     );
-    $("dashboardMapSelection").replaceChildren(...rows);
+    return rows;
+  }
+  function renderEventTimeline(target, items, users, start, end, adminKey) {
+    timelineInteraction(false);
+    let renderEpoch = timelineEpoch;
+    const category = (item) => item.event_type?.split(".")[0] || "other";
+    const name = (item) => users.get(item.user_id)?.display_name || "Member";
+    const time = (item) =>
+      new Date(item.occurred_at).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZoneName: "short",
+      });
+    const label = (item) =>
+      `${name(item)} · ${eventLabel(item.event_type)} · ${time(item)}`;
+    let selectedCategory = null,
+      zoom = 1,
+      activeEvent = null,
+      inspectorOwner = null;
+    const count = text("div", "", "dashboard-timeline-count");
+    count.setAttribute("role", "status");
+    const toolbar = text("div", "", "dashboard-timeline-toolbar");
+    const filters = text("div", "", "dashboard-timeline-legend");
+    filters.setAttribute("aria-label", "Filter event category");
+    const scroll = text("div", "", "dashboard-timeline-scroll");
+    scroll.tabIndex = 0;
+    scroll.setAttribute(
+      "aria-label",
+      "Day event timeline; scroll horizontally to pan",
+    );
+    const track = text("div", "", "dashboard-timeline-track");
+    scroll.append(track);
+    const interactive = () =>
+      renderEpoch === timelineEpoch && !timelinePending && scroll.isConnected;
+    const inspector = text("div", "", "dashboard-timeline-inspector");
+    inspector.hidden = true;
+    inspector.setAttribute("aria-label", "Event inspector");
+    let dismissTimer,
+      restoringFocus = false;
+    const dismiss = () => {
+      clearTimeout(dismissTimer);
+      inspector.replaceChildren();
+      inspector.hidden = true;
+      inspectorOwner = null;
+      inspector.style.cssText = "";
+    };
+    const dismissAndRestoreFocus = () => {
+      const owner = inspectorOwner;
+      dismiss();
+      if (!interactive() || !owner?.isConnected) return;
+      restoringFocus = true;
+      try {
+        owner.focus({ preventScroll: true });
+      } finally {
+        restoringFocus = false;
+      }
+    };
+    const scheduleDismiss = () => {
+      clearTimeout(dismissTimer);
+      if (interactive() && inspector.dataset.mode === "preview")
+        dismissTimer = setTimeout(dismiss, 180);
+    };
+    inspector.onpointerenter = () => clearTimeout(dismissTimer);
+    inspector.onpointerleave = scheduleDismiss;
+    const visibleItems = () =>
+      [...items.values()]
+        .filter(
+          (item) =>
+            !suppressedMembers.has(item.user_id) &&
+            (!selectedMember || selectedMember === item.user_id) &&
+            (!selectedCategory || selectedCategory === category(item)),
+        )
+        .sort(
+          (a, b) =>
+            Date.parse(a.occurred_at) - Date.parse(b.occurred_at) ||
+            a.id.localeCompare(b.id),
+        );
+    const select = (item) => {
+      if (!interactive()) return;
+      if (!visibleItems().some((event) => event.id === item.id)) return;
+      activeEvent = item.id;
+      showEvent(item, name(item), adminKey);
+      dismissAndRestoreFocus();
+      for (const cluster of track.querySelectorAll(
+        ".dashboard-timeline-cluster",
+      ))
+        cluster.setAttribute(
+          "aria-pressed",
+          String(JSON.parse(cluster.dataset.eventIds).includes(item.id)),
+        );
+    };
+    const preview = (group, owner, choose = false) => {
+      if (!interactive() || !owner.isConnected) return;
+      dismiss();
+      inspectorOwner = owner;
+      inspector.hidden = false;
+      inspector.dataset.mode = choose ? "chooser" : "preview";
+      const close = text(
+        "button",
+        "Close inspector",
+        "dashboard-timeline-close",
+      );
+      close.type = "button";
+      close.onclick = dismissAndRestoreFocus;
+      inspector.append(close);
+      if (group.length === 1) {
+        const rows = eventSnapshot(group[0], name(group[0]));
+        inspector.append(rows[0], rows[1], rows[2], ...rows.slice(4, -1));
+        const pick = text(
+          "button",
+          "Select event",
+          "dashboard-timeline-choice",
+        );
+        pick.type = "button";
+        pick.dataset.eventId = group[0].id;
+        pick.onclick = () => select(group[0]);
+        inspector.append(pick);
+      } else {
+        inspector.append(
+          text(
+            "h3",
+            `${group.length} events · ${time(group[0])}${group.at(-1).occurred_at !== group[0].occurred_at ? ` – ${time(group.at(-1))}` : ""}`,
+          ),
+        );
+        inspector.append(
+          text(
+            "p",
+            "Separate occurrences at their recorded times. Choose an event; zoom can separate nearby times.",
+            "hint",
+          ),
+        );
+        for (const item of group) {
+          const choice = text(
+            "button",
+            label(item),
+            "dashboard-timeline-choice",
+          );
+          choice.type = "button";
+          choice.dataset.eventId = item.id;
+          choice.style.borderLeftColor =
+            activityColors[category(item)] || "#6b7280";
+          const snapshot = eventSnapshot(item, name(item));
+          const detail = text(
+            "span",
+            [
+              snapshot[2].textContent,
+              ...snapshot.slice(4, -1).map((row) => row.textContent),
+            ].join(" · "),
+            "dashboard-timeline-choice-snapshot",
+          );
+          choice.append(detail);
+          choice.onclick = () => select(item);
+          inspector.append(choice);
+        }
+      }
+      inspector.scrollTop = 0;
+      if (!choose) {
+        const rect = owner.getBoundingClientRect();
+        inspector.style.width = `${Math.min(380, innerWidth - 24)}px`;
+        inspector.style.maxHeight = `${Math.min(300, innerHeight - 24)}px`;
+        const card = inspector.getBoundingClientRect();
+        inspector.style.left = `${Math.max(12, Math.min(innerWidth - card.width - 12, rect.left + rect.width / 2 - card.width / 2))}px`;
+        inspector.style.top = `${Math.max(12, Math.min(innerHeight - card.height - 12, rect.bottom + 10 + card.height <= innerHeight - 12 ? rect.bottom + 10 : rect.top - card.height - 10))}px`;
+      }
+      if (choose)
+        inspector
+          .querySelector(".dashboard-timeline-choice")
+          ?.focus({ preventScroll: true });
+    };
+    const draw = () => {
+      dismiss();
+      for (const [id, item] of items)
+        if (suppressedMembers.has(item.user_id)) items.delete(id);
+      const events = visibleItems();
+      const selected = $("dashboardMapSelection").querySelector(
+        ".dashboard-event-detail",
+      );
+      if (
+        (activeEvent && !events.some((item) => item.id === activeEvent)) ||
+        (selected &&
+          (suppressedMembers.has(selected.dataset.memberId) ||
+            (selectedMember && selectedMember !== selected.dataset.memberId)))
+      ) {
+        selectionEpoch++;
+        activeEvent = null;
+        $("dashboardMapSelection").replaceChildren();
+      }
+      count.textContent = `${events.length} visible · ${items.size} loaded events across all members`;
+      for (const chip of filters.children)
+        chip.setAttribute(
+          "aria-pressed",
+          String((chip.dataset.category || null) === selectedCategory),
+        );
+      track.replaceChildren();
+      const width = Math.max(160, scroll.clientWidth - 32) * zoom;
+      track.style.width = `${width}px`;
+      const fraction = (stamp) => (stamp - +start) / (+end - +start);
+      const now = Date.now();
+      if (now >= +start && now < +end) {
+        const future = text("div", "", "dashboard-timeline-future");
+        future.style.left = `${fraction(now) * 100}%`;
+        track.append(future);
+        const marker = text("span", "Now", "dashboard-timeline-now");
+        marker.style.left = `${fraction(now) * 100}%`;
+        marker.setAttribute(
+          "aria-label",
+          `Now ${new Date(now).toLocaleTimeString()}`,
+        );
+        track.append(marker);
+      }
+      const groups = [];
+      for (const item of events) {
+        const x = fraction(Date.parse(item.occurred_at)) * width;
+        const last = groups.at(-1);
+        // Bound each cluster around its first recorded timestamp, not an invented duration.
+        if (last && x - last.x < 48) last.items.push(item);
+        else groups.push({ x, items: [item] });
+      }
+      const singles = new Set(
+        groups
+          .filter((group) => group.items.length === 1)
+          .map((group) => group.items[0].id),
+      );
+      // Keep one unique, inspectable occurrence node for every loaded authorized event.
+      for (const item of items.values()) {
+        const mark = text("button", "", "dashboard-timeline-mark");
+        mark.type = "button";
+        mark.dataset.eventId = item.id;
+        mark.dataset.memberId = item.user_id;
+        mark.dataset.eventType = item.event_type;
+        mark.style.left = `${fraction(Date.parse(item.occurred_at)) * 100}%`;
+        mark.style.top = "34px";
+        mark.style.backgroundColor =
+          activityColors[category(item)] || "#6b7280";
+        mark.setAttribute("aria-label", label(item));
+        mark.setAttribute("aria-pressed", String(activeEvent === item.id));
+        mark.classList.toggle(
+          "dashboard-timeline-future-event",
+          now >= +start && now < +end && Date.parse(item.occurred_at) > now,
+        );
+        mark.hidden = !singles.has(item.id);
+        mark.onpointerenter = (event) => {
+          if (event.pointerType !== "touch") preview([item], mark);
+        };
+        mark.onpointerleave = scheduleDismiss;
+        mark.onfocus = () => {
+          if (!restoringFocus) preview([item], mark);
+        };
+        mark.onclick = (event) => {
+          if (event.pointerType === "touch") preview([item], mark, true);
+          else select(item);
+        };
+        track.append(mark);
+      }
+      for (const group of groups.filter((group) => group.items.length > 1)) {
+        const cluster = text(
+          "button",
+          String(group.items.length),
+          "dashboard-timeline-cluster",
+        );
+        cluster.type = "button";
+        cluster.classList.toggle(
+          "dashboard-timeline-future-event",
+          now >= +start &&
+            now < +end &&
+            group.items.every((item) => Date.parse(item.occurred_at) > now),
+        );
+        cluster.dataset.eventIds = JSON.stringify(
+          group.items.map((item) => item.id),
+        );
+        cluster.style.left = `${(group.x / width) * 100}%`;
+        cluster.style.top = "34px";
+        cluster.setAttribute(
+          "aria-label",
+          `${group.items.length} events at ${time(group.items[0])}; choose an occurrence`,
+        );
+        cluster.setAttribute(
+          "aria-pressed",
+          String(group.items.some((item) => item.id === activeEvent)),
+        );
+        cluster.onpointerenter = (event) => {
+          if (event.pointerType !== "touch") preview(group.items, cluster);
+        };
+        cluster.onpointerleave = scheduleDismiss;
+        cluster.onfocus = () => {
+          if (!restoringFocus) preview(group.items, cluster);
+        };
+        cluster.onclick = () => preview(group.items, cluster, true);
+        const swatches = text("span", "", "dashboard-timeline-cluster-colors");
+        for (const type of [...new Set(group.items.map(category))].slice(
+          0,
+          4,
+        )) {
+          const swatch = text("i", "", "dashboard-timeline-swatch");
+          swatch.style.backgroundColor = activityColors[type] || "#6b7280";
+          swatch.setAttribute("aria-hidden", "true");
+          swatches.append(swatch);
+        }
+        cluster.append(swatches);
+        track.append(cluster);
+      }
+      const step =
+        Math.max(
+          1,
+          Math.ceil(
+            (+end - +start) / 3600000 / Math.max(1, Math.floor(width / 64)),
+          ),
+        ) * 3600000;
+      const ticks = [];
+      for (let tick = +start; tick < +end; tick += step) {
+        if (tick === +start || ((+end - tick) / (+end - +start)) * width >= 52)
+          ticks.push(tick);
+      }
+      ticks.push(+end);
+      for (const tick of ticks) {
+        const tickLabel = text(
+          "span",
+          new Date(tick).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }),
+          "dashboard-timeline-tick",
+        );
+        tickLabel.style.left = `${fraction(tick) * 100}%`;
+        tickLabel.setAttribute(
+          "aria-label",
+          `${tick === +end ? "Next midnight" : "Local time"} ${new Date(tick).toLocaleString([], { timeZoneName: "short" })}`,
+        );
+        if (tick === +start)
+          tickLabel.classList.add("dashboard-timeline-start");
+        if (tick === +end) tickLabel.classList.add("dashboard-timeline-end");
+        track.append(tickLabel);
+      }
+      toolbar.querySelector(".dashboard-timeline-zoom-label").textContent =
+        zoom === 1 ? "Full day" : `${zoom}× zoom`;
+      toolbar.querySelector('[data-action="Zoom in"]').disabled = zoom === 128;
+      toolbar.querySelector('[data-action="Zoom out"]').disabled = zoom === 1;
+    };
+    for (const type of [null, ...new Set([...items.values()].map(category))]) {
+      const chip = text(
+        "button",
+        type
+          ? type === "status_change"
+            ? "Readiness"
+            : eventLabel(type)
+          : "All events",
+      );
+      chip.type = "button";
+      chip.dataset.category = type || "";
+      if (type) {
+        const swatch = text("i", "", "dashboard-timeline-swatch");
+        swatch.style.backgroundColor = activityColors[type] || "#6b7280";
+        swatch.setAttribute("aria-hidden", "true");
+        chip.prepend(swatch);
+      }
+      chip.onclick = () => {
+        if (!interactive()) return;
+        selectedCategory = type;
+        draw();
+      };
+      filters.append(chip);
+    }
+    for (const action of [
+      "Pan earlier",
+      "Zoom out",
+      "Zoom in",
+      "Full day",
+      "Pan later",
+    ]) {
+      const button = text(
+        "button",
+        {
+          "Pan earlier": "←",
+          "Zoom out": "−",
+          "Zoom in": "+",
+          "Pan later": "→",
+        }[action] || action,
+      );
+      button.type = "button";
+      button.dataset.action = action;
+      button.setAttribute("aria-label", action);
+      button.onclick = () => {
+        if (!interactive()) return;
+        if (action.startsWith("Pan")) {
+          scroll.scrollBy({
+            left:
+              (action === "Pan earlier" ? -1 : 1) * scroll.clientWidth * 0.75,
+          });
+          return;
+        }
+        const oldZoom = zoom,
+          center =
+            (scroll.scrollLeft + scroll.clientWidth / 2) / track.offsetWidth;
+        zoom =
+          action === "Full day"
+            ? 1
+            : action === "Zoom in"
+              ? Math.min(128, zoom * 2)
+              : Math.max(1, zoom / 2);
+        if (oldZoom !== zoom) {
+          draw();
+          scroll.scrollLeft =
+            zoom === 1
+              ? 0
+              : center * track.offsetWidth - scroll.clientWidth / 2;
+        }
+      };
+      toolbar.append(button);
+    }
+    toolbar.append(text("span", "", "dashboard-timeline-zoom-label"));
+    target.append(count, filters, toolbar, scroll, inspector);
+    target.onkeydown = (event) => {
+      if (!interactive()) return;
+      if (
+        (event.key === "ArrowRight" || event.key === "ArrowLeft") &&
+        event.target.closest(".dashboard-timeline-choice")
+      ) {
+        const choices = [
+          ...inspector.querySelectorAll(".dashboard-timeline-choice"),
+        ];
+        const index = choices.indexOf(
+          event.target.closest(".dashboard-timeline-choice"),
+        );
+        choices[
+          Math.max(
+            0,
+            Math.min(
+              choices.length - 1,
+              index + (event.key === "ArrowRight" ? 1 : -1),
+            ),
+          )
+        ]?.focus();
+        event.preventDefault();
+        return;
+      }
+      if (event.key === "Escape") {
+        dismissAndRestoreFocus();
+        event.preventDefault();
+      } else if (
+        (event.key === "ArrowRight" || event.key === "ArrowLeft") &&
+        !event.target.closest(
+          ".dashboard-timeline-toolbar, .dashboard-timeline-legend",
+        )
+      ) {
+        const buttons = [
+          ...track.querySelectorAll("button:not([hidden])"),
+        ].sort((a, b) => parseFloat(a.style.left) - parseFloat(b.style.left));
+        const index = buttons.indexOf(document.activeElement);
+        const next =
+          index < 0
+            ? event.key === "ArrowRight"
+              ? 0
+              : buttons.length - 1
+            : Math.max(
+                0,
+                Math.min(
+                  buttons.length - 1,
+                  index + (event.key === "ArrowRight" ? 1 : -1),
+                ),
+              );
+        buttons[next]?.focus({ preventScroll: true });
+        buttons[next]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        event.preventDefault();
+      }
+    };
+    filterTimeline = draw;
+    draw();
+    // Recompute collision distances after viewport changes, with no leaked observers.
+    timelineResize?.disconnect();
+    timelineResize = new ResizeObserver(() => {
+      if (scroll.isConnected) draw();
+    });
+    timelineResize.observe(scroll);
+    timelineInteraction = (enabled) => {
+      dismiss();
+      for (const region of [scroll, filters, toolbar]) region.inert = !enabled;
+      if (enabled && scroll.isConnected) {
+        // A transient read failure deliberately restores this retained
+        // inventory's interaction epoch, never an obsolete async completion.
+        renderEpoch = timelineEpoch;
+        draw();
+        timelineResize.observe(scroll);
+      }
+    };
   }
   async function loadTimeline(adminKey, resume = null) {
     const target = $("dashboardTimeline");
@@ -746,42 +1281,33 @@ window.CoachDashboard = (() => {
     selectionEpoch++;
     $("dashboardMapSelection").replaceChildren();
     const id = ++timelineEpoch;
+    timelinePending = true;
+    timelineInteraction(false);
     timelineController?.abort();
     timelineController = new AbortController();
     const signal = timelineController.signal,
       date = $("dashboardMapDate").value;
     const live = () => id === timelineEpoch && !signal.aborted;
-    if (target.dataset.date !== date) target.replaceChildren();
+    if (target.dataset.date !== date) {
+      target.replaceChildren();
+      timelineInteraction = () => {};
+      filterTimeline = () => {};
+    }
     target.dataset.date = date;
     for (const old of target.querySelectorAll(":scope > p, :scope > button"))
       old.remove();
-    filterTimeline = () => {
-      const selectedEvent = $("dashboardMapSelection").querySelector(
-        ".dashboard-event-detail",
-      );
-      if (
-        selectedEvent &&
-        suppressedMembers.has(selectedEvent.dataset.memberId)
-      ) {
-        selectionEpoch++;
-        $("dashboardMapSelection").replaceChildren();
-      }
-      for (const mark of target.querySelectorAll(".dashboard-timeline-mark")) {
-        if (suppressedMembers.has(mark.dataset.memberId)) mark.remove();
-        else
-          mark.hidden =
-            !!selectedMember && selectedMember !== mark.dataset.memberId;
-      }
-      const count = target.querySelector(".dashboard-timeline-count");
-      if (count) {
-        const marks = [...target.querySelectorAll(".dashboard-timeline-mark")];
-        count.textContent = `${marks.filter((mark) => !mark.hidden).length} visible · ${marks.length} loaded events across all members`;
-      }
-    };
+    timelineResize?.disconnect();
+    for (const inspector of target.querySelectorAll(
+      ".dashboard-timeline-inspector",
+    )) {
+      inspector.replaceChildren();
+      inspector.hidden = true;
+    }
     const status = text("p", "Loading authorized day events…", "hint");
     status.setAttribute("role", "status");
     target.append(status);
     if (!validDay(date)) {
+      timelinePending = false;
       status.textContent = "Choose a valid event date.";
       return;
     }
@@ -792,8 +1318,8 @@ window.CoachDashboard = (() => {
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
     try {
-      const users = resume?.users || new Map(),
-        items = resume?.items || new Map();
+      const users = new Map(resume?.users),
+        items = new Map(resume?.items);
       let cursor = resume?.cursor,
         coverage = resume?.coverage,
         pages = 0;
@@ -852,86 +1378,25 @@ window.CoachDashboard = (() => {
         if (cursor) seenCursors.add(cursor);
       } while (cursor && pages < 10);
       if (!live()) return;
-      status.textContent = `All authorized event types · ${date} · device timezone · occurrence times, not activity duration. ${cursor ? "More events available; partial day. Load more to continue." : "Complete loaded pages."} Historical aggregate events may not contain individual sets/items; no reconstruction is inferred.`;
-      const legend = text("div", "", "dashboard-timeline-legend");
-      legend.setAttribute("aria-label", "Activity type colors");
-      for (const [type, color] of Object.entries(activityColors)) {
-        const label = text(
-          "span",
-          type === "status_change" ? "Status/Readiness" : type,
-        );
-        const swatch = text("i", "", "dashboard-timeline-swatch");
-        swatch.style.backgroundColor = color;
-        swatch.setAttribute("aria-hidden", "true");
-        label.append(swatch);
-        legend.append(label);
-      }
-      const scroll = text("div", "", "dashboard-timeline-scroll");
-      scroll.tabIndex = 0;
-      scroll.setAttribute("aria-label", "Scrollable day activity timeline");
-      const track = text("div", "", "dashboard-timeline-track");
-      scroll.append(track);
-      const lanes = [];
-      for (const item of [...items.values()].sort(
-        (a, b) =>
-          Date.parse(a.occurred_at) - Date.parse(b.occurred_at) ||
-          a.id.localeCompare(b.id),
-      )) {
-        if (suppressedMembers.has(item.user_id)) continue;
-        const fraction =
-            (Date.parse(item.occurred_at) - +start) / (+end - +start),
-          x = fraction * 640;
-        let lane = lanes.findIndex((last) => x - last >= 24);
-        if (lane < 0) lane = lanes.length;
-        lanes[lane] = x;
-        const name = users.get(item.user_id)?.display_name || "Member";
-        const mark = text("button", "", "dashboard-timeline-mark");
-        mark.type = "button";
-        mark.dataset.eventId = item.id;
-        mark.dataset.memberId = item.user_id;
-        mark.dataset.eventType = item.event_type;
-        mark.style.left = `${fraction * 100}%`;
-        mark.style.top = `${lane * 26}px`;
-        mark.style.backgroundColor =
-          activityColors[item.event_type?.split(".")[0]] || "#6b7280";
-        mark.setAttribute(
-          "aria-label",
-          `${name} · ${eventLabel(item.event_type)} · ${new Date(item.occurred_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" })}`,
-        );
-        mark.title = mark.getAttribute("aria-label");
-        mark.setAttribute("aria-pressed", "false");
-        mark.onclick = () => showEvent(item, name);
-        track.append(mark);
-      }
-      const height = Math.max(30, lanes.length * 26);
-      track.style.height = `${height + 28}px`;
-      const ticks = [];
-      for (let tick = +start; tick <= +end - 2 * 3600000; tick += 2 * 3600000)
-        ticks.push(tick);
-      ticks.push(+end);
-      for (const tick of ticks) {
-        const label = text(
-          "span",
-          new Date(tick).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false,
-          }),
-          "dashboard-timeline-tick",
-        );
-        label.setAttribute(
-          "aria-label",
-          `${tick === +end ? "Next midnight" : "Local time"} ${new Date(tick).toLocaleString([], { timeZoneName: "short" })}`,
-        );
-        if (tick === +start) label.classList.add("dashboard-timeline-start");
-        if (tick === +end) label.classList.add("dashboard-timeline-end");
-        label.style.left = `${((tick - +start) / (+end - +start)) * 100}%`;
-        label.style.top = `${height}px`;
-        track.append(label);
-      }
-      const count = text("div", "", "dashboard-timeline-count");
-      count.setAttribute("role", "status");
-      target.replaceChildren(status, count, legend, scroll);
+      timelinePending = false;
+      status.textContent = cursor
+        ? "More events available; partial day. Load more to continue."
+        : "Complete loaded pages.";
+      const info = text("details", "", "dashboard-timeline-info");
+      info.append(
+        text("summary", "About this timeline"),
+        text(
+          "p",
+          `All authorized event types · ${date} · device timezone. Occurrence times, not activity duration. Historical aggregate events may not contain individual sets/items; no reconstruction is inferred. Use arrows to navigate, Enter to select, Escape to dismiss. Tap a cluster to choose an event.`,
+        ),
+      );
+      status.hidden = !cursor;
+      target.replaceChildren(
+        text("h3", `Day timeline · ${date}`, "dashboard-timeline-heading"),
+        status,
+      );
+      renderEventTimeline(target, items, users, start, end, adminKey);
+      target.append(info);
       if (cursor) {
         const more = text("button", "Load more events");
         more.type = "button";
@@ -953,14 +1418,18 @@ window.CoachDashboard = (() => {
       filterTimeline();
     } catch (error) {
       if (!live()) return;
+      timelinePending = false;
       if (denied(error)) {
         $("dashboardMapSelection").replaceChildren();
         selectionEpoch++;
-        for (const mark of target.querySelectorAll(".dashboard-timeline-mark"))
-          mark.remove();
-        filterTimeline();
+        filterTimeline = () => {};
+        timelineResize?.disconnect();
+        target.replaceChildren(status);
+        timelineInteraction = () => {};
+      } else {
+        timelineInteraction(true);
       }
-      status.textContent = `Timeline unavailable${error.status ? ` (${error.status})` : ""}; try again.`;
+      status.textContent = `Timeline unavailable${error.status ? ` (${error.status})` : ""}; try again.${!denied(error) && target.querySelector(".dashboard-timeline-track") ? " Retained events are stale; authorization could not be refreshed." : ""}`;
       const retry = text("button", "Retry timeline");
       retry.type = "button";
       retry.onclick = () => void loadTimeline(adminKey);

@@ -307,9 +307,36 @@ test(
                 r.event_type === "meal.deleted",
             ),
           ]) {
-            await page
-              .locator(`.dashboard-timeline-mark[data-event-id="${row._id}"]`)
-              .click();
+            const mark = page.locator(
+              `.dashboard-timeline-mark[data-event-id="${row._id}"]`,
+            );
+            if (await mark.isVisible()) await mark.click();
+            else {
+              const clusterIndex = await page
+                .locator(".dashboard-timeline-cluster")
+                .evaluateAll(
+                  (nodes, id) =>
+                    nodes.findIndex((node) =>
+                      JSON.parse(
+                        (node as HTMLElement).dataset.eventIds!,
+                      ).includes(id),
+                    ),
+                  String(row._id),
+                );
+              assert.ok(
+                clusterIndex >= 0,
+                "every persisted event belongs to an accessible collision cluster",
+              );
+              await page
+                .locator(".dashboard-timeline-cluster")
+                .nth(clusterIndex)
+                .click();
+              await page
+                .locator(
+                  `.dashboard-timeline-choice[data-event-id="${row._id}"]`,
+                )
+                .click();
+            }
             const detailText = await page
               .locator("#dashboardMapSelection")
               .innerText();

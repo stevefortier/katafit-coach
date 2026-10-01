@@ -199,8 +199,36 @@ test(
               document.querySelectorAll(".dashboard-timeline-mark").length ===
               4,
           );
-          const mark = page.locator(`[data-event-id="${events[1]._id}"]`);
-          await mark.click();
+          const mark = page.locator(
+            `.dashboard-timeline-mark[data-event-id="${events[1]._id}"]`,
+          );
+          const selectEvent = async () => {
+            if (await mark.isVisible()) await mark.click();
+            else {
+              const clusterIndex = await page
+                .locator(".dashboard-timeline-cluster")
+                .evaluateAll(
+                  (nodes, id) =>
+                    nodes.findIndex((node) =>
+                      JSON.parse(
+                        (node as HTMLElement).dataset.eventIds!,
+                      ).includes(id),
+                    ),
+                  String(events[1]._id),
+                );
+              assert.ok(clusterIndex >= 0);
+              await page
+                .locator(".dashboard-timeline-cluster")
+                .nth(clusterIndex)
+                .click();
+              await page
+                .locator(
+                  `.dashboard-timeline-choice[data-event-id="${events[1]._id}"]`,
+                )
+                .click();
+            }
+          };
+          await selectEvent();
           assert.match(
             await page.locator("#dashboardMapSelection").innerText(),
             /meal created/,
@@ -216,7 +244,7 @@ test(
           await pin.click();
           await page.getByText("Synthetic workout", { exact: true }).waitFor();
           assert.equal(await pin.getAttribute("aria-pressed"), "true");
-          await mark.click();
+          await selectEvent();
           assert.equal(await mark.getAttribute("aria-pressed"), "true");
           assert.equal(
             await page.evaluate(
