@@ -43,7 +43,7 @@ export class History {
   private path: string;
   constructor(
     private dir: string,
-    private filename: "operator-actions.json",
+    private filename: "operator-actions.json" | "member-message-binding.json",
   ) {
     this.path = resolve(dir, filename);
   }

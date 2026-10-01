@@ -156,6 +156,10 @@ export const hints = {
     "Enter a nonempty sample question of at most 8000 characters.",
   REQUEST_FAILED:
     "The operation failed. Check local configuration and connectivity; raw errors are intentionally withheld.",
+  MEMBER_DELIVERY_LEDGER_FULL:
+    "The bounded member-message ledger is full. This new message was not sent. Old delivery markers are preserved; use a supported ledger migration rather than deleting storage or retrying with changed identifiers.",
+  MEMBER_DELIVERY_RECOVERY_LIMITED:
+    "A member message delivery is unverified and cannot be recovered with the current Kata.fit account, origin or credential lineage (for example an older client's send after a token change, or another account). It stays fenced and is never resent; new member messages and changes remain blocked until its original account verifies the receipt.",
 } as const;
 export type ErrorCode = keyof typeof hints;
 export function numericMetadata(input: Record<string, unknown> = {}) {
@@ -186,6 +190,8 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     "outputTokenLimit",
     "skillRevision",
     "enabledSkills",
+    "unresolved",
+    "legacyUnbound",
   ])
     if (
       typeof input[key] === "number" &&

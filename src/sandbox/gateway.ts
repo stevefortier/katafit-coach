@@ -11,6 +11,12 @@ import {
 } from "../katafit/restGet.js";
 import { restSession } from "../katafit/restSession.js";
 import {
+  MemberMessageFailure,
+  classifyMemberMessageRequest,
+  openMemberMessages,
+} from "../katafit/memberMessages.js";
+import { NativeSelections } from "./selections.js";
+import {
   PROVIDER_TEXT_LIMIT,
   canonicalImages,
   compactImages,
@@ -185,30 +191,19 @@ export async function openNativeGateway(
     object,
     Parameters<Actions["save"]>[0]
   >();
-  // A POST may have committed before this process died. Reconcile its exact
-  // recorded recipient/key with a read-only REST request, never a second POST.
-  await actions.reconcileMemberReceipts(async (recipient, key) => {
-    const receipt = await restRequest(
-      config.origin,
-      secrets.token,
-      {
-        method: "GET",
-        path: `/api/coach/member-messages/${recipient}/receipts/${key}`,
-      },
-      lifetime,
-      Object.values(secrets),
-    );
-    const value = JSON.parse(receipt.content?.[0]?.text ?? "null");
-    if (
-      value?.status !== "delivered" ||
-      value?.recipient_id !== recipient ||
-      value?.idempotency_key !== key ||
-      typeof value?.message_id !== "string" ||
-      !value.message_id
-    )
-      throw new Error("REST_RECEIPT_UNVERIFIED");
-    return value.message_id;
+  // Shared member delivery for this exact credential/origin. A POST may have
+  // committed before this process died: recover recorded sends of the same
+  // backend account by read-only receipt, never by a second POST.
+  const messages = openMemberMessages(store, {
+    signal: lifetime,
+    current,
+    onDiagnostic: hooks.onDiagnostic,
+    origin: config.origin,
+    secrets,
   });
+  await messages.reconcile();
+  // Runtime-only provider-selected tool-call slots; no transcript retained.
+  const selections = new NativeSelections();
 
   // Native Pi never opens an Operator MCP session; worker MCP remains separate.
   const session = restSession(current);
@@ -223,6 +218,7 @@ export async function openNativeGateway(
     abort.abort();
     receipts.clear();
     attachments.clear();
+    selections.retire();
     return (disposal ??= session.dispose());
   };
   // Continuity failures invalidate this gateway and ask the owner to destroy
@@ -714,6 +710,63 @@ export async function openNativeGateway(
       return new NativeFailure("NATIVE_SESSION_EXPIRED", message);
     return new NativeFailure("NATIVE_AUTHORIZATION_FAILED", message);
   }
+  /**
+   * Native adapter of the shared member delivery service. Only an exact,
+   * unambiguous provider-selected call is a delivery occurrence; its
+   * retransmission reuses that occurrence (recorded result or receipt read).
+   */
+  async function memberSend(
+    request: any,
+    recipient: string,
+    requestSignal?: AbortSignal,
+  ) {
+    const body = request.args.body;
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).join() !== "text" ||
+      typeof body.text !== "string"
+    )
+      throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+    const occurrence = selections.bind(
+      request.toolCallId,
+      request.name,
+      request.args,
+    );
+    if (!occurrence) throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+    let delivered;
+    try {
+      delivered = await messages.deliver(
+        { occurrenceId: occurrence, recipientId: recipient, text: body.text },
+        requestSignal,
+      );
+    } catch (error) {
+      check();
+      const code =
+        error instanceof MemberMessageFailure ? error.code : "UNVERIFIED";
+      if (code === "DELIVERY_CANCELLED") throw new Error("NATIVE_CANCELLED");
+      if (["DELIVERY_REJECTED", "OCCURRENCE_CONFLICT"].includes(code))
+        throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+      if (code === "BINDING_UNAVAILABLE")
+        throw new NativeFailure("NATIVE_TOOL_FAILED", code);
+      throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
+    }
+    check();
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            status: delivered.status,
+            recipient_id: delivered.recipient_id,
+            message_id: delivered.message_id,
+            note: "Appended to the member's canonical Coach chat. This does not confirm they saw it.",
+          }),
+        },
+      ],
+    };
+  }
   async function dispatch(
     request: any,
     requestSignal?: AbortSignal,
@@ -723,70 +776,20 @@ export async function openNativeGateway(
       if (request.name === restRequestTool.name && secrets.token) {
         const args = restRequestArgs(request.args);
         assertNoSecrets(request.args, Object.values(secrets));
-        const mutation = args.method !== "GET";
-        const send =
-          mutation &&
-          args.method === "POST" &&
-          /^\/api\/coach\/member-messages\/[^/?]+$/.test(args.path);
-        const recipient = send
-          ? decodeURIComponent(
-              args.path.slice("/api/coach/member-messages/".length),
-            )
-          : "";
-        if (
-          send &&
-          (!request.args.body ||
-            typeof request.args.body !== "object" ||
-            Array.isArray(request.args.body) ||
-            Object.keys(request.args.body).join() !== "text" ||
-            typeof request.args.body.text !== "string" ||
-            !request.args.body.text.trim())
-        )
+        const target = classifyMemberMessageRequest(args.method, args.path);
+        if (target.kind === "reject")
           throw new NativeFailure("NATIVE_REQUEST_REJECTED");
-        const key = send
-          ? createHash("sha256")
-              .update(
-                JSON.stringify([
-                  "member-message-v1",
-                  recipient.toLowerCase(),
-                  request.args.body.text.trim(),
-                ]),
-              )
-              .digest("hex")
-          : randomUUID();
+        if (target.kind === "send")
+          return memberSend(request, target.recipient, requestSignal);
+        const mutation = args.method !== "GET";
         const pending = {
           session_id: session.session_id,
-          idempotency_key: key,
+          idempotency_key: randomUUID(),
           tool_name: restRequestTool.name,
-          ...(send ? { recipient_id: recipient } : {}),
           status: "pending" as const,
         };
-        const receiptPath = `${args.path}/receipts/${key}`;
-        const lookup = async () => {
-          const receipt = await restRequest(
-            config.origin,
-            secrets.token,
-            { method: "GET", path: receiptPath },
-            lifetime,
-            Object.values(secrets),
-          );
-          const value = JSON.parse(receipt.content?.[0]?.text ?? "null");
-          if (
-            value.status !== "delivered" ||
-            value.recipient_id !== recipient ||
-            value.idempotency_key !== key ||
-            typeof value.message_id !== "string" ||
-            !value.message_id
-          )
-            throw new Error("REST_RECEIPT_UNVERIFIED");
-          return value;
-        };
         if (mutation) {
-          if (
-            actions
-              .snapshot()
-              .some((a) => ["pending", "unknown"].includes(a.status))
-          )
+          if (actions.unresolved())
             throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
           actions.save(pending);
         }
@@ -795,45 +798,16 @@ export async function openNativeGateway(
           result = await restRequest(
             config.origin,
             secrets.token,
-            send
-              ? {
-                  ...request.args,
-                  body: { text: request.args.body.text, idempotency_key: key },
-                }
-              : request.args,
+            request.args,
             requestSignal
               ? AbortSignal.any([lifetime, requestSignal])
               : lifetime,
             Object.values(secrets),
           );
           check();
-          if (send) {
-            const sent = JSON.parse(result.content?.[0]?.text ?? "null");
-            const checked = await lookup();
-            if (sent.message_id !== checked.message_id)
-              throw new Error("REST_RECEIPT_UNVERIFIED");
-          }
           if (mutation)
             completionByResult.set(result, { ...pending, status: "completed" });
         } catch (error) {
-          // A committed send may lose its POST acknowledgement. Read only the
-          // exact host-generated receipt; absence is never proof of noncommit.
-          if (send && current()) {
-            try {
-              const recovered = await lookup();
-              const recoveredResult = {
-                content: [{ type: "text", text: JSON.stringify(recovered) }],
-              };
-              completionByResult.set(recoveredResult, {
-                ...pending,
-                status: "delivered",
-                message_id: recovered.message_id,
-              });
-              return recoveredResult;
-            } catch {
-              /* preserve unknown, never repeat POST */
-            }
-          }
           if (mutation) actions.save({ ...pending, status: "unknown" });
           if ((error as Error).message === "REST_REQUEST_REJECTED")
             throw new NativeFailure("NATIVE_REQUEST_REJECTED");
@@ -868,6 +842,9 @@ export async function openNativeGateway(
 
       throw new Error("NATIVE_TOOL_REJECTED");
     }
+    // Pi only requests a new completion after it has finished executing the
+    // previous one's tool calls: those slots can never be selected again.
+    selections.retire();
     try {
       assertNoSecrets(request.body, Object.values(secrets));
     } catch (error) {
@@ -981,12 +958,14 @@ export async function openNativeGateway(
     } catch (error) {
       throw authority(error, true);
     }
-    return {
-      body,
-      type: response.headers.get("content-type")?.includes("text/event-stream")
-        ? "text/event-stream"
-        : "application/json",
-    };
+    const type = response.headers
+      .get("content-type")
+      ?.includes("text/event-stream")
+      ? "text/event-stream"
+      : "application/json";
+    // Only this complete, screened response delivered to Pi selects slots.
+    selections.observe(body, type);
+    return { body, type };
   }
 }
 type OpenedGateway = Awaited<ReturnType<typeof openNativeGateway>>;

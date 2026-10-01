@@ -229,7 +229,7 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
     assert.equal(await page.locator("#skillHistorySnapshot img").count(), 0);
     assert.match(
       (await page.locator("#skillDefaultStatus").textContent()) || "",
-      /Default version 3/,
+      /Default version 4/,
     );
 
     await mkdir(evidence, { recursive: true });
