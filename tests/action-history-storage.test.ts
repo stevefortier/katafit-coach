@@ -260,3 +260,67 @@ test("history rejects symlinks, nonregular targets, malformed and oversized reco
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("history fsyncs its securely opened directory after the rename and propagates a failure", () => {
+  const dir = mkdtempSync(tmpdir() + "/operator-history-dirsync-");
+  const originals = {
+    fsyncSync: fs.fsyncSync,
+    renameSync: fs.renameSync,
+    openSync: fs.openSync,
+  };
+  const trace: string[] = [];
+  const failure = Object.assign(new Error("synthetic directory sync failure"), {
+    code: "EIO",
+  });
+  let failDirectory = false;
+  try {
+    Object.assign(fs, {
+      openSync: (path: any, flags: any, mode?: any) => {
+        const fd = originals.openSync(path, flags, mode);
+        if (fs.fstatSync(fd).isDirectory())
+          trace.push(
+            `open-directory:${
+              flags & fs.constants.O_DIRECTORY &&
+              flags & fs.constants.O_NOFOLLOW
+                ? "secure"
+                : "insecure"
+            }`,
+          );
+        return fd;
+      },
+      fsyncSync: (fd: number) => {
+        const directory = fs.fstatSync(fd).isDirectory();
+        trace.push(directory ? "fsync-directory" : "fsync-file");
+        if (directory && failDirectory) throw failure;
+        return originals.fsyncSync(fd);
+      },
+      renameSync: (from: any, to: any) => {
+        trace.push("rename");
+        return originals.renameSync(from, to);
+      },
+    });
+    syncBuiltinESMExports();
+    const history = new History(dir, "operator-actions.json");
+    history.save(privateTurn);
+    assert.deepEqual(trace, [
+      "fsync-file",
+      "rename",
+      "open-directory:secure",
+      "fsync-directory",
+    ]);
+    assert.equal(
+      fs.statSync(dir + "/operator-actions.json").mode & 0o777,
+      0o600,
+    );
+    failDirectory = true;
+    assert.throws(
+      () => history.save([]),
+      (e) => e === failure,
+    );
+    assert.deepEqual(fs.readdirSync(dir), ["operator-actions.json"]);
+  } finally {
+    Object.assign(fs, originals);
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

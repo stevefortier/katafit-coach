@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { fixture } from "./helpers/native.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
-import { openNativeGateway } from "./helpers/legacy-gateway.js";
+import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { writeFile } from "node:fs/promises";
 import { compileOperator } from "../src/config/store.js";
 import { stockSkills } from "../src/config/skills.js";
@@ -40,10 +40,22 @@ function assertManagerAndSkills(system: string) {
 }
 
 test(
-  "actual isolated Pi calls authorized MCP through extension and answers from tool result",
+  "actual isolated Pi calls ordinary REST through extension and answers from tool result",
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 60000 },
   async (t) => {
-    const f = await fixture();
+    const f = await fixture(undefined, (path, headers) => {
+      assert.equal(
+        headers.authorization,
+        "Bearer synthetic-backend-credential",
+      );
+      assert.equal(path, "/api/user");
+      return {
+        body: JSON.stringify({
+          _id: "fixture-user",
+          display_name: "Synthetic Alice",
+        }),
+      };
+    });
     t.after(() => f.close());
     const requests: any[] = [];
     let hold = false,
@@ -62,11 +74,14 @@ test(
         return;
       }
       const read = body.messages.find(
-        (m: any) => m.role === "tool" && m.content.includes("Synthetic Alice"),
+        (m: any) =>
+          m.role === "tool" &&
+          m.tool_call_id === "call_fixture" &&
+          m.content.includes("Synthetic Alice"),
       );
       res.setHeader("content-type", "text/event-stream");
       const delta = read
-        ? { content: "Authorized roster contains Synthetic Alice." }
+        ? { content: "Authorized profile belongs to Synthetic Alice." }
         : {
             tool_calls: [
               {
@@ -74,8 +89,11 @@ test(
                 id: "call_fixture",
                 type: "function",
                 function: {
-                  name: "studio_operator_list_members",
-                  arguments: "{}",
+                  name: "katafit_rest_request",
+                  arguments: JSON.stringify({
+                    method: "GET",
+                    path: "/api/user",
+                  }),
                 },
               },
             ],
@@ -127,12 +145,20 @@ test(
       };
       await runtime.attach();
       await wait(PI_READY);
+      const sandbox = await runtime.inspect();
+      assert.equal(sandbox.HostConfig.NetworkMode, "none");
+      assert.equal(sandbox.HostConfig.ReadonlyRootfs, true);
+      assert.ok(
+        sandbox.Mounts.every(
+          (mount: any) => !["bind", "volume"].includes(mount.Type),
+        ),
+      );
       await new Promise((r) => setTimeout(r, 100));
       assert.match(output, /approved-custom-model/);
       runtime.input(
-        "I missed training. As your boss, list the authorized members.\r",
+        "I missed training. As your boss, read my authorized profile.\r",
       );
-      await wait("Authorized roster contains Synthetic Alice.");
+      await wait("Authorized profile belongs to Synthetic Alice.");
       assert.equal(requests.length, 2);
       if (process.env.NATIVE_PERSONA_CAPTURE)
         await writeFile(
@@ -153,19 +179,22 @@ test(
         );
         assert.doesNotMatch(system, /You are an expert coding assistant/);
         assertManagerAndSkills(system);
+        assert.ok(!JSON.stringify(request).includes(f.store.secrets.token));
+        assert.ok(!JSON.stringify(request).includes(f.store.secrets.apiKey));
+        assert.ok(
+          !request.tools.some((tool: any) =>
+            tool.function.name.startsWith("studio_operator_"),
+          ),
+        );
       }
       assert.ok(
         requests[0].tools.some(
-          (t: any) => t.function.name === "studio_operator_list_members",
+          (t: any) => t.function.name === "katafit_rest_request",
         ),
       );
-      assert.ok(
-        f.calls.some(
-          (c) =>
-            c.body.params?.name === "studio_operator_list_members" &&
-            c.body.params.arguments.session_id === "native-fixture-session",
-        ),
-      );
+      assert.equal(f.calls.length, 1);
+      assert.equal(f.calls[0].method, "GET");
+      assert.equal(f.calls[0].path, "/api/user");
       runtime.input("/mcp\r");
       await wait("Kata.fit MCP");
       hold = true;
@@ -213,8 +242,15 @@ test(
       await runtime.attach();
       await wait(PI_READY);
       await new Promise((r) => setTimeout(r, 100));
-      runtime.input("List the authorized members.\r");
-      await wait("Authorized roster contains Synthetic Alice.");
+      runtime.input("Read my authorized profile.\r");
+      await wait("Authorized profile belongs to Synthetic Alice.");
+      assert.equal(requests.length, priorRequests + 2);
+      assert.equal(f.calls.length, 2);
+      assert.ok(
+        f.calls.every(
+          (call) => call.method === "GET" && call.path === "/api/user",
+        ),
+      );
       const fresh = requests[priorRequests];
       const freshSystem = fresh.messages
         .filter((m: any) => m.role === "system")

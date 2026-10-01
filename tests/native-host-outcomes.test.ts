@@ -16,10 +16,10 @@ test("invalid host tool arguments fail without an action receipt; a later provid
     await assert.rejects(
       gateway.handle({
         kind: "tool",
-        name: "studio_operator_list_members",
-        args: { limit: -1 },
+        name: "katafit_rest_request",
+        args: { method: "GET", path: "http://forbidden.example/api/user" },
       }),
-      (error: any) => error.code === "NATIVE_TOOL_FAILED",
+      (error: any) => error.code === "NATIVE_REQUEST_REJECTED",
     );
     const response = await gateway.handle({
       kind: "provider",
@@ -29,7 +29,11 @@ test("invalid host tool arguments fail without an action receipt; a later provid
         messages: [{ role: "user", content: "continue after failure" }],
       },
     });
-    assert.match(JSON.stringify(response), /studio_operator_list_members/);
+    assert.ok(response);
+    assert.equal(
+      f.calls.filter((c) => c.path === "/v1/chat/completions").length,
+      1,
+    );
   } finally {
     await gateway.close();
     await f.close();
@@ -72,42 +76,26 @@ test("malformed host tool frames and unknown tool cannot dispatch", async () => 
 });
 
 for (const scenario of ["success", "failure", "unknown"] as const)
-  test(`host outcome ${scenario} is normalized for the current Pi turn`, async () => {
-    const f = await fixture((name, value) =>
-      name === "studio_operator_list_members" && scenario === "failure"
-        ? {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ code: "SYNTHETIC_FAILURE" }),
-              },
-            ],
-          }
-        : value,
-    );
+  test(`host REST outcome ${scenario} is normalized for the current Pi turn`, async () => {
+    const f = await fixture(undefined, () => ({
+      status: scenario === "failure" ? 403 : 200,
+      body: JSON.stringify({ members: [{ display_name: "Synthetic Alice" }] }),
+    }));
     const gateway = await openNativeGateway(f.store);
     try {
       let result: any, code: string | undefined;
+      const name =
+        scenario === "unknown" ? "unknown_tool" : "katafit_rest_request";
       try {
         result = await gateway.handle({
           kind: "tool",
-          name:
-            scenario === "unknown"
-              ? "unknown_tool"
-              : "studio_operator_list_members",
-          args: {},
+          name,
+          args: { method: "GET", path: "/api/dojos/my" },
         });
       } catch (error: any) {
         code = error.code;
       }
-      const outcome = nativeToolOutcome(
-        scenario === "unknown"
-          ? "unknown_tool"
-          : "studio_operator_list_members",
-        result,
-        code,
-      );
+      const outcome = nativeToolOutcome(name, result, code);
       assert.equal(Boolean(outcome.isError), scenario !== "success");
       assert.ok(outcome.content.every((part: any) => part.type === "text"));
       if (scenario === "success")
@@ -117,7 +105,7 @@ for (const scenario of ["success", "failure", "unknown"] as const)
           JSON.stringify(outcome),
           scenario === "unknown"
             ? /NATIVE_REQUEST_REJECTED/
-            : /Kata.fit tool failed; do not replay uncertain actions/,
+            : /HTTP 403; no data was delivered/,
         );
     } finally {
       await gateway.close();

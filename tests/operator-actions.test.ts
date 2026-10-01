@@ -4,7 +4,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Actions } from "../src/chat/actions.js";
 import { Store } from "../src/config/store.js";
-import { operatorBackend } from "./operator-tools.test.js";
 
 test("durable receipt is monotonic under late ambiguous transport failure", async () => {
   const dir = await mkdtemp(tmpdir() + "/operator-journal-");
@@ -92,51 +91,30 @@ test("journal fails closed rather than evicting unresolved receipts", async () =
   }
 });
 
-test("restart reconciles pending stable key without resend; credential replacement hides old receipts", async () => {
-  const f = await operatorBackend((name, result) =>
-    name === "studio_operator_get_action"
-      ? {
-          schema_version: 1,
-          session_id: "session-fixture",
-          action_id: "a",
-          message_id: "m",
-          status: "delivered",
-          idempotent: true,
-        }
-      : result,
-  );
+test("retired legacy pending actions remain recorded but cannot trigger MCP reconciliation on restart", async () => {
   const dir = await mkdtemp(tmpdir() + "/operator-recovery-");
   const store = new Store(dir);
   await store.init();
-  await store.save({
-    ...store.publicConfig(),
-    origin: f.origin,
-    token: "synthetic-token",
-    apiKey: "synthetic-key",
-  });
   try {
-    new Actions(store).save({
+    const action = {
       session_id: "session-fixture",
       idempotency_key: "original-key",
-      status: "pending",
-    });
+      status: "pending" as const,
+    };
+    new Actions(store).save(action);
     const restarted = new Actions(store);
-    await restarted.reconcile();
-    assert.equal(restarted.snapshot()[0].status, "delivered");
-    assert.equal(
-      f.calls.filter((c) => c.params?.name === "studio_operator_send_message")
-        .length,
-      0,
-    );
-    assert.equal(
-      f.calls.find((c) => c.params?.name === "studio_operator_get_action")
-        .params.arguments.idempotency_key,
-      "original-key",
-    );
+    assert.equal(restarted.snapshot()[0].status, "pending");
+    assert.equal("reconcile" in restarted, false);
+    // Changing authority hides old scope without discarding its private history.
+    const token = store.secrets.token;
     store.secrets.token = "replacement-fixture";
     assert.deepEqual(restarted.snapshot(), []);
+    store.secrets.token = token;
+    assert.equal(
+      new Actions(store).snapshot()[0].idempotency_key,
+      "original-key",
+    );
   } finally {
-    await f.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

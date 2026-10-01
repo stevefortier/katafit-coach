@@ -77,7 +77,7 @@ test("authenticated Studio connect and roster calls reach persisted Diagnostics"
   }
 });
 
-test("native gateway logs every physical attempt including clones and close controls", async () => {
+test("native REST read and close never open legacy MCP sessions", async () => {
   const f = await fixture();
   const rows: LogInput[] = [];
   let gateway;
@@ -87,23 +87,16 @@ test("native gateway logs every physical attempt including clones and close cont
     });
     await gateway.handle({
       kind: "tool",
-      name: "studio_operator_list_members",
-      args: {},
+      name: "katafit_rest_request",
+      args: { method: "GET", path: "/api/docs/coach" },
     });
     await gateway.close();
+    assert.equal(f.calls.filter((c) => c.path === "/api/docs/coach").length, 1);
     assert.equal(
-      rows.length,
       f.calls.filter((c) => c.path === "/api/agents/coach/mcp").length,
+      0,
     );
-    assert.ok(
-      rows.some(
-        (e) => e.backendCall?.operation === "notifications/initialized",
-      ),
-    );
-    assert.ok(
-      rows.some((e) => e.backendCall?.tool === "studio_operator_close_session"),
-    );
-    assert.ok(rows.every((e) => e.backendCall?.outcome === "ok"));
+    assert.equal(rows.filter((e) => e.backendCall?.route === "mcp").length, 0);
   } finally {
     await gateway?.close();
     await f.close();

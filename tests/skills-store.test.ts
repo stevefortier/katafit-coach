@@ -25,8 +25,8 @@ const content = (skill: any) => ({
 
 test("day closure maps to the updated ordinary REST progress skill", () => {
   const progress = stockSkills.find((skill) => skill.id === "katafit-api")!;
-  assert.equal(progress.defaultVersion, 2);
-  assert.equal(progress.basedOnDefaultVersion, 2);
+  assert.equal(progress.defaultVersion, 4);
+  assert.equal(progress.basedOnDefaultVersion, 4);
   assert.deepEqual(
     skillForTask(
       {
