@@ -1,0 +1,23 @@
+{
+  "label": "Synthetic fixture served Studio date-strip; no production/customer pixels",
+  "source_files": {
+    "ui/index.html": "f8614a48c0d6750e845798317d168628957cea2a1601b6d4f7de380e10d09cc9",
+    "ui/style.css": "3960e17a4dd10221267d9e3d6824daeb1e47e590d795d23ce4bf104ed892f0c3",
+    "ui/dashboard.js": "248e6a91cafaa99692538ab94a70fa0a5c6aa75bcab572c10e3b5708d037d1bc",
+    "tests/dojo-date-navigation-browser.test.ts": "67cb59cea42165ab1298ee0e1a7a938224011eb69f29cc2e31d8839e6fa8b123",
+    "tests/studio-monochrome.test.ts": "06fe582663c6d8b88a7ecbbf91877ea5f0dd344680d1b18b111e9188ec7ab122",
+    "docs/dojo-date-navigation.md": "5529ddaf976f009864e65010356749c7fd52a5c87dd8a6740a6cfbf5af59d2af"
+  },
+  "captures": [
+    {
+      "path": "docs/pr-evidence/dojo-date-navigation/synthetic-date-strip-1280.png",
+      "sha256": "b68a77a528546b4bb70065e64182dc4a2fe9c91e46c4b5a46273600a35151f0c",
+      "viewport": 1280
+    },
+    {
+      "path": "docs/pr-evidence/dojo-date-navigation/synthetic-date-strip-320.png",
+      "sha256": "6e66f3181384132b62ba81d595d83467b820a2cbc67f5d3125506a130344681a",
+      "viewport": 320
+    }
+  ]
+}
