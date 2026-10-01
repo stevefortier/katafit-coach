@@ -432,7 +432,7 @@ test(
             await page
               .locator("#dashboardMemberCards .dashboard-member-card")
               .count(),
-            3,
+            2,
           );
           assert.equal(
             await page.locator("#dashboardMap .dashboard-member-pin").count(),

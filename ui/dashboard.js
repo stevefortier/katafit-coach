@@ -164,7 +164,10 @@ window.CoachDashboard = (() => {
       heading.textContent = mapMembers.size
         ? "Dojo members"
         : "Members in loaded shared data";
+    const rosterScrollLeft =
+      target.querySelector(".dashboard-member-rail")?.scrollLeft || 0;
     target.replaceChildren();
+    const rail = text("div", "", "dashboard-member-rail");
     const members = new Map(
       [...feedMembers, ...mapMembers].filter(
         ([id]) => !suppressedMembers.has(id),
@@ -205,7 +208,7 @@ window.CoachDashboard = (() => {
       const button = text(
         "button",
         "",
-        `dashboard-member-card${all ? " dashboard-member-all" : ""}`,
+        all ? "dashboard-member-all" : "dashboard-member-card",
       );
       button.type = "button";
       button.setAttribute("aria-pressed", String(selectedMember === id));
@@ -220,7 +223,7 @@ window.CoachDashboard = (() => {
           .join("");
         const avatar = avatarCache.get(id);
         if (avatar) {
-          const image = text("img", "", "dashboard-map-avatar");
+          const image = text("img", "", "dashboard-roster-image");
           image.alt = "";
           image.src = avatar;
           image.onerror = () => image.remove();
@@ -257,10 +260,14 @@ window.CoachDashboard = (() => {
         filterFeed();
         filterTimeline();
       });
-      target.append(button);
+      (all ? target : rail).append(button);
     };
     makeCard(null, {}, true);
+    target.append(rail);
     for (const [id, user] of members) makeCard(id, user);
+    // Keep the selected offscreen member in view across selection/cache renders;
+    // the browser clamps naturally if an authorization denial shrinks the rail.
+    rail.scrollLeft = rosterScrollLeft;
   }
   function svg(tag, attributes) {
     const node = document.createElementNS(svgNS, tag);
@@ -1055,7 +1062,13 @@ window.CoachDashboard = (() => {
               ),
             ]) {
               if (pin.dataset.memberId !== memberId) continue;
-              const image = text("img", "", "dashboard-map-avatar");
+              const image = text(
+                "img",
+                "",
+                pin.classList.contains("dashboard-member-portrait")
+                  ? "dashboard-roster-image"
+                  : "dashboard-map-avatar",
+              );
               image.alt = "";
               image.src = url;
               image.onerror = () => image.remove();
