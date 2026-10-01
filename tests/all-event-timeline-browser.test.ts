@@ -2,12 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { chromium } from "playwright-core";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 
 test("served timeline retains every occurrence and renders deleted/nonactivity event snapshots without live detail", async () => {
-  const home = await mkdtemp("/tmp/coach-events-");
+  const home = await mkdtemp(tmpdir() + "/coach-events-");
   const member = "aaaaaaaaaaaaaaaaaaaaaaaa";
   // Snapshot of the backend EVENT_DETAILS catalog, plus an unknown future kind.
   const kinds = [
@@ -333,9 +334,9 @@ test("served timeline retains every occurrence and renders deleted/nonactivity e
       await page.locator("#dashboardTimeline").innerText(),
       /82.*events/,
     );
-    const evidence =
-      process.env.EVENT_TIMELINE_EVIDENCE ||
-      "/home/kai/task-evidence/coach-all-event-timeline";
+    // Explicit captures may persist; default output belongs to this fixture's
+    // temporary home and is removed by finally, including on CI runners.
+    const evidence = process.env.EVENT_TIMELINE_EVIDENCE || `${home}/evidence`;
     await mkdir(evidence, { recursive: true });
     for (const width of [320, 390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
