@@ -38,7 +38,7 @@ test(
         held.delete(res);
       });
       const roster = url.pathname.endsWith("dashboard-members");
-      const dayRead = /day-activities|positioned-activities/.test(url.pathname);
+      const dayRead = /day-events|positioned-activities/.test(url.pathname);
       const finish = () => {
         held.delete(res);
         res.setHeader("Content-Type", "application/json");
@@ -77,6 +77,18 @@ test(
           JSON.stringify({
             users: [{ _id: member, display_name: "Synthetic member" }],
             activities: dayRead ? [entry] : [],
+            events: url.pathname.endsWith("day-events")
+              ? [
+                  {
+                    id: "synthetic-event",
+                    user_id: member,
+                    event_type: "workout.created",
+                    occurred_at: entry.created_at,
+                    subject: { type: "workout", id: entry._id },
+                    details: {},
+                  },
+                ]
+              : [],
             hasMore: false,
           }),
         );

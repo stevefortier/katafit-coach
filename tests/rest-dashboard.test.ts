@@ -54,11 +54,11 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
           hasMore: false,
         }),
       );
-    else if (req.url?.startsWith("/api/friends/dojo/day-activities?"))
+    else if (req.url?.startsWith("/api/friends/dojo/day-events?"))
       res.end(
         JSON.stringify({
           users: [{ _id: "member", display_name: "Ada" }],
-          activities: [{ _id: "act", user_id: "member", type: "meal" }],
+          events: [{ id: "act", user_id: "member", event_type: "food_added" }],
           hasMore: false,
           nextCursor: null,
         }),
@@ -145,11 +145,11 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     assert.equal(map.status, 200);
     assert.equal((await map.json()).users[0].display_name, "Ada");
     const timeline = await fetch(
-      base + "/api/dashboard/timeline?" + mapDay + "&cursor=opaque-cursor",
+      base + "/api/dashboard/timeline?" + mapDay + "&cursor=payload.signature",
       { headers },
     );
     assert.equal(timeline.status, 200);
-    assert.equal((await timeline.json()).activities[0]._id, "act");
+    assert.equal((await timeline.json()).events[0].id, "act");
     const cursor = await fetch(
       base + "/api/dashboard/map?" + mapDay + "&cursor=opaque-cursor",
       { headers },
@@ -182,7 +182,7 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
       "/api/friends/feed/dojo?limit=20",
       "/api/friends/dojo/dashboard-members",
       "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100",
-      "/api/friends/dojo/day-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100&cursor=opaque-cursor",
+      "/api/friends/dojo/day-events?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100&cursor=payload.signature",
       "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100&cursor=opaque-cursor",
       "/api/friends/dojo/positioned-activities?start=2026-11-01T04%3A00%3A00.000Z&end=2026-11-02T05%3A00%3A00.000Z&limit=100",
       "/api/friends/activity/act",
@@ -222,6 +222,9 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     for (const path of [
       "/api/dashboard/map?date=2026-02-30",
       "/api/dashboard/map?" + mapDay + "&cursor=!!!",
+      "/api/dashboard/map?" + mapDay + "&cursor=payload.signature",
+      "/api/dashboard/timeline?" + mapDay + "&cursor=!!!",
+      "/api/dashboard/timeline?" + mapDay + "&cursor=" + "x".repeat(4097),
       "/api/dashboard/map?" + mapDay + "&cursor=" + "x".repeat(513),
       "/api/dashboard/map?" + mapDay + "&date=2026-09-27",
       "/api/dashboard/map?" + mapDay + "&redirect=https://example.org",

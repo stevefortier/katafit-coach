@@ -498,12 +498,18 @@ export async function admin(
               endTime - startTime < 23 * hour ||
               endTime - startTime > 25 * hour ||
               (cursor &&
-                (cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(cursor)))
+                (cursor.length >
+                  (url.pathname === "/api/dashboard/timeline" ? 4096 : 512) ||
+                  !(
+                    url.pathname === "/api/dashboard/timeline"
+                      ? /^[A-Za-z0-9_.-]+$/
+                      : /^[A-Za-z0-9_-]+$/
+                  ).test(cursor)))
             )
               throw new SafeError("ARGUMENTS_REJECTED");
             target =
               (url.pathname === "/api/dashboard/timeline"
-                ? "/api/friends/dojo/day-activities?start="
+                ? "/api/friends/dojo/day-events?start="
                 : "/api/friends/dojo/positioned-activities?start=") +
               encodeURIComponent(start) +
               "&end=" +

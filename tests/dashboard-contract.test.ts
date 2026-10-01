@@ -30,6 +30,9 @@ async function render(
       for (const node of nodes) node.parent = this;
       this.children.unshift(...nodes);
     }
+    querySelector(selector: string): Node | null {
+      return this.querySelectorAll(selector)[0] || null;
+    }
     querySelectorAll(selector: string): Node[] {
       const className = selector.startsWith(".") ? selector.slice(1) : "";
       const descend = (node: Node): Node[] =>
