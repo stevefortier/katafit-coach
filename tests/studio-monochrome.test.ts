@@ -70,6 +70,15 @@ async function neutralSurfaces(page: Page) {
         continue;
       const style = getComputedStyle(el);
       for (const property of properties) {
+        // Only data-encoding backgrounds are exempt; timeline text, borders,
+        // container surfaces and all other decorations remain monochrome.
+        if (
+          property === "backgroundColor" &&
+          el.matches(
+            "#dashboardTimeline .dashboard-timeline-mark, #dashboardTimeline .dashboard-timeline-swatch",
+          )
+        )
+          continue;
         const value = style[property];
         const parts = value.match(/[\d.]+/g)?.map(Number);
         if (!parts || (parts.length === 4 && parts[3] === 0)) continue;
@@ -310,6 +319,12 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           "/api/logs": { entries: [] },
           "/api/mcp/registrations": { registrations: [] },
           "/api/dashboard": { users: [], activities: [], hasMore: false },
+          "/api/dashboard/timeline": {
+            users: [],
+            activities: [],
+            hasMore: false,
+            nextCursor: null,
+          },
           "/api/dashboard/map": { users: [], activities: [], hasMore: false },
         };
         await route.fulfill({ json: bodies[path] || {} });
