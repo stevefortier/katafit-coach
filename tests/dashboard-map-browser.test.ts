@@ -13,7 +13,7 @@ const bob = "bbbbbbbbbbbbbbbbbbbbbbbb";
 test("synthetic authorized map: local date, separate member pins, fresh detail, stale and private reads", async () => {
   const avatarPng = await sharp(
     Buffer.from(
-      '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#385c80"/><circle cx="32" cy="24" r="13" fill="#dcb998"/><path d="M7 64 Q32 30 57 64" fill="#dcb998"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 64 64"><rect width="64" height="64" fill="#385c80"/><circle cx="32" cy="24" r="13" fill="#dcb998"/><path d="M7 64 Q32 30 57 64" fill="#dcb998"/></svg>',
     ),
   )
     .png()
@@ -455,6 +455,34 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
           document.querySelectorAll(
             "#dashboardMemberCards .dashboard-member-portrait img",
           ).length === 1,
+      );
+      await page
+        .locator("#dashboardMap .dashboard-map-avatar")
+        .first()
+        .evaluate((el) => (el as HTMLImageElement).decode());
+      assert.deepEqual(
+        await page.evaluate(() => {
+          const map = document.querySelector<HTMLImageElement>(
+            "#dashboardMap .dashboard-map-avatar",
+          )!;
+          const roster = document.querySelector<HTMLImageElement>(
+            "#dashboardMemberCards .dashboard-member-portrait img",
+          )!;
+          return {
+            sameCachedSource: map.src === roster.src,
+            native: [map.naturalWidth, map.naturalHeight],
+          };
+        }),
+        { sameCachedSource: true, native: [512, 512] },
+        "map and roster share the same selected avatar Blob, without another source/download",
+      );
+      assert.equal(
+        await page
+          .locator("#dashboardMap .dashboard-map-avatar")
+          .first()
+          .evaluate((image) => getComputedStyle(image).borderRadius),
+        "50%",
+        "larger shared avatar bytes must retain circular map markers",
       );
       await page
         .locator(
