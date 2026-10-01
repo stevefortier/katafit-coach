@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { WebSocket } from "ws";
 import { Store } from "../../src/config/store.js";
 import { admin } from "../../src/server/admin.js";
-import { AutoUpdateSetting } from "../../src/update/auto.js";
 import { Updates } from "../../src/update/updates.js";
 
 // Studio preview is an isolated, read-only inference over the saved revision.
@@ -36,7 +35,7 @@ export const aborted = (signal: AbortSignal) =>
 type Infer = NonNullable<Parameters<typeof admin>[2]>;
 export async function harness(
   preview: (signal: AbortSignal, provider: any) => Promise<string>,
-  options: { updates?: Updates; auto?: boolean } = {},
+  options: { updates?: Updates; quiesce?: boolean } = {},
 ) {
   let request: any = null;
   let publications = 0;
@@ -159,14 +158,7 @@ export async function harness(
     await Promise.race([work.gate, aborted(signal)]);
     return "Synthetic worker reply";
   };
-  const app = await admin(
-    store,
-    0,
-    infer,
-    undefined,
-    options.updates,
-    options.auto ? new AutoUpdateSetting(dir) : undefined,
-  );
+  const app = await admin(store, 0, infer, undefined, options.updates);
   const headers = {
     Authorization: "Bearer " + store.secrets.admin,
     Origin: app.origin,

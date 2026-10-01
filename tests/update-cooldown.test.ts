@@ -26,54 +26,7 @@ for (const [headers, seconds] of [
     assert.equal(updates.sourceRetryAt, now + seconds * 1000);
   });
 }
-test("immutable comparison is coalesced and rate limits share the ref cooldown", async (t) => {
-  const now = Date.parse("2026-01-01T00:00:00Z");
-  t.mock.timers.enable({ apis: ["Date"], now });
-  let calls = 0;
-  let limited = true;
-  const updates = new Updates("a".repeat(40), null, async (url) => {
-    calls++;
-    if (!String(url).includes("/compare/"))
-      return new Response(JSON.stringify({ object: { sha } }));
-    return limited
-      ? new Response("", {
-          status: 403,
-          headers: {
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": String(now / 1000 + 3600),
-          },
-        })
-      : new Response(JSON.stringify({ status: "ahead", ahead_by: 1 }));
-  });
-  await updates.check();
-  assert.deepEqual(
-    await Promise.all([
-      updates.isDescendant(updates.installed!, sha),
-      updates.isDescendant(updates.installed!, sha),
-    ]),
-    [false, false],
-  );
-  assert.equal(calls, 2);
-  assert.equal(updates.latest, null);
-  assert.equal(updates.checkError, "RATE_LIMITED");
-  for (let minute = 1; minute < 60; minute++) {
-    t.mock.timers.setTime(now + minute * 60000);
-    await updates.check();
-    await updates.isDescendant(updates.installed!, sha);
-    assert.equal(calls, 2);
-  }
-  t.mock.timers.setTime(now + 3600000);
-  limited = false;
-  await updates.check();
-  assert.equal(await updates.isDescendant(updates.installed!, sha), true);
-  for (let minute = 61; minute < 75; minute++) {
-    t.mock.timers.setTime(now + minute * 60000);
-    await updates.check(true);
-    assert.equal(await updates.isDescendant(updates.installed!, sha), true);
-  }
-  assert.equal(calls, 4);
-});
-test("automatic freshness is fifteen minutes while manual approval can refresh after one", async (t) => {
+test("explicit approval expires without idle source discovery and refreshes only on Check", async (t) => {
   const now = Date.parse("2026-01-01T00:00:00Z");
   t.mock.timers.enable({ apis: ["Date"], now });
   let calls = 0;
@@ -85,19 +38,14 @@ test("automatic freshness is fifteen minutes while manual approval can refresh a
       return new Response(JSON.stringify({ object: { sha } }));
     },
   );
-  await updates.check(true);
-  for (let minute = 1; minute < 15; minute++) {
-    t.mock.timers.setTime(now + minute * 60000);
-    await updates.check(true);
-    assert.equal(calls, 1);
-  }
+  await updates.check();
+  assert.equal(updates.validate(sha), sha);
+  t.mock.timers.setTime(now + 600001);
+  assert.equal(calls, 1);
   assert.throws(() => updates.validate(sha), /CHECK_FIRST/);
   await updates.check();
   assert.equal(calls, 2);
   assert.equal(updates.validate(sha), sha);
-  t.mock.timers.setTime(now + 29 * 60000);
-  await updates.check(true);
-  assert.equal(calls, 3);
 });
 test("provider cooldown survives repeated manual checks and clears only on success", async (t) => {
   const now = Date.parse("2026-01-01T00:00:00Z");

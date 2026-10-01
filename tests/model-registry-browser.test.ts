@@ -343,8 +343,18 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       /Bravo.*Save/,
     );
     await field(page, "alpha", "name").fill("Alpha renamed");
-    for (const name of ["Persona", "Preview", "Updates", "Worker", "Models"])
+    for (const name of ["Persona", "Preview", "Updates", "Worker", "Models"]) {
+      const checked =
+        name === "Updates"
+          ? page.waitForResponse(
+              (response) =>
+                response.url().endsWith("/api/update/check") &&
+                response.request().method() === "POST",
+            )
+          : null;
       await page.getByRole("tab", { name, exact: true }).click();
+      if (checked) await checked;
+    }
     assert.equal(
       await card(page, "bravo").getByRole("radio").isChecked(),
       true,
@@ -363,7 +373,8 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       apiCalls
         .slice(before)
         .filter((c) => !/^GET \/api\/(status|update)$/.test(c)),
-      [],
+      ["POST /api/update/check"],
+      "entering Updates checks once; browsing model drafts makes no other calls",
     );
     assert.deepEqual(providerRequests, []);
     assert.equal(store.modelRegistry().active.provider, "alpha");

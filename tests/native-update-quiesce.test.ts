@@ -41,7 +41,6 @@ import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { admin } from "../src/server/admin.js";
 import { Updates } from "../src/update/updates.js";
-import { AutoUpdateSetting } from "../src/update/auto.js";
 import { Store } from "../src/config/store.js";
 import { Actions } from "../src/chat/actions.js";
 import { fixture } from "./helpers/native.js";
@@ -72,19 +71,16 @@ const connect = async (origin: string, ticket: string) => {
   return { ws, closed };
 };
 
-test("auto quiesce closes a starting Pi under the admission fence", async () => {
+test("confirmed quiesce closes a starting Pi under the admission fence", async () => {
   const h = held();
   heldStartup = h;
   const f = await fixture();
-  const setting = new AutoUpdateSetting(f.store.dir);
-  await setting.write(true);
   const app = await admin(
     f.store,
     0,
     undefined,
     undefined,
     new Updates(null, async () => {}),
-    setting,
   );
   const headers = {
     Authorization: "Bearer " + f.store.secrets.admin,
@@ -92,7 +88,11 @@ test("auto quiesce closes a starting Pi under the admission fence", async () => 
     "Content-Type": "application/json",
   };
   const post = (path: string) =>
-    fetch(app.origin + path, { method: "POST", headers, body: "{}" });
+    fetch(app.origin + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(path.endsWith("quiesce") ? { confirm: true } : {}),
+    });
   const sockets: WebSocket[] = [];
   try {
     const first = (await (await post("/api/terminal/ticket")).json()) as any;
@@ -100,7 +100,7 @@ test("auto quiesce closes a starting Pi under the admission fence", async () => 
     const starting = await connect(app.origin, first.ticket);
     sockets.push(starting.ws);
     await h.started;
-    const quiesce = await post("/api/update/auto/quiesce");
+    const quiesce = await post("/api/update/quiesce");
     assert.equal(quiesce.status, 200);
     assert.deepEqual(await quiesce.json(), { wasRunning: false });
     h.release();
@@ -109,7 +109,7 @@ test("auto quiesce closes a starting Pi under the admission fence", async () => 
       await fetch(app.origin + "/api/status", { headers })
     ).json();
     assert.equal(state.nativeActive, false);
-    assert.equal(state.autoQuiesceReady, true);
+    assert.equal(state.updateQuiesceReady, true);
     const calls = f.calls.length;
     assert.equal((await post("/api/terminal/ticket")).status, 409);
     const late = await connect(app.origin, spare.ticket);
@@ -120,7 +120,7 @@ test("auto quiesce closes a starting Pi under the admission fence", async () => 
       calls,
       "no native backend session (or SEND) after acknowledged quiescence",
     );
-    assert.equal((await post("/api/update/auto/release")).status, 200);
+    assert.equal((await post("/api/update/release")).status, 200);
     assert.equal((await post("/api/terminal/ticket")).status, 200);
   } finally {
     h.release();
@@ -174,15 +174,12 @@ test("confirmed manual update closes a starting Pi after source validation", asy
 
 test("failed native teardown retains the admission fence and rejects idempotent quiesce and release", async () => {
   const f = await fixture();
-  const setting = new AutoUpdateSetting(f.store.dir);
-  await setting.write(true);
   const app = await admin(
     f.store,
     0,
     undefined,
     undefined,
     new Updates(null, async () => {}),
-    setting,
   );
   const originalStop = NativeTerminal.prototype.stop;
   let gatewayCloses = 0;
@@ -193,7 +190,11 @@ test("failed native teardown retains the admission fence and rejects idempotent 
     "Content-Type": "application/json",
   };
   const post = (path: string) =>
-    fetch(app.origin + path, { method: "POST", headers, body: "{}" });
+    fetch(app.origin + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(path.endsWith("quiesce") ? { confirm: true } : {}),
+    });
   try {
     NativeTerminal.prototype.stop = function () {
       terminal = this;
@@ -206,15 +207,15 @@ test("failed native teardown retains the admission fence and rejects idempotent 
         };
       return originalStop.call(this);
     };
-    assert.equal((await post("/api/update/auto/quiesce")).status, 409);
+    assert.equal((await post("/api/update/quiesce")).status, 409);
     assert.equal(gatewayCloses, 1);
     const status = await (
       await fetch(app.origin + "/api/status", { headers })
     ).json();
-    assert.equal(status.autoQuiesced, true);
-    assert.equal(status.autoQuiesceReady, false);
-    assert.equal((await post("/api/update/auto/quiesce")).status, 409);
-    assert.equal((await post("/api/update/auto/release")).status, 409);
+    assert.equal(status.updateQuiesced, true);
+    assert.equal(status.updateQuiesceReady, false);
+    assert.equal((await post("/api/update/quiesce")).status, 409);
+    assert.equal((await post("/api/update/release")).status, 409);
     assert.equal((await post("/api/terminal/ticket")).status, 409);
   } finally {
     NativeTerminal.prototype.stop = originalStop;
@@ -281,7 +282,6 @@ async function supervised(
       ),
   });
   owner.updates.installed = "b".repeat(40);
-  await new AutoUpdateSetting(home).write(true);
   const headers = {
     Authorization: "Bearer " + store.secrets.admin,
     Origin: owner.origin,
@@ -322,7 +322,32 @@ async function supervised(
   };
 }
 
-test("supervised auto update closes a starting Pi and activates the prepared candidate", async () => {
+async function confirmedUpgrade(
+  s: Awaited<ReturnType<typeof supervised>>,
+  target: string,
+) {
+  assert.equal(
+    (
+      await fetch(s.owner.origin + "/api/update/check", {
+        method: "POST",
+        headers: s.headers,
+        body: "{}",
+      })
+    ).status,
+    200,
+  );
+  const response = await fetch(s.owner.origin + "/api/update/apply", {
+    method: "POST",
+    headers: s.headers,
+    body: JSON.stringify({ sha: target, confirm: true }),
+  });
+  assert.equal(response.status, 202, await response.text());
+  for (let i = 0; i < 200 && s.owner.updates.applying; i++)
+    await new Promise((r) => setTimeout(r, 20));
+  assert.equal(s.owner.updates.applying, false);
+}
+
+test("supervised confirmed update closes a starting Pi and activates the prepared candidate", async () => {
   const f = await fixture();
   const target = "e".repeat(40);
   const s = await supervised("coach-native-close-", target, true, false);
@@ -351,8 +376,8 @@ test("supervised auto update closes a starting Pi and activates the prepared can
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(ws.readyState, WebSocket.OPEN);
-    await s.owner.auto.tick();
-    assert.equal(s.owner.updates.snapshot().autoOutcome?.state, "stopped");
+    await confirmedUpgrade(s, target);
+    assert.equal(s.owner.updates.lastOperation?.state, "succeeded");
     assert.equal(
       s.prepares(),
       1,
@@ -365,7 +390,7 @@ test("supervised auto update closes a starting Pi and activates the prepared can
       await fetch(s.owner.origin + "/api/status", { headers: s.headers })
     ).json();
     assert.equal(state.nativeActive, false);
-    assert.equal(state.autoQuiesced, false);
+    assert.equal(state.updateQuiesced, false);
   } finally {
     ws?.terminate();
     await s.close();
@@ -391,13 +416,14 @@ test("failed supervised activation keeps the original uncertain native action id
     new Actions(store).save(original);
     const before = new Actions(store).snapshot();
     assert.deepEqual(before, [original]);
-    await assert.rejects(s.owner.auto.tick(), /UPGRADE_FAILED|ROLLED_BACK/);
+    await confirmedUpgrade(s, bad);
+    assert.equal(s.owner.updates.lastOperation?.state, "failed");
     assert.equal(s.prepares(), 1, "activation was genuinely attempted");
     assert.equal(s.owner.updates.snapshot().installed, "b".repeat(40));
     assert.deepEqual(new Actions(store).snapshot(), [original]);
     // The restored child still refuses native start: no replay, no session.
     const calls = f.calls.length;
-    await fetch(s.owner.origin + "/api/update/auto/release", {
+    await fetch(s.owner.origin + "/api/update/release", {
       method: "POST",
       headers: s.headers,
       body: "{}",

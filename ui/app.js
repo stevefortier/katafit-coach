@@ -349,7 +349,7 @@ action("unlock", async () => {
   restoreStudioRoute(true);
   void loadNativeReceipts();
   await status();
-  await refreshUpdate(true);
+  if (!updatesEntryActive) await refreshUpdate();
 });
 action("save", async () => {
   const persona = Object.fromEntries(fields.map((f) => [f, $(f).value]));
@@ -1457,6 +1457,7 @@ function selectSettingsSection(section, navigate = true) {
   if (historyVisible()) void loadPersonaHistory();
   if (skillHistoryVisible()) void loadSkillHistory();
   logVisibility();
+  updateRouteEntry();
 }
 for (const [index, section] of settingsSections.entries()) {
   const tab = $("settings-" + section + "-tab");
@@ -2151,6 +2152,7 @@ function selectStudioTab(tab, navigate = true) {
   else if (dashboard) CoachDashboard.load(api, key);
   renderPane();
   if (navigate) navigateStudio(studioPath(tab));
+  updateRouteEntry();
 }
 $("dashboardTab").onclick = () => selectStudioTab("dashboard");
 document.addEventListener("visibilitychange", () => {
@@ -2504,7 +2506,8 @@ action("logDownload", async () => {
 });
 
 let updateData,
-  updateClockOffset = 0,
+  updatesEntryActive = false,
+  updatesEntryCheckPending = false,
   updateRequest = false,
   updateCheckRequested = false,
   updatePending = false,
@@ -2544,7 +2547,7 @@ const updateFailureHelp = {
   HEALTH_FAILED:
     "Candidate health check failed. Verify the installed revision and worker status.",
   AUTO_UPDATE_DISABLED:
-    "Automatic consent was withdrawn before activation. Review the setting before a manual retry.",
+    "A historical automatic attempt was cancelled. Automatic source updates are no longer supported; retry only with manual confirmation.",
   UPGRADE_FAILED:
     "No specific safe failure code is available. Check host disk, Git/npm access and exact native artifact readiness before retrying manually.",
 };
@@ -2602,58 +2605,33 @@ function renderHeaderStatus() {
     $("state").dataset.tone = workerStatusTone(workerState);
   }
 }
-function renderUpdateSchedule() {
-  const data = updateData;
-  if (!data || !key || document.hidden || $("studio").hidden) return;
-  const schedule = data.autoSchedule;
-  let text;
-  if (!data.auto?.enabled) {
-    text = "No automatic retry while automatic updates are off.";
-  } else if (!schedule) {
-    text =
-      "Automatic retry time unknown: this older launcher does not report its schedule. Source upgrades do not replace the stable launcher.";
-  } else if (schedule.reason === "running" && schedule.nextAttemptAt === null) {
-    text =
-      "Launcher automatic cycle in progress; next attempt is not scheduled yet.";
-  } else if (
-    Number.isSafeInteger(schedule.nextAttemptAt) &&
-    schedule.nextAttemptAt > 0 &&
-    ["poll", "check-failed", "readiness", "recovery"].includes(schedule.reason)
-  ) {
-    const reasons = {
-      poll: "Normal polling.",
-      "check-failed": "Source-check failure backoff.",
-      readiness: "Native readiness cooldown.",
-      recovery: "Worker recovery retry (before another source check).",
-    };
-    const localDeadline = schedule.nextAttemptAt - updateClockOffset;
-    const seconds = Math.max(0, Math.ceil((localDeadline - Date.now()) / 1000));
-    const local = formatTimestamp(localDeadline);
-    text = `${reasons[schedule.reason]} ${
-      seconds > 0
-        ? `Next automatic attempt in ${Math.floor(seconds / 60)}m ${seconds % 60}s · ${local} (local time).`
-        : `Scheduled for ${local} (local time). Awaiting launcher status; the deadline passing does not confirm a check has started.`
-    }`;
-  } else {
-    text =
-      "Automatic retry time unknown: the launcher has not reported a valid schedule.";
-  }
-  if (updateError && data.auto?.enabled)
-    text = `Last reported schedule (Studio unavailable). ${text}`;
-  if ($("updateSchedule").textContent !== text)
-    $("updateSchedule").textContent = text;
+function updatesVisible() {
+  return (
+    !!key &&
+    !$("studio").hidden &&
+    !$("settingsPanel").hidden &&
+    !$("updates").hidden
+  );
 }
-setInterval(() => {
-  if (!$("settingsPanel").hidden && !$("updates").hidden)
-    renderUpdateSchedule();
-}, 1000);
+function updateRouteEntry() {
+  const visible = updatesVisible();
+  const entered = visible && !updatesEntryActive;
+  updatesEntryActive = visible;
+  if (!visible) {
+    updatesEntryCheckPending = false;
+    clearTimeout(updateTimer);
+  } else if (entered) {
+    if (updateRequest) updatesEntryCheckPending = true;
+    else void refreshUpdate(true);
+  }
+}
 function renderUpdate() {
   renderHeaderStatus();
   const data = updateData;
   $("restorePersona").disabled =
     historyBusy || updatePending || data?.applying === true;
   if (!data) return;
-  renderUpdateSchedule();
+
   const locked =
     updatePending ||
     data.applying ||
@@ -2681,68 +2659,13 @@ function renderUpdate() {
   $("updateLatest").title = sourceSha(data.latest) ? data.latest : "";
   const guidance =
     updateError ||
-    (data.auto?.enabled && data.guidance?.startsWith("New source available.")
-      ? failedLatest
-        ? "Main differs from the installed source. The last attempt failed; see the upgrade failure below."
-        : "Main differs from the installed source. Automatic upgrade will verify it, then close active native Pi and safely stop the worker before replacing Studio."
-      : data.guidance);
+    data.guidance ||
+    "Open Updates or press Check for updates to check main. Installation requires your confirmation.";
   $("updateStatus").textContent =
     guidance +
     (data.cleanupWarning === true && !/cleanup/i.test(guidance)
       ? " Candidate cleanup is incomplete; repair protected-home permissions before retrying this revision."
       : "");
-  $("updateAuto").disabled =
-    !data.supported || data.auto?.available !== true || updateRequest;
-  $("updateAuto").checked = data.auto?.enabled === true;
-  const autoStates = {
-    running:
-      "Upgrade committed; worker started locally. Check Worker status for ongoing connectivity.",
-    stopped: "Upgrade committed; previously stopped worker remains stopped.",
-    deferred:
-      "Automatic attempt deferred before installation. The launcher did not record a specific reason; see the last upgrade result separately.",
-    suppressed:
-      "Automatic retry suppressed: this revision already failed. Resolve the failure, then retry manually, or wait for a different main revision.",
-    "restored-running":
-      "Upgrade failed; previous runtime restored and worker started locally. Check Worker status.",
-    failed:
-      "Automatic upgrade failed; previous runtime retained. This revision will not retry automatically.",
-    "resume-failed":
-      "Worker restart could not be confirmed. Check Worker status and start it manually if needed; inspect upgrade result separately.",
-  };
-  const deferReasons = {
-    AUTO_UPDATE_BUSY:
-      "Automatic attempt deferred: worker, preview, or native teardown could not safely finish. Check Worker status and the upgrade result; the owner retries on its displayed schedule.",
-    WORKER_STOP_UNCONFIRMED:
-      "Automatic attempt deferred: worker stop could not be confirmed. Check Worker status.",
-    LOCAL_UNAVAILABLE:
-      "Automatic attempt deferred: local Studio communication failed. No source operation was accepted; the supervisor will reconcile worker state before retrying.",
-    AUTO_UPDATE_DISABLED:
-      "Automatic attempt cancelled before installation because automatic updates were disabled or the owner was shutting down.",
-    ARTIFACT_NOT_READY:
-      "Automatic attempt deferred before worker stop: the exact trusted native artifact or synthetic preflight is not ready. External provisioning is required; this same revision will retry after cooldown.",
-  };
-  const autoOutcome = data.autoOutcome;
-  const relevantAuto =
-    autoOutcome &&
-    sourceSha(autoOutcome.sha) &&
-    (autoOutcome.sha === data.latest || autoOutcome.sha === data.installed) &&
-    !(autoOutcome.state === "suppressed" && autoOutcome.sha === data.installed);
-  const historicalAuto =
-    relevantAuto && autoOutcome.state === "deferred" && failedLatest
-      ? "Last attempt for this revision failed. See the failure details before retrying manually."
-      : relevantAuto &&
-          autoOutcome.state === "deferred" &&
-          Object.hasOwn(deferReasons, autoOutcome.reason)
-        ? deferReasons[autoOutcome.reason]
-        : relevantAuto &&
-            sourceSha(data.autoOutcome.sha) &&
-            Object.hasOwn(autoStates, data.autoOutcome.state)
-          ? autoStates[data.autoOutcome.state]
-          : data.supported && data.auto?.available === false
-            ? "Launcher upgrade required. Replace the launcher or container image with the current build, restart the service using the same Coach home, then reload Studio. Source upgrades alone leave the old launcher running."
-            : data.auto?.enabled
-              ? "Enabled. Waiting for a newer verified main revision; after preparation, an upgrade closes native Pi and safely stops the worker. Finish important Pi work first."
-              : "Off. Enable to upgrade from main automatically.";
   const checkErrors = {
     RATE_LIMITED: "GitHub rate limit. Source check failed.",
     FORBIDDEN:
@@ -2750,8 +2673,6 @@ function renderUpdate() {
     UNAVAILABLE:
       "GitHub unavailable or timed out. Source check failed; check network access.",
   };
-  // Older owners only send guidance. Preserve it even when a historical
-  // successful autoOutcome matches the installed revision.
   const checkError = Object.hasOwn(checkErrors, data.checkError)
     ? checkErrors[data.checkError]
     : data.checkError === undefined &&
@@ -2766,22 +2687,11 @@ function renderUpdate() {
       : updateCheckRequested
         ? `Source check requested; waiting for launcher…${checkError ? ` Previous check: ${checkError}` : ""}`
         : checkError;
-  $("updateAutoStatus").textContent =
-    (checkStatus ? `${checkStatus} ` : "") +
-    (relevantAuto
-      ? `Last automatic result: ${historicalAuto}`
-      : historicalAuto);
+  $("updateCheckStatus").textContent = checkStatus;
+  $("updateCheckStatus").dataset.tone = checkError ? "error" : "neutral";
   const validOutcome = !!outcome;
   $("updateOutcome").dataset.tone = failed ? "error" : "neutral";
   $("updateOutcome").setAttribute("role", failed ? "alert" : "status");
-  $("updateAutoStatus").dataset.tone =
-    checkError ||
-    (relevantAuto &&
-      ["failed", "suppressed", "restored-running", "resume-failed"].includes(
-        autoOutcome.state,
-      ))
-      ? "error"
-      : "neutral";
   const failureHelp = !failed
     ? ""
     : outcome.state === "interrupted"
@@ -2833,7 +2743,7 @@ function renderUpdate() {
   if (
     data.recovering &&
     !data.applying &&
-    data.autoOutcome?.state === "resume-failed"
+    data.recoveryOutcome?.state === "resume-failed"
   ) {
     updateRecoveryVisible = true;
     $("restartStatus").textContent =
@@ -2870,9 +2780,7 @@ async function refreshUpdate(check = false) {
     if (updateInitialRevision === undefined)
       updateInitialRevision = data.installed;
     updateData = data;
-    updateClockOffset = Number.isSafeInteger(data.serverNow)
-      ? data.serverNow - Date.now()
-      : 0;
+
     updatePending = data.applying;
     updateError = "";
   } catch {
@@ -2886,7 +2794,21 @@ async function refreshUpdate(check = false) {
     updateCheckRequested = false;
     updateController = undefined;
     renderUpdate();
-    if (key && !document.hidden && !$("studio").hidden)
+    if (updatesEntryCheckPending && updatesVisible() && !document.hidden) {
+      updatesEntryCheckPending = false;
+      void refreshUpdate(true);
+      return;
+    }
+    if (
+      key &&
+      !document.hidden &&
+      !$("studio").hidden &&
+      (updatesVisible() ||
+        updatePending ||
+        updateData?.preparing ||
+        updateData?.applying ||
+        updateData?.recovering)
+    )
       updateTimer = setTimeout(
         () => refreshUpdate(),
         updatePending ||
@@ -2902,22 +2824,6 @@ async function refreshUpdate(check = false) {
 action("updateCheck", async () => {
   $("updateConfirm").hidden = true;
   await refreshUpdate(true);
-});
-$("updateAuto").addEventListener("change", async () => {
-  const enabled = $("updateAuto").checked;
-  $("updateAuto").disabled = true;
-  try {
-    await api("update/auto", { enabled }, AbortSignal.timeout(15000));
-    await refreshUpdate();
-  } catch {
-    $("updateAuto").checked = !enabled;
-    notice(
-      "Could not save automatic update setting. Check Studio connection.",
-      "error",
-    );
-  } finally {
-    renderUpdate();
-  }
 });
 action("updateApply", async () => {
   const generation = authGeneration;
@@ -3082,6 +2988,8 @@ function lockSession(message, severity) {
   updateWorkerBlocked = true;
   workerState = undefined;
   updateData = undefined;
+  updatesEntryActive = false;
+  updatesEntryCheckPending = false;
   updateTarget = undefined;
   $("updateConfirm").hidden = true;
   clearTimeout(logTimer);

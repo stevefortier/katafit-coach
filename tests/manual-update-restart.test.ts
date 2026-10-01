@@ -38,9 +38,15 @@ test("manual update stable owner resumes after replacement and rollback without 
   });
   let latest = "a".repeat(40);
   const bad = "b".repeat(40);
+  let sourceRequests = 0;
+  const realFetch = globalThis.fetch;
   const owner = await supervise(store, 0, undefined, {
-    request: async () =>
-      new Response(JSON.stringify({ object: { sha: latest } })),
+    recoveryTimer: ((callback: (...args: any[]) => void, delay?: number) =>
+      setTimeout(callback, delay === 1 ? 1 : 50)) as typeof setTimeout,
+    request: async () => {
+      sourceRequests++;
+      return new Response(JSON.stringify({ object: { sha: latest } }));
+    },
     prepare: async (sha) => {
       const root = join(home, "versions", sha);
       await mkdir(join(root, "dist/config"), { recursive: true });
@@ -78,24 +84,79 @@ test("manual update stable owner resumes after replacement and rollback without 
       const status = await (
         await fetch(owner.origin + "/api/status", { headers })
       ).json();
-      if (status.state === "idle" && status.safeToReplace) return;
+      const update = await (
+        await fetch(owner.origin + "/api/update", { headers })
+      ).json();
+      if (
+        status.state === "idle" &&
+        status.safeToReplace &&
+        !update.recovering &&
+        !update.applying
+      )
+        return;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.fail("manual admission requires idle publication-safe worker");
   };
   try {
     assert.equal((await post("run")).status, 200);
-    for (const target of [latest, bad]) {
+    for (const target of [latest, bad, "d".repeat(40), "e".repeat(40)]) {
       latest = target;
       owner.updates.checkedAt = 0;
       await post("update/check");
       await waitIdle();
       const pid = owner.pid;
+      const loss =
+        target === "d".repeat(40)
+          ? "resume"
+          : target === "e".repeat(40)
+            ? "status"
+            : "";
+      let lostReplies = 0;
+      if (loss)
+        globalThis.fetch = async (input, init) => {
+          const response = await realFetch(input, init);
+          if (
+            owner.updates.installed === target &&
+            String(input).endsWith(
+              loss === "resume" ? "/api/update/resume" : "/api/status",
+            )
+          ) {
+            lostReplies++;
+            throw new Error("synthetic lost local recovery response");
+          }
+          return response;
+        };
       const accepted = await post("update/apply", {
         sha: target,
         confirm: true,
       });
       assert.equal(accepted.status, 202, await accepted.clone().text());
+      if (loss) {
+        for (
+          let i = 0;
+          i < 200 && (!lostReplies || owner.updates.applying);
+          i++
+        )
+          await new Promise((r) => setTimeout(r, 10));
+        assert.ok(lostReplies > 0);
+        assert.equal(owner.updates.recovering, true);
+        assert.equal(
+          JSON.parse(await readFile(join(home, "update-resume.json"), "utf8"))
+            .pending,
+          true,
+        );
+        const before = sourceRequests;
+        globalThis.fetch = realFetch;
+        for (let i = 0; i < 200 && owner.updates.recovering; i++)
+          await new Promise((r) => setTimeout(r, 10));
+        assert.equal(owner.updates.recovering, false);
+        assert.equal(
+          sourceRequests,
+          before,
+          "accepted recovery cannot discover/reapply source",
+        );
+      }
       let done = false;
       for (let i = 0; i < 160; i++) {
         await new Promise((r) => setTimeout(r, 50));
@@ -129,13 +190,18 @@ test("manual update stable owner resumes after replacement and rollback without 
     // Exhausted resume persists intent; a new stable owner recovers even with
     // automatic updates off and no browser. Never re-apply the source revision.
     latest = "c".repeat(40);
+    await waitIdle();
     owner.updates.checkedAt = 0;
     await post("update/check");
-    await waitIdle();
     unavailable = true;
+    const pendingAccepted = await post("update/apply", {
+      sha: latest,
+      confirm: true,
+    });
     assert.equal(
-      (await post("update/apply", { sha: latest, confirm: true })).status,
+      pendingAccepted.status,
       202,
+      await pendingAccepted.clone().text(),
     );
     for (let i = 0; i < 100 && owner.updates.applying; i++)
       await new Promise((r) => setTimeout(r, 50));
@@ -148,7 +214,13 @@ test("manual update stable owner resumes after replacement and rollback without 
     assert.equal((await post("config", {})).status, 409);
     await owner.close();
     unavailable = false;
-    recoveredOwner = await supervise(store, 0);
+    const beforeRestartChecks = sourceRequests;
+    recoveredOwner = await supervise(store, 0, undefined, {
+      request: async () => {
+        sourceRequests++;
+        throw new Error("recovery must not check source");
+      },
+    });
     let resumed = false;
     for (let i = 0; i < 100; i++) {
       await new Promise((r) => setTimeout(r, 50));
@@ -164,6 +236,7 @@ test("manual update stable owner resumes after replacement and rollback without 
       }
     }
     assert.equal(resumed, true);
+    assert.equal(sourceRequests, beforeRestartChecks);
     assert.equal(recoveredOwner.updates.installed, latest);
     assert.equal(
       JSON.parse(await readFile(join(home, "update-resume.json"), "utf8"))
@@ -171,6 +244,7 @@ test("manual update stable owner resumes after replacement and rollback without 
       false,
     );
   } finally {
+    globalThis.fetch = realFetch;
     await recoveredOwner?.close();
     await owner.close();
     backend.closeAllConnections();

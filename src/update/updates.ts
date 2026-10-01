@@ -1,4 +1,3 @@
-import { isMainDescendant } from "./auto.js";
 import { randomUUID } from "node:crypto";
 import { failureReason, type FailureReason } from "./failure.js";
 export interface LastOperation {
@@ -18,7 +17,7 @@ export class Updates {
   checking = false;
   sourceRetryAt?: number | null;
   private cooldownGeneration = 0;
-  onSourceCooldown?: () => void;
+
   readonly sourceRequest: typeof fetch = async (input, init) => {
     if (this.sourceRetryAt && Date.now() < this.sourceRetryAt)
       throw new Error("RATE_LIMITED");
@@ -58,7 +57,6 @@ export class Updates {
         this.latest = null;
         this.checkError = "RATE_LIMITED";
         this.guidance = "GitHub rate limit. Source check failed.";
-        this.onSourceCooldown?.();
       }
       await response.body?.cancel();
       throw new Error(limited ? "RATE_LIMITED" : "FORBIDDEN");
@@ -66,47 +64,20 @@ export class Updates {
     return response;
   };
   checkError: "RATE_LIMITED" | "FORBIDDEN" | "UNAVAILABLE" | null = null;
-  // Only the stable owner sets this, at the point it arms its actual timer.
-  // Missing means an older owner, not a deadline inferred from checkedAt.
-  autoSchedule?: {
-    nextAttemptAt: number | null;
-    reason: "poll" | "check-failed" | "readiness" | "recovery" | "running";
-  };
   applying = false;
   preparing = false;
   preparationSupported = false;
   manualRestartSupported = false;
   recovering = false;
   cleanupWarning = false;
-  autoOutcome?: {
+  recoveryOutcome?: {
     sha: string;
     state: string;
-    reason?:
-      | "FAILED_TARGET"
-      | "AUTO_UPDATE_BUSY"
-      | "WORKER_STOP_UNCONFIRMED"
-      | "LOCAL_UNAVAILABLE"
-      | "ARTIFACT_NOT_READY"
-      | "AUTO_UPDATE_DISABLED";
+    reason?: "LOCAL_UNAVAILABLE";
   };
   accepted: Promise<void> = Promise.resolve();
   lastOperation: LastOperation | undefined;
   guidance = "Use a managed Linux launcher to enable upgrades.";
-  private comparison?: { key: string; result: Promise<boolean> };
-  async isDescendant(installed: string, latest: string): Promise<boolean> {
-    if (this.sourceRetryAt && Date.now() < this.sourceRetryAt) return false;
-    const key = `${installed}...${latest}`;
-    if (this.comparison?.key === key) return this.comparison.result;
-    const entry = {
-      key,
-      result: isMainDescendant(installed, latest, this.sourceRequest),
-    };
-    this.comparison = entry;
-    const result = await entry.result;
-    // Keep only proven ancestry, never cache a transport denial as eligibility.
-    if (!result && this.comparison === entry) this.comparison = undefined;
-    return result;
-  }
   private pending?: Promise<ReturnType<Updates["snapshot"]>>;
   constructor(
     public installed: string | null,
@@ -128,7 +99,7 @@ export class Updates {
       checking: this.checking,
       checkError: this.checkError,
       sourceRetryAt: this.sourceRetryAt,
-      autoSchedule: this.autoSchedule,
+
       supported: !!this.applyTarget,
       applying: this.applying,
       preparing: this.preparing,
@@ -138,7 +109,7 @@ export class Updates {
       cleanupWarning: this.cleanupWarning,
       guidance: this.guidance,
       lastOperation: this.lastOperation,
-      autoOutcome: this.autoOutcome,
+      recoveryOutcome: this.recoveryOutcome,
     };
   }
   validate(sha: unknown): string {
@@ -231,11 +202,6 @@ export class Updates {
       if (this.persist) await this.accepted;
       await this.applyTarget!(sha);
       this.installed = sha;
-      if (
-        this.autoOutcome?.sha === sha &&
-        this.autoOutcome.state === "suppressed"
-      )
-        this.autoOutcome = undefined;
       this.guidance =
         "Upgrade healthy. Worker remains stopped; preview before Run." +
         (this.cleanupWarning
@@ -267,14 +233,11 @@ export class Updates {
       this.applying = false;
     }
   }
-  async check(automatic = false) {
+  async check() {
     if (this.pending) return this.pending;
     if (this.sourceRetryAt && Date.now() < this.sourceRetryAt)
       return this.snapshot();
-    if (
-      this.checkedAt &&
-      Date.now() - this.checkedAt < (automatic ? 900000 : 60000)
-    )
+    if (this.checkedAt && Date.now() - this.checkedAt < 60000)
       return this.snapshot();
     this.checkedAt = Date.now();
     this.latest = null;
