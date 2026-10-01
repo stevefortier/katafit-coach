@@ -321,7 +321,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           "/api/dashboard": { users: [], activities: [], hasMore: false },
           "/api/dashboard/timeline": {
             users: [],
-            activities: [],
+            events: [],
             hasMore: false,
             nextCursor: null,
           },

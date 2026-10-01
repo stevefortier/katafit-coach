@@ -625,9 +625,126 @@ window.CoachDashboard = (() => {
     survey: "#f59e0b",
     status_change: "#6b7280",
   };
-  async function loadTimeline(adminKey) {
+  function eventLabel(kind) {
+    return typeof kind === "string" ? kind.replace(/[._]/g, " ") : "Event";
+  }
+  function showEvent(item, name) {
+    if (suppressedMembers.has(item.user_id)) return;
+    selectionEpoch++;
+    highlightActivity(null);
+    for (const mark of document.querySelectorAll(".dashboard-timeline-mark"))
+      mark.setAttribute(
+        "aria-pressed",
+        String(mark.dataset.eventId === item.id),
+      );
+    const heading = text(
+      "h3",
+      `${name} · ${eventLabel(item.event_type)}`,
+      "dashboard-event-detail",
+    );
+    heading.dataset.memberId = item.user_id;
+    const rows = [
+      heading,
+      text(
+        "p",
+        `Occurred: ${new Date(item.occurred_at).toLocaleString([], { timeZoneName: "short" })} · ${item.occurred_at}`,
+      ),
+      text(
+        "p",
+        `Subject: ${item.subject?.type || "Unavailable"} · ${item.subject?.id || "Unavailable"}`,
+      ),
+      text(
+        "p",
+        `Actor: ${item.actor_type || "Unavailable"} · Source: ${item.source || "Unavailable"}`,
+      ),
+    ];
+    const details = item.details || {};
+    if (
+      Number.isSafeInteger(details.exercise_index) &&
+      details.exercise_index >= 0 &&
+      Number.isSafeInteger(details.set_index) &&
+      details.set_index >= 0
+    )
+      rows.push(
+        text(
+          "p",
+          `Exercise ${details.exercise_index + 1} · Set ${details.set_index + 1}`,
+        ),
+      );
+    if (
+      Number.isFinite(details.previous_quantity) &&
+      Number.isFinite(details.quantity) &&
+      typeof details.previous_unit === "string" &&
+      details.previous_unit.length <= 128 &&
+      typeof details.unit === "string" &&
+      details.unit.length <= 128
+    )
+      rows.push(
+        text(
+          "p",
+          `${details.previous_quantity} ${details.previous_unit} → ${details.quantity} ${details.unit}`,
+        ),
+      );
+    // Render only bounded scalar DTO fields, never raw source documents, HTML or URLs.
+    const allowed = new Set([
+      "from_status",
+      "to_status",
+      "food_id",
+      "food_index",
+      "change",
+      "instance_id",
+      "legacy_index",
+      "quantity",
+      "unit",
+      "previous_quantity",
+      "previous_unit",
+      "changed_fields",
+      "question_count",
+      "answered_count",
+      "file_count",
+      "accepted_count",
+      "rejected_count",
+      "measurement_count",
+      "exercise_count",
+      "set_count",
+      "food_count",
+      "event_id",
+      "session_id",
+      "sequence",
+      "platform",
+      "observed_at",
+      "start_reason",
+      "exercise_id",
+      "set_id",
+      "set_index",
+      "exercise_index",
+    ]);
+    for (const [key, value] of Object.entries(item.details || {})) {
+      if (!allowed.has(key)) continue;
+      const values = Array.isArray(value) ? value.slice(0, 100) : [value];
+      const safe = values.filter(
+        (v) =>
+          (typeof v === "string" && v.length <= 1024) ||
+          typeof v === "boolean" ||
+          (typeof v === "number" && Number.isFinite(v)),
+      );
+      if (safe.length)
+        rows.push(text("p", `${eventLabel(key)}: ${safe.join(", ")}`));
+    }
+    rows.push(
+      text(
+        "p",
+        "Authorized historical event snapshot. The subject may have changed or been deleted; live activity detail is not required.",
+        "hint",
+      ),
+    );
+    $("dashboardMapSelection").replaceChildren(...rows);
+  }
+  async function loadTimeline(adminKey, resume = null) {
     const target = $("dashboardTimeline");
     if (!target) return;
+    selectionEpoch++;
+    $("dashboardMapSelection").replaceChildren();
     const id = ++timelineEpoch;
     timelineController?.abort();
     timelineController = new AbortController();
@@ -639,18 +756,33 @@ window.CoachDashboard = (() => {
     for (const old of target.querySelectorAll(":scope > p, :scope > button"))
       old.remove();
     filterTimeline = () => {
+      const selectedEvent = $("dashboardMapSelection").querySelector(
+        ".dashboard-event-detail",
+      );
+      if (
+        selectedEvent &&
+        suppressedMembers.has(selectedEvent.dataset.memberId)
+      ) {
+        selectionEpoch++;
+        $("dashboardMapSelection").replaceChildren();
+      }
       for (const mark of target.querySelectorAll(".dashboard-timeline-mark")) {
         if (suppressedMembers.has(mark.dataset.memberId)) mark.remove();
         else
           mark.hidden =
             !!selectedMember && selectedMember !== mark.dataset.memberId;
       }
+      const count = target.querySelector(".dashboard-timeline-count");
+      if (count) {
+        const marks = [...target.querySelectorAll(".dashboard-timeline-mark")];
+        count.textContent = `${marks.filter((mark) => !mark.hidden).length} visible · ${marks.length} loaded events across all members`;
+      }
     };
-    const status = text("p", "Loading shared day activities…", "hint");
+    const status = text("p", "Loading authorized day events…", "hint");
     status.setAttribute("role", "status");
     target.append(status);
     if (!validDay(date)) {
-      status.textContent = "Choose a valid activity creation date.";
+      status.textContent = "Choose a valid event date.";
       return;
     }
     const [year, month, day] = date.split("-").map(Number);
@@ -660,10 +792,12 @@ window.CoachDashboard = (() => {
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
     try {
-      const users = new Map(),
-        items = new Map();
-      let cursor,
+      const users = resume?.users || new Map(),
+        items = resume?.items || new Map();
+      let cursor = resume?.cursor,
+        coverage = resume?.coverage,
         pages = 0;
+      const seenCursors = new Set();
       do {
         const query = new URLSearchParams({
           date,
@@ -686,38 +820,39 @@ window.CoachDashboard = (() => {
         if (!live()) return;
         if (
           !Array.isArray(data.users) ||
-          !Array.isArray(data.activities) ||
+          !Array.isArray(data.events) ||
           typeof data.hasMore !== "boolean"
         )
           throw new Error("Invalid timeline response");
+        coverage = data.coverage || coverage;
         for (const user of data.users) users.set(user._id, user);
-        for (const item of data.activities) {
-          const stamp = Date.parse(item.created_at);
+        for (const item of data.events) {
+          const stamp = Date.parse(item.occurred_at);
           if (
-            typeof item._id !== "string" ||
+            typeof item.id !== "string" ||
             typeof item.user_id !== "string" ||
             !Number.isFinite(stamp) ||
             stamp < +start ||
             stamp >= +end ||
-            items.has(item._id)
+            items.has(item.id)
           )
-            throw new Error("Invalid timeline activity");
-          items.set(item._id, item);
+            throw new Error("Invalid timeline event");
+          items.set(item.id, item);
         }
         pages++;
         if (
-          items.size > 5000 ||
-          (data.hasMore &&
-            (pages >= 50 ||
-              typeof data.nextCursor !== "string" ||
-              !data.nextCursor ||
-              data.nextCursor === cursor))
+          data.hasMore &&
+          (typeof data.nextCursor !== "string" ||
+            !data.nextCursor ||
+            data.nextCursor === cursor ||
+            seenCursors.has(data.nextCursor))
         )
           throw new Error("Timeline display limit or nonadvancing cursor");
         cursor = data.hasMore ? data.nextCursor : undefined;
-      } while (cursor);
+        if (cursor) seenCursors.add(cursor);
+      } while (cursor && pages < 10);
       if (!live()) return;
-      status.textContent = `Created-time points · ${date} · device timezone · not activity duration.`;
+      status.textContent = `All authorized event types · ${date} · device timezone · occurrence times, not activity duration. ${cursor ? "More events available; partial day. Load more to continue." : "Complete loaded pages."} Historical aggregate events may not contain individual sets/items; no reconstruction is inferred.`;
       const legend = text("div", "", "dashboard-timeline-legend");
       legend.setAttribute("aria-label", "Activity type colors");
       for (const [type, color] of Object.entries(activityColors)) {
@@ -739,12 +874,12 @@ window.CoachDashboard = (() => {
       const lanes = [];
       for (const item of [...items.values()].sort(
         (a, b) =>
-          Date.parse(a.created_at) - Date.parse(b.created_at) ||
-          a._id.localeCompare(b._id),
+          Date.parse(a.occurred_at) - Date.parse(b.occurred_at) ||
+          a.id.localeCompare(b.id),
       )) {
         if (suppressedMembers.has(item.user_id)) continue;
         const fraction =
-            (Date.parse(item.created_at) - +start) / (+end - +start),
+            (Date.parse(item.occurred_at) - +start) / (+end - +start),
           x = fraction * 640;
         let lane = lanes.findIndex((last) => x - last >= 24);
         if (lane < 0) lane = lanes.length;
@@ -752,19 +887,20 @@ window.CoachDashboard = (() => {
         const name = users.get(item.user_id)?.display_name || "Member";
         const mark = text("button", "", "dashboard-timeline-mark");
         mark.type = "button";
-        mark.dataset.activityId = item._id;
+        mark.dataset.eventId = item.id;
         mark.dataset.memberId = item.user_id;
-        mark.dataset.activityType = item.type;
+        mark.dataset.eventType = item.event_type;
         mark.style.left = `${fraction * 100}%`;
         mark.style.top = `${lane * 26}px`;
-        mark.style.backgroundColor = activityColors[item.type] || "#6b7280";
+        mark.style.backgroundColor =
+          activityColors[item.event_type?.split(".")[0]] || "#6b7280";
         mark.setAttribute(
           "aria-label",
-          `${name} · ${item.type} · ${item.name || "Activity"} · created ${new Date(item.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" })}`,
+          `${name} · ${eventLabel(item.event_type)} · ${new Date(item.occurred_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" })}`,
         );
         mark.title = mark.getAttribute("aria-label");
         mark.setAttribute("aria-pressed", "false");
-        mark.onclick = () => void selectActivity(item, name, adminKey, true);
+        mark.onclick = () => showEvent(item, name);
         track.append(mark);
       }
       const height = Math.max(30, lanes.length * 26);
@@ -793,13 +929,37 @@ window.CoachDashboard = (() => {
         label.style.top = `${height}px`;
         track.append(label);
       }
-      target.replaceChildren(status, legend, scroll);
+      const count = text("div", "", "dashboard-timeline-count");
+      count.setAttribute("role", "status");
+      target.replaceChildren(status, count, legend, scroll);
+      if (cursor) {
+        const more = text("button", "Load more events");
+        more.type = "button";
+        more.onclick = () => {
+          more.disabled = true;
+          void loadTimeline(adminKey, { users, items, cursor, coverage });
+        };
+        target.append(more);
+      }
+      if (coverage && typeof coverage === "object") {
+        const summary = text("details");
+        summary.append(text("summary", "Backend event coverage"));
+        // Coverage is a bounded backend DTO, not raw source activity data.
+        summary.append(
+          text("pre", JSON.stringify(coverage, null, 2).slice(0, 8000)),
+        );
+        target.append(summary);
+      }
       filterTimeline();
     } catch (error) {
       if (!live()) return;
-      if (denied(error))
+      if (denied(error)) {
+        $("dashboardMapSelection").replaceChildren();
+        selectionEpoch++;
         for (const mark of target.querySelectorAll(".dashboard-timeline-mark"))
           mark.remove();
+        filterTimeline();
+      }
       status.textContent = `Timeline unavailable${error.status ? ` (${error.status})` : ""}; try again.`;
       const retry = text("button", "Retry timeline");
       retry.type = "button";
