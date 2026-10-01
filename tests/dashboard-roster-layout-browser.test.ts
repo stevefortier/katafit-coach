@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
 import sharp from "sharp";
 
 // Synthetic authorized avatar bytes; real dashboard renderer and production CSS.
-test("roster keeps All members above the scrolling member slots", async () => {
+test("roster covers full-height slots with decoded larger avatars and cached selection", async () => {
   const image = await sharp(
     Buffer.from(
-      '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="300"><rect width="100" height="300" fill="#365878"/><circle cx="50" cy="35" r="20" fill="#deb998"/><path d="M25 65h50v140H25zM25 205h20v90H25zM55 205h20v90H55z" fill="#deb998"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg" width="341" height="512" viewBox="0 0 100 150"><defs><pattern id="grid" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#365878"/><path d="M0 0h4v4" stroke="#7194ad" stroke-width=".4"/></pattern></defs><rect width="100" height="150" fill="url(#grid)"/><circle cx="50" cy="20" r="12" fill="#deb998"/><path d="M32 35h36v65H32zM32 100h14v45H32zM54 100h14v45H54z" fill="#deb998"/><path d="M36 42h28M36 46h28M36 50h28M36 54h28M36 58h28" stroke="#a67a60" stroke-width=".6"/></svg>',
     ),
   )
     .png()
     .toBuffer();
+  const avatarReads: string[] = [];
+  const snapshots: unknown[] = [];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url!, "http://fixture");
     if (["/dashboard.js", "/style.css"].includes(url.pathname)) {
@@ -25,9 +27,10 @@ test("roster keeps All members above the scrolling member slots", async () => {
     } else if (url.pathname === "/") {
       res.setHeader("content-type", "text/html");
       res.end(
-        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><style>body{margin:0;padding:12px}#dashboardPanel{max-width:1100px;margin:auto}header{position:fixed;top:0;height:40px;width:100%;background:#111;z-index:12}#studioNotice{position:fixed;top:40px;height:20px;width:100%;background:#222;z-index:11}:root{--header-offset:40px;--notice-offset:20px}.spacer{height:180px}.tail{height:1600px}</style><header>Fixture chrome</header><div id="studioNotice">Fixture notice</div><section id="dashboardPanel"><div class="spacer"></div><input id="dashboardMapDate" type="date"><div id="dashboardMapStatus"></div><div id="dashboardMap"></div><div id="dashboardMapSelection"></div><h3 id="dashboardMemberHeading"></h3><div id="dashboardMemberCards" class="dashboard-member-cards" role="group" aria-label="Member filters"></div><div id="dashboardStatus"></div><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div><div class="tail"></div></section><script src="/dashboard.js"></script>',
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><style>body{margin:0;padding:12px}#dashboardPanel{max-width:1100px;margin:auto}header{position:fixed;top:0;height:40px;width:100%;background:#111;z-index:12}#studioNotice{position:fixed;top:40px;height:20px;width:100%;background:#222;z-index:11}:root{--header-offset:40px;--notice-offset:20px}.spacer{height:180px}.tail{height:1600px}</style><header>SYNTHETIC roster · 341 × 512 PNG</header><div id="studioNotice">Fixture data · production CSS</div><section id="dashboardPanel"><div class="spacer"></div><input id="dashboardMapDate" type="date"><div id="dashboardMapStatus"></div><div id="dashboardMap"></div><div id="dashboardMapSelection"></div><h3 id="dashboardMemberHeading"></h3><div id="dashboardMemberCards" class="dashboard-member-cards" role="group" aria-label="Member filters"></div><div id="dashboardStatus"></div><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div><div class="tail"></div></section><script src="/dashboard.js"></script>',
       );
     } else if (url.pathname === "/api/dashboard/avatar") {
+      avatarReads.push(url.searchParams.get("id")!);
       res.statusCode =
         url.searchParams.get("id") === "aaaaaaaaaaaaaaaaaaaaaaaa" ? 200 : 404;
       res.setHeader("content-type", "image/png");
@@ -45,11 +48,15 @@ test("roster keeps All members above the scrolling member slots", async () => {
                 stats: { height_cm: 170, weight: { value: 68, unit: "kg" } },
               },
               {
-                _id: "bob",
+                _id: "bbbbbbbbbbbbbbbbbbbbbbbb",
                 display_name: "Synthetic Bob (no image)",
                 stats: {},
               },
-              { _id: "cy", display_name: "Synthetic Cy", stats: {} },
+              {
+                _id: "cccccccccccccccccccccccc",
+                display_name: "Synthetic Cy",
+                stats: {},
+              },
             ],
           }),
         );
@@ -87,7 +94,7 @@ test("roster keeps All members above the scrolling member slots", async () => {
           document.querySelector(
             ".dashboard-member-portrait img",
           ) as HTMLImageElement
-        ).naturalHeight > 0,
+        ).naturalHeight === 512,
     );
     for (const width of [320, 390, 1440]) {
       await page.setViewportSize({ width, height: 900 });
@@ -130,6 +137,9 @@ test("roster keeps All members above the scrolling member slots", async () => {
         const rect = card.getBoundingClientRect();
         const photo = portrait.getBoundingClientRect();
         return {
+          imageBox: image.getBoundingClientRect().toJSON(),
+          photo: photo.toJSON(),
+          native: [image.naturalWidth, image.naturalHeight],
           top: photo.top,
           bottom: photo.bottom,
           innerTop: rect.top + parseFloat(style.borderTopWidth),
@@ -148,6 +158,17 @@ test("roster keeps All members above the scrolling member slots", async () => {
           ).every((node) => node.getBoundingClientRect().right <= rect.right),
         };
       });
+      assert.deepEqual(
+        photoGeometry.native,
+        [341, 512],
+        "actual PNG bytes decode at larger native dimensions, not an enlarged 64px fixture",
+      );
+      assert.deepEqual(
+        photoGeometry.imageBox,
+        photoGeometry.photo,
+        "image element occupies the entire full-height photo zone",
+      );
+      snapshots.push({ width, phase: "initial", photoGeometry });
       assert.equal(
         photoGeometry.top,
         photoGeometry.innerTop,
@@ -160,8 +181,8 @@ test("roster keeps All members above the scrolling member slots", async () => {
       );
       assert.equal(
         photoGeometry.fit,
-        "contain",
-        "full body image is not cropped",
+        "cover",
+        "photo fills the full rectangular zone without letterbox bands",
       );
       assert.equal(
         photoGeometry.radius,
@@ -231,13 +252,30 @@ test("roster keeps All members above the scrolling member slots", async () => {
           "mid-rail selection retains the exact offset",
         );
       }
+      await page
+        .locator(".dashboard-member-portrait img")
+        .evaluate((el) => (el as HTMLImageElement).decode());
+      const cached = await page
+        .locator(".dashboard-member-portrait img")
+        .evaluate((el) => {
+          const image = el as HTMLImageElement;
+          return {
+            fit: getComputedStyle(image).objectFit,
+            radius: getComputedStyle(image).borderRadius,
+            native: [image.naturalWidth, image.naturalHeight],
+            box: image.getBoundingClientRect().toJSON(),
+            photo: image.parentElement!.getBoundingClientRect().toJSON(),
+          };
+        });
+      assert.equal(cached.radius, "0px", "cached rerender remains rectangular");
       assert.equal(
-        await page
-          .locator(".dashboard-member-portrait img")
-          .evaluate((el) => getComputedStyle(el).borderRadius),
-        "0px",
-        "cached rerender remains rectangular",
+        cached.fit,
+        "cover",
+        "cached rerender still fills the photo zone",
       );
+      assert.deepEqual(cached.native, [341, 512]);
+      assert.deepEqual(cached.box, cached.photo);
+      snapshots.push({ width, phase: "cached", cached });
       await rail.evaluate((el) => {
         el.scrollLeft = 0;
       });
@@ -284,6 +322,20 @@ test("roster keeps All members above the scrolling member slots", async () => {
         await page.screenshot({ path: `${evidence}/roster-${width}.png` });
       }
     }
+    assert.deepEqual(
+      avatarReads,
+      [
+        "aaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbb",
+        "cccccccccccccccccccccccc",
+      ],
+      "selection, viewport changes and cached rerenders do not download avatars again",
+    );
+    if (process.env.COACH_ROSTER_EVIDENCE)
+      await writeFile(
+        `${process.env.COACH_ROSTER_EVIDENCE}/synthetic-roster-geometry.json`,
+        JSON.stringify(snapshots, null, 2),
+      );
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

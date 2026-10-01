@@ -10,7 +10,7 @@ import { admin } from "../src/server/admin.js";
 test("served dashboard uses ordinary feed, social detail and binary media with backend denial", async () => {
   const home = await mkdtemp(tmpdir() + "/rest-dashboard-");
   const image = await sharp({
-    create: { width: 2, height: 2, channels: 3, background: "red" },
+    create: { width: 341, height: 512, channels: 3, background: "red" },
   })
     .png()
     .toBuffer();
@@ -73,7 +73,7 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
       );
     else if (
       req.url === "/api/media/act/files/file" ||
-      req.url === "/api/users/aaaaaaaaaaaaaaaaaaaaaaaa/avatar/64"
+      req.url === "/api/users/aaaaaaaaaaaaaaaaaaaaaaaa/avatar/512"
     ) {
       res.setHeader("content-type", "image/png");
       res.end(image);
@@ -124,7 +124,38 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     );
     assert.equal(avatar.status, 200);
     assert.equal(avatar.headers.get("content-type"), "image/png");
-    assert.deepEqual(Buffer.from(await avatar.arrayBuffer()), image);
+    const avatarBytes = Buffer.from(await avatar.arrayBuffer());
+    assert.deepEqual(avatarBytes, image);
+    const avatarMetadata = await sharp(avatarBytes).metadata();
+    assert.deepEqual(
+      [avatarMetadata.width, avatarMetadata.height],
+      [341, 512],
+      "avatar response preserves actual larger upstream bytes and aspect ratio",
+    );
+    const callsBeforeInvalidAvatars = calls.length;
+    for (const query of [
+      "",
+      "?id=../x",
+      "?id=" + "a".repeat(23),
+      "?id=" + "a".repeat(25),
+      "?id=" + "A".repeat(24),
+      "?id=" + "g".repeat(24),
+      "?id=aaaaaaaaaaaaaaaaaaaaaaaa&id=bbbbbbbbbbbbbbbbbbbbbbbb",
+      "?id=aaaaaaaaaaaaaaaaaaaaaaaa&size=1024",
+      "?id=aaaaaaaaaaaaaaaaaaaaaaaa&original=true",
+      "?id=aaaaaaaaaaaaaaaaaaaaaaaa&redirect=https://example.org",
+    ])
+      assert.equal(
+        (await fetch(base + "/api/dashboard/avatar" + query, { headers }))
+          .status,
+        400,
+        `malformed avatar query must be rejected: ${query}`,
+      );
+    assert.equal(
+      calls.length,
+      callsBeforeInvalidAvatars,
+      "malformed and caller-selected sizes never reach upstream",
+    );
     assert.equal(
       (await fetch(base + "/api/dashboard/avatar?id=../x", { headers })).status,
       400,
@@ -178,7 +209,7 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     assert.equal(photo.status, 200);
     assert.deepEqual(Buffer.from(await photo.arrayBuffer()), image);
     assert.deepEqual(calls, [
-      "/api/users/aaaaaaaaaaaaaaaaaaaaaaaa/avatar/64",
+      "/api/users/aaaaaaaaaaaaaaaaaaaaaaaa/avatar/512",
       "/api/friends/feed/dojo?limit=20",
       "/api/friends/dojo/dashboard-members",
       "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100",

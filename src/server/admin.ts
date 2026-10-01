@@ -455,7 +455,7 @@ export async function admin(
           const id = params.get("id");
           if (!id || !/^[a-f0-9]{24}$/.test(id))
             throw new SafeError("ARGUMENTS_REJECTED");
-          target = `/api/users/${id}/avatar/64`;
+          target = `/api/users/${id}/avatar/512`;
         } else if (url.pathname === "/api/dashboard/members") {
           if (params.size) throw new SafeError("ARGUMENTS_REJECTED");
           target = "/api/friends/dojo/dashboard-members";
