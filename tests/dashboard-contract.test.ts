@@ -288,7 +288,7 @@ test("a true 403 purges that member's cached detail charts and photos; 429 does 
   assert.doesNotMatch(throttled.nodes.dashboardStatus.textContent, /denied/i);
 });
 
-test("strict body numbers and explicit weight/fat limits, never arbitrary unit inference", async () => {
+test("strict body numbers and explicit weight limits, never manual body fat or arbitrary unit inference", async () => {
   const r = await render([
     metric([
       { type_id: "weight", value: "80.5", unit: "kg" },
@@ -306,11 +306,7 @@ test("strict body numbers and explicit weight/fat limits, never arbitrary unit i
   ]);
   assert.deepEqual(
     r.labels().filter((s: string) => s.startsWith("Synthetic Ada:")),
-    [
-      "Synthetic Ada: 2026-09-28, 80.5 kg",
-      "Synthetic Ada: 2026-09-28, 176 lb",
-      "Synthetic Ada: 2026-09-28, 20 %",
-    ],
+    ["Synthetic Ada: 2026-09-28, 80.5 kg", "Synthetic Ada: 2026-09-28, 176 lb"],
   );
 });
 test("Health Connect stored lb requires exact provider, valid adjacent leaf day and identical value", async () => {
@@ -411,8 +407,9 @@ test("gallery uses latest completed check-in per loaded member, not generic acti
   );
   assert.ok(r.labels().some((s: string) => s.includes("80 kg")));
   assert.match(r.nodes.dashboardStatus.textContent, /partial history/);
-  // Supply canonical detail for the older metric before paging.
+  // Supply canonical details for all older chart inputs before paging.
   rows.push(
+    photo("earliest", "20"),
     metric([{ type_id: "weight", value: 79, unit: "kg" }], {
       _id: "oldmetric",
       created_at: "2026-09-20T12:00:00Z",
