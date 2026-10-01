@@ -86,8 +86,13 @@ test("map-independent member filtering clears event selection and fences held ol
       await page.locator("#dashboardMapDate").dispatchEvent("change");
     };
     await change("2026-11-01");
-    await page.locator('[data-event-id="2026-11-01-2"]').waitFor();
-    await page.locator('[data-event-id="2026-11-01-0"]').click();
+    await page
+      .locator('[data-event-id="2026-11-01-2"]')
+      .waitFor({ state: "attached" });
+    await page.locator(".dashboard-timeline-cluster").click();
+    await page
+      .locator('.dashboard-timeline-choice[data-event-id="2026-11-01-0"]')
+      .click();
     await page
       .locator(
         `#dashboardMemberCards .dashboard-member-portrait[data-member-id="${bob}"]`,
@@ -109,15 +114,14 @@ test("map-independent member filtering clears event selection and fences held ol
     await page
       .getByRole("button", { name: "All members", exact: true })
       .click();
-    assert.equal(
-      await page.locator(".dashboard-timeline-mark:visible").count(),
-      3,
-    );
+    assert.equal(await page.locator(".dashboard-timeline-mark").count(), 3);
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
     await change("2026-11-02");
     await began;
     await change("2026-11-03");
-    await page.locator('[data-event-id="2026-11-03-2"]').waitFor();
+    await page
+      .locator('[data-event-id="2026-11-03-2"]')
+      .waitFor({ state: "attached" });
     await page
       .locator(
         `#dashboardMemberCards .dashboard-member-portrait[data-member-id="${bob}"]`,
