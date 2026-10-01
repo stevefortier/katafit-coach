@@ -423,7 +423,8 @@ export async function admin(
             ? ["before"]
             : url.pathname === "/api/dashboard/members"
               ? []
-              : url.pathname === "/api/dashboard/map"
+              : url.pathname === "/api/dashboard/map" ||
+                  url.pathname === "/api/dashboard/timeline"
                 ? ["date", "start", "end", "cursor"]
                 : url.pathname === "/api/dashboard/activity"
                   ? ["id"]
@@ -467,7 +468,10 @@ export async function admin(
             (before.length > 64 || !Number.isFinite(Date.parse(before)))
           )
             throw new SafeError("ARGUMENTS_REJECTED");
-          if (url.pathname === "/api/dashboard/map") {
+          if (
+            url.pathname === "/api/dashboard/map" ||
+            url.pathname === "/api/dashboard/timeline"
+          ) {
             const date = params.get("date");
             const start = params.get("start");
             const end = params.get("end");
@@ -498,7 +502,9 @@ export async function admin(
             )
               throw new SafeError("ARGUMENTS_REJECTED");
             target =
-              "/api/friends/dojo/positioned-activities?start=" +
+              (url.pathname === "/api/dashboard/timeline"
+                ? "/api/friends/dojo/day-activities?start="
+                : "/api/friends/dojo/positioned-activities?start=") +
               encodeURIComponent(start) +
               "&end=" +
               encodeURIComponent(end) +

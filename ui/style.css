@@ -1717,3 +1717,96 @@ html.coach-covered #workspaceScroll {
     padding: 8px;
   }
 }
+
+/* Functional activity-type encoding, not decorative application accents. */
+.dashboard-map-column,
+.dashboard-timeline {
+  min-width: 0;
+  max-width: 100%;
+}
+.dashboard-timeline {
+  margin-top: 8px;
+}
+.dashboard-timeline > p {
+  margin: 4px 0;
+  font-size: 11px;
+}
+.dashboard-timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+}
+.dashboard-timeline-legend span {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.dashboard-timeline-swatch {
+  width: 4px;
+  height: 12px;
+  order: -1;
+}
+.dashboard-timeline-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 8px 12px 0;
+}
+.dashboard-timeline-track {
+  position: relative;
+  min-width: 640px;
+  margin-right: 16px;
+}
+.dashboard-timeline-mark {
+  position: absolute;
+  background-image: linear-gradient(
+    to right,
+    var(--panel) 0 5px,
+    transparent 5px 11px,
+    var(--panel) 11px 16px
+  );
+  width: 16px;
+  min-width: 16px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  transform: translateX(-50%);
+}
+.dashboard-timeline-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0 6px;
+  background: currentColor;
+  opacity: 0.3;
+}
+.dashboard-timeline-mark[aria-pressed="true"],
+.dashboard-activity-pin[aria-pressed="true"] {
+  outline: 2px solid white;
+  outline-offset: 2px;
+}
+.dashboard-timeline-mark:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 3px;
+}
+.dashboard-timeline-tick {
+  position: absolute;
+  white-space: nowrap;
+  border-left: 1px solid var(--border);
+  padding: 5px 0 0 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.dashboard-timeline-end {
+  transform: translateX(-100%);
+  border-left: 0;
+  border-right: 1px solid var(--border);
+  padding-right: 3px;
+}
+
+.dashboard-timeline-tick:not(.dashboard-timeline-start):not(
+    .dashboard-timeline-end
+  ) {
+  transform: translateX(-50%);
+}
