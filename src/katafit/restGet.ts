@@ -73,7 +73,7 @@ export function restPath(args: unknown): string {
 export const restRequestTool = {
   name: "katafit_rest_request",
   description:
-    "Call ordinary Kata.fit HTTP APIs as the current account. First GET /api/docs/coach, then GET the relevant domain path from that index; follow documented methods, parameters and bodies, never guess routes. Backend authorizes every new request. Relative /api/ paths only; no caller headers or credentials. JSON bodies/results are bounded; validated images are supported. Execute sequentially. Read before requested changes and read back canonical state afterwards. Never replay uncertain mutations. See katafit-api skill.",
+    "Call ordinary Kata.fit HTTP APIs as the current account. First GET /api/docs/coach, then GET the relevant domain path from that index; follow documented methods, parameters and bodies, never guess routes. Backend authorizes every new request. Relative /api/ paths only; no caller headers or credentials. JSON bodies/results are bounded; validated images are supported. Execute sequentially. Read before requested changes and read back canonical state afterwards. For an explicitly requested message to a current Dojo roster recipient, including the dojo chief, POST /api/coach/member-messages/:recipient_id with exactly {text}; the host supplies and verifies the delivery key, so never supply idempotency_key. A request-validation rejection is not evidence that the recipient is ineligible. Never replay uncertain mutations. See katafit-api skill.",
   parameters: {
     type: "object",
     additionalProperties: false,
