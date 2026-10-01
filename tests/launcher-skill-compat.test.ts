@@ -87,6 +87,18 @@ test("old owner's candidate probe rejects the new catalog before update acceptan
       join(owner, "dist", "config", "skills.js"),
       'export const stockSkills = [{id:"katafit-api"}]; export const launcherSkillCatalog = 2;',
     );
+    const automaticOwner = run();
+    assert.notEqual(
+      automaticOwner.status,
+      0,
+      "matching catalog cannot prove manual-only source ownership",
+    );
+    assert.match(automaticOwner.stderr, /LAUNCHER_UPGRADE_REQUIRED/);
+    assert.deepEqual(await readdir(home), []);
+    await writeFile(
+      join(owner, "dist", "update", "capability.js"),
+      "export const manualOnlySourceUpdates = 1;",
+    );
     const accepted = run();
     assert.equal(accepted.status, 0, accepted.stderr);
     assert.deepEqual(
@@ -98,7 +110,11 @@ test("old owner's candidate probe rejects the new catalog before update acceptan
   }
 });
 
-async function coldChild(home: string, launcherSkillCatalog?: number) {
+async function coldChild(
+  home: string,
+  launcherSkillCatalog?: number,
+  manualOnlySourceUpdates = launcherSkillCatalog === 2 ? 1 : undefined,
+) {
   const child = fork(
     resolve("dist/update/runtime.js"),
     [resolve("."), home, "0", "fixture"],
@@ -123,7 +139,11 @@ async function coldChild(home: string, launcherSkillCatalog?: number) {
       });
       child.send({
         type: "state",
-        data: { installed: null, launcherSkillCatalog },
+        data: {
+          installed: null,
+          launcherSkillCatalog,
+          manualOnlySourceUpdates,
+        },
       });
     });
     return result;
@@ -174,6 +194,12 @@ test("incompatible launcher denies legacy catalog migration without changing the
       await coldChild(home),
       "exit",
       "old owner state fails before migration",
+    );
+    assert.deepEqual(await catalog(home), before);
+    assert.equal(
+      await coldChild(home, 2, 0),
+      "exit",
+      "automatic owner cannot start manual-only child even with the current skill catalog",
     );
     assert.deepEqual(await catalog(home), before);
     assert.equal(

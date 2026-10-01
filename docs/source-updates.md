@@ -11,90 +11,28 @@ This is a launcher prerequisite change, not a data migration.
 
 ## User workflow
 
-**Automatic upgrades are opt-in and off by default.** In Settings → Updates,
-enable the checkbox to have the stable Linux supervisor check the fixed public
-`main` about every 15 minutes (longer when GitHub requests a cooldown). It
-only installs a SHA verified as ahead of the known installed Git revision;
-unknown/dirty, divergent and behind revisions are skipped. It waits for
-the stable owner to reserve the target, stage and validate its exact metadata,
-run native artifact/preflight checks, and probe the candidate on a disposable
-home while the current worker is still running. It then rechecks consent,
-target and child admission before fencing new native Pi starts, closing the
-existing Pi runtime and quiescing the worker. A live Pi transcript, in-progress
-turn or unsent draft may be lost; automatic upgrade never replays actions. If
-native teardown or worker/publication safety cannot be confirmed, the owner
-defers rather than replacing the child. A manual apply uses the same owner
-reservation, so manual and automatic preparation cannot overlap. `GET /api/update` exposes `preparing` and
-`preparationSupported`; preparation does not commit `active.json`. A previously running worker is started again
-after a healthy upgrade or restored previous runtime; a previously stopped
-worker stays stopped. A successful local start is not proof of ongoing backend
-connectivity or reply delivery. Check Worker status after an upgrade. If resume
-cannot be confirmed, Studio reports it separately from the source operation.
-Disabling during preparation discards the prepared candidate before worker
-quiescence. Missing, mismatched or untrusted native readiness is a retryable
-deferral with a bounded cooldown: it does not blacklist that SHA. Once an
-external matching receipt/image is provisioned, the same SHA is retried on a
-later automatic tick. Source/build errors and post-quiescence activation failures
-remain suppressed for that exact SHA; use the manual confirmation path after
-investigating, or wait for a different main SHA. A worker stopped after an
-ambiguous local transport failure is restarted unless the service is shutting
-down. The preference
-lives in the protected Coach home, independently of persona revisions and
-rollback. Unsupported/embedded or explicitly disabled installations cannot
-enable it. The browser does not schedule checks.
+**Source updates are manual-only.** Availability is checked only when entering
+Settings → Updates (including a deep link, unlock there, or history reentry) or
+pressing **Check for updates**. Unlocking Dashboard or other Settings, visibility
+return, startup, idle timers and status reads never query GitHub. Checks never
+install. There is no automatic install preference, source poller, ancestry
+comparison, readiness retry or failed-target installer. Legacy consent/failure
+files are ignored and left inert for full-home rollback safety, including enabled
+or corrupt records.
 
-Studio reports the stable owner's `autoSchedule.nextAttemptAt` and `reason`
-from `GET /api/update`, rather than deriving a retry from the last check time.
-The owner publishes the actual armed timer: normal polling, failed-check backoff
-(currently 15 minutes), native readiness cooldown, or worker recovery retry.
-An automatic cycle is not necessarily a GitHub request: consent, admission and
-recovery still apply. Disabling automatic updates gates the next cycle; it does
-not cancel the timer. Studio hides the automatic countdown while disabled.
-Manual checks retain their one-minute throttle so the five-minute approval window
-can be refreshed independently of automatic polling. They cannot bypass an active
-server cooldown. A manual rate-limit response extends an earlier armed source
-timer; a successful manual check does not rearm it. `checking` and `checkError` describe the source check
-separately from historical upgrade outcomes; only a successful source response
-clears the error. HTTP 429 and HTTP 403 with rate-limit headers report rate
-limiting; an unqualified 403 reports access denied without claiming a rate limit.
+Checks use the compact fixed `git/ref/heads/main` endpoint with a ten-second
+deadline, bounded streaming, one-minute throttle and concurrent deduplication.
+Approval expires after five minutes. Confirmed rate limiting clears approval and
+sets `sourceRetryAt` to at least fifteen minutes, honoring later valid Retry-After
+or X-RateLimit-Reset deadlines. Malformed, past, nonfinite or timer-overflow values
+are ignored. The deadline is guidance for your next explicit Check, **not an armed
+source timer**. HTTP 429 and a 403 with rate-limit evidence report RATE_LIMITED;
+a plain 403 reports FORBIDDEN. A failed check is not “up to date”. No GitHub token
+or provider credential is used. Status/error/outcome readback performs no source
+request.
 
-Main-ref and ancestry comparison requests share the same cooldown. Confirmed
-rate limiting clears source approval and sets optional `sourceRetryAt` to at least
-15 minutes after the response, honoring the later valid `Retry-After` (integer
-seconds or an HTTP date) and `X-RateLimit-Reset` (epoch seconds). Malformed, past,
-non-finite and timer-overflow values are ignored; deadlines beyond Node's maximum
-signed 32-bit timer delay are rejected rather than causing a rapid timer loop.
-The deadline is not reset by repeated manual checks, and a late success from a
-request started before a newer rate limit cannot clear it. Only a subsequent
-successful source check clears the error/cooldown.
-
-Rapid local worker recovery (10 seconds) and native-readiness retries (normally
-one minute) remain separate from remote polling. Readiness cycles reuse the main
-ref until its 15-minute interval expires and cache proven ancestry for the exact
-immutable SHA pair. Recovery performs no source request. If readiness finishes
-after approval expires, activation waits for fresh source verification without
-marking that revision failed. The owner rechecks source approval around quiescence;
-a concurrent manual rate limit cannot turn a valid target into a failed upgrade.
-`autoSchedule` continues to describe the actual armed cycle, including local-only
-retries; `sourceRetryAt` describes the independent remote cooldown. Missing new
-fields on older owners mean unknown, not an inferred deadline.
-
-**This cadence/cooldown fix requires a stable launcher/package or outer-image
-upgrade.** Installing application source through Studio does not replace the
-running owner or its loaded scheduler. Replace the reviewed launcher using the
-existing protected home/volume and the installation's normal service procedure;
-merely restarting an old package/image will retain its old polling behavior. Wait
-for native sessions and worker/publication safety before any cutover. Do not patch
-an old owner's loaded closure or weaken upgrade/quiesce fences.
-
-The countdown uses `serverNow` to account for browser/host clock differences and
-shows a local retry time. A passed deadline means awaiting launcher status, not
-proof that a request started. Older stable owners do not expose this telemetry:
-Studio shows their GitHub error guidance and an unknown retry time. Installing
-new application source alone cannot add schedule telemetry to a running old
-owner; replace the stable launcher/image separately using the same protected home.
-
-Open **Settings → Updates** in Studio. Unlock performs a source check; checks never install anything. The installed identifier is an exact Git SHA, **not** npm `0.1.0` or a persona revision. Unknown/dirty builds report an unknown source rather than falsely claiming the checkout's HEAD.
+Open **Settings → Updates**. The installed identifier is the exact source Git SHA,
+not npm `0.1.0` or a persona revision. Dirty/unknown builds remain unknown.
 
 1. Save or revert unsaved edits and finish/cancel any preview or Operator turn. No manual worker stop is required.
 2. Check the displayed latest revision from the fixed public repository, `stevefortier/katafit-coach`, branch `main`.
@@ -127,9 +65,7 @@ capabilities, and the intentionally stopped worker before Run. Subsequent
 compatible application source upgrades happen in Studio without overwriting the
 stable package/outer image or Git checkout.
 
-**Important when adding auto-update to an existing managed installation:** an in-Studio source upgrade replaces only the runtime child, **not** its stable launcher or Docker image. A pre-auto-update launcher can show the newer checkbox but cannot poll or write the auto-update preference; it returns `409 UNSUPPORTED_INSTALLATION`. Replace the installed launcher/package or rebuild and recreate the container from the current reviewed source, preserving the exact Coach home/volume, then reload Studio. Merely stopping and restarting the old package/image does not add the feature. The worker is stopped after the service restart; verify it before choosing Run. The revised UI identifies this as “Launcher upgrade required.”
-
-Supported updater: Linux, Node 22.19+, `git`, `npm`, and `flock` on PATH, a writable private Coach home on a local filesystem supporting atomic rename and kernel locks, and outbound access to GitHub/npm. The same OS user owns all processes and files. Native protocol-2 applications additionally require the trusted control-plane Docker CLI/socket and matching provisioned image; Pi never receives that authority. macOS retains the legacy Studio/worker launcher, but source apply is disabled; macOS hardware was not tested. `KATAFIT_COACH_UPDATES=disabled` explicitly disables managed apply. A directly embedded admin server without the launcher reports unsupported rather than pretending it can replace itself.
+Supported updater: Linux, Node 26.10+ (major 26 only), `git`, `npm`, and `flock` on PATH, a writable private Coach home on a local filesystem supporting atomic rename and kernel locks, and outbound access to GitHub/npm. The same OS user owns all processes and files. Native protocol-2 applications additionally require the trusted control-plane Docker CLI/socket and matching provisioned image; Pi never receives that authority. macOS retains the legacy Studio/worker launcher, but source apply is disabled; macOS hardware was not tested. `KATAFIT_COACH_UPDATES=disabled` explicitly disables managed apply. A directly embedded admin server without the launcher reports unsupported rather than pretending it can replace itself.
 
 A read-only/immutable application directory is fine because it is never overwritten. A read-only Coach home cannot run the managed lifecycle. Arbitrary immutable container images cannot self-update: use the supplied [managed Docker recipe](docker.md), with the stable launcher/image plus persistent writable home and build tools. Managed versions survive container recreation on the same volume. The image/launcher itself still changes through your normal deployment process.
 
@@ -145,22 +81,13 @@ Each build subprocess is limited to three minutes and a process group that is ki
 
 Managed directory ancestors cannot be symlinks; metadata/lockfile reads require bounded regular files with no-follow/nonblocking opens, rejecting symlinks and FIFOs. This prevents accidental redirected writes/reads, not a defense against a hostile same-user process racing filesystem operations. Protect the home as you would its plaintext credentials.
 
-An isolated child loads the candidate's **own Store and admin code**, with a disposable home and no real secrets. It must serve authenticated stopped-worker health. Only then does the owner snapshot existing JSON records, stop the old runtime, launch the candidate against the real home, wait through startup probation, and require authenticated health at the original port. The active pointer is atomically renamed only after health. Startup errors, hangs and early exits cause old-runtime restart and JSON restoration. Confirmed manual upgrades and opt-in automatic upgrades restore a previously running worker only after healthy activation or rollback. This certifies startup health, not every future request.
+An isolated child loads the candidate's **own Store and admin code**, with a disposable home and no real secrets. It must serve authenticated stopped-worker health. Only then does the owner snapshot existing JSON records, stop the old runtime, launch the candidate against the real home, wait through startup probation, and require authenticated health at the original port. The active pointer is atomically renamed only after health. Startup errors, hangs and early exits cause old-runtime restart and JSON restoration. Confirmed manual upgrades restore a previously running worker only after healthy activation or rollback. This certifies startup health, not every future request.
 
-The stable owner retains at most one successfully prepared automatic candidate
-when only source approval expires or a source check becomes unavailable. It
-waits without stopping Coach, then reuses that exact SHA after a fresh,
-cadence-compliant source check and all normal ancestry/consent/admission fences.
-On the next owner cycle, revoked or unreadable consent, an installed target, or
-a different confirmed source target releases the retained reservation. Manual
-preparation can take ownership of the same candidate or release it before
-preparing a different confirmed target; automatic cycles cannot consume a
-manual reservation. Shutdown also releases retained preparation.
-Other readiness or post-preparation admission deferrals and preparation failures
-remove the candidate as before.
-It never treats the active application directory as preparation-owned cleanup.
-An error while re-reading automatic-update consent after preparation releases
-the reservation before it escapes. Initial active-image preflight failure also
+The stable owner owns one serialized manual preparation. Cancelling or rejected
+admission releases the exact candidate without installing. It never treats the
+active directory as preparation-owned cleanup. No failed target is installed or
+retried without a fresh human confirmation.
+Initial active-image preflight failure also
 drains retained native probe ownership before launcher startup rejects. Native
 probe ownership is first persisted in the protected home, before Docker create,
 with an unpredictable name/token, exact source/image identity and required
@@ -182,20 +109,16 @@ be removed successfully before a later preflight can proceed.
 
 The installed stable launcher and protocol stay fixed while managed runtime source changes. Current source identity is the active runtime revision, not a claim that the global launcher package has been overwritten. Clean Git builds embed HEAD. Dirty builds embed null. Git-less builders can attest a clean exported tree through `KATAFIT_BUILD_REVISION`; do not set it for dirty exports.
 
-Application admin code advertises its two-phase update capability through an
-explicit numeric module export. A new admin under the immediately previous
-owner refuses a running manual update before worker stop because that owner
-cannot prepare. A new owner masks running-restart support from a versionless
-legacy admin; an intentionally stopped legacy application remains upgradeable
-through owner-side lazy preparation. No capability is inferred from source text.
-Readiness deferrals retain same-SHA retry only until cooldown, success, manual
-installation, disablement, or a changed target restores the normal cadence.
+Application admin code advertises two-phase preparation with its numeric module
+export; a new owner deliberately supports a stopped legacy rollback admin while
+masking running-manual capabilities the legacy admin cannot implement. Source
+updates do not replace the resident owner. See the required migration below.
 
 ## Troubleshooting and recovery
 
 - **Operation in progress:** finish or cancel preview or Operator work; preserve unsaved edits. Confirming the upgrade performs the worker stop/start automatically.
 - **Check first/target rejected:** check again after the throttle period and confirm the currently shown target. Do not edit the request to force another SHA.
-- **GitHub unavailable/rate limit:** check access to `api.github.com`; wait at least one minute, then retry. No provider credentials are involved.
+- **GitHub unavailable/rate limit:** check access to `api.github.com`; honor sourceRetryAt, then press Check again. No provider credentials are involved.
 - **Upgrade failed:** the active pointer remains previous unless the candidate passed health. Check free disk, Git/npm availability and outbound access. Do not infer success from a closed browser or a returned 202.
 - **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime. Workers remain stopped unless a pending durable manual-update resume intent requires recovery; recovery never reapplies source or replays chat/actions. Keep the home and the bootstrap launcher.
 - **Native probe cleanup pending at startup:** preserve the entire protected home, including `native-probe-cleanup.json`, and restore Docker/socket availability for the same reviewed launcher identity. Restart retries only the receipt's exact name and verifies its token labels, immutable image and recorded container ID before removal. A missing container clears the receipt; a mismatch or invalid receipt remains blocked. Never delete the receipt, remove a same-name container, or prune merely to force startup. Use reviewed offline recovery if exact ownership cannot be established.
@@ -213,7 +136,7 @@ which the new supervisor sends in initial IPC state. An older owner can already
 ship `katafit-api` without sending the capability; catalog IDs alone would let
 its candidate pass pre-stop probing and fail only after the worker stops. The
 probe rejects that owner before worker stop or protected skill mutation, and
-automatic preparation records/suppresses the failed SHA. The child also requires
+the old owner may report the candidate denial generically. The child also requires
 that explicit catalog-2 startup capability; a missing capability fails closed
 with `LAUNCHER_UPGRADE_REQUIRED` before the skill manifest or linked records
 change. The new owner supplies that capability to
@@ -229,109 +152,72 @@ the full home and unit, and change only the launcher path using the verified
 replacement procedure below. A new owner must cold-start against the protected
 head and validate the old links; selecting an older manifest is not recovery.
 
-### Stable launcher replacement, including the `8daaa71` owner
+### Mandatory manual-only stable launcher replacement
 
-An application source update never replaces the process-resident stable owner.
-In particular, an owner built from `8daaa71` remains old even after it loads a
-new child: it does not acquire the current two-phase preparation or durable probe
-reconciliation contract. Do not interpret a newer runtime SHA, a reconnect, or
-an accepted old-owner request as a launcher upgrade. Current child code rejects
-a running manual source update when the owner does not explicitly advertise
-preparation support; do not bypass that guard. Automatic publication recovery
-also cannot retrofit the owner.
+**An application-only update cannot remove a resident automatic owner.** The
+candidate-owned Store inspects the actual pinned probe launcher's compiled
+`dist/update/capability.js` export `manualOnlySourceUpdates === 1`, in addition to
+the existing skill-catalog check. Missing or incompatible capability rejects
+before worker stop or protected-home writes. Real managed startup independently
+requires explicit initial IPC capability. Old owner + new child fails closed
+with LAUNCHER_UPGRADE_REQUIRED (an old owner may surface BUILD_FAILED). This gate
+cannot stop the old owner's existing polling; only replacing that owner does.
+Direct embedded admin use is consciously supported but cannot replace itself.
+Native protocol remains 2; this is an independent owner contract, not a sandbox
+protocol migration.
 
-For a future authorized replacement, first discover the actual unit/container,
-Node binary, package mode, service UID/GID, protected home/volume, environment,
-port and prior worker running intent; no service name or path is implied here.
-Build, pack and qualify the approved clean release outside the Pi and install the
-complete production tree side-by-side under a private new prefix, retaining the
-old package/outer image and service definition. Provision an exact native
-receipt only through the authorized external release path and run preflight from
-that exact candidate without changing `active.json` or starting a second owner.
+For an **authorized future rollout**, discover the actual unit/container, Node
+binary, service UID/GID, protected home, port, install mode and prior running
+intent. Build/pack the reviewed clean release into a complete side-by-side
+launcher tree or outer image. Validate its cold Store against a disposable
+private full-home copy and qualify native preflight/image binding without a
+second live owner. Preserve the old package/image and unit.
 
-Finish preview/Operator work, read authenticated status and record the prior
-running intent outside the home. Use the supported authenticated automatic
-quiesce endpoint and require stopped presence, publication safety and
-`autoQuiesceReady:true`; stop on ambiguity. Stop the discovered outer owner and
-verify every owner/runtime descendant exited. Privately back up the **entire**
-protected home and old service/container definition. Never unlink `service.lock`,
-discard active/image receipts, or selectively copy configuration; preserve
-secrets, history, persona records, auto-update consent, active pointer, durable
-cleanup/update receipts and the original running/stopped intent.
+Finish preview/Pi work, require publication-safe stopped presence/native teardown
+using the currently installed supported maintenance contract (legacy automatic
+quiesce only on the old installation), and stop on ambiguity. Stop and await
+**every old owner and child**. Privately back up the **whole protected home** and
+service definition: config, secrets, linked skill/persona history, pointers,
+publication identities, locks, cleanup receipts, operation/resume intent and
+inert legacy files. Do not delete/repoint history, receipts or lock inodes.
 
-For a host-package service, change only the reviewed launcher path and working
-directory while preserving its Node binary, `serve` foreground mode, user/group,
-environment, home, port, hardening and proxy. For outer-container mode, replace
-the reviewed outer image while retaining the exact protected volume, private
-networking and socket supplementary GID; do not switch install modes. Start one
-owner, then verify its exact command/PID, authenticated stopped health, runtime
-SHA/image binding and `preparationSupported:true` plus
-`manualRestartSupported:true`. Because persisted `active.json` still wins, a
-legacy active child may intentionally mask capabilities until it is upgraded by
-the supported stopped-manual or consented automatic path.
+Change only the approved launcher path/outer image, keeping home, identity,
+volume/socket GID, port, proxy and hardening. Persisted active pointer still wins:
+the new owner may intentionally launch the old stopped child first. Then enter
+Updates, explicitly Check and confirm the manual child upgrade, or use a
+separately approved offline paired bootstrap. Resume only original running
+intent. Verify exact resident command/build/manual-only capability, active
+child/image binding, idle/reported publication safety, protected hashes and no
+unsolicited source requests. A newer child SHA or restarting the same old package
+is not owner replacement. On failure preserve both pairs and use the full-home
+rollback; restarting an old automatic owner reintroduces polling, so its consent
+must be safely disabled before rollback restart. No new code normalizes legacy
+consent on disk, because disk writes cannot stop a loaded old owner.
 
-Resume through authenticated `POST /api/run` only when the recorded prior intent
-was running. Verify running/idle presence, installed SHA and image, unchanged
-consent, and private pre/post hashes for configuration, secrets and history. On
-failure, stop the new owner, reconcile/remove only exactly owned probe resources,
-restore the prior launcher/package and full protected home/pointer, then restore
-only the prior running intent. Retain both application/image pairs through
-probation.
+## Confirmed maintenance quiesce and local recovery
 
-## Automatic publication recovery
+Authenticated same-origin `POST /api/update/quiesce` requires exactly
+`{confirm:true}`. It is a human maintenance stop, not source discovery or install
+authority. It fences native/admin/worker admission, settles native teardown and
+requires publication safety plus confirmed stopped presence. `POST
+/api/update/release` with `{}` performs receipt-only reconciliation and releases
+only a safe gate. Legacy `/api/update/auto/release` is retained solely as a
+recovery alias; `/api/update/auto` and `/api/update/auto/quiesce` return HTTP 410
+AUTOMATIC_UPDATES_REMOVED and never write consent or stop Coach. No old automatic
+activation path survives.
 
-The runtime child performs receipt-only reconciliation when the stable owner
-calls its existing automatic quiesce or release endpoint. This works with an
-already-loaded auto-update owner that supports those endpoints; no new owner
-RPC, unsafe flag, or browser timer is needed. It does **not** repair an old
-Worker closure merely because newer files exist on disk. The reviewed child
-must actually be loaded. A launcher predating automatic updates still needs the
-supported reviewed launcher/package/container replacement using the same
-protected home, not a guard override or an old-image restart.
-
-For an idle worker, the child fences claims and native/admin admission, reads
-exact retained publication identities, and durably archives strict invalidation
-receipts **before stopping anything**. Denied/missing/mismatched evidence or an
-archive failure leaves the original worker running and the update deferred.
-Stopped workers use the same read-only path; intentionally stopped intent is
-preserved. A previously held automatic gate remains held until publication
-safety **and** stopped presence are confirmed; the existing owner then releases
-and resumes its original running intent. No completion, claim, lease expiry,
-renewal, model inference, or action is replayed by this reconciliation path.
-
-Automatic receipt passes are limited to one per minute per child (including
-failed passes), with a shared six-second network deadline and three-second
-per-identity transports. Fast owner HTTP retries do not trigger more reads.
-Durable archive completion is awaited, not timed out into permission to replace.
-Historical delivery diagnostics are retained. Explicit stopped reconciliation
-remains available and is not rate-limited by the automatic cadence.
-
-### External artifact release preflight remains required
-
-This recovery change does not provision a sandbox artifact or move the loaded
-stable owner's native preflight. Existing owners perform candidate native
-preflight **before replacing the server process, but after automatic worker
-quiesce/stop**. A missing artifact can therefore still fail and suppress that
-source SHA, followed by restoration of the original worker. Do not describe
-that as a pre-stop deferral or a permanent artifact-upgrade solution.
-
-Before making a native-fingerprint-changing revision eligible on `main`, the
-authorized release operator must provision and preflight the reviewed matching
-artifact through the external release path. Matching protected fingerprint
-receipts can already be reused for source-only revisions. To make unavailable
-artifacts a retryable pre-worker-stop deferral in code requires a separate
-reviewed stable-launcher release: reserve preparation against concurrent manual
-apply, stage and preflight the exact candidate while the old worker runs,
-recheck consent and idle/publication/native admission before stopping, then
-consume that same prepared candidate. Missing readiness must not be recorded as
-a failed source SHA; prepare retries need bounded backoff. Installing a child
-alone cannot change that owner's ordering. Never weaken native receipt or
-publication guards to bypass this release prerequisite.
+The resident owner's only update timer is a ten-second **local recovery** retry
+armed for durable accepted manual running intent (`update-resume.json`). It uses
+local authenticated status/release/resume with narrowly scoped legacy rollback
+Run/release fallbacks, never GitHub, candidate preparation, activation or action
+replay. Intent clears only after confirmed running readback. Recovery drains on
+shutdown and stops scheduling when confirmed. Publication passes retain their
+one-minute receipt-read throttle and durable archival fences.
 
 ## Publication-safe update admission and stopped recovery
 
-Manual apply now requires an idle, publication-safe running worker, just like
-automatic quiescence. An unsafe or busy worker is rejected **before** native
+Manual apply now requires an idle, publication-safe running worker, alongside
+confirmed maintenance quiescence. An unsafe or busy worker is rejected **before** native
 teardown or worker stop; no update is accepted. Wait for active work to finish.
 `GET /api/status` exposes `safeToReplace` separately from `stopConfirmed` and
 historical `lastError`. An old delivery error is not itself live uncertainty;
@@ -341,7 +227,7 @@ For an intentionally stopped worker on a build supporting this endpoint, an
 authenticated, same-origin `POST /api/worker/reconcile` with `{}` performs only
 bounded backend receipt reads against the **same Worker instance**. It never
 starts the worker, claims work, runs inference, renews/expires a lease, or retries
-a publication. It remains callable while an automatic quiesce recovery gate is
+a publication. It remains callable while an update quiesce recovery gate is
 held. It does not release that gate or override failed presence confirmation.
 Read status back; only when both publication safety and stop confirmation are
 true may the normal launcher release/resume or Run lifecycle replace the worker.
@@ -388,7 +274,7 @@ receipt may be reused for a different source revision only when its native
 fingerprint is identical; this does not claim that every source revision needs a
 new image. A changed fingerprint still requires new out-of-band provisioning.
 Likewise, a runtime source update cannot replace or expand the stable owner's
-launcher, poller, filesystem authority or protocol support. Install a reviewed
+launcher, filesystem authority or protocol support. Install a reviewed
 stable-owner update through the deployment/bootstrap procedure; do not treat
 child activation, restart, or a recovered task receipt as an owner upgrade.
 

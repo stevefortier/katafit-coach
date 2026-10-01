@@ -217,16 +217,17 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     good,
   );
   assert.equal((await (await api("status")).json()).state, "stopped");
-  const autoResponse = await api("update/auto", { enabled: true });
-  assert.equal(
-    autoResponse.status,
-    200,
-    `Auto-update setting after successful upgrade: ${autoResponse.status} ${JSON.stringify(await autoResponse.json())}`,
-  );
-  const autoState = (await (await api("update")).json()).auto;
-  assert.deepEqual(autoState, { enabled: true, available: true });
-  assert.equal((await api("update/auto", { enabled: false })).status, 200);
-  assert.equal((await (await api("update")).json()).auto.enabled, false);
+  // A packed candidate must not resurrect the retired automatic installer.
+  for (const enabled of [true, false]) {
+    const autoResponse = await api("update/auto", { enabled });
+    assert.equal(autoResponse.status, 410);
+    assert.deepEqual(await autoResponse.json(), {
+      error: "AUTOMATIC_UPDATES_REMOVED",
+    });
+  }
+  const manualState = await (await api("update")).json();
+  assert.equal("auto" in manualState, false);
+  assert.equal("autoSchedule" in manualState, false);
   await apply(bad, 61000);
   const failed = await wait(
     (s) => !s.applying && s.guidance.includes("failed"),

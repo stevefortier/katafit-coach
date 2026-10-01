@@ -1,6 +1,6 @@
 # Native Operator attachments
 
-Native Pi can send the operator an image or a file with the `send_to_operator` tool. Items show up in the **Attachments from Pi** panel beside the terminal on `/chat/operator`. On desktop the panel sits to the right of the terminal. Below 900px wide it stacks under the terminal. Images get a preview, **Enlarge** (a modal dialog) and **Download**. Other files get a download card. The tool is offered only by the Studio-owned native terminal. Other gateway consumers never see it.
+Native Pi can send the operator an image or a file with the `send_to_operator` tool. Items show up in the **Attachments from Pi** panel of the global Coach pane. When the pane is expanded on desktop the panel sits to the right of the terminal; when docked, or full screen below 900px wide, it stacks under the terminal. Collapsing the pane or navigating Studio keeps the cards and their previews. Images get a preview, **Enlarge** (a modal dialog) and **Download**. Other files get a download card. The tool is offered only by the Studio-owned native terminal. Other gateway consumers never see it.
 
 ## Tool contract
 

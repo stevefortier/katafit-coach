@@ -12,927 +12,961 @@
     <script src="/xterm-fit.js"></script>
   </head>
   <body>
-    <main>
-      <header>
-        <a class="brand" href="/">Kata.fit Coach</a
-        ><span class="pill" id="state" data-tone="neutral">LOCKED</span>
-        <button id="lockStudio" class="secondary" hidden>Lock studio</button>
-      </header>
-      <div id="noticeBar">
-        <div
-          id="noticeRegion"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          <span id="noticeIcon" aria-hidden="true"></span
-          ><strong id="noticeLabel" hidden></strong>
-          <p id="notice"></p>
-        </div>
-      </div>
-      <section id="login" class="card">
-        <h2>Unlock Coach</h2>
-        <p>Enter your admin key. Lock studio clears it from this tab.</p>
-        <label
-          >Admin key<input
-            id="adminKey"
-            type="password"
-            autocomplete="off" /></label
-        ><button id="unlock">Unlock studio</button>
-      </section>
-      <div id="studio" hidden>
-        <nav class="studio-tabs" aria-label="Studio sections">
-          <button id="coachTab" aria-controls="coachPanel" aria-pressed="true">
-            Coach
-          </button>
-          <button
-            id="dashboardTab"
+    <div id="workspaceScroll" role="region" aria-label="Studio workspace">
+      <main>
+        <header>
+          <a class="brand" href="/">Kata.fit Coach</a
+          ><button
+            id="coachLauncher"
+            type="button"
             class="secondary"
-            aria-controls="dashboardPanel"
-            aria-pressed="false"
+            aria-controls="coachPane"
+            aria-expanded="false"
+            hidden
           >
-            Dojo
-          </button>
-          <button
-            id="diagnosticsTab"
-            class="secondary"
-            aria-controls="diagnostics"
-            aria-pressed="false"
-          >
-            Activity
-          </button>
-          <button
-            id="settingsTab"
-            class="secondary"
-            aria-controls="settingsPanel"
-            aria-pressed="false"
-          >
-            Settings
-          </button>
-        </nav>
-        <section
-          id="dashboardPanel"
-          class="card"
-          aria-labelledby="dashboardTab"
-          hidden
-        >
-          <p
-            id="dashboardStatus"
-            class="dashboard-assistive"
+            <span id="coachLauncherName">Coach</span
+            ><span id="coachLauncherIndicator" class="coach-new-output" hidden
+              ><span class="native-sr-only">New output</span></span
+            ></button
+          ><span class="pill" id="state" data-tone="neutral">LOCKED</span>
+          <button id="lockStudio" class="secondary" hidden>Lock studio</button>
+        </header>
+        <div id="noticeBar">
+          <div
+            id="noticeRegion"
             role="status"
             aria-live="polite"
+            aria-atomic="true"
           >
-            Open Dojo to load shared data.
-          </p>
-          <div
-            id="dashboardCoverage"
-            class="dashboard-coverage dashboard-assistive"
-            hidden
-          ></div>
+            <span id="noticeIcon" aria-hidden="true"></span
+            ><strong id="noticeLabel" hidden></strong>
+            <p id="notice"></p>
+          </div>
+        </div>
+        <section id="login" class="card">
+          <h2>Unlock Coach</h2>
+          <p>Enter your admin key. Lock studio clears it from this tab.</p>
+          <label
+            >Admin key<input
+              id="adminKey"
+              type="password"
+              autocomplete="off" /></label
+          ><button id="unlock">Unlock studio</button>
+        </section>
+        <div id="studio" hidden>
+          <nav class="studio-tabs" aria-label="Studio sections">
+            <button
+              id="dashboardTab"
+              aria-controls="dashboardPanel"
+              aria-pressed="true"
+            >
+              Dojo
+            </button>
+            <button
+              id="diagnosticsTab"
+              class="secondary"
+              aria-controls="diagnostics"
+              aria-pressed="false"
+            >
+              Activity
+            </button>
+            <button
+              id="settingsTab"
+              class="secondary"
+              aria-controls="settingsPanel"
+              aria-pressed="false"
+            >
+              Settings
+            </button>
+          </nav>
           <section
-            class="dashboard-map-section"
-            aria-label="Shared activity map"
+            id="dashboardPanel"
+            class="card"
+            aria-labelledby="dashboardTab"
           >
-            <div class="dashboard-map-date">
-              <label for="dashboardMapDate">
-                <span class="dashboard-assistive"
-                  >Activity creation date (your device timezone)</span
-                >
-                <input id="dashboardMapDate" type="date" required />
-              </label>
-            </div>
             <p
-              id="dashboardMapStatus"
+              id="dashboardStatus"
               class="dashboard-assistive"
               role="status"
               aria-live="polite"
-            ></p>
-            <div class="dashboard-map-layout">
-              <div
-                id="dashboardMap"
-                class="dashboard-map"
-                aria-label="Interactive OpenStreetMap activity map"
-              ></div>
-              <aside
-                id="dashboardMapSelection"
-                class="dashboard-map-selection"
-                aria-label="Selected activity detail"
-                aria-live="polite"
-              ></aside>
-            </div>
-          </section>
-          <h3 id="dashboardMemberHeading">Members in loaded shared data</h3>
-          <p class="hint">
-            Select a member to filter loaded trends, photos, and this date's
-            activity pins. Profile pins come from a separate
-            latest-authorized-position read, not the selected date or live
-            tracking.
-          </p>
-          <div
-            id="dashboardMemberCards"
-            class="dashboard-member-cards"
-            role="group"
-            aria-label="Member filters"
-          ></div>
-          <h3>Latest completed check-in photos among loaded data</h3>
-          <div id="dashboardRoster" class="dashboard-roster"></div>
-          <div id="dashboardCharts"></div>
-        </section>
-        <section id="coachPanel" class="card">
-          <div id="operatorView">
-            <span
-              id="nativeStatus"
-              class="native-sr-only"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-              >Pi disconnected.</span
             >
-            <div class="native-workbench">
-              <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
-              <aside
-                id="nativeAttachments"
-                aria-labelledby="nativeAttachmentsTitle"
-              >
-                <h3 id="nativeAttachmentsTitle">
-                  Attachments from Pi
-                  <span id="nativeAttachmentCount"></span>
-                </h3>
-                <p id="nativeAttachmentsEmpty" class="hint">
-                  Images and files Pi sends with send_to_operator appear here.
-                  They are erased when the session ends.
-                </p>
-                <p
-                  id="nativeAttachmentsNotice"
-                  class="hint"
-                  role="status"
-                  hidden
-                ></p>
-                <ul
-                  id="nativeAttachmentList"
-                  aria-live="polite"
-                  aria-relevant="additions"
-                ></ul>
-              </aside>
-            </div>
-            <dialog
-              id="attachmentDialog"
-              aria-labelledby="attachmentDialogTitle"
-            >
-              <div class="attachment-dialog-bar">
-                <strong id="attachmentDialogTitle"></strong>
-                <a id="attachmentDialogDownload" class="button secondary"
-                  >Download</a
-                ><button
-                  id="attachmentDialogClose"
-                  type="button"
-                  class="secondary"
-                >
-                  Close
-                </button>
-              </div>
-              <img id="attachmentDialogImage" alt="" />
-              <p id="attachmentDialogCaption" class="hint"></p>
-            </dialog>
-            <p id="operatorStatus" role="status"></p>
-            <div id="operatorActions" role="status" aria-live="polite"></div>
-            <button
-              id="operatorReconcile"
-              type="button"
-              class="secondary"
-              hidden
-            >
-              Check delivery status
-            </button>
-          </div>
-        </section>
-        <section id="settingsPanel" hidden>
-          <div
-            class="settings-tabs"
-            role="tablist"
-            aria-label="Settings sections"
-          >
-            <button
-              type="button"
-              id="settings-katafit-tab"
-              role="tab"
-              aria-controls="katafit"
-              aria-selected="true"
-              tabindex="0"
-              class=""
-            >
-              Kata.fit
-            </button>
-            <button
-              type="button"
-              id="settings-models-tab"
-              role="tab"
-              aria-controls="models"
-              aria-selected="false"
-              tabindex="-1"
-              class="secondary"
-            >
-              Models
-            </button>
-            <button
-              type="button"
-              id="settings-persona-tab"
-              role="tab"
-              aria-controls="persona"
-              aria-selected="false"
-              tabindex="-1"
-              class="secondary"
-            >
-              Persona
-            </button>
-            <button
-              type="button"
-              id="settings-preview-tab"
-              role="tab"
-              aria-controls="preview"
-              aria-selected="false"
-              tabindex="-1"
-              class="secondary"
-            >
-              Preview
-            </button>
-            <button
-              type="button"
-              id="settings-skills-tab"
-              role="tab"
-              aria-controls="skills"
-              aria-selected="false"
-              tabindex="-1"
-              class="secondary"
-            >
-              Skills
-            </button>
-            <button
-              type="button"
-              id="settings-memories-tab"
-              role="tab"
-              aria-controls="memories"
-              aria-selected="false"
-              tabindex="-1"
-              class="secondary"
-            >
-              Memories
-            </button>
-            <button
-              type="button"
-              id="settings-updates-tab"
-              role="tab"
-              aria-controls="updates"
-              aria-selected="false"
-              tabindex="-1"
-              class="secondary"
-            >
-              Updates
-            </button>
-            <button
-              type="button"
-              id="settings-worker-tab"
-              role="tab"
-              aria-controls="worker"
-              aria-selected="false"
-              tabindex="-1"
-              class="secondary"
-            >
-              Worker
-            </button>
-          </div>
-          <section
-            class="card"
-            id="katafit"
-            role="tabpanel"
-            aria-labelledby="settings-katafit-tab"
-            tabindex="0"
-          >
-            <h2>Kata.fit</h2>
-            <label>Kata.fit origin<input id="origin" type="url" /></label
-            ><label
-              >Kata.fit connection credential<input
-                id="token"
-                type="password"
-                placeholder="Leave blank to keep saved credential"
-                autocomplete="off"
-            /></label>
-            <p class="hint">
-              Create a credential with ordinary REST access in Kata.fit's
-              external Coach settings. Older credentials must be replaced to use
-              Dashboard and ordinary reads; denied reads do not fall back to
-              MCP.
-            </p>
-            <button id="connect" class="secondary">
-              Test saved connection
-            </button>
-          </section>
-          <section
-            class="card"
-            id="models"
-            role="tabpanel"
-            aria-labelledby="settings-models-tab"
-            tabindex="0"
-            hidden
-          >
-            <h2>Models</h2>
-            <p id="activeModelBadge" class="active-badge"></p>
-            <p id="modelDraftStatus" class="hint" role="status"></p>
-            <p class="hint">
-              Providers must offer an OpenAI-compatible Chat Completions API:
-              Coach sends requests to the base URL plus /chat/completions. Coach
-              does not discover, list or verify models; enter model IDs exactly
-              as your provider documents them. Browsing and editing here
-              contacts nobody. Save applies the selected model; Preview, the
-              worker and native Operator Pi use the saved active model.
-            </p>
-            <div id="providerList"></div>
-            <div class="provider-add">
-              <label
-                >New provider template<select id="providerPreset">
-                  <option value="custom">Custom OpenAI-compatible</option>
-                  <option value="openai">OpenAI API</option>
-                </select></label
-              ><button id="addProvider" type="button" class="secondary">
-                Add provider
-              </button>
-            </div>
-            <p class="hint">
-              API keys are stored privately and never shown again. Changing a
-              provider's base URL requires re-entering its key or removing it. A
-              remote provider receives Coach requests and any data included in
-              them; original images are sent only when the saved active model
-              has vision enabled.
-            </p>
-          </section>
-          <section
-            class="card"
-            id="persona"
-            role="tabpanel"
-            aria-labelledby="settings-persona-tab"
-            tabindex="0"
-            hidden
-          >
-            <h2>Persona</h2>
-            <label>Coach name<input id="name" /></label
-            ><label>Voice<input id="voice" /></label>
-            <div class="split">
-              <label
-                >Verbosity<select id="verbosity">
-                  <option>Concise</option>
-                  <option>Balanced</option>
-                  <option>Detailed</option>
-                </select></label
-              ><label>Initiative<input id="initiative" /></label>
-            </div>
-            <label
-              >Coaching principles<textarea
-                id="principles"
-                rows="2"
-              ></textarea></label
-            ><label
-              >Example guidance<textarea
-                id="examples"
-                rows="2"
-              ></textarea></label
-            ><label
-              >Boundaries<textarea id="boundaries" rows="2"></textarea>
-            </label>
-            <details>
-              <summary>Advanced Markdown</summary>
-              <textarea
-                id="markdown"
-                rows="5"
-                placeholder="Additional persona instructions"
-              ></textarea>
-            </details>
-            <button id="resetPersona" type="button" class="secondary">
-              Reset to stock defaults
-            </button>
-            <p class="hint">
-              Reset changes only the persona editor. Save a new revision to
-              apply.
-            </p>
-            <details id="personaHistory">
-              <summary>Persona revision history</summary>
-              <p class="hint">
-                Every save retains a snapshot, including Kata.fit- or
-                Models-only saves. Restoring creates a new revision; history is
-                never removed.
-              </p>
-              <p id="historyStatus" role="status"></p>
-              <div id="historyList" class="history-list"></div>
-              <div class="actions">
-                <button id="historyLatest" type="button" class="secondary">
-                  Latest revisions
-                </button>
-                <button
-                  id="historyOlder"
-                  type="button"
-                  class="secondary"
-                  hidden
-                >
-                  Older revisions
-                </button>
-              </div>
-              <section
-                id="historyDetail"
-                hidden
-                aria-label="Read-only persona snapshot"
-              >
-                <h3 id="historyTitle"></h3>
-                <dl id="historySnapshot"></dl>
-                <button id="restorePersona" type="button">
-                  Restore as new revision
-                </button>
-                <p class="hint">
-                  Only saved persona fields are restored. Saved Kata.fit and
-                  Models settings and credentials stay unchanged. Unsaved
-                  Kata.fit and Models drafts remain in the editor.
-                </p>
-              </section>
-            </details>
-          </section>
-          <section
-            class="card"
-            id="skills"
-            role="tabpanel"
-            aria-labelledby="settings-skills-tab"
-            tabindex="0"
-            hidden
-          >
-            <h2>Skills</h2>
-            <p class="hint">
-              Skills are optional workflows. Purpose and triggers guide Operator
-              matching; background typed tasks use the default skill mapping,
-              and member requests use fixed keyword relevance rules. Editable
-              trigger text does not control background routing or guarantee
-              selection. Skills are guidance, not permission: backend
-              authorization, audience and tool schemas remain authoritative.
-              Keep reusable guidance only; never paste member/customer evidence
-              or credentials into a skill.
-            </p>
-            <p id="skillsRevision" class="hint" role="status"></p>
-            <button id="refreshSkills" type="button" class="secondary">
-              Refresh saved skills
-            </button>
-            <p class="hint">
-              If another tab changed Skills, refresh to keep your drafts and
-              review the latest saved values below. Nothing is retried
-              automatically; review before choosing Save skill again.
+              Open Dojo to load shared data.
             </p>
             <div
-              id="skillList"
-              class="skill-list"
-              aria-label="Coach skills"
+              id="dashboardCoverage"
+              class="dashboard-coverage dashboard-assistive"
+              hidden
             ></div>
-            <section id="skillEditor" hidden aria-label="Selected Coach skill">
-              <div class="skill-heading">
-                <h3 id="skillTitle"></h3>
-                <span id="skillLabel" class="pill"></span>
+            <div
+              id="dashboardMemberCards"
+              class="dashboard-member-cards"
+              role="group"
+              aria-label="Member filters"
+            ></div>
+            <section
+              class="dashboard-map-section"
+              aria-label="Shared activity map"
+            >
+              <div class="dashboard-map-date">
+                <label for="dashboardMapDate">
+                  <span class="dashboard-assistive"
+                    >Activity creation date (your device timezone)</span
+                  >
+                  <input id="dashboardMapDate" type="date" required />
+                </label>
               </div>
-              <label class="toggle-label"
-                ><input id="skillEnabled" type="checkbox" /> Enabled</label
-              >
-              <label
-                >Purpose<textarea
-                  id="skillPurpose"
-                  rows="3"
-                  maxlength="2000"
-                ></textarea></label
-              ><label
-                >Triggers<textarea
-                  id="skillTriggers"
-                  rows="4"
-                  maxlength="4000"
-                ></textarea></label
-              ><label
-                >Instructions<textarea
-                  id="skillInstructions"
-                  rows="14"
-                  maxlength="16000"
-                ></textarea>
-              </label>
-              <div class="actions">
-                <button id="saveSkill" type="button">Save skill</button>
-                <button id="restoreSkill" type="button" class="secondary">
-                  Restore default
-                </button>
+              <p
+                id="dashboardMapStatus"
+                class="dashboard-assistive"
+                role="status"
+                aria-live="polite"
+              ></p>
+              <div class="dashboard-map-layout">
+                <div class="dashboard-map-column">
+                  <div
+                    id="dashboardMap"
+                    class="dashboard-map"
+                    aria-label="Interactive OpenStreetMap activity map"
+                  ></div>
+                  <section
+                    id="dashboardTimeline"
+                    class="dashboard-timeline"
+                    aria-label="Day activity timeline"
+                  ></section>
+                </div>
+                <aside
+                  id="dashboardMapSelection"
+                  class="dashboard-map-selection"
+                  aria-label="Selected activity detail"
+                  aria-live="polite"
+                ></aside>
               </div>
-              <details id="skillSavedReview">
-                <summary>Review latest saved skill (not your draft)</summary>
-                <dl id="skillSavedSnapshot" class="skill-snapshot"></dl>
-              </details>
-              <details id="skillDefaultReview">
-                <summary>Review current default</summary>
-                <p id="skillDefaultStatus" class="hint"></p>
-                <dl id="skillDefaultSnapshot" class="skill-snapshot"></dl>
-              </details>
             </section>
-            <details id="skillHistory">
-              <summary>Skills revision history</summary>
-              <p class="hint">
-                Every save appends an immutable full snapshot. History is
-                read-only; Restore default appends a new revision.
-              </p>
-              <p id="skillHistoryStatus" role="status"></p>
-              <div id="skillHistoryList" class="history-list"></div>
-              <section id="skillHistoryDetail" hidden>
-                <h3 id="skillHistoryTitle"></h3>
-                <dl id="skillHistorySnapshot" class="skill-snapshot"></dl>
-              </section>
-            </details>
+            <h3>Latest completed check-in photos among loaded data</h3>
+            <div id="dashboardRoster" class="dashboard-roster"></div>
+            <div id="dashboardCharts"></div>
           </section>
-          <section
-            class="card"
-            id="memories"
-            role="tabpanel"
-            aria-labelledby="settings-memories-tab"
-            tabindex="0"
-            hidden
-          >
-            <h2>Memories</h2>
-            <p id="memoryStatus" class="hint" role="status"></p>
-            <div class="memory-controls">
-              <label
-                >Search<input id="memorySearch" type="search" maxlength="200"
-              /></label>
-              <label
-                >Audience<select id="memoryAudienceFilter">
-                  <option value="">All</option>
-                  <option value="member_private">Member private</option>
-                  <option value="member_coach">Member Coach</option>
-                  <option value="operator_private">Operator private</option>
-                </select></label
+          <section id="settingsPanel" hidden>
+            <div
+              class="settings-tabs"
+              role="tablist"
+              aria-label="Settings sections"
+            >
+              <button
+                type="button"
+                id="settings-katafit-tab"
+                role="tab"
+                aria-controls="katafit"
+                aria-selected="true"
+                tabindex="0"
+                class=""
               >
-              <label
-                >Member<select id="memoryMemberFilter">
-                  <option value="">All</option>
-                </select></label
+                Kata.fit
+              </button>
+              <button
+                type="button"
+                id="settings-models-tab"
+                role="tab"
+                aria-controls="models"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
               >
-              <label
-                >Kind<select id="memoryKindFilter">
-                  <option value="">All</option>
-                  <option value="fact">Fact</option>
-                  <option value="preference">Preference</option>
-                  <option value="commitment">Commitment</option>
-                  <option value="goal">Goal</option>
-                  <option value="lesson">Lesson</option>
-                  <option value="hypothesis">Hypothesis</option>
-                </select></label
+                Models
+              </button>
+              <button
+                type="button"
+                id="settings-persona-tab"
+                role="tab"
+                aria-controls="persona"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
               >
-              <label class="toggle-label"
-                ><input id="memoryArchivedFilter" type="checkbox" /> Show
-                archived</label
+                Persona
+              </button>
+              <button
+                type="button"
+                id="settings-preview-tab"
+                role="tab"
+                aria-controls="preview"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
               >
-              <button id="memoryRefresh" type="button" class="secondary">
-                Refresh memories
+                Preview
+              </button>
+              <button
+                type="button"
+                id="settings-skills-tab"
+                role="tab"
+                aria-controls="skills"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Skills
+              </button>
+              <button
+                type="button"
+                id="settings-memories-tab"
+                role="tab"
+                aria-controls="memories"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Memories
+              </button>
+              <button
+                type="button"
+                id="settings-updates-tab"
+                role="tab"
+                aria-controls="updates"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Updates
+              </button>
+              <button
+                type="button"
+                id="settings-worker-tab"
+                role="tab"
+                aria-controls="worker"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Worker
               </button>
             </div>
-            <button id="memoryMore" type="button" class="secondary" hidden>
-              Load more memories
-            </button>
-            <div id="memoryList" class="memory-list"></div>
-            <section id="memoryEditor" aria-label="Memory editor">
-              <h3 id="memoryEditorTitle">Add boss-private memory</h3>
-              <label
-                >Audience<select id="memoryAudience">
-                  <option value="operator_private">Operator private</option>
-                  <option value="member_coach">Member Coach</option>
-                  <option value="member_private">Member private</option>
-                </select></label
-              >
-              <label
-                >Member<select id="memoryMember">
-                  <option value="">No member subject</option>
-                </select></label
-              >
-              <label
-                >Kind<select id="memoryKind">
-                  <option value="preference">Preference</option>
-                  <option value="fact">Fact</option>
-                  <option value="commitment">Commitment</option>
-                  <option value="goal">Goal</option>
-                  <option value="lesson">Lesson</option>
-                  <option value="hypothesis">Hypothesis</option>
-                </select></label
-              >
-              <label
-                >Memory text<textarea
-                  id="memoryText"
-                  rows="3"
-                  maxlength="2000"
-                ></textarea>
-              </label>
-              <div class="split">
-                <label
-                  >Importance<input
-                    id="memoryImportance"
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value="0.85"
-                /></label>
-                <label
-                  >Relevance<input
-                    id="memoryRelevance"
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value="0.85"
-                /></label>
-              </div>
-              <label
-                >Review date (UTC)<input id="memoryReviewAt" type="date"
+            <section
+              class="card"
+              id="katafit"
+              role="tabpanel"
+              aria-labelledby="settings-katafit-tab"
+              tabindex="0"
+            >
+              <h2>Kata.fit</h2>
+              <label>Kata.fit origin<input id="origin" type="url" /></label
+              ><label
+                >Kata.fit connection credential<input
+                  id="token"
+                  type="password"
+                  placeholder="Leave blank to keep saved credential"
+                  autocomplete="off"
               /></label>
-              <label class="toggle-label"
-                ><input id="memoryPinned" type="checkbox" checked /> Pinned
-                correction</label
-              >
-              <div class="actions">
-                <button id="memorySave" type="button">Save memory</button>
-                <button id="memoryNew" type="button" class="secondary">
-                  New memory
+              <p class="hint">
+                Create a credential with ordinary REST access in Kata.fit's
+                external Coach settings. Older credentials must be replaced to
+                use Dashboard and ordinary reads; denied reads do not fall back
+                to MCP.
+              </p>
+              <button id="connect" class="secondary">
+                Test saved connection
+              </button>
+            </section>
+            <section
+              class="card"
+              id="models"
+              role="tabpanel"
+              aria-labelledby="settings-models-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Models</h2>
+              <p id="activeModelBadge" class="active-badge"></p>
+              <p id="modelDraftStatus" class="hint" role="status"></p>
+              <p class="hint">
+                Providers must offer an OpenAI-compatible Chat Completions API:
+                Coach sends requests to the base URL plus /chat/completions.
+                Coach does not discover, list or verify models; enter model IDs
+                exactly as your provider documents them. Browsing and editing
+                here contacts nobody. Save applies the selected model; Preview,
+                the worker and native Operator Pi use the saved active model.
+              </p>
+              <div id="providerList"></div>
+              <div class="provider-add">
+                <label
+                  >New provider template<select id="providerPreset">
+                    <option value="custom">Custom OpenAI-compatible</option>
+                    <option value="openai">OpenAI API</option>
+                  </select></label
+                ><button id="addProvider" type="button" class="secondary">
+                  Add provider
                 </button>
               </div>
               <p class="hint">
-                Backend authority is checked before every list, edit, history,
-                recall and deletion. Unavailable memories never reveal prose.
+                API keys are stored privately and never shown again. Changing a
+                provider's base URL requires re-entering its key or removing it.
+                A remote provider receives Coach requests and any data included
+                in them; original images are sent only when the saved active
+                model has vision enabled.
               </p>
-              <details id="memoryHistory">
-                <summary>Selected memory history</summary>
-                <div id="memoryHistoryList" class="history-list"></div>
+            </section>
+            <section
+              class="card"
+              id="persona"
+              role="tabpanel"
+              aria-labelledby="settings-persona-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Persona</h2>
+              <label>Coach name<input id="name" /></label
+              ><label>Voice<input id="voice" /></label>
+              <div class="split">
+                <label
+                  >Verbosity<select id="verbosity">
+                    <option>Concise</option>
+                    <option>Balanced</option>
+                    <option>Detailed</option>
+                  </select></label
+                ><label>Initiative<input id="initiative" /></label>
+              </div>
+              <label
+                >Coaching principles<textarea
+                  id="principles"
+                  rows="2"
+                ></textarea></label
+              ><label
+                >Example guidance<textarea
+                  id="examples"
+                  rows="2"
+                ></textarea></label
+              ><label
+                >Boundaries<textarea id="boundaries" rows="2"></textarea>
+              </label>
+              <details>
+                <summary>Advanced Markdown</summary>
+                <textarea
+                  id="markdown"
+                  rows="5"
+                  placeholder="Additional persona instructions"
+                ></textarea>
+              </details>
+              <button id="resetPersona" type="button" class="secondary">
+                Reset to stock defaults
+              </button>
+              <p class="hint">
+                Reset changes only the persona editor. Save a new revision to
+                apply.
+              </p>
+              <details id="personaHistory">
+                <summary>Persona revision history</summary>
+                <p class="hint">
+                  Every save retains a snapshot, including Kata.fit- or
+                  Models-only saves. Restoring creates a new revision; history
+                  is never removed.
+                </p>
+                <p id="historyStatus" role="status"></p>
+                <div id="historyList" class="history-list"></div>
+                <div class="actions">
+                  <button id="historyLatest" type="button" class="secondary">
+                    Latest revisions
+                  </button>
+                  <button
+                    id="historyOlder"
+                    type="button"
+                    class="secondary"
+                    hidden
+                  >
+                    Older revisions
+                  </button>
+                </div>
+                <section
+                  id="historyDetail"
+                  hidden
+                  aria-label="Read-only persona snapshot"
+                >
+                  <h3 id="historyTitle"></h3>
+                  <dl id="historySnapshot"></dl>
+                  <button id="restorePersona" type="button">
+                    Restore as new revision
+                  </button>
+                  <p class="hint">
+                    Only saved persona fields are restored. Saved Kata.fit and
+                    Models settings and credentials stay unchanged. Unsaved
+                    Kata.fit and Models drafts remain in the editor.
+                  </p>
+                </section>
               </details>
             </section>
-          </section>
-          <section
-            class="card"
-            id="preview"
-            role="tabpanel"
-            aria-labelledby="settings-preview-tab"
-            tabindex="0"
-            hidden
-          >
-            <h2>Preview</h2>
-            <p>
-              Save your changes first. Preview uses the saved settings and a
-              sample question; it does not send a member message.
-            </p>
-            <label
-              >Sample question<textarea id="question" rows="2">
+            <section
+              class="card"
+              id="skills"
+              role="tabpanel"
+              aria-labelledby="settings-skills-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Skills</h2>
+              <p class="hint">
+                Skills are optional workflows. Purpose and triggers guide
+                Operator matching; background typed tasks use the default skill
+                mapping, and member requests use fixed keyword relevance rules.
+                Editable trigger text does not control background routing or
+                guarantee selection. Skills are guidance, not permission:
+                backend authorization, audience and tool schemas remain
+                authoritative. Keep reusable guidance only; never paste
+                member/customer evidence or credentials into a skill.
+              </p>
+              <p id="skillsRevision" class="hint" role="status"></p>
+              <button id="refreshSkills" type="button" class="secondary">
+                Refresh saved skills
+              </button>
+              <p class="hint">
+                If another tab changed Skills, refresh to keep your drafts and
+                review the latest saved values below. Nothing is retried
+                automatically; review before choosing Save skill again.
+              </p>
+              <div
+                id="skillList"
+                class="skill-list"
+                aria-label="Coach skills"
+              ></div>
+              <section
+                id="skillEditor"
+                hidden
+                aria-label="Selected Coach skill"
+              >
+                <div class="skill-heading">
+                  <h3 id="skillTitle"></h3>
+                  <span id="skillLabel" class="pill"></span>
+                </div>
+                <label class="toggle-label"
+                  ><input id="skillEnabled" type="checkbox" /> Enabled</label
+                >
+                <label
+                  >Purpose<textarea
+                    id="skillPurpose"
+                    rows="3"
+                    maxlength="2000"
+                  ></textarea></label
+                ><label
+                  >Triggers<textarea
+                    id="skillTriggers"
+                    rows="4"
+                    maxlength="4000"
+                  ></textarea></label
+                ><label
+                  >Instructions<textarea
+                    id="skillInstructions"
+                    rows="14"
+                    maxlength="16000"
+                  ></textarea>
+                </label>
+                <div class="actions">
+                  <button id="saveSkill" type="button">Save skill</button>
+                  <button id="restoreSkill" type="button" class="secondary">
+                    Restore default
+                  </button>
+                </div>
+                <details id="skillSavedReview">
+                  <summary>Review latest saved skill (not your draft)</summary>
+                  <dl id="skillSavedSnapshot" class="skill-snapshot"></dl>
+                </details>
+                <details id="skillDefaultReview">
+                  <summary>Review current default</summary>
+                  <p id="skillDefaultStatus" class="hint"></p>
+                  <dl id="skillDefaultSnapshot" class="skill-snapshot"></dl>
+                </details>
+              </section>
+              <details id="skillHistory">
+                <summary>Skills revision history</summary>
+                <p class="hint">
+                  Every save appends an immutable full snapshot. History is
+                  read-only; Restore default appends a new revision.
+                </p>
+                <p id="skillHistoryStatus" role="status"></p>
+                <div id="skillHistoryList" class="history-list"></div>
+                <section id="skillHistoryDetail" hidden>
+                  <h3 id="skillHistoryTitle"></h3>
+                  <dl id="skillHistorySnapshot" class="skill-snapshot"></dl>
+                </section>
+              </details>
+            </section>
+            <section
+              class="card"
+              id="memories"
+              role="tabpanel"
+              aria-labelledby="settings-memories-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Memories</h2>
+              <p id="memoryStatus" class="hint" role="status"></p>
+              <div class="memory-controls">
+                <label
+                  >Search<input id="memorySearch" type="search" maxlength="200"
+                /></label>
+                <label
+                  >Audience<select id="memoryAudienceFilter">
+                    <option value="">All</option>
+                    <option value="member_private">Member private</option>
+                    <option value="member_coach">Member Coach</option>
+                    <option value="operator_private">Operator private</option>
+                  </select></label
+                >
+                <label
+                  >Member<select id="memoryMemberFilter">
+                    <option value="">All</option>
+                  </select></label
+                >
+                <label
+                  >Kind<select id="memoryKindFilter">
+                    <option value="">All</option>
+                    <option value="fact">Fact</option>
+                    <option value="preference">Preference</option>
+                    <option value="commitment">Commitment</option>
+                    <option value="goal">Goal</option>
+                    <option value="lesson">Lesson</option>
+                    <option value="hypothesis">Hypothesis</option>
+                  </select></label
+                >
+                <label class="toggle-label"
+                  ><input id="memoryArchivedFilter" type="checkbox" /> Show
+                  archived</label
+                >
+                <button id="memoryRefresh" type="button" class="secondary">
+                  Refresh memories
+                </button>
+              </div>
+              <button id="memoryMore" type="button" class="secondary" hidden>
+                Load more memories
+              </button>
+              <div id="memoryList" class="memory-list"></div>
+              <section id="memoryEditor" aria-label="Memory editor">
+                <h3 id="memoryEditorTitle">Add boss-private memory</h3>
+                <label
+                  >Audience<select id="memoryAudience">
+                    <option value="operator_private">Operator private</option>
+                    <option value="member_coach">Member Coach</option>
+                    <option value="member_private">Member private</option>
+                  </select></label
+                >
+                <label
+                  >Member<select id="memoryMember">
+                    <option value="">No member subject</option>
+                  </select></label
+                >
+                <label
+                  >Kind<select id="memoryKind">
+                    <option value="preference">Preference</option>
+                    <option value="fact">Fact</option>
+                    <option value="commitment">Commitment</option>
+                    <option value="goal">Goal</option>
+                    <option value="lesson">Lesson</option>
+                    <option value="hypothesis">Hypothesis</option>
+                  </select></label
+                >
+                <label
+                  >Memory text<textarea
+                    id="memoryText"
+                    rows="3"
+                    maxlength="2000"
+                  ></textarea>
+                </label>
+                <div class="split">
+                  <label
+                    >Importance<input
+                      id="memoryImportance"
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value="0.85"
+                  /></label>
+                  <label
+                    >Relevance<input
+                      id="memoryRelevance"
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value="0.85"
+                  /></label>
+                </div>
+                <label
+                  >Review date (UTC)<input id="memoryReviewAt" type="date"
+                /></label>
+                <label class="toggle-label"
+                  ><input id="memoryPinned" type="checkbox" checked /> Pinned
+                  correction</label
+                >
+                <div class="actions">
+                  <button id="memorySave" type="button">Save memory</button>
+                  <button id="memoryNew" type="button" class="secondary">
+                    New memory
+                  </button>
+                </div>
+                <p class="hint">
+                  Backend authority is checked before every list, edit, history,
+                  recall and deletion. Unavailable memories never reveal prose.
+                </p>
+                <details id="memoryHistory">
+                  <summary>Selected memory history</summary>
+                  <div id="memoryHistoryList" class="history-list"></div>
+                </details>
+              </section>
+            </section>
+            <section
+              class="card"
+              id="preview"
+              role="tabpanel"
+              aria-labelledby="settings-preview-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Preview</h2>
+              <p>
+                Save your changes first. Preview uses the saved settings and a
+                sample question; it does not send a member message.
+              </p>
+              <label
+                >Sample question<textarea id="question" rows="2">
 I trained hard yesterday and feel sore today. How should I approach my next session?</textarea
-              ></label
-            ><button id="previewButton">Preview response</button
-            ><button id="cancel" class="secondary">Cancel preview</button>
-            <pre id="answer">Your preview will appear here.</pre>
-            <details>
-              <summary>Effective nonsecret instructions</summary>
-              <pre id="prompt"></pre>
-            </details>
+                ></label
+              ><button id="previewButton">Preview response</button
+              ><button id="cancel" class="secondary">Cancel preview</button>
+              <pre id="answer">Your preview will appear here.</pre>
+              <details>
+                <summary>Effective nonsecret instructions</summary>
+                <pre id="prompt"></pre>
+              </details>
+            </section>
+            <section
+              class="card diagnostics"
+              id="updates"
+              role="tabpanel"
+              aria-labelledby="settings-updates-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Updates</h2>
+              <p>
+                Updates come from the official Kata.fit Coach repository on
+                GitHub. Checking never installs an update.
+              </p>
+              <div class="update-versions">
+                <div>
+                  <span class="hint">INSTALLED SOURCE</span
+                  ><code id="updateInstalled">Unknown</code>
+                </div>
+                <div>
+                  <span class="hint">LATEST ON MAIN</span
+                  ><code id="updateLatest">Not checked</code>
+                </div>
+              </div>
+              <p id="updateStatus" role="status" aria-live="polite">
+                Check for a newer source revision.
+              </p>
+              <p class="hint" id="updateChecked">Not checked yet.</p>
+              <p id="updateOutcome" class="hint" role="status" hidden></p>
+              <p class="hint">
+                Source is checked only when you open Updates or press Check for
+                updates. Every installation requires your confirmation.
+              </p>
+              <p class="hint" id="updateCheckStatus" role="status"></p>
+              <div class="log-controls">
+                <button id="updateCheck" class="secondary">
+                  Check for updates
+                </button>
+                <button id="updateApply" disabled>Upgrade…</button>
+                <button id="updateReload" class="secondary" hidden>
+                  Reload upgraded Studio
+                </button>
+                <a
+                  id="updateSource"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  hidden
+                  >View source on GitHub ↗</a
+                >
+              </div>
+              <p class="hint">
+                Confirming an upgrade stops Coach safely and restarts it if it
+                was running. A stopped Coach stays stopped. Finish or cancel
+                previews and native Pi first if you need their drafts. Native
+                sessions close during the upgrade; in-progress turns and unsent
+                drafts may be lost. Actions are never replayed.
+              </p>
+              <div id="updateConfirm" class="update-confirm" hidden>
+                <h3>Install this source revision?</h3>
+                <code id="updateTarget"></code>
+                <p>
+                  This downloads and builds code from the official repository,
+                  then briefly restarts Studio. Coach is stopped safely and
+                  restarted only if it was running; a stopped Coach stays
+                  stopped. Native sessions close; an in-progress Pi turn or
+                  unsent draft may be lost. Actions are never replayed. Only
+                  continue if you trust this source. The launcher completes the
+                  operation even if this tab closes. A disconnect is not proof
+                  of success.
+                </p>
+                <button id="updateConfirmApply">Install and restart</button>
+                <button id="updateCancel" class="secondary">Not now</button>
+              </div>
+            </section>
+            <section
+              class="card runbar"
+              id="worker"
+              role="tabpanel"
+              aria-labelledby="settings-worker-tab"
+              tabindex="0"
+              hidden
+            >
+              <div>
+                <h2>Worker</h2>
+                <p>
+                  Keep this service running. An asleep laptop is an offline
+                  Coach.
+                </p>
+              </div>
+              <div>
+                <button id="run">Run Coach</button
+                ><button id="stop" class="secondary">Stop worker</button>
+              </div>
+            </section>
+            <div class="actions">
+              <button id="save">Save new revision</button
+              ><button id="export" class="secondary">
+                Export nonsecret configuration</button
+              ><span id="revision"></span>
+            </div>
+            <p class="hint">
+              Save applies Kata.fit, Models and Persona drafts across tabs.
+              Preview and worker use saved settings.
+            </p>
           </section>
           <section
             class="card diagnostics"
-            id="updates"
-            role="tabpanel"
-            aria-labelledby="settings-updates-tab"
+            id="diagnostics"
+            role="region"
+            aria-labelledby="diagnosticsTab"
             tabindex="0"
             hidden
           >
-            <h2>Updates</h2>
-            <p>
-              Updates come from the official Kata.fit Coach repository on
-              GitHub. Checking never installs an update.
-            </p>
-            <div class="update-versions">
-              <div>
-                <span class="hint">INSTALLED SOURCE</span
-                ><code id="updateInstalled">Unknown</code>
-              </div>
-              <div>
-                <span class="hint">LATEST ON MAIN</span
-                ><code id="updateLatest">Not checked</code>
-              </div>
-            </div>
-            <p id="updateStatus" role="status" aria-live="polite">
-              Check for a newer source revision.
-            </p>
-            <p class="hint" id="updateChecked">Not checked yet.</p>
-            <p id="updateOutcome" class="hint" role="status" hidden></p>
-            <label class="hint update-auto-control" for="updateAuto">
-              <input type="checkbox" id="updateAuto" disabled />
-              <span>Automatically install newer main source</span>
-            </label>
-            <p class="hint" id="updateAutoStatus" role="status">
-              Off. When enabled, upgrades may close an active native Pi session,
-              interrupting its turn and losing its live transcript or unsent
-              draft. A previously running worker is restarted; check its status
-              afterward.
-            </p>
-            <p class="hint" id="updateSchedule"></p>
-            <div class="log-controls">
-              <button id="updateCheck" class="secondary">
-                Check for updates
-              </button>
-              <button id="updateApply" disabled>Upgrade…</button>
-              <button id="updateReload" class="secondary" hidden>
-                Reload upgraded Studio
-              </button>
-              <a
-                id="updateSource"
-                target="_blank"
-                rel="noopener noreferrer"
-                hidden
-                >View source on GitHub ↗</a
-              >
-            </div>
-            <p class="hint">
-              Confirming an upgrade stops Coach safely and restarts it if it was
-              running. A stopped Coach stays stopped. Finish or cancel previews
-              and native Pi first if you need their drafts. Native sessions
-              close during the upgrade; in-progress turns and unsent drafts may
-              be lost. Actions are never replayed.
-            </p>
-            <div id="updateConfirm" class="update-confirm" hidden>
-              <h3>Install this source revision?</h3>
-              <code id="updateTarget"></code>
-              <p>
-                This downloads and builds code from the official repository,
-                then briefly restarts Studio. Coach is stopped safely and
-                restarted only if it was running; a stopped Coach stays stopped.
-                Native sessions close; an in-progress Pi turn or unsent draft
-                may be lost. Actions are never replayed. Only continue if you
-                trust this source. The launcher completes the operation even if
-                this tab closes. A disconnect is not proof of success.
-              </p>
-              <button id="updateConfirmApply">Install and restart</button>
-              <button id="updateCancel" class="secondary">Not now</button>
-            </div>
-          </section>
-          <section
-            class="card runbar"
-            id="worker"
-            role="tabpanel"
-            aria-labelledby="settings-worker-tab"
-            tabindex="0"
-            hidden
-          >
-            <div>
-              <h2>Worker</h2>
-              <p>
-                Keep this service running. An asleep laptop is an offline Coach.
-              </p>
-            </div>
-            <div>
-              <button id="run">Run Coach</button
-              ><button id="stop" class="secondary">Stop worker</button>
-            </div>
-          </section>
-          <div class="actions">
-            <button id="save">Save new revision</button
-            ><button id="export" class="secondary">
-              Export nonsecret configuration</button
-            ><span id="revision"></span>
-          </div>
-          <p class="hint">
-            Save applies Kata.fit, Models and Persona drafts across tabs.
-            Preview and worker use saved settings.
-          </p>
-        </section>
-        <section
-          class="card diagnostics"
-          id="diagnostics"
-          role="region"
-          aria-labelledby="diagnosticsTab"
-          tabindex="0"
-          hidden
-        >
-          <h2>Activity</h2>
-          <p id="lastError" role="status">No retained error.</p>
-          <div
-            class="settings-tabs"
-            role="tablist"
-            aria-label="Activity sections"
-          >
-            <button
-              id="diagnostics-performance-tab"
-              class="secondary"
-              role="tab"
-              aria-selected="false"
-              aria-controls="backendPerformance"
-              tabindex="-1"
-            >
-              Performance
-            </button>
-            <button
-              id="diagnostics-logs-tab"
-              role="tab"
-              aria-selected="true"
-              aria-controls="logsView"
-              tabindex="0"
-            >
-              Logs
-            </button>
-          </div>
-          <div class="log-controls">
-            <button id="logRefresh" class="secondary">Refresh</button>
-            <button id="logPause" class="secondary" aria-pressed="false">
-              Pause live
-            </button>
-          </div>
-          <section
-            id="backendPerformance"
-            role="tabpanel"
-            aria-labelledby="diagnostics-performance-tab"
-            tabindex="0"
-            hidden
-          >
-            <h3 id="performanceHeading">Backend performance</h3>
-            <p class="hint">
-              All retained backend receipts, independent of log level.
-              Cumulative request time is not wallclock time: overlapping
-              requests add together. This is not lifetime usage; the
-              20,000-entry window also includes other logs.
-            </p>
-            <p id="performanceWindow"></p>
-            <div class="log-controls">
-              <label
-                >Sort descending<select id="performanceSort">
-                  <option value="totalMs">Cumulative time</option>
-                  <option value="calls">Calls</option>
-                  <option value="p95Ms">p95 duration</option>
-                  <option value="timeouts">Timeouts</option>
-                </select></label
-              >
-              <button id="performanceExport" class="secondary" disabled>
-                Export aggregate JSON
-              </button>
-            </div>
-            <details>
-              <summary>How metrics are calculated</summary>
-              <p class="hint">
-                Durations use measured calls only; missing durations are not
-                zero. p95 uses nearest rank (small samples under 20 can
-                mislead); median uses the midpoint. Outcome rates use all calls,
-                including unknown outcomes. Failed time includes timeouts and
-                other failures, not cancellations.
-              </p>
-            </details>
-            <p class="hint">
-              Select a call to inspect receipts. Scroll the breakdown for more
-              calls.
-            </p>
+            <h2>Activity</h2>
+            <p id="lastError" role="status">No retained error.</p>
             <div
-              id="performanceRows"
-              tabindex="0"
-              role="region"
-              aria-label="Backend call breakdown"
-            ></div>
-          </section>
-          <div
-            id="logsView"
-            role="tabpanel"
-            aria-labelledby="diagnostics-logs-tab"
-            tabindex="0"
-          >
-            <h3>Activity logs</h3>
-            <p id="performanceSelection" role="status"></p>
-            <button id="performanceClear" class="secondary" hidden>
-              Clear call selection
-            </button>
-            <p class="hint">
-              Logs may contain health or meal details. Inspect and redact copied
-              or downloaded JSON before sharing it.
-            </p>
-            <div class="log-controls">
-              <label
-                >Level<select id="logLevel">
-                  <option value="all">All levels</option>
-                  <option value="verbose">Verbose</option>
-                  <option value="info" selected>Info</option>
-                  <option value="warn">Warnings</option>
-                  <option value="error">Errors</option>
-                </select></label
+              class="settings-tabs"
+              role="tablist"
+              aria-label="Activity sections"
+            >
+              <button
+                id="diagnostics-performance-tab"
+                class="secondary"
+                role="tab"
+                aria-selected="false"
+                aria-controls="backendPerformance"
+                tabindex="-1"
               >
-              <button id="logCopy" class="secondary">Copy JSON</button>
-              <button id="logDownload" class="secondary">Download JSON</button>
+                Performance
+              </button>
+              <button
+                id="diagnostics-logs-tab"
+                role="tab"
+                aria-selected="true"
+                aria-controls="logsView"
+                tabindex="0"
+              >
+                Logs
+              </button>
             </div>
-            <p id="logStatus" role="status">
-              Logs load only while Activity is active and the tab is visible.
-            </p>
-            <div id="logRows" aria-label="Activity entries"></div>
-          </div>
-        </section>
+            <div class="log-controls">
+              <button id="logRefresh" class="secondary">Refresh</button>
+              <button id="logPause" class="secondary" aria-pressed="false">
+                Pause live
+              </button>
+            </div>
+            <section
+              id="backendPerformance"
+              role="tabpanel"
+              aria-labelledby="diagnostics-performance-tab"
+              tabindex="0"
+              hidden
+            >
+              <h3 id="performanceHeading">Backend performance</h3>
+              <p class="hint">
+                All retained backend receipts, independent of log level.
+                Cumulative request time is not wallclock time: overlapping
+                requests add together. This is not lifetime usage; the
+                20,000-entry window also includes other logs.
+              </p>
+              <p id="performanceWindow"></p>
+              <div class="log-controls">
+                <label
+                  >Sort descending<select id="performanceSort">
+                    <option value="totalMs">Cumulative time</option>
+                    <option value="calls">Calls</option>
+                    <option value="p95Ms">p95 duration</option>
+                    <option value="timeouts">Timeouts</option>
+                  </select></label
+                >
+                <button id="performanceExport" class="secondary" disabled>
+                  Export aggregate JSON
+                </button>
+              </div>
+              <details>
+                <summary>How metrics are calculated</summary>
+                <p class="hint">
+                  Durations use measured calls only; missing durations are not
+                  zero. p95 uses nearest rank (small samples under 20 can
+                  mislead); median uses the midpoint. Outcome rates use all
+                  calls, including unknown outcomes. Failed time includes
+                  timeouts and other failures, not cancellations.
+                </p>
+              </details>
+              <p class="hint">
+                Select a call to inspect receipts. Scroll the breakdown for more
+                calls.
+              </p>
+              <div
+                id="performanceRows"
+                tabindex="0"
+                role="region"
+                aria-label="Backend call breakdown"
+              ></div>
+            </section>
+            <div
+              id="logsView"
+              role="tabpanel"
+              aria-labelledby="diagnostics-logs-tab"
+              tabindex="0"
+            >
+              <h3>Activity logs</h3>
+              <p id="performanceSelection" role="status"></p>
+              <button id="performanceClear" class="secondary" hidden>
+                Clear call selection
+              </button>
+              <p class="hint">
+                Logs may contain health or meal details. Inspect and redact
+                copied or downloaded JSON before sharing it.
+              </p>
+              <div class="log-controls">
+                <label
+                  >Level<select id="logLevel">
+                    <option value="all">All levels</option>
+                    <option value="verbose">Verbose</option>
+                    <option value="info" selected>Info</option>
+                    <option value="warn">Warnings</option>
+                    <option value="error">Errors</option>
+                  </select></label
+                >
+                <button id="logCopy" class="secondary">Copy JSON</button>
+                <button id="logDownload" class="secondary">
+                  Download JSON
+                </button>
+              </div>
+              <p id="logStatus" role="status">
+                Logs load only while Activity is active and the tab is visible.
+              </p>
+              <div id="logRows" aria-label="Activity entries"></div>
+            </div>
+          </section>
+        </div>
+        <p id="restartStatus" role="status" aria-live="polite"></p>
+        <button id="restartRetry" class="secondary" hidden>
+          Retry Coach restart
+        </button>
+        <button id="restartCheck" class="secondary" hidden>
+          Check operation status
+        </button>
+      </main>
+    </div>
+    <aside id="coachPane" aria-labelledby="coachPaneName" hidden>
+      <div
+        id="coachDivider"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-controls="coachPane"
+        aria-label="Resize Coach pane"
+      ></div>
+      <div class="coach-pane-bar">
+        <button id="coachPaneBack" type="button" class="secondary">
+          Back to Dojo
+        </button>
+        <h2 id="coachPaneName">Coach</h2>
+        <span id="coachPaneStatus" class="coach-pane-status">Not started</span>
+        <button id="coachPaneStart" type="button" hidden>
+          Start new session
+        </button>
+        <button
+          id="coachPaneExpand"
+          type="button"
+          class="secondary"
+          aria-pressed="false"
+        >
+          Expand
+        </button>
+        <button id="coachPaneCollapse" type="button" class="secondary">
+          Collapse
+        </button>
       </div>
-      <p id="restartStatus" role="status" aria-live="polite"></p>
-      <button id="restartRetry" class="secondary" hidden>
-        Retry Coach restart
-      </button>
-      <button id="restartCheck" class="secondary" hidden>
-        Check operation status
-      </button>
-    </main>
+      <section id="coachPanel" class="card">
+        <div id="operatorView">
+          <span
+            id="nativeStatus"
+            class="native-sr-only"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            >Pi disconnected.</span
+          >
+          <div class="native-workbench">
+            <div id="nativeTerminal" aria-label="Native Pi terminal"></div>
+            <aside
+              id="nativeAttachments"
+              aria-labelledby="nativeAttachmentsTitle"
+            >
+              <h3 id="nativeAttachmentsTitle">
+                Attachments from Pi
+                <span id="nativeAttachmentCount"></span>
+              </h3>
+              <p id="nativeAttachmentsEmpty" class="hint">
+                Images and files Pi sends with send_to_operator appear here.
+                They are erased when the session ends.
+              </p>
+              <p
+                id="nativeAttachmentsNotice"
+                class="hint"
+                role="status"
+                hidden
+              ></p>
+              <ul
+                id="nativeAttachmentList"
+                aria-live="polite"
+                aria-relevant="additions"
+              ></ul>
+            </aside>
+          </div>
+          <dialog id="attachmentDialog" aria-labelledby="attachmentDialogTitle">
+            <div class="attachment-dialog-bar">
+              <strong id="attachmentDialogTitle"></strong>
+              <a id="attachmentDialogDownload" class="button secondary"
+                >Download</a
+              ><button
+                id="attachmentDialogClose"
+                type="button"
+                class="secondary"
+              >
+                Close
+              </button>
+            </div>
+            <img id="attachmentDialogImage" alt="" />
+            <p id="attachmentDialogCaption" class="hint"></p>
+          </dialog>
+          <p id="operatorStatus" role="status"></p>
+          <div id="operatorActions" role="status" aria-live="polite"></div>
+          <button id="operatorReconcile" type="button" class="secondary" hidden>
+            Check delivery status
+          </button>
+        </div>
+      </section>
+    </aside>
     <script src="/terminal.js"></script>
     <script src="/backend-performance.js"></script>
     <script src="/leaflet.js"></script>

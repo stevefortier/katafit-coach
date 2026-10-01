@@ -52,7 +52,7 @@ pixels. `/api/activities/:id` remains owner-only. Dashboard uses the same routes
 retains chart presentation from available records, and labels bounded coverage.
 
 Native Pi conversations are not saved, read, or restored. While the application
-and runtime remain alive, re-entering the Coach tab attaches to the same Pi.
+and runtime remain alive, reopening the Coach pane attaches to the same Pi.
 Application restart, update, settings/credential change, or runtime teardown
 starts a fresh conversation with no old prompt/tool replay. Separate tenants
 still require separate protected Coach homes. Old native-history files remain
@@ -188,8 +188,8 @@ merely to match this example.
    preparation. A candidate with missing/mismatched/untrusted artifacts reports
    **external artifact or native bootstrap required**, removes its staged copy,
    and leaves the old worker/child/pointer untouched. Re-provision out-of-band;
-   an opt-in automatic update retries the same SHA after a bounded cooldown,
-   while manual updates require another confirmation. The updater never builds
+   retry only with another explicit manual confirmation. Availability is checked
+   only on Updates entry or Check; no source retry/install timer exists. The updater never builds
    or pulls images. Reconnect is not a success receipt.
 5. If cutover fails, stop the new owner, confirm removal of its owned probes/Pi,
    restore the previous pointer/home backup and old service/package/outer-image

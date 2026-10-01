@@ -806,22 +806,6 @@ header {
   flex-wrap: wrap;
   gap: 12px;
 }
-.update-auto-control {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.65rem;
-  cursor: pointer;
-  max-width: 100%;
-}
-.update-auto-control input {
-  flex: none;
-  width: 1.1rem;
-  height: 1.1rem;
-  margin: 0.1rem 0 0;
-}
-.update-auto-control span {
-  min-width: 0;
-}
 .update-versions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -870,7 +854,7 @@ header {
   padding: 16px;
   font-weight: 600;
 }
-#updateAutoStatus[data-tone="error"] {
+#updateCheckStatus[data-tone="error"] {
   color: #ffb4b4;
 }
 @media (max-width: 480px) {
@@ -925,10 +909,21 @@ header {
   }
 }
 .dashboard-member-cards {
+  position: sticky;
+  top: calc(var(--header-offset, 0px) + var(--notice-offset, 0px));
+  z-index: 8;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(270px, 1fr);
   gap: 12px;
   margin: 14px 0 22px;
+  padding: 8px 0;
+  background: #151515;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.dashboard-member-cards:empty {
+  display: none;
 }
 .dashboard-member-card {
   display: grid;
@@ -1010,6 +1005,9 @@ header {
 }
 .dashboard-map {
   position: relative;
+  /* Contain Leaflet's internal z-indices (panes 400, controls 1000) so the
+     map never paints over the sticky header or the Coach pane. */
+  isolation: isolate;
   width: 100%;
   height: clamp(280px, 48vw, 520px);
   overflow: hidden;
@@ -1490,4 +1488,325 @@ header {
 #performanceWindow,
 #performanceSelection {
   overflow-wrap: anywhere;
+}
+/* Global Coach pane: a header launcher and one persistent terminal pane that
+   docks right (the page shrinks), expands over the workspace, or covers the
+   screen on narrow viewports. */
+#coachLauncher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(360px, 45vw);
+  min-height: 44px;
+  margin: 0 auto 0 0;
+  padding: 8px 14px;
+}
+#coachLauncher[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: #303030;
+  color: var(--accent);
+}
+#coachLauncherName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coach-new-output {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+}
+/* One explicit workspace owner while Coach is open. The ordinary document
+   remains the owner when collapsed; main retains its existing content layout. */
+html.coach-open {
+  overflow: hidden;
+}
+.coach-open #workspaceScroll {
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  scroll-padding-top: var(--notice-offset, 0px);
+}
+html.coach-covered #workspaceScroll {
+  overflow-y: hidden;
+}
+/* Layout follows the viewport in CSS so it never lags the JS mode switch:
+   narrow screens get a full-screen pane, wide ones dock or expand. */
+#coachPane {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--panel);
+  overscroll-behavior: contain;
+  /* Outside <main>, so restate its long-token wrapping. */
+  overflow-wrap: anywhere;
+}
+@media (min-width: 900px) {
+  body.coach-docked #workspaceScroll {
+    right: var(--coach-pane-width, 520px);
+  }
+  #coachPane {
+    left: auto;
+    width: var(--coach-pane-width, 520px);
+  }
+  #coachPane[data-mode="expanded"] {
+    top: var(--coach-pane-top, 0px);
+    left: 0;
+    width: auto;
+    border-top: 1px solid var(--line);
+  }
+  #coachPane[data-mode="expanded"] #coachDivider,
+  #coachPaneBack {
+    display: none;
+  }
+}
+@media (max-width: 899.98px) {
+  #coachDivider,
+  #coachPaneExpand,
+  #coachPaneCollapse {
+    display: none;
+  }
+}
+#coachDivider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  z-index: 1;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+#coachDivider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 1px;
+  background: var(--line);
+}
+#coachDivider:hover::after,
+#coachDivider:focus-visible::after {
+  left: 4px;
+  width: 3px;
+  background: var(--accent);
+}
+#coachDivider:focus-visible {
+  outline: none;
+}
+.coach-pane-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.coach-pane-bar button {
+  flex: none;
+  min-height: 40px;
+  margin: 0;
+  padding: 8px 12px;
+}
+#coachPaneName {
+  flex: 1 1 6rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coach-pane-status {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.coach-pane-status[data-state="connected"] {
+  color: #86efac;
+}
+.coach-pane-status[data-state="starting"] {
+  color: #93c5fd;
+}
+.coach-pane-status[data-state="disconnected"],
+.coach-pane-status[data-state="ended"] {
+  color: #fcd34d;
+}
+.coach-pane-status[data-state="error"],
+.coach-pane-status[data-state="unavailable"],
+.coach-pane-status[data-state="overflow"] {
+  color: #fca5a5;
+}
+#coachPane #coachPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+#coachPane #operatorView {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#coachPane .native-workbench {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* Stretch: a content-sized terminal would shrink on every fit. */
+  align-items: stretch;
+  gap: 12px;
+  margin: 0;
+}
+#coachPane #nativeTerminal {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 160px;
+  margin: 0;
+}
+#coachPane #nativeAttachments {
+  flex: 0 1 auto;
+  /* Leave room for a full attachment action in short panes. Any excess
+     belongs to coachPanel's scroll viewport, never the document. */
+  min-height: 80px;
+  max-height: 30%;
+}
+@media (min-width: 900px) {
+  #coachPane[data-mode="expanded"] .native-workbench {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+    align-items: stretch;
+  }
+  #coachPane[data-mode="expanded"] #nativeAttachments {
+    max-height: none;
+  }
+}
+#coachPane #operatorStatus,
+#coachPane #operatorActions,
+#coachPane #operatorReconcile {
+  flex: none;
+}
+#coachPane #operatorStatus {
+  margin: 8px 0 0;
+}
+#coachPane #operatorStatus:empty,
+#coachPane #operatorActions:empty {
+  display: none;
+}
+#coachPane #operatorActions {
+  max-height: 20vh;
+  overflow-y: auto;
+}
+@media (max-width: 600px) {
+  #coachPane #coachPanel {
+    padding: 8px;
+  }
+}
+
+/* Functional activity-type encoding, not decorative application accents. */
+.dashboard-map-column,
+.dashboard-timeline {
+  min-width: 0;
+  max-width: 100%;
+}
+.dashboard-timeline {
+  margin-top: 8px;
+}
+.dashboard-timeline > p {
+  margin: 4px 0;
+  font-size: 11px;
+}
+.dashboard-timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+}
+.dashboard-timeline-legend span {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.dashboard-timeline-swatch {
+  width: 4px;
+  height: 12px;
+  order: -1;
+}
+.dashboard-timeline-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 8px 12px 0;
+}
+.dashboard-timeline-track {
+  position: relative;
+  min-width: 640px;
+  margin-right: 16px;
+}
+.dashboard-timeline-mark {
+  position: absolute;
+  background-image: linear-gradient(
+    to right,
+    var(--panel) 0 5px,
+    transparent 5px 11px,
+    var(--panel) 11px 16px
+  );
+  width: 16px;
+  min-width: 16px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  transform: translateX(-50%);
+}
+.dashboard-timeline-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0 6px;
+  background: currentColor;
+  opacity: 0.3;
+}
+.dashboard-timeline-mark[aria-pressed="true"],
+.dashboard-activity-pin[aria-pressed="true"] {
+  outline: 2px solid white;
+  outline-offset: 2px;
+}
+.dashboard-timeline-mark:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 3px;
+}
+.dashboard-timeline-tick {
+  position: absolute;
+  white-space: nowrap;
+  border-left: 1px solid var(--border);
+  padding: 5px 0 0 3px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.dashboard-timeline-end {
+  transform: translateX(-100%);
+  border-left: 0;
+  border-right: 1px solid var(--border);
+  padding-right: 3px;
+}
+
+.dashboard-timeline-tick:not(.dashboard-timeline-start):not(
+    .dashboard-timeline-end
+  ) {
+  transform: translateX(-50%);
 }

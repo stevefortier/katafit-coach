@@ -16,6 +16,72 @@ window.CoachDashboard = (() => {
   const avatarUrls = [];
   const avatarCache = new Map();
   const urls = [];
+  // Share admission across map, timeline, feed, detail and image reads, including
+  // old loads. Leave one of the BFF's four slots available for cleanup/other UI.
+  const readQueue = [];
+  let activeReads = 0;
+  let activeAvatarReads = 0;
+  function dashboardFetch(input, options, queuedSignal = options.signal) {
+    return new Promise((resolve, reject) => {
+      const avatar = input.startsWith("/api/dashboard/avatar?");
+      const job = { start, cancel, avatar };
+      let started = false;
+      function cancel() {
+        if (!started) {
+          const index = readQueue.indexOf(job);
+          if (index !== -1) readQueue.splice(index, 1);
+        }
+        reject(
+          queuedSignal.reason || new DOMException("Aborted", "AbortError"),
+        );
+      }
+      async function start() {
+        started = true;
+        activeReads++;
+        if (avatar) activeAvatarReads++;
+        // Selection detail has only a queued signal: once dispatched, retain its
+        // existing late-denial handling. Other callers reject promptly on abort.
+        if (!options.signal) queuedSignal?.removeEventListener("abort", cancel);
+        try {
+          // A client abort is not an acknowledgment of server-side cleanup.
+          // Drain an admitted read (bounded by the BFF REST deadline) before
+          // reusing its slot; never dispatch canceled queued date work.
+          const response = await fetch(input, {
+            ...options,
+            signal: undefined,
+          });
+          // The BFF buffers upstream reads and releases memberReads before its
+          // response arrives. Preserve the original Response/body for live
+          // callers; consume canceled results so no unused transport remains.
+          if (options.signal?.aborted) await response.arrayBuffer();
+          options.signal?.throwIfAborted();
+          resolve(response);
+        } catch (error) {
+          reject(error);
+        } finally {
+          queuedSignal?.removeEventListener("abort", cancel);
+          activeReads--;
+          if (avatar) activeAvatarReads--;
+          admitReads();
+        }
+      }
+      if (queuedSignal?.aborted) return cancel();
+      queuedSignal?.addEventListener("abort", cancel, { once: true });
+      readQueue.push(job);
+      admitReads();
+    });
+  }
+  function admitReads() {
+    while (activeReads < 3 && readQueue.length) {
+      // Old-date avatars still own slots while draining. Never let a new-date
+      // avatar take the third lane needed by primary/feed/photo/detail reads.
+      const index = readQueue.findIndex(
+        (job) => !job.avatar || activeAvatarReads < 2,
+      );
+      if (index === -1) return;
+      readQueue.splice(index, 1)[0].start();
+    }
+  }
   // Last successful authorized roster; kept only across transient failures.
   let rosterCache = null;
   // A confirmed same-load denial cannot be undone by a concurrent roster/map
@@ -26,6 +92,13 @@ window.CoachDashboard = (() => {
   let feedMembers = new Map();
   let filterFeed = () => {};
   let filterMap = () => {};
+  let selectionEpoch = 0;
+  let timelineEpoch = 0;
+  let timelineController;
+  let filterTimeline = () => {};
+  let linkActivity = () => {};
+  let purgeMapMember = () => {};
+  let removeMapActivity = () => {};
   let forgetMember = () => {};
   // Only a true 401/403 means access was denied; 429, 5xx and network
   // failures are transient and must never be treated as revoked sharing.
@@ -39,12 +112,18 @@ window.CoachDashboard = (() => {
     return node;
   };
   function clear() {
+    if ($("dashboardMapDate")) $("dashboardMapDate").onchange = null;
     epoch++;
     controller?.abort();
     controller = undefined;
     mapEpoch++;
     mapController?.abort();
     mapController = undefined;
+    timelineEpoch++;
+    timelineController?.abort();
+    selectionEpoch++;
+    $("dashboardTimeline")?.replaceChildren();
+    filterTimeline = () => {};
     disposeMap();
     $("dashboardMap")?.replaceChildren();
     $("dashboardMapSelection")?.replaceChildren();
@@ -108,7 +187,7 @@ window.CoachDashboard = (() => {
         value > 0 &&
         value <= max
       )
-        return `${value} ${unit}`;
+        return `${unit === "%" ? Number(value.toFixed(1)) : value} ${unit}`;
       if (
         unit === "weight" &&
         value &&
@@ -152,16 +231,31 @@ window.CoachDashboard = (() => {
         for (const [label, value] of [
           ["Weight", stat(stats?.weight, "weight", 2000)],
           ["Height", stat(stats?.height_cm, "cm", 300)],
-          ["Body fat", stat(stats?.body_fat_percent, "%", 100)],
+          [
+            "Body fat (photo estimate)",
+            stat(
+              stats?.body_fat_estimate?.source === "ai" &&
+                stats?.body_fat_estimate?.estimated === true &&
+                stats?.body_fat_estimate?.value === stats?.body_fat_percent
+                ? stats.body_fat_percent
+                : null,
+              "%",
+              100,
+            ),
+          ],
           ["Age", stat(stats?.age_years, "", 130)],
         ])
           button.append(text("span", `${label}: ${value}`));
       }
       button.addEventListener("click", () => {
         selectedMember = id;
+        selectionEpoch++;
+        $("dashboardMapSelection")?.replaceChildren();
+        highlightActivity(null);
         renderMemberCards();
         filterMap();
         filterFeed();
+        filterTimeline();
       });
       target.append(button);
     };
@@ -179,7 +273,13 @@ window.CoachDashboard = (() => {
     card.append(
       text("h4", `${series.member_name} — ${series.label} (${series.unit})`),
     );
-    const points = series.points;
+    const points =
+      series.label === "Body fat (photo estimate)"
+        ? series.points.map((p) => ({
+            ...p,
+            value: Number(p.value.toFixed(1)),
+          }))
+        : series.points;
     if (!points.length) {
       card.append(text("p", "No shared data in this period.", "hint"));
       return card;
@@ -311,7 +411,408 @@ window.CoachDashboard = (() => {
       longitude <= 180
     );
   }
+  const safeActivityData = (value, depth = 0) => {
+    if (depth >= 6) return "[nested detail omitted]";
+    if (typeof value === "string") return value.slice(0, 500);
+    if (
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      value === null
+    )
+      return value;
+    if (Array.isArray(value))
+      return value
+        .slice(0, 50)
+        .map((item) => safeActivityData(item, depth + 1));
+    if (!value || typeof value !== "object") return undefined;
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(
+          ([key]) =>
+            !/secret|token|password|credential|authorization|api[_-]?key|email/i.test(
+              key,
+            ),
+        )
+        .slice(0, 40)
+        .map(([key, item]) => [key, safeActivityData(item, depth + 1)]),
+    );
+  };
+  function showDetail(detail, name) {
+    const rows = [
+      text("h4", name),
+      text("p", detail.name || detail.type || "Activity"),
+      text(
+        "p",
+        [detail.type, detail.status, detail.created_at]
+          .filter(Boolean)
+          .join(" · "),
+        "hint",
+      ),
+    ];
+    if (
+      detail.type === "workout" &&
+      Number.isFinite(detail.workout_progress?.completed_sets)
+    )
+      rows.push(
+        text("p", `Completed sets: ${detail.workout_progress.completed_sets}`),
+      );
+    if (detail.type === "meal") {
+      for (const [field, unit] of [
+        ["calories", "kcal"],
+        ["protein", "g"],
+      ])
+        if (Number.isFinite(detail.nutrition_summary?.[field]))
+          rows.push(
+            text("p", `${field}: ${detail.nutrition_summary[field]} ${unit}`),
+          );
+    }
+    if (detail.type === "metric") {
+      for (const point of (Array.isArray(detail.data?.measurements)
+        ? detail.data.measurements
+        : []
+      ).slice(0, 8))
+        if (
+          typeof point?.type_id === "string" &&
+          Number.isFinite(point.value) &&
+          typeof point.unit === "string"
+        )
+          rows.push(
+            text("p", `${point.type_id}: ${point.value} ${point.unit}`),
+          );
+    }
+    const data = safeActivityData(detail.data || {});
+    const rendered = JSON.stringify(data, null, 2);
+    if (rendered && rendered !== "{}") {
+      const more = text("details");
+      more.append(
+        text("summary", "Activity data"),
+        text(
+          "pre",
+          rendered.slice(0, 32000) +
+            (rendered.length > 32000 ? "\n[detail truncated]" : ""),
+        ),
+      );
+      rows.push(more);
+    }
+    rows.push(
+      text(
+        "p",
+        position(detail.position)
+          ? `Position: ${detail.position.latitude}, ${detail.position.longitude}`
+          : "Position unavailable.",
+        "hint",
+      ),
+    );
+    rows.push(
+      text(
+        "p",
+        position(detail.position)
+          ? "Position reauthorized for this read; map pin is not a live location."
+          : "No authorized position was returned; activity detail is still available.",
+        "hint",
+      ),
+    );
+    $("dashboardMapSelection").replaceChildren(...rows);
+  }
+
+  function highlightActivity(activityId) {
+    for (const mark of document.querySelectorAll(
+      ".dashboard-timeline-mark, .dashboard-activity-pin",
+    ))
+      mark.setAttribute(
+        "aria-pressed",
+        String(mark.dataset.activityId === activityId),
+      );
+  }
+  async function selectActivity(entry, name, adminKey, pan = false) {
+    const choice = ++selectionEpoch,
+      day = mapEpoch,
+      loadId = epoch;
+    const selectedDate = $("dashboardMapDate").value;
+    const [year, month, date] = selectedDate.split("-").map(Number);
+    const start = new Date(0);
+    start.setFullYear(year, month - 1, date);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    const selection = $("dashboardMapSelection");
+    highlightActivity(entry._id);
+    selection.replaceChildren(text("p", "Checking current activity access…"));
+    try {
+      const response = await dashboardFetch(
+        `/api/dashboard/activity?${new URLSearchParams({ id: entry._id })}`,
+        {
+          headers: { Authorization: `Bearer ${adminKey}` },
+          cache: "no-store",
+          redirect: "error",
+        },
+        mapController?.signal,
+      );
+      if (!response.ok)
+        throw httpError("Activity read failed", response.status);
+      const envelope = await response.json();
+      if (loadId !== epoch || day !== mapEpoch || choice !== selectionEpoch)
+        return;
+      if (
+        envelope.owner?._id !== entry.user_id ||
+        envelope.activity?._id !== entry._id ||
+        envelope.activity?.user_id !== entry.user_id
+      )
+        throw httpError("Activity unavailable", 404);
+      const fresh = envelope.activity,
+        stamp = Date.parse(fresh.created_at);
+      if (
+        !Number.isFinite(stamp) ||
+        stamp < +start ||
+        stamp >= +end ||
+        !(
+          ["complete", "completed"].includes(fresh.status) ||
+          (fresh.status === "ongoing" &&
+            Date.now() >= +start &&
+            Date.now() < +end)
+        )
+      )
+        throw httpError("Activity unavailable", 404);
+      if (suppressedMembers.has(entry.user_id)) return;
+      showDetail(envelope.activity, name);
+      linkActivity(envelope.activity, pan);
+    } catch (error) {
+      if (loadId !== epoch) return;
+      if (denied(error)) {
+        suppressedMembers.add(entry.user_id);
+        mapMembers.delete(entry.user_id);
+        rosterCache?.delete(entry.user_id);
+        const url = avatarCache.get(entry.user_id);
+        if (url) {
+          URL.revokeObjectURL(url);
+          avatarCache.delete(entry.user_id);
+        }
+        purgeMapMember(entry.user_id);
+        forgetMember(entry.user_id);
+        filterTimeline();
+        renderMemberCards();
+      } else if (error.status === 404 && day === mapEpoch) {
+        removeMapActivity(entry._id);
+        for (const mark of document.querySelectorAll(
+          ".dashboard-timeline-mark",
+        ))
+          if (mark.dataset.activityId === entry._id) mark.remove();
+      }
+      if (day !== mapEpoch || choice !== selectionEpoch) return;
+      selection.replaceChildren(
+        text(
+          "p",
+          denied(error)
+            ? `Activity access denied (${error.status}); this member's pins, card and loaded details were removed.`
+            : error.status === 404
+              ? "Activity unavailable (404); this activity was removed. Refresh to recheck."
+              : `Activity detail temporarily unavailable${error.status ? ` (${error.status})` : ""}. Pins and cards were kept; try again shortly.`,
+        ),
+      );
+      if (!denied(error) && error.status !== 404) {
+        const retry = text("button", "Retry activity detail");
+        retry.type = "button";
+        retry.onclick = () => void selectActivity(entry, name, adminKey, pan);
+        selection.append(retry);
+      }
+    }
+  }
+  const activityColors = {
+    workout: "#ef4444",
+    meal: "#22c55e",
+    media: "#8b5cf6",
+    metric: "#3b82f6",
+    survey: "#f59e0b",
+    status_change: "#6b7280",
+  };
+  async function loadTimeline(adminKey) {
+    const target = $("dashboardTimeline");
+    if (!target) return;
+    const id = ++timelineEpoch;
+    timelineController?.abort();
+    timelineController = new AbortController();
+    const signal = timelineController.signal,
+      date = $("dashboardMapDate").value;
+    const live = () => id === timelineEpoch && !signal.aborted;
+    if (target.dataset.date !== date) target.replaceChildren();
+    target.dataset.date = date;
+    for (const old of target.querySelectorAll(":scope > p, :scope > button"))
+      old.remove();
+    filterTimeline = () => {
+      for (const mark of target.querySelectorAll(".dashboard-timeline-mark")) {
+        if (suppressedMembers.has(mark.dataset.memberId)) mark.remove();
+        else
+          mark.hidden =
+            !!selectedMember && selectedMember !== mark.dataset.memberId;
+      }
+    };
+    const status = text("p", "Loading shared day activities…", "hint");
+    status.setAttribute("role", "status");
+    target.append(status);
+    if (!validDay(date)) {
+      status.textContent = "Choose a valid activity creation date.";
+      return;
+    }
+    const [year, month, day] = date.split("-").map(Number);
+    const start = new Date(0);
+    start.setFullYear(year, month - 1, day);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    try {
+      const users = new Map(),
+        items = new Map();
+      let cursor,
+        pages = 0;
+      do {
+        const query = new URLSearchParams({
+          date,
+          start: start.toISOString(),
+          end: end.toISOString(),
+        });
+        if (cursor) query.set("cursor", cursor);
+        const response = await dashboardFetch(
+          `/api/dashboard/timeline?${query}`,
+          {
+            headers: { Authorization: `Bearer ${adminKey}` },
+            signal,
+            cache: "no-store",
+            redirect: "error",
+          },
+        );
+        if (!response.ok)
+          throw httpError("Timeline read failed", response.status);
+        const data = await response.json();
+        if (!live()) return;
+        if (
+          !Array.isArray(data.users) ||
+          !Array.isArray(data.activities) ||
+          typeof data.hasMore !== "boolean"
+        )
+          throw new Error("Invalid timeline response");
+        for (const user of data.users) users.set(user._id, user);
+        for (const item of data.activities) {
+          const stamp = Date.parse(item.created_at);
+          if (
+            typeof item._id !== "string" ||
+            typeof item.user_id !== "string" ||
+            !Number.isFinite(stamp) ||
+            stamp < +start ||
+            stamp >= +end ||
+            items.has(item._id)
+          )
+            throw new Error("Invalid timeline activity");
+          items.set(item._id, item);
+        }
+        pages++;
+        if (
+          items.size > 5000 ||
+          (data.hasMore &&
+            (pages >= 50 ||
+              typeof data.nextCursor !== "string" ||
+              !data.nextCursor ||
+              data.nextCursor === cursor))
+        )
+          throw new Error("Timeline display limit or nonadvancing cursor");
+        cursor = data.hasMore ? data.nextCursor : undefined;
+      } while (cursor);
+      if (!live()) return;
+      status.textContent = `Created-time points · ${date} · device timezone · not activity duration.`;
+      const legend = text("div", "", "dashboard-timeline-legend");
+      legend.setAttribute("aria-label", "Activity type colors");
+      for (const [type, color] of Object.entries(activityColors)) {
+        const label = text(
+          "span",
+          type === "status_change" ? "Status/Readiness" : type,
+        );
+        const swatch = text("i", "", "dashboard-timeline-swatch");
+        swatch.style.backgroundColor = color;
+        swatch.setAttribute("aria-hidden", "true");
+        label.append(swatch);
+        legend.append(label);
+      }
+      const scroll = text("div", "", "dashboard-timeline-scroll");
+      scroll.tabIndex = 0;
+      scroll.setAttribute("aria-label", "Scrollable day activity timeline");
+      const track = text("div", "", "dashboard-timeline-track");
+      scroll.append(track);
+      const lanes = [];
+      for (const item of [...items.values()].sort(
+        (a, b) =>
+          Date.parse(a.created_at) - Date.parse(b.created_at) ||
+          a._id.localeCompare(b._id),
+      )) {
+        if (suppressedMembers.has(item.user_id)) continue;
+        const fraction =
+            (Date.parse(item.created_at) - +start) / (+end - +start),
+          x = fraction * 640;
+        let lane = lanes.findIndex((last) => x - last >= 24);
+        if (lane < 0) lane = lanes.length;
+        lanes[lane] = x;
+        const name = users.get(item.user_id)?.display_name || "Member";
+        const mark = text("button", "", "dashboard-timeline-mark");
+        mark.type = "button";
+        mark.dataset.activityId = item._id;
+        mark.dataset.memberId = item.user_id;
+        mark.dataset.activityType = item.type;
+        mark.style.left = `${fraction * 100}%`;
+        mark.style.top = `${lane * 26}px`;
+        mark.style.backgroundColor = activityColors[item.type] || "#6b7280";
+        mark.setAttribute(
+          "aria-label",
+          `${name} · ${item.type} · ${item.name || "Activity"} · created ${new Date(item.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" })}`,
+        );
+        mark.title = mark.getAttribute("aria-label");
+        mark.setAttribute("aria-pressed", "false");
+        mark.onclick = () => void selectActivity(item, name, adminKey, true);
+        track.append(mark);
+      }
+      const height = Math.max(30, lanes.length * 26);
+      track.style.height = `${height + 28}px`;
+      const ticks = [];
+      for (let tick = +start; tick <= +end - 2 * 3600000; tick += 2 * 3600000)
+        ticks.push(tick);
+      ticks.push(+end);
+      for (const tick of ticks) {
+        const label = text(
+          "span",
+          new Date(tick).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }),
+          "dashboard-timeline-tick",
+        );
+        label.setAttribute(
+          "aria-label",
+          `${tick === +end ? "Next midnight" : "Local time"} ${new Date(tick).toLocaleString([], { timeZoneName: "short" })}`,
+        );
+        if (tick === +start) label.classList.add("dashboard-timeline-start");
+        if (tick === +end) label.classList.add("dashboard-timeline-end");
+        label.style.left = `${((tick - +start) / (+end - +start)) * 100}%`;
+        label.style.top = `${height}px`;
+        track.append(label);
+      }
+      target.replaceChildren(status, legend, scroll);
+      filterTimeline();
+    } catch (error) {
+      if (!live()) return;
+      if (denied(error))
+        for (const mark of target.querySelectorAll(".dashboard-timeline-mark"))
+          mark.remove();
+      status.textContent = `Timeline unavailable${error.status ? ` (${error.status})` : ""}; try again.`;
+      const retry = text("button", "Retry timeline");
+      retry.type = "button";
+      retry.onclick = () => void loadTimeline(adminKey);
+      target.append(retry);
+    }
+  }
   async function loadMap(adminKey) {
+    selectionEpoch++;
+    linkActivity = () => {};
+    purgeMapMember = () => {};
+    removeMapActivity = () => {};
+    void loadTimeline(adminKey);
     mapEpoch++;
     mapController?.abort();
     mapController = new AbortController();
@@ -329,7 +830,7 @@ window.CoachDashboard = (() => {
     selection.replaceChildren();
     status.removeAttribute("data-tone");
     const request = async (path) => {
-      const response = await fetch(`/api/${path}`, {
+      const response = await dashboardFetch(`/api/${path}`, {
         headers: { Authorization: `Bearer ${adminKey}` },
         signal,
         cache: "no-store",
@@ -359,7 +860,7 @@ window.CoachDashboard = (() => {
         while (live() && avatarIndex < avatarQueue.length) {
           const memberId = avatarQueue[avatarIndex++];
           try {
-            const response = await fetch(
+            const response = await dashboardFetch(
               `/api/dashboard/avatar?${new URLSearchParams({ id: memberId })}`,
               {
                 headers: { Authorization: `Bearer ${adminKey}` },
@@ -481,7 +982,7 @@ window.CoachDashboard = (() => {
     instance.setView([0, 0], 2); // Neutral initial view; never request device location.
     const overlay = text("div", "", "dashboard-map-overlay");
     map.append(overlay);
-    let selectionEpoch = 0;
+
     try {
       const users = new Map(),
         byMember = new Map();
@@ -547,120 +1048,6 @@ window.CoachDashboard = (() => {
       const { latestPositions } = roster;
       const entriesWithPins = [];
       const badges = new Map();
-      const stillOnMap = (detail, entry) =>
-        detail?._id === entry._id &&
-        detail?.user_id === entry.user_id &&
-        position(detail.position) &&
-        detail.position.latitude === entry.position.latitude &&
-        detail.position.longitude === entry.position.longitude &&
-        Number.isFinite(Date.parse(detail.created_at)) &&
-        Date.parse(detail.created_at) >= startMs &&
-        Date.parse(detail.created_at) < endMs;
-      const safeActivityData = (value, depth = 0) => {
-        if (depth >= 6) return "[nested detail omitted]";
-        if (typeof value === "string") return value.slice(0, 500);
-        if (
-          typeof value === "number" ||
-          typeof value === "boolean" ||
-          value === null
-        )
-          return value;
-        if (Array.isArray(value))
-          return value
-            .slice(0, 50)
-            .map((item) => safeActivityData(item, depth + 1));
-        if (!value || typeof value !== "object") return undefined;
-        return Object.fromEntries(
-          Object.entries(value)
-            .filter(
-              ([key]) =>
-                !/secret|token|password|credential|authorization|api[_-]?key|email/i.test(
-                  key,
-                ),
-            )
-            .slice(0, 40)
-            .map(([key, item]) => [key, safeActivityData(item, depth + 1)]),
-        );
-      };
-      function showDetail(detail, name) {
-        const rows = [
-          text("h4", name),
-          text("p", detail.name || detail.type || "Activity"),
-          text(
-            "p",
-            [detail.type, detail.status, detail.created_at]
-              .filter(Boolean)
-              .join(" · "),
-            "hint",
-          ),
-        ];
-        if (
-          detail.type === "workout" &&
-          Number.isFinite(detail.workout_progress?.completed_sets)
-        )
-          rows.push(
-            text(
-              "p",
-              `Completed sets: ${detail.workout_progress.completed_sets}`,
-            ),
-          );
-        if (detail.type === "meal") {
-          for (const [field, unit] of [
-            ["calories", "kcal"],
-            ["protein", "g"],
-          ])
-            if (Number.isFinite(detail.nutrition_summary?.[field]))
-              rows.push(
-                text(
-                  "p",
-                  `${field}: ${detail.nutrition_summary[field]} ${unit}`,
-                ),
-              );
-        }
-        if (detail.type === "metric") {
-          for (const point of (Array.isArray(detail.data?.measurements)
-            ? detail.data.measurements
-            : []
-          ).slice(0, 8))
-            if (
-              typeof point?.type_id === "string" &&
-              Number.isFinite(point.value) &&
-              typeof point.unit === "string"
-            )
-              rows.push(
-                text("p", `${point.type_id}: ${point.value} ${point.unit}`),
-              );
-        }
-        const data = safeActivityData(detail.data || {});
-        const rendered = JSON.stringify(data, null, 2);
-        if (rendered && rendered !== "{}") {
-          const more = text("details");
-          more.append(
-            text("summary", "Activity data"),
-            text(
-              "pre",
-              rendered.slice(0, 32000) +
-                (rendered.length > 32000 ? "\n[detail truncated]" : ""),
-            ),
-          );
-          rows.push(more);
-        }
-        rows.push(
-          text(
-            "p",
-            `Position: ${detail.position.latitude}, ${detail.position.longitude}`,
-            "hint",
-          ),
-        );
-        rows.push(
-          text(
-            "p",
-            "Position reauthorized for this read; map pin is not a live location.",
-            "hint",
-          ),
-        );
-        selection.replaceChildren(...rows);
-      }
       for (const [memberId, entries] of byMember) {
         if (suppressedMembers.has(memberId)) continue;
         const name = users.get(memberId)?.display_name || "Member";
@@ -691,78 +1078,12 @@ window.CoachDashboard = (() => {
             "aria-label",
             `${name} activity: ${entry.name || entry.type || "Activity"}`,
           );
-          marker.addEventListener("click", async () => {
-            selectionEpoch++;
-            const choiceId = selectionEpoch;
-            selection.replaceChildren(
-              text("p", "Checking current position access…"),
-            );
-            try {
-              const envelope = await request(
-                `dashboard/activity?${new URLSearchParams({ id: entry._id })}`,
-              );
-              if (!live() || choiceId !== selectionEpoch) return;
-              if (
-                envelope.owner?._id !== memberId ||
-                !stillOnMap(envelope.activity, entry)
-              )
-                throw Object.assign(new Error("Position unavailable."), {
-                  stale: true,
-                });
-              showDetail(envelope.activity, name);
-            } catch (error) {
-              if (!live()) return;
-              // A confirmed denial must invalidate data even when the operator
-              // has selected a different pin since this request began.
-              if (denied(error)) {
-                suppressedMembers.add(memberId);
-                deniedMembers.add(memberId);
-                mapMembers.delete(memberId);
-                rosterCache?.delete(memberId);
-                const priorUrl = avatarCache.get(memberId);
-                if (priorUrl) {
-                  URL.revokeObjectURL(priorUrl);
-                  avatarCache.delete(memberId);
-                  const urlIndex = avatarUrls.indexOf(priorUrl);
-                  if (urlIndex !== -1) avatarUrls.splice(urlIndex, 1);
-                }
-                for (const pin of entriesWithPins.filter(
-                  ({ entry: item }) => item.user_id === memberId,
-                )) {
-                  pin.marker.remove();
-                  pin.anchor.remove();
-                  pin.link.remove();
-                }
-                forgetMember(memberId);
-                renderMemberCards();
-              }
-              // A stale response may purge revoked data, but it must never
-              // replace the newer activity/member selection message.
-              if (choiceId !== selectionEpoch) return;
-              if (!denied(error) && !error.stale) {
-                // Throttled, server or network failure: sharing is unknown,
-                // so keep every pin and card and let the operator retry.
-                selection.replaceChildren(
-                  text(
-                    "p",
-                    `Activity detail temporarily unavailable${error.status ? ` (${error.status})` : ""}. Pins and cards were kept; try again shortly.`,
-                  ),
-                );
-                return;
-              }
-              marker.remove();
-              anchor.remove();
-              link.remove();
-              selection.replaceChildren(
-                text(
-                  "p",
-                  denied(error)
-                    ? `Activity access denied (${error.status}); this member's pins, card and loaded details were removed. Refresh the map to recheck sharing.`
-                    : "Activity or position unavailable or location changed. Refresh the map to recheck sharing.",
-                ),
-              );
-            }
-          });
+          marker.dataset.activityId = entry._id;
+          marker.setAttribute("aria-pressed", "false");
+          marker.addEventListener(
+            "click",
+            () => void selectActivity(entry, name, adminKey),
+          );
           const anchor = text("span", "", "dashboard-map-anchor");
           const link = text("span", "", "dashboard-map-pin-link");
           overlay.append(link, anchor, marker);
@@ -829,6 +1150,7 @@ window.CoachDashboard = (() => {
           renderMemberCards();
           filterMap(false);
           filterFeed();
+          filterTimeline();
         });
         const anchor = text("span", "", "dashboard-map-anchor");
         const link = text("span", "", "dashboard-map-pin-link");
@@ -843,6 +1165,47 @@ window.CoachDashboard = (() => {
           link,
         });
       }
+      const removePins = (predicate) => {
+        for (const pin of entriesWithPins.filter(({ entry }) =>
+          predicate(entry),
+        )) {
+          pin.marker.remove();
+          pin.anchor.remove();
+          pin.link.remove();
+        }
+      };
+      purgeMapMember = (memberId) =>
+        removePins((entry) => entry.user_id === memberId);
+      removeMapActivity = (activityId) =>
+        removePins((entry) => entry._id === activityId);
+      linkActivity = (detail, pan) => {
+        const pin = entriesWithPins.find(
+          ({ entry, marker }) => entry._id === detail._id && marker.isConnected,
+        );
+        if (!pin) return;
+        if (
+          !position(detail.position) ||
+          detail.position.latitude !== pin.entry.position.latitude ||
+          detail.position.longitude !== pin.entry.position.longitude
+        ) {
+          removeMapActivity(detail._id);
+          $("dashboardMapSelection").append(
+            text(
+              "p",
+              "Map position unavailable or location changed. Refresh the map to recheck sharing.",
+              "hint",
+            ),
+          );
+          return;
+        }
+        if (pan)
+          instance.panTo(
+            [detail.position.latitude, detail.position.longitude],
+            {
+              animate: false,
+            },
+          );
+      };
       let initialView;
       filterMap = (clearSelection = true) => {
         if (clearSelection) {
@@ -1041,7 +1404,7 @@ window.CoachDashboard = (() => {
     const signal = controller.signal;
     const live = () => id === epoch && !signal.aborted;
     const request = async (path, binary = false) => {
-      const response = await fetch("/api/" + path, {
+      const response = await dashboardFetch("/api/" + path, {
         headers: { Authorization: "Bearer " + adminKey },
         signal,
         cache: "no-store",
@@ -1065,6 +1428,8 @@ window.CoachDashboard = (() => {
     const revoked = new Set();
     forgetMember = (memberId) => {
       suppressedMembers.add(memberId);
+      filterTimeline();
+      purgeMapMember(memberId);
       revoked.add(memberId);
       users.delete(memberId);
       feedMembers.delete(memberId);
@@ -1113,7 +1478,7 @@ window.CoachDashboard = (() => {
         text("h3", "Activity trends"),
         text(
           "p",
-          "Loaded activities only, not a complete history or adherence. UTC completion day (creation-date fallback). Nutrition uses available recorded summaries; missing values are not zero. Body points use explicit recorded units or verified Health Connect stored lb; units are never inferred from photos.",
+          "Loaded activities only, not a complete history or adherence. UTC completion day (creation-date fallback). Nutrition uses available recorded summaries; missing values are not zero. Weight uses explicit recorded units or verified Health Connect stored lb. Body fat is a photo-inferred range midpoint estimate, not a manual measurement.",
           "hint",
         ),
       );
@@ -1157,11 +1522,7 @@ window.CoachDashboard = (() => {
           "hint",
         ),
       );
-      if (
-        activity.type === "media" &&
-        latestPhotos.get(activity.user_id)?._id !== activity._id
-      )
-        return;
+
       if (["complete", "completed"].includes(activity.status)) {
         if (activity.type === "workout") {
           addPoint(activity, "Completed workouts", "workouts", 1);
@@ -1269,14 +1630,85 @@ window.CoachDashboard = (() => {
                 ...detail,
                 completed_at: `${leaf.date}T00:00:00Z`,
               };
-            } else if (
-              !(m.type_id === "fat_percentage" && unit === "%" && value <= 100)
-            )
-              continue;
+            } else continue;
             addPoint(pointActivity, m.type_id, unit, value, true);
           }
           return;
         }
+        // Match Stats' canonical photoBodyFatReadings semantics. REST serializes
+        // its Date as a string; do not use best_estimate or manual fat metrics.
+        const stamp = detail.completed_at || detail.created_at;
+        if (
+          detail.is_template !== true &&
+          typeof stamp === "string" &&
+          Number.isFinite(Date.parse(stamp))
+        ) {
+          for (const file of Array.isArray(detail.data.files)
+            ? detail.data.files
+            : []) {
+            if (
+              !(
+                file?.type === "image" ||
+                ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(
+                  file?.type,
+                )
+              ) ||
+              file.isPlaceholder ||
+              (file.inferenceStatus != null &&
+                file.inferenceStatus !== "completed")
+            )
+              continue;
+            const inferences = Array.isArray(file.inferences)
+              ? file.inferences
+              : [];
+            const result = inferences.at(-1)?.result;
+            const range =
+              result?.estimated_body_fat_range || result?.estimated_body_fat;
+            const namedFile = result?.photo_validation?.file_id;
+            const sessionFiles = result?._session?.file_ids;
+            if (
+              (namedFile != null && String(namedFile) !== String(file._id)) ||
+              (sessionFiles != null &&
+                (!Array.isArray(sessionFiles) ||
+                  !sessionFiles.map(String).includes(String(file._id)))) ||
+              !range ||
+              typeof range !== "object" ||
+              Array.isArray(range)
+            )
+              continue;
+            const valid = (n) =>
+              typeof n === "number" && Number.isFinite(n) && n > 0 && n <= 100;
+            const number = (n) =>
+              typeof n === "string" &&
+              n.length <= 24 &&
+              /^[+]?(?:\d+\.?\d*|\.\d+)$/.test(n.trim())
+                ? Number(n.trim())
+                : n;
+            const lo = number(range.lower_bound),
+              hi = number(range.upper_bound);
+            if ((lo != null && !valid(lo)) || (hi != null && !valid(hi)))
+              continue;
+            const lower = lo ?? hi;
+            const upper = hi ?? lo;
+            if (
+              !valid(lower) ||
+              !valid(upper) ||
+              lower > upper ||
+              lower <= 1 !== upper <= 1
+            )
+              continue;
+            const midpoint = (lower + upper) / 2;
+            addPoint(
+              detail,
+              "Body fat (photo estimate)",
+              "%",
+              (midpoint * 100) / (midpoint > 1 ? 100 : 1),
+              true,
+            );
+          }
+        }
+        // Accumulate all loaded chart inputs; only the latest check-in is a gallery.
+        if (latestPhotos.get(activity.user_id)?._id !== activity._id) return;
         const photos = (
           Array.isArray(detail.data.files) ? detail.data.files : []
         ).filter(isPhoto);

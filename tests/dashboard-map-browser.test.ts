@@ -133,6 +133,11 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
                     weight: { value: 68, unit: "kg" },
                     height_cm: 170,
                     body_fat_percent: 21,
+                    body_fat_estimate: {
+                      source: "ai",
+                      estimated: true,
+                      value: 21,
+                    },
                     age_years: 30,
                   },
                   last_position: {
@@ -404,7 +409,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
       );
       assert.match(
         await page.locator("#dashboardMemberCards").innerText(),
-        /Weight: 68 kg.*Height: 170 cm.*Body fat: 21 %.*Age: 30.*Weight: Unavailable.*Height: Unavailable.*Body fat: Unavailable.*Age: Unavailable/s,
+        /Weight: 68 kg.*Height: 170 cm.*Body fat \(photo estimate\): 21 %.*Age: 30.*Weight: Unavailable.*Height: Unavailable.*Body fat \(photo estimate\): Unavailable.*Age: Unavailable/s,
       );
       assert.match(
         (await page
@@ -1333,6 +1338,7 @@ test("roster cards load independently when the map endpoint fails or Leaflet is 
                 weight: { value: 68, unit: "kg" },
                 height_cm: 170,
                 body_fat_percent: 21,
+                body_fat_estimate: { source: "ai", estimated: true, value: 21 },
                 age_years: 30,
               },
               last_position: {
@@ -1377,7 +1383,7 @@ test("roster cards load independently when the map endpoint fails or Leaflet is 
       });
       // Cards arrive while the date-scoped map read is still pending.
       await page.waitForFunction(() =>
-        /Synthetic Ada.*Weight: 68 kg.*Height: 170 cm.*Body fat: 21 %.*Age: 30.*Synthetic Bob.*Weight: Unavailable/s.test(
+        /Synthetic Ada.*Weight: 68 kg.*Height: 170 cm.*Body fat \(photo estimate\): 21 %.*Age: 30.*Synthetic Bob.*Weight: Unavailable/s.test(
           (document.querySelector("#dashboardMemberCards") as HTMLElement)
             ?.innerText || "",
         ),
@@ -1418,5 +1424,453 @@ test("roster cards load independently when the map endpoint fails or Leaflet is 
     releaseMap!();
     await browser.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("served compact day timeline works without Leaflet and places tied activity instants on local DST scale", async () => {
+  const { Store } = await import("../src/config/store.js");
+  const { admin } = await import("../src/server/admin.js");
+  const { mkdtemp, rm, mkdir } = await import("node:fs/promises");
+  const home = await mkdtemp("/tmp/coach-timeline-");
+  let detailStatus = 200;
+  let timelineStatus = 200;
+  let sixTypes = false;
+  let detailOverride: Record<string, unknown> = {};
+  let holdDetail = false;
+  let releaseDetail: (() => void) | undefined;
+  let detailStarted: (() => void) | undefined;
+  let beganDetail = new Promise<void>((r) => {
+    detailStarted = r;
+  });
+  let heldDetail = new Promise<void>((r) => {
+    releaseDetail = r;
+  });
+  const items = ["workout", "meal", "metric"].map((type, i) => ({
+    _id: `point-${i}`,
+    user_id: i === 2 ? bob : ada,
+    type,
+    status: "complete",
+    name: `Synthetic ${type}`,
+    created_at: "2026-11-01T06:30:00.000Z",
+  }));
+  const calls: string[] = [];
+  const backend = createServer(async (req, res) => {
+    calls.push(req.url!);
+    res.setHeader("content-type", "application/json");
+    if (req.url?.startsWith("/api/friends/dojo/day-activities?")) {
+      if (timelineStatus !== 200) {
+        res.statusCode = timelineStatus;
+        res.end("{}");
+        return;
+      }
+      res.end(
+        JSON.stringify({
+          users: [
+            { _id: ada, display_name: "Synthetic Ada" },
+            { _id: bob, display_name: "Synthetic Bob" },
+          ],
+          activities: (sixTypes
+            ? [
+                ...items,
+                ...["media", "survey", "status_change"].map((type, i) => ({
+                  ...items[0],
+                  _id: `extra-${i}`,
+                  type,
+                })),
+              ]
+            : items
+          ).map((item) => ({
+            ...item,
+            created_at: new Date(
+              Date.parse(
+                new URL(req.url!, "http://fixture").searchParams.get("start")!,
+              ) +
+                2.5 * 3600000,
+            ).toISOString(),
+          })),
+          hasMore: false,
+          nextCursor: null,
+        }),
+      );
+    } else if (req.url === "/api/friends/dojo/dashboard-members")
+      res.end(
+        JSON.stringify({
+          members: [
+            { _id: ada, display_name: "Synthetic Ada" },
+            { _id: bob, display_name: "Synthetic Bob" },
+          ],
+        }),
+      );
+    else if (req.url?.startsWith("/api/friends/activity/")) {
+      if (holdDetail) {
+        detailStarted?.();
+        await heldDetail;
+      }
+      res.statusCode = detailStatus;
+      const item = items.find((i) => req.url?.endsWith(i._id));
+      res.end(
+        JSON.stringify({
+          activity: { ...item, ...detailOverride },
+          owner: { _id: item?.user_id },
+        }),
+      );
+    } else
+      res.end(JSON.stringify({ users: [], activities: [], hasMore: false }));
+  });
+  await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
+  const store = new Store(home);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: `http://127.0.0.1:${(backend.address() as any).port}`,
+    token: "synthetic-token",
+  });
+  const app = await admin(store, 0);
+  const browser = await chromium.launch({
+    executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
+    headless: true,
+    args: ["--no-sandbox"],
+  });
+  try {
+    const context = await browser.newContext({
+      timezoneId: "America/New_York",
+    });
+    const page = await context.newPage();
+    await page.goto(app.origin + "/dashboard");
+    await page.evaluate(async (key) => {
+      document.getElementById("studio")!.hidden = false;
+      document.getElementById("login")!.hidden = true;
+      (window as any).L = undefined;
+      await (window as any).CoachDashboard.load(null, key);
+    }, store.secrets.admin);
+    await page.locator("#dashboardMapDate").fill("2026-11-01");
+    await page.locator("#dashboardMapDate").dispatchEvent("change");
+    await page.locator(".dashboard-timeline-mark").nth(2).waitFor();
+    assert.ok(
+      calls.some((c) =>
+        c.includes(
+          "day-activities?start=2026-11-01T04%3A00%3A00.000Z&end=2026-11-02T05%3A00%3A00.000Z",
+        ),
+      ),
+    );
+    const geometry = await page
+      .locator(".dashboard-timeline-mark")
+      .evaluateAll((nodes) =>
+        nodes.map((n) => ({
+          left: (n as HTMLElement).style.left,
+          top: (n as HTMLElement).style.top,
+          color: getComputedStyle(n).backgroundColor,
+        })),
+      );
+    assert.equal(new Set(geometry.map((g) => g.left)).size, 1);
+    assert.equal(new Set(geometry.map((g) => g.top)).size, 3);
+    assert.equal(new Set(geometry.map((g) => g.color)).size, 3);
+    assert.ok(
+      Math.abs(parseFloat(geometry[0].left) - 10) < 0.001,
+      "2.5 elapsed hours on 25-hour day",
+    );
+    await page
+      .locator('[data-activity-id="point-0"].dashboard-timeline-mark')
+      .click();
+    await page.getByText("Position unavailable.", { exact: true }).waitFor();
+    assert.doesNotMatch(
+      await page.locator("#dashboardMapSelection").innerText(),
+      /Position reauthorized/,
+      "absent position does not claim authorized location",
+    );
+    assert.equal(
+      await page
+        .locator('[data-activity-id="point-0"].dashboard-timeline-mark')
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const desktopTrack = await page
+      .locator(".dashboard-timeline-scroll")
+      .evaluate((el) => ({
+        client: el.clientWidth,
+        scroll: el.scrollWidth,
+        last: el.querySelector(".dashboard-timeline-tick:last-child")
+          ?.textContent,
+      }));
+    assert.equal(
+      desktopTrack.scroll <= desktopTrack.client,
+      true,
+      "desktop fits complete day without horizontal scrolling",
+    );
+    assert.equal(
+      desktopTrack.last,
+      "00:00",
+      "explicit next-midnight end tick on 25-hour day",
+    );
+    const tickRects = await page
+      .locator(".dashboard-timeline-tick")
+      .evaluateAll((nodes) =>
+        nodes.map((n) => {
+          const r = n.getBoundingClientRect();
+          return { left: r.left, right: r.right, height: r.height };
+        }),
+      );
+    assert.ok(
+      tickRects.every((r) => r.height < 24),
+      "tick labels remain one line",
+    );
+    for (let i = 1; i < tickRects.length; i++)
+      assert.ok(
+        tickRects[i].left >= tickRects[i - 1].right,
+        "local tick labels do not overlap, including next midnight",
+      );
+
+    await mkdir("/tmp/coach-day-timeline/screenshots", { recursive: true });
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const rects = await page
+        .locator(".dashboard-timeline-mark")
+        .evaluateAll((nodes) =>
+          nodes.map((n) => {
+            const r = n.getBoundingClientRect();
+            return { x: r.x, y: r.y, width: r.width, height: r.height };
+          }),
+        );
+      for (let i = 0; i < rects.length; i++)
+        for (let j = i + 1; j < rects.length; j++)
+          assert.ok(
+            Math.abs(rects[i].x - rects[j].x) >= rects[i].width ||
+              Math.abs(rects[i].y - rects[j].y) >= rects[i].height,
+            "tied targets do not overlap",
+          );
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        true,
+      );
+      await page.screenshot({
+        path: `/tmp/coach-day-timeline/screenshots/timeline-full-${width}.png`,
+        fullPage: true,
+      });
+    }
+    holdDetail = true;
+    await page
+      .locator('[data-activity-id="point-0"].dashboard-timeline-mark')
+      .click();
+    await beganDetail;
+    await page
+      .locator(
+        `#dashboardMemberCards .dashboard-member-portrait[data-member-id="${bob}"]`,
+      )
+      .locator("..")
+      .click();
+    assert.equal(
+      await page.locator(".dashboard-timeline-mark:visible").count(),
+      1,
+      "member filters timeline without map",
+    );
+    const completedDetail = page.waitForResponse((r) =>
+      r.url().includes("/api/dashboard/activity?id=point-0"),
+    );
+    releaseDetail?.();
+    await completedDetail;
+    await page.waitForFunction(
+      () =>
+        !document
+          .getElementById("dashboardMapSelection")!
+          .textContent?.includes("Synthetic workout"),
+    );
+    assert.equal(
+      await page.locator("#dashboardMapSelection").innerText(),
+      "",
+      "member switch fences in-flight detail even without map",
+    );
+    holdDetail = false;
+    await page
+      .getByRole("button", { name: "All members", exact: true })
+      .click();
+    holdDetail = true;
+    detailStatus = 404;
+    beganDetail = new Promise<void>((r) => {
+      detailStarted = r;
+    });
+    heldDetail = new Promise<void>((r) => {
+      releaseDetail = r;
+    });
+    await page
+      .locator('[data-activity-id="point-0"].dashboard-timeline-mark')
+      .click();
+    await beganDetail;
+    await page.locator("#dashboardMapDate").fill("2026-11-02");
+    await page.locator("#dashboardMapDate").dispatchEvent("change");
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("#dashboardTimeline > p")
+          ?.textContent?.includes("2026-11-02") &&
+        document.querySelectorAll(".dashboard-timeline-mark").length === 3,
+    );
+    const normalTicks = await page
+      .locator(".dashboard-timeline-tick")
+      .evaluateAll((nodes) =>
+        nodes.map((n) => {
+          const r = n.getBoundingClientRect();
+          return { left: r.left, right: r.right };
+        }),
+      );
+    for (let i = 1; i < normalTicks.length; i++)
+      assert.ok(
+        normalTicks[i].left - normalTicks[i - 1].right >= 4,
+        "24-hour tick labels have a visible gap including midnight",
+      );
+    const oldDetail = page.waitForResponse((r) =>
+      r.url().includes("/api/dashboard/activity?id=point-0"),
+    );
+    releaseDetail?.();
+    await oldDetail;
+    await page.waitForTimeout(50);
+    assert.equal(
+      await page.locator(".dashboard-timeline-mark").count(),
+      3,
+      "old date 404 cannot remove newly-authorized same activity on new date",
+    );
+    holdDetail = false;
+    detailStatus = 200;
+    await page.locator("#dashboardMapDate").fill("2026-03-08");
+    await page.locator("#dashboardMapDate").dispatchEvent("change");
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#dashboardTimeline > p")
+        ?.textContent?.includes("2026-03-08"),
+    );
+    assert.ok(
+      calls.some((c) =>
+        c.includes(
+          "day-activities?start=2026-03-08T05%3A00%3A00.000Z&end=2026-03-09T04%3A00%3A00.000Z",
+        ),
+      ),
+      "spring forward 23-hour bounds",
+    );
+    assert.ok(
+      Math.abs(
+        parseFloat(
+          await page
+            .locator(".dashboard-timeline-mark")
+            .first()
+            .evaluate((el) => (el as HTMLElement).style.left),
+        ) -
+          (2.5 / 23) * 100,
+      ) < 0.001,
+    );
+    assert.equal(
+      await page.locator(".dashboard-timeline-end").textContent(),
+      "00:00",
+    );
+    await page.locator("#dashboardMapDate").fill("2026-11-01");
+    await page.locator("#dashboardMapDate").dispatchEvent("change");
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("#dashboardTimeline > p")
+          ?.textContent?.includes("2026-11-01") &&
+        document.querySelectorAll(".dashboard-timeline-mark").length === 3,
+    );
+    detailOverride = { created_at: "2026-11-02T06:30:00.000Z" };
+    await page
+      .locator('[data-activity-id="point-0"].dashboard-timeline-mark')
+      .click();
+    await page.getByText(/Activity unavailable/).waitFor();
+    assert.equal(
+      await page
+        .locator('[data-activity-id="point-0"].dashboard-timeline-mark')
+        .count(),
+      0,
+      "moved-day detail removes stale point",
+    );
+    detailOverride = {};
+    await page.locator("#dashboardMapDate").dispatchEvent("change");
+    await page.locator(".dashboard-timeline-mark").nth(2).waitFor();
+    detailOverride = { status: "pending" };
+    await page
+      .locator('[data-activity-id="point-1"].dashboard-timeline-mark')
+      .click();
+    await page.getByText(/Activity unavailable/).waitFor();
+    assert.equal(
+      await page
+        .locator('[data-activity-id="point-1"].dashboard-timeline-mark')
+        .count(),
+      0,
+      "unpublished detail removes stale point",
+    );
+    detailOverride = {};
+    await page.locator("#dashboardMapDate").dispatchEvent("change");
+    await page.locator(".dashboard-timeline-mark").nth(2).waitFor();
+    timelineStatus = 429;
+    await page.locator("#dashboardMapDate").dispatchEvent("change");
+    await page.getByText("Timeline unavailable (429); try again.").waitFor();
+    assert.equal(
+      await page.locator(".dashboard-timeline-mark").count(),
+      3,
+      "transient same-date refresh retains authorized points",
+    );
+    timelineStatus = 200;
+    await page
+      .getByRole("button", { name: "Retry timeline", exact: true })
+      .click();
+    await page.getByText(/Created-time points/).waitFor();
+    detailStatus = 429;
+    await page
+      .locator('[data-activity-id="point-1"].dashboard-timeline-mark')
+      .click();
+    await page.getByText(/temporarily unavailable.*429/).waitFor();
+    assert.equal(await page.locator(".dashboard-timeline-mark").count(), 3);
+    detailStatus = 404;
+    await page
+      .locator('[data-activity-id="point-1"].dashboard-timeline-mark')
+      .click();
+    await page.getByText(/Activity unavailable/).waitFor();
+    assert.equal(await page.locator(".dashboard-timeline-mark").count(), 2);
+    detailStatus = 403;
+    await page
+      .locator('[data-activity-id="point-0"].dashboard-timeline-mark')
+      .click();
+    await page.getByText(/Activity access denied/).waitFor();
+    assert.equal(await page.locator(".dashboard-timeline-mark").count(), 1);
+    await mkdir("/tmp/coach-day-timeline/screenshots", { recursive: true });
+    for (const width of [320, 390, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+        true,
+      );
+      await page.screenshot({
+        path: `/tmp/coach-day-timeline/screenshots/timeline-${width}.png`,
+        fullPage: true,
+      });
+    }
+    sixTypes = true;
+    detailStatus = 200;
+    await page.evaluate(async (key) => {
+      await (window as any).CoachDashboard.load(null, key);
+    }, store.secrets.admin);
+    await page.locator("#dashboardMapDate").fill("2026-11-01");
+    await page.locator("#dashboardMapDate").dispatchEvent("change");
+    await page.locator(".dashboard-timeline-mark").nth(5).waitFor();
+    assert.equal(
+      await page.locator(".dashboard-timeline-legend").innerText(),
+      "workout\nmeal\nmedia\nmetric\nsurvey\nStatus/Readiness",
+    );
+    assert.equal(
+      await page
+        .getByRole("button", { name: /status_change.*created/ })
+        .count(),
+      1,
+    );
+    await context.close();
+  } finally {
+    releaseDetail?.();
+    await browser.close();
+    await app.close();
+    await new Promise<void>((r) => backend.close(() => r()));
+    await rm(home, { recursive: true, force: true });
   }
 });

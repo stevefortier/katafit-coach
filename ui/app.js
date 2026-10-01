@@ -342,10 +342,14 @@ action("unlock", async () => {
   $("login").hidden = true;
   $("studio").hidden = false;
   $("lockStudio").hidden = false;
+  const pane = restorePaneState();
+  // Restore coverage before selecting/loading the underlying route. Otherwise
+  // a reload briefly fetches Dojo data beneath an expanded/mobile Coach pane.
+  if (pane.open && !paneOpen) openPane(pane.expanded === true);
   restoreStudioRoute(true);
   void loadNativeReceipts();
   await status();
-  await refreshUpdate(true);
+  if (!updatesEntryActive) await refreshUpdate();
 });
 action("save", async () => {
   const persona = Object.fromEntries(fields.map((f) => [f, $(f).value]));
@@ -1453,6 +1457,7 @@ function selectSettingsSection(section, navigate = true) {
   if (historyVisible()) void loadPersonaHistory();
   if (skillHistoryVisible()) void loadSkillHistory();
   logVisibility();
+  updateRouteEntry();
 }
 for (const [index, section] of settingsSections.entries()) {
   const tab = $("settings-" + section + "-tab");
@@ -1786,17 +1791,294 @@ function renderCoachName() {
       ? config.persona.name.trim()
       : "";
   const label = name || "Coach";
-  $("coachTab").textContent = label;
-  $("coachTab").title = label;
+  $("coachLauncherName").textContent = label;
+  $("coachLauncher").title = label;
+  $("coachPaneName").textContent = label;
+  $("coachPaneName").title = label;
+}
+// Global Coach pane. The page underneath keeps its own route and history; the
+// pane only docks, expands or collapses around it and never owns a URL.
+const paneStateKey = "katafit-coach-pane",
+  paneMin = 360,
+  paneMax = 960,
+  pageMin = 480,
+  tabLabels = {
+    dashboard: "Dojo",
+    diagnostics: "Activity",
+    settings: "Settings",
+  };
+const dockedQuery = matchMedia("(min-width: 900px)");
+let paneOpen = false,
+  paneExpanded = false,
+  // Pi is wanted only after the pane was first opened in this unlock.
+  paneStarted = false,
+  paneNewOutput = false,
+  paneWidth = 520,
+  paneCovering = false,
+  paneScroll = 0,
+  studioTab,
+  dashboardPending = false;
+try {
+  const saved = JSON.parse(sessionStorage.getItem(paneStateKey) || "{}");
+  if (Number.isFinite(saved.width)) paneWidth = saved.width;
+} catch {}
+function savePaneState() {
+  try {
+    sessionStorage.setItem(
+      paneStateKey,
+      JSON.stringify({
+        width: paneWidth,
+        ...(paneOpen && { open: true, expanded: paneExpanded }),
+      }),
+    );
+  } catch {}
+}
+function restorePaneState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(paneStateKey) || "{}");
+  } catch {
+    return {};
+  }
+}
+function paneMode() {
+  if (!paneOpen || !key || $("studio").hidden) return "closed";
+  if (!dockedQuery.matches) return "mobile";
+  return paneExpanded ? "expanded" : "docked";
+}
+const paneShown = () => paneMode() !== "closed" && !document.hidden;
+const pageCovered = () => ["expanded", "mobile"].includes(paneMode());
+function paneBounds() {
+  const room = document.documentElement.clientWidth - pageMin;
+  return { min: paneMin, max: Math.max(paneMin, Math.min(paneMax, room)) };
+}
+// The rendered width: the preferred width clamped to the current viewport.
+function clampPaneWidth(width) {
+  const { min, max } = paneBounds();
+  return Math.round(Math.min(max, Math.max(min, width)));
+}
+function setPaneWidth(width, persist = true) {
+  const { min, max } = paneBounds();
+  const value = clampPaneWidth(width);
+  if (persist) paneWidth = value;
+  document.documentElement.style.setProperty(
+    "--coach-pane-width",
+    value + "px",
+  );
+  const divider = $("coachDivider");
+  divider.setAttribute("aria-valuemin", String(min));
+  divider.setAttribute("aria-valuemax", String(max));
+  divider.setAttribute("aria-valuenow", String(value));
+  divider.setAttribute("aria-valuetext", value + " pixels wide");
+  if (persist) savePaneState();
+}
+function syncPaneTop() {
+  // Expanded Coach fills the workspace below the header and any notice.
+  const header = document.querySelector("header").getBoundingClientRect();
+  const bar = $("noticeBar");
+  const top = bar.dataset.severity
+    ? Math.max(header.bottom, bar.getBoundingClientRect().bottom)
+    : header.bottom;
+  document.documentElement.style.setProperty(
+    "--coach-pane-top",
+    Math.max(0, Math.round(top)) + "px",
+  );
+}
+function renderPane() {
+  const mode = paneMode();
+  const unlocked = !!key && !$("studio").hidden;
+  $("coachLauncher").hidden = !unlocked;
+  $("coachLauncher").setAttribute("aria-expanded", String(mode !== "closed"));
+  if (mode !== "closed") paneNewOutput = false;
+  $("coachLauncherIndicator").hidden = !paneNewOutput;
+  if (paneNewOutput) $("coachLauncher").dataset.newOutput = "true";
+  else delete $("coachLauncher").dataset.newOutput;
+  $("coachPane").hidden = mode === "closed";
+  $("coachPane").dataset.mode = mode;
+  $("coachPaneExpand").textContent = mode === "expanded" ? "Restore" : "Expand";
+  $("coachPaneExpand").setAttribute(
+    "aria-pressed",
+    String(mode === "expanded"),
+  );
+  $("coachPaneBack").textContent =
+    "Back to " + (tabLabels[studioTab] || "Dojo");
+  setPaneWidth(paneWidth, false);
+  const covering = mode === "expanded" || mode === "mobile";
+  const workspace = $("workspaceScroll");
+  const owned = document.documentElement.classList.contains("coach-open");
+  const open = mode !== "closed";
+  // Read the old owner before changing layout. Covered content retains its
+  // logical offset even if a narrower/shorter layout temporarily clamps it.
+  const offset = paneCovering
+    ? paneScroll
+    : owned
+      ? workspace.scrollTop
+      : scrollY;
+  if (covering && !paneCovering) paneScroll = offset;
+  document.body.classList.toggle("coach-docked", mode === "docked");
+  document.documentElement.classList.toggle("coach-open", open);
+  document.documentElement.classList.toggle("coach-covered", covering);
+  if (open) {
+    if (!owned || paneCovering !== covering) workspace.scrollTop = offset;
+    if (!owned) scrollTo(0, 0);
+  } else if (owned) {
+    scrollTo(0, offset);
+    workspace.scrollTop = 0;
+  }
+  if (covering) syncPaneTop();
+  // Covered content is out of reach for pointer, keyboard and assistive tech.
+  // Focus inside newly covered content moves to the pane rather than <body>.
+  const focused = document.activeElement;
+  if (mode === "docked") workspace.setAttribute("tabindex", "0");
+  else workspace.removeAttribute("tabindex");
+  workspace.inert = mode === "mobile";
+  const covered =
+    mode === "mobile"
+      ? document.querySelector("main")
+      : mode === "expanded"
+        ? $("studio")
+        : undefined;
+  document.querySelector("main").inert = mode === "mobile";
+  $("studio").inert = mode === "expanded";
+  if (covered?.contains(focused) || (covering && focused === workspace))
+    (mode === "mobile" ? $("coachPaneBack") : $("coachPaneExpand")).focus();
+  if (covering === paneCovering) return;
+  paneCovering = covering;
+  if (!covering) {
+    if (dashboardPending && studioTab === "dashboard" && key) {
+      dashboardPending = false;
+      CoachDashboard.load(api, key);
+    }
+  }
+  // Covered pages stop polling; a docked pane leaves them running.
+  logVisibility();
+}
+function openPane(expand = false) {
+  paneOpen = true;
+  paneExpanded = expand;
+  paneStarted = true;
+  savePaneState();
+  renderPane();
+  if (key && !document.hidden) void native.connect();
+  if (native.started()) native.focus();
+  else
+    (dockedQuery.matches ? $("coachPaneCollapse") : $("coachPaneBack")).focus();
+}
+function collapsePane() {
+  paneOpen = false;
+  paneExpanded = false;
+  savePaneState();
+  renderPane();
+  $("coachLauncher").focus({ preventScroll: true });
+}
+function closePaneForLock() {
+  paneOpen = false;
+  paneExpanded = false;
+  paneStarted = false;
+  paneNewOutput = false;
+  dashboardPending = false;
+  studioTab = undefined;
+  savePaneState();
+  renderPane();
+}
+$("coachLauncher").onclick = () =>
+  paneMode() === "closed" ? openPane() : collapsePane();
+$("coachPaneCollapse").onclick = collapsePane;
+$("coachPaneBack").onclick = collapsePane;
+// Deliberately starting again after a native Stop; nothing restarts on its own.
+$("coachPaneStart").onclick = () => {
+  if (key && !document.hidden) void native.connect();
+  $("coachPaneCollapse").focus();
+};
+$("coachPaneExpand").onclick = () => {
+  paneExpanded = !paneExpanded;
+  savePaneState();
+  renderPane();
+};
+// Escape on pane controls collapses; inside the terminal it stays Pi input.
+$("coachPane").addEventListener("keydown", (event) => {
+  if (
+    event.key === "Escape" &&
+    !event.defaultPrevented &&
+    !$("nativeTerminal").contains(event.target) &&
+    !event.target.closest("dialog")
+  ) {
+    event.preventDefault();
+    collapsePane();
+  }
+});
+$("coachDivider").addEventListener("keydown", (event) => {
+  const { min, max } = paneBounds();
+  const step = event.shiftKey ? 64 : 16;
+  // Adjust what is on screen, not a wider preference the viewport clamped.
+  const width = clampPaneWidth(paneWidth);
+  const next = {
+    ArrowLeft: width + step,
+    ArrowRight: width - step,
+    Home: min,
+    End: max,
+  }[event.key];
+  if (next === undefined) return;
+  event.preventDefault();
+  setPaneWidth(next);
+});
+$("coachDivider").addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const divider = $("coachDivider");
+  const startX = event.clientX,
+    startWidth = clampPaneWidth(paneWidth);
+  divider.setPointerCapture(event.pointerId);
+  divider.focus();
+  const move = (e) => setPaneWidth(startWidth + startX - e.clientX);
+  const end = () => {
+    divider.removeEventListener("pointermove", move);
+    divider.removeEventListener("pointerup", end);
+    divider.removeEventListener("pointercancel", end);
+  };
+  divider.addEventListener("pointermove", move);
+  divider.addEventListener("pointerup", end);
+  divider.addEventListener("pointercancel", end);
+});
+dockedQuery.addEventListener("change", renderPane);
+new ResizeObserver(() => {
+  if (paneCovering) syncPaneTop();
+}).observe($("noticeBar"));
+window.addEventListener("resize", () => setPaneWidth(paneWidth, false));
+function coachOutput() {
+  if (paneShown() || paneNewOutput) return;
+  paneNewOutput = true;
+  renderPane();
+}
+const paneStatusLabels = {
+  starting: "Starting…",
+  connected: "Connected",
+  disconnected: "Disconnected",
+  error: "Error",
+  unavailable: "Unavailable",
+  overflow: "Output overflow",
+  ended: "Session ended",
+};
+function coachStatus(state, text) {
+  const node = $("coachPaneStatus");
+  node.textContent = paneStatusLabels[state] || "Not started";
+  node.dataset.state = state;
+  node.title = text;
+  const start = $("coachPaneStart");
+  const focused = document.activeElement === start;
+  start.hidden = state !== "ended";
+  if (focused && start.hidden) native.focus();
 }
 function studioRoute() {
-  if (location.pathname === "/dashboard") return { tab: "dashboard" };
-  if (location.pathname === "/diagnostics")
+  const path = location.pathname;
+  // Former chat views open the pane over the page already shown, or Dojo.
+  if (path === "/chat/operator" || path.startsWith("/chat/member/"))
+    return { tab: studioTab || "dashboard", chat: true };
+  if (path === "/diagnostics")
     return {
       tab: "diagnostics",
       section: new URLSearchParams(location.search).get("section"),
     };
-  if (location.pathname === "/settings") {
+  if (path === "/settings") {
     const section =
       new URLSearchParams(location.search).get("section") ??
       (location.hash === "#logsView" ? "diagnostics" : location.hash.slice(1));
@@ -1804,10 +2086,14 @@ function studioRoute() {
       ? { tab: "diagnostics", legacy: true }
       : { tab: "settings", section };
   }
-  return {
-    tab: "coach",
-    legacy: location.pathname.startsWith("/chat/member/"),
-  };
+  return { tab: "dashboard" };
+}
+function studioPath(tab) {
+  return tab === "dashboard"
+    ? "/dashboard"
+    : tab === "diagnostics"
+      ? "/diagnostics?section=" + diagnosticsSection
+      : settingsPath();
 }
 function navigateStudio(path) {
   if (location.pathname + location.search + location.hash !== path)
@@ -1815,21 +2101,23 @@ function navigateStudio(path) {
 }
 function restoreStudioRoute(restartDiagnostics = false) {
   const route = studioRoute();
-  if (route.legacy)
-    history.replaceState(
-      null,
-      "",
-      route.tab === "coach" ? "/chat/operator" : "/diagnostics",
-    );
-  if (route.tab === "settings") selectSettingsSection(route.section, false);
-  if (route.tab === "diagnostics")
+  if (route.chat) {
+    // Expand before selecting so a covered Dojo defers its reads.
+    paneOpen = paneExpanded = true;
+    history.replaceState(null, "", studioPath(route.tab));
+  } else if (route.legacy) history.replaceState(null, "", "/diagnostics");
+  if (route.tab === "settings" && !route.chat)
+    selectSettingsSection(route.section, false);
+  if (route.tab === "diagnostics" && !route.chat)
     selectDiagnosticsSection(route.section, false);
   if (
-    restartDiagnostics ||
-    route.tab !== "diagnostics" ||
-    $("diagnostics").hidden
+    (route.chat ? studioTab !== route.tab : true) &&
+    (restartDiagnostics ||
+      route.tab !== "diagnostics" ||
+      $("diagnostics").hidden)
   )
     selectStudioTab(route.tab, false);
+  if (route.chat) openPane(true);
 }
 window.addEventListener("popstate", () => {
   if (key) restoreStudioRoute();
@@ -1843,15 +2131,13 @@ window.addEventListener("hashchange", () => {
     restoreStudioRoute();
 });
 function selectStudioTab(tab, navigate = true) {
-  const coach = tab === "coach";
   const dashboard = tab === "dashboard";
-  $("coachPanel").hidden = !coach;
+  studioTab = tab;
   $("dashboardPanel").hidden = !dashboard;
   $("settingsPanel").hidden = tab !== "settings";
   $("diagnostics").hidden = tab !== "diagnostics";
   if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
-    ["coachTab", coach],
     ["dashboardTab", dashboard],
     ["settingsTab", tab === "settings"],
     ["diagnosticsTab", tab === "diagnostics"],
@@ -1860,36 +2146,33 @@ function selectStudioTab(tab, navigate = true) {
     $(id).classList.toggle("secondary", !active);
   }
   logVisibility();
-  if (dashboard) CoachDashboard.load(api, key);
-  else CoachDashboard.clear();
-  if (coach && key && !document.hidden) void native.connect();
-  else native.suspend();
-  if (navigate)
-    navigateStudio(
-      coach
-        ? "/chat/operator"
-        : dashboard
-          ? "/dashboard"
-          : tab === "diagnostics"
-            ? "/diagnostics?section=" + diagnosticsSection
-            : settingsPath(),
-    );
+  dashboardPending = false;
+  CoachDashboard.clear();
+  if (dashboard && pageCovered()) dashboardPending = true;
+  else if (dashboard) CoachDashboard.load(api, key);
+  renderPane();
+  if (navigate) navigateStudio(studioPath(tab));
+  updateRouteEntry();
 }
-$("coachTab").onclick = () => selectStudioTab("coach");
 $("dashboardTab").onclick = () => selectStudioTab("dashboard");
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     CoachDashboard.clear();
+    if (key && !$("dashboardPanel").hidden) dashboardPending = true;
     native.suspend();
   } else {
-    if (key && !$("dashboardPanel").hidden) CoachDashboard.load(api, key);
-    if (key && !$("coachPanel").hidden) void native.connect();
+    if (dashboardPending && !pageCovered()) {
+      dashboardPending = false;
+      CoachDashboard.load(api, key);
+    }
+    if (key && paneStarted) native.resume();
   }
 });
 window.addEventListener("pagehide", () => CoachDashboard.clear());
 $("settingsTab").onclick = () => selectStudioTab("settings");
 $("diagnosticsTab").onclick = () => selectStudioTab("diagnostics");
-const logActive = () => key && !$("diagnostics").hidden && !document.hidden;
+const logActive = () =>
+  key && !$("diagnostics").hidden && !document.hidden && !pageCovered();
 function filteredLogs() {
   return logData.entries.filter(
     (e) =>
@@ -2223,7 +2506,8 @@ action("logDownload", async () => {
 });
 
 let updateData,
-  updateClockOffset = 0,
+  updatesEntryActive = false,
+  updatesEntryCheckPending = false,
   updateRequest = false,
   updateCheckRequested = false,
   updatePending = false,
@@ -2263,7 +2547,7 @@ const updateFailureHelp = {
   HEALTH_FAILED:
     "Candidate health check failed. Verify the installed revision and worker status.",
   AUTO_UPDATE_DISABLED:
-    "Automatic consent was withdrawn before activation. Review the setting before a manual retry.",
+    "A historical automatic attempt was cancelled. Automatic source updates are no longer supported; retry only with manual confirmation.",
   UPGRADE_FAILED:
     "No specific safe failure code is available. Check host disk, Git/npm access and exact native artifact readiness before retrying manually.",
 };
@@ -2321,58 +2605,33 @@ function renderHeaderStatus() {
     $("state").dataset.tone = workerStatusTone(workerState);
   }
 }
-function renderUpdateSchedule() {
-  const data = updateData;
-  if (!data || !key || document.hidden || $("studio").hidden) return;
-  const schedule = data.autoSchedule;
-  let text;
-  if (!data.auto?.enabled) {
-    text = "No automatic retry while automatic updates are off.";
-  } else if (!schedule) {
-    text =
-      "Automatic retry time unknown: this older launcher does not report its schedule. Source upgrades do not replace the stable launcher.";
-  } else if (schedule.reason === "running" && schedule.nextAttemptAt === null) {
-    text =
-      "Launcher automatic cycle in progress; next attempt is not scheduled yet.";
-  } else if (
-    Number.isSafeInteger(schedule.nextAttemptAt) &&
-    schedule.nextAttemptAt > 0 &&
-    ["poll", "check-failed", "readiness", "recovery"].includes(schedule.reason)
-  ) {
-    const reasons = {
-      poll: "Normal polling.",
-      "check-failed": "Source-check failure backoff.",
-      readiness: "Native readiness cooldown.",
-      recovery: "Worker recovery retry (before another source check).",
-    };
-    const localDeadline = schedule.nextAttemptAt - updateClockOffset;
-    const seconds = Math.max(0, Math.ceil((localDeadline - Date.now()) / 1000));
-    const local = formatTimestamp(localDeadline);
-    text = `${reasons[schedule.reason]} ${
-      seconds > 0
-        ? `Next automatic attempt in ${Math.floor(seconds / 60)}m ${seconds % 60}s · ${local} (local time).`
-        : `Scheduled for ${local} (local time). Awaiting launcher status; the deadline passing does not confirm a check has started.`
-    }`;
-  } else {
-    text =
-      "Automatic retry time unknown: the launcher has not reported a valid schedule.";
-  }
-  if (updateError && data.auto?.enabled)
-    text = `Last reported schedule (Studio unavailable). ${text}`;
-  if ($("updateSchedule").textContent !== text)
-    $("updateSchedule").textContent = text;
+function updatesVisible() {
+  return (
+    !!key &&
+    !$("studio").hidden &&
+    !$("settingsPanel").hidden &&
+    !$("updates").hidden
+  );
 }
-setInterval(() => {
-  if (!$("settingsPanel").hidden && !$("updates").hidden)
-    renderUpdateSchedule();
-}, 1000);
+function updateRouteEntry() {
+  const visible = updatesVisible();
+  const entered = visible && !updatesEntryActive;
+  updatesEntryActive = visible;
+  if (!visible) {
+    updatesEntryCheckPending = false;
+    clearTimeout(updateTimer);
+  } else if (entered) {
+    if (updateRequest) updatesEntryCheckPending = true;
+    else void refreshUpdate(true);
+  }
+}
 function renderUpdate() {
   renderHeaderStatus();
   const data = updateData;
   $("restorePersona").disabled =
     historyBusy || updatePending || data?.applying === true;
   if (!data) return;
-  renderUpdateSchedule();
+
   const locked =
     updatePending ||
     data.applying ||
@@ -2400,68 +2659,13 @@ function renderUpdate() {
   $("updateLatest").title = sourceSha(data.latest) ? data.latest : "";
   const guidance =
     updateError ||
-    (data.auto?.enabled && data.guidance?.startsWith("New source available.")
-      ? failedLatest
-        ? "Main differs from the installed source. The last attempt failed; see the upgrade failure below."
-        : "Main differs from the installed source. Automatic upgrade will verify it, then close active native Pi and safely stop the worker before replacing Studio."
-      : data.guidance);
+    data.guidance ||
+    "Open Updates or press Check for updates to check main. Installation requires your confirmation.";
   $("updateStatus").textContent =
     guidance +
     (data.cleanupWarning === true && !/cleanup/i.test(guidance)
       ? " Candidate cleanup is incomplete; repair protected-home permissions before retrying this revision."
       : "");
-  $("updateAuto").disabled =
-    !data.supported || data.auto?.available !== true || updateRequest;
-  $("updateAuto").checked = data.auto?.enabled === true;
-  const autoStates = {
-    running:
-      "Upgrade committed; worker started locally. Check Worker status for ongoing connectivity.",
-    stopped: "Upgrade committed; previously stopped worker remains stopped.",
-    deferred:
-      "Automatic attempt deferred before installation. The launcher did not record a specific reason; see the last upgrade result separately.",
-    suppressed:
-      "Automatic retry suppressed: this revision already failed. Resolve the failure, then retry manually, or wait for a different main revision.",
-    "restored-running":
-      "Upgrade failed; previous runtime restored and worker started locally. Check Worker status.",
-    failed:
-      "Automatic upgrade failed; previous runtime retained. This revision will not retry automatically.",
-    "resume-failed":
-      "Worker restart could not be confirmed. Check Worker status and start it manually if needed; inspect upgrade result separately.",
-  };
-  const deferReasons = {
-    AUTO_UPDATE_BUSY:
-      "Automatic attempt deferred: worker, preview, or native teardown could not safely finish. Check Worker status and the upgrade result; the owner retries on its displayed schedule.",
-    WORKER_STOP_UNCONFIRMED:
-      "Automatic attempt deferred: worker stop could not be confirmed. Check Worker status.",
-    LOCAL_UNAVAILABLE:
-      "Automatic attempt deferred: local Studio communication failed. No source operation was accepted; the supervisor will reconcile worker state before retrying.",
-    AUTO_UPDATE_DISABLED:
-      "Automatic attempt cancelled before installation because automatic updates were disabled or the owner was shutting down.",
-    ARTIFACT_NOT_READY:
-      "Automatic attempt deferred before worker stop: the exact trusted native artifact or synthetic preflight is not ready. External provisioning is required; this same revision will retry after cooldown.",
-  };
-  const autoOutcome = data.autoOutcome;
-  const relevantAuto =
-    autoOutcome &&
-    sourceSha(autoOutcome.sha) &&
-    (autoOutcome.sha === data.latest || autoOutcome.sha === data.installed) &&
-    !(autoOutcome.state === "suppressed" && autoOutcome.sha === data.installed);
-  const historicalAuto =
-    relevantAuto && autoOutcome.state === "deferred" && failedLatest
-      ? "Last attempt for this revision failed. See the failure details before retrying manually."
-      : relevantAuto &&
-          autoOutcome.state === "deferred" &&
-          Object.hasOwn(deferReasons, autoOutcome.reason)
-        ? deferReasons[autoOutcome.reason]
-        : relevantAuto &&
-            sourceSha(data.autoOutcome.sha) &&
-            Object.hasOwn(autoStates, data.autoOutcome.state)
-          ? autoStates[data.autoOutcome.state]
-          : data.supported && data.auto?.available === false
-            ? "Launcher upgrade required. Replace the launcher or container image with the current build, restart the service using the same Coach home, then reload Studio. Source upgrades alone leave the old launcher running."
-            : data.auto?.enabled
-              ? "Enabled. Waiting for a newer verified main revision; after preparation, an upgrade closes native Pi and safely stops the worker. Finish important Pi work first."
-              : "Off. Enable to upgrade from main automatically.";
   const checkErrors = {
     RATE_LIMITED: "GitHub rate limit. Source check failed.",
     FORBIDDEN:
@@ -2469,8 +2673,6 @@ function renderUpdate() {
     UNAVAILABLE:
       "GitHub unavailable or timed out. Source check failed; check network access.",
   };
-  // Older owners only send guidance. Preserve it even when a historical
-  // successful autoOutcome matches the installed revision.
   const checkError = Object.hasOwn(checkErrors, data.checkError)
     ? checkErrors[data.checkError]
     : data.checkError === undefined &&
@@ -2485,22 +2687,11 @@ function renderUpdate() {
       : updateCheckRequested
         ? `Source check requested; waiting for launcher…${checkError ? ` Previous check: ${checkError}` : ""}`
         : checkError;
-  $("updateAutoStatus").textContent =
-    (checkStatus ? `${checkStatus} ` : "") +
-    (relevantAuto
-      ? `Last automatic result: ${historicalAuto}`
-      : historicalAuto);
+  $("updateCheckStatus").textContent = checkStatus;
+  $("updateCheckStatus").dataset.tone = checkError ? "error" : "neutral";
   const validOutcome = !!outcome;
   $("updateOutcome").dataset.tone = failed ? "error" : "neutral";
   $("updateOutcome").setAttribute("role", failed ? "alert" : "status");
-  $("updateAutoStatus").dataset.tone =
-    checkError ||
-    (relevantAuto &&
-      ["failed", "suppressed", "restored-running", "resume-failed"].includes(
-        autoOutcome.state,
-      ))
-      ? "error"
-      : "neutral";
   const failureHelp = !failed
     ? ""
     : outcome.state === "interrupted"
@@ -2552,7 +2743,7 @@ function renderUpdate() {
   if (
     data.recovering &&
     !data.applying &&
-    data.autoOutcome?.state === "resume-failed"
+    data.recoveryOutcome?.state === "resume-failed"
   ) {
     updateRecoveryVisible = true;
     $("restartStatus").textContent =
@@ -2589,9 +2780,7 @@ async function refreshUpdate(check = false) {
     if (updateInitialRevision === undefined)
       updateInitialRevision = data.installed;
     updateData = data;
-    updateClockOffset = Number.isSafeInteger(data.serverNow)
-      ? data.serverNow - Date.now()
-      : 0;
+
     updatePending = data.applying;
     updateError = "";
   } catch {
@@ -2605,7 +2794,21 @@ async function refreshUpdate(check = false) {
     updateCheckRequested = false;
     updateController = undefined;
     renderUpdate();
-    if (key && !document.hidden && !$("studio").hidden)
+    if (updatesEntryCheckPending && updatesVisible() && !document.hidden) {
+      updatesEntryCheckPending = false;
+      void refreshUpdate(true);
+      return;
+    }
+    if (
+      key &&
+      !document.hidden &&
+      !$("studio").hidden &&
+      (updatesVisible() ||
+        updatePending ||
+        updateData?.preparing ||
+        updateData?.applying ||
+        updateData?.recovering)
+    )
       updateTimer = setTimeout(
         () => refreshUpdate(),
         updatePending ||
@@ -2621,22 +2824,6 @@ async function refreshUpdate(check = false) {
 action("updateCheck", async () => {
   $("updateConfirm").hidden = true;
   await refreshUpdate(true);
-});
-$("updateAuto").addEventListener("change", async () => {
-  const enabled = $("updateAuto").checked;
-  $("updateAuto").disabled = true;
-  try {
-    await api("update/auto", { enabled }, AbortSignal.timeout(15000));
-    await refreshUpdate();
-  } catch {
-    $("updateAuto").checked = !enabled;
-    notice(
-      "Could not save automatic update setting. Check Studio connection.",
-      "error",
-    );
-  } finally {
-    renderUpdate();
-  }
 });
 action("updateApply", async () => {
   const generation = authGeneration;
@@ -2741,6 +2928,7 @@ window.addEventListener("pagehide", () => {
 });
 function lockSession(message, severity) {
   CoachDashboard.clear();
+  closePaneForLock();
   if (key)
     void fetch("/api/terminal/stop", {
       method: "POST",
@@ -2800,6 +2988,8 @@ function lockSession(message, severity) {
   updateWorkerBlocked = true;
   workerState = undefined;
   updateData = undefined;
+  updatesEntryActive = false;
+  updatesEntryCheckPending = false;
   updateTarget = undefined;
   $("updateConfirm").hidden = true;
   clearTimeout(logTimer);
@@ -2822,6 +3012,7 @@ function lockSession(message, severity) {
   $("studio").hidden = true;
   $("login").hidden = false;
   $("lockStudio").hidden = true;
+  renderPane();
   $("state").textContent = "LOCKED";
   $("state").dataset.tone = "neutral";
   notice(message, severity);
@@ -2849,7 +3040,15 @@ async function loadNativeReceipts() {
 $("operatorReconcile").onclick = () => loadNativeReceipts();
 const native = nativeTerminal({
   api,
-  active: () => !!key && !document.hidden && !$("coachPanel").hidden,
+  active: () => !!key && !document.hidden && paneStarted,
+  visible: paneShown,
+  // Never steal focus from the page underneath a docked pane.
+  canFocus: () =>
+    paneShown() &&
+    (document.activeElement === document.body ||
+      $("coachPane").contains(document.activeElement)),
+  onStatus: coachStatus,
+  onOutput: coachOutput,
   // Private attachment bytes; bound to the key of the session that requested.
   fetchAttachment: (path, signal) =>
     fetch(path, {

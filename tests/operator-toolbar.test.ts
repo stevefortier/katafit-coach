@@ -46,7 +46,7 @@ test(
         false,
         "settings must not acquire Pi",
       );
-      await page.locator("#coachTab").click();
+      await page.locator("#coachLauncher").click();
       await page.waitForFunction(() =>
         document
           .querySelector("#nativeStatus")
@@ -90,35 +90,33 @@ test(
         [],
         "no history reads or selections",
       );
-      await page.locator("#settingsTab").click();
       const ticketCount = calls.filter(
         (path) => path === "/api/terminal/ticket",
       ).length;
-      await page.waitForFunction(() =>
-        document
-          .querySelector("#nativeStatus")
-          ?.textContent?.startsWith("Disconnected"),
-      );
+      // Page navigation and collapse neither detach nor restart the session.
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.locator("#coachPaneCollapse").click();
+      await page.locator("#dashboardTab").click();
+      await page.locator("#diagnosticsTab").click();
       await page.waitForTimeout(1800);
+      assert.equal(
+        await page.locator("#nativeStatus").innerText(),
+        "Connected to isolated Pi.",
+      );
       assert.equal(
         calls.filter((path) => path === "/api/terminal/ticket").length,
         ticketCount,
-        "hidden Coach must not reconnect",
+        "collapsed Coach keeps its connection without reconnecting",
       );
       assert.equal(
         calls.includes("/api/terminal/stop"),
         false,
         "navigation never stops the runtime",
       );
-      await page.locator("#coachTab").click();
-      await page.waitForFunction(() =>
-        document
-          .querySelector("#nativeStatus")
-          ?.textContent?.startsWith("Connected"),
-      );
+      await page.locator("#coachLauncher").click();
       assert.equal(
         calls.filter((path) => path === "/api/terminal/ticket").length,
-        ticketCount + 1,
+        ticketCount,
       );
       await page.reload();
       if (await page.locator("#adminKey").isVisible()) {
@@ -147,9 +145,11 @@ test(
         beforeRestore + 1,
         "BFCache return must reattach without a manual button",
       );
-      await page.locator("#settingsTab").click();
       await page.route("**/api/terminal/ticket", (route) => route.abort());
-      await page.locator("#coachTab").click();
+      await page.evaluate(() => {
+        dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+        dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      });
       await page.waitForFunction(() =>
         document
           .querySelector("#nativeStatus")

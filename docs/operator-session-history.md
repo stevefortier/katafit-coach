@@ -1,6 +1,6 @@
 # Native Operator conversation lifetime
 
-The Coach tab is a live connection to one isolated Pi runtime. Entering the tab connects automatically, starting Pi if no runtime exists. Re-entering or reloading attaches to that same runtime while the application is running; closing a browser tab does not create a saved conversation or restart Pi. There are no Start, Stop, History, New, Delete, rename, or conversation-selection controls in Coach.
+The global Coach pane is a live connection to one isolated Pi runtime. Its first open after unlock connects, starting Pi if no runtime exists. Reopening or reloading attaches to that same runtime while the application is running; closing a browser tab does not create a saved conversation or restart Pi. After a native Stop the pane offers only **Start new session**, which begins a fresh runtime; there are no Stop, History, New, Delete, rename, or conversation-selection controls in Coach.
 
 **No conversation history is saved or restored.** Native Pi's transcript exists only in its active runtime. Application restart, update, settings/credential changes, revocation, or runtime failure can destroy that transcript and ephemeral workspace. Reconnecting after such an event starts fresh; no old prompt, tool result, or action is replayed. The attachment panel is tied to the active runtime and its separate authenticated delivery endpoint; attachment erasure follows runtime shutdown or authorization loss. A temporary browser disconnect does not itself destroy the runtime.
 

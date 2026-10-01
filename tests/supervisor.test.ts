@@ -13,7 +13,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Store } from "../src/config/store.js";
-import { AutoUpdateSetting } from "../src/update/auto.js";
 import {
   activateLegacyFixture,
   supervise,
@@ -489,7 +488,7 @@ test("new owner explicitly supports stopped legacy admin but withholds running c
   }
 });
 
-test("auto post-prepare failures release their prepared reservations", async () => {
+test("manual cancellation and acceptance failures release their prepared reservations", async () => {
   const home = await mkdtemp(join(tmpdir(), "coach-auto-accept-release-"));
   const store = new Store(home);
   await store.init();
@@ -537,15 +536,36 @@ test("auto post-prepare failures release their prepared reservations", async () 
   });
   try {
     owner.updates.installed = "c".repeat(40);
-    await new AutoUpdateSetting(home).write(true);
-    await assert.rejects(owner.auto.tick());
+    await owner.updates.check();
+    await owner.updates.prepare(latest);
+    await owner.updates.cancelPreparation(latest);
     await assert.rejects(access(join(home, "versions", consentFailure)), {
       code: "ENOENT",
     });
     await writeFile(join(home, "auto-update.json"), '{"enabled":true}');
     latest = acceptanceFailure;
     owner.updates.checkedAt = 0;
-    await assert.rejects(owner.auto.tick());
+    const headers = {
+      Authorization: "Bearer " + store.secrets.admin,
+      Origin: owner.origin,
+      "Content-Type": "application/json",
+    };
+    assert.equal(
+      (
+        await fetch(owner.origin + "/api/update/check", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    const response = await fetch(owner.origin + "/api/update/apply", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sha: latest, confirm: true }),
+    });
+    assert.equal(response.status, 503);
     await assert.rejects(access(join(home, "versions", acceptanceFailure)), {
       code: "ENOENT",
     });
@@ -553,9 +573,17 @@ test("auto post-prepare failures release their prepared reservations", async () 
       recursive: true,
       force: true,
     });
+    for (let n = 0; n < 100 && owner.updates.applying; n++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.equal(
+      owner.updates.applying,
+      false,
+      "failed durable acceptance must settle before retry",
+    );
     latest = success;
     owner.updates.checkedAt = 0;
-    await owner.auto.tick();
+    await owner.updates.check();
+    await owner.updates.apply(latest);
     assert.deepEqual(prepared, [consentFailure, acceptanceFailure, success]);
     assert.equal(owner.updates.installed, success);
   } finally {

@@ -1,6 +1,6 @@
 # Native Pi live continuity
 
-The Coach tab attaches automatically to one isolated Pi runtime. Its transcript and `/workspace` live only inside that runtime. Browser navigation or connection loss detaches the terminal but does not stop Pi; app replacement, settings/credential changes, revocation, runtime failure, or expiry starts fresh. No old transcript or provider/tool-result archive is loaded, sealed, compared, or restored.
+The global Coach pane attaches to one isolated Pi runtime when first opened after unlock. Its transcript and `/workspace` live only inside that runtime. Studio navigation and collapsing, expanding or resizing the pane keep the same terminal attached; connection loss or a hidden browser tab detaches it but does not stop Pi, and only a shown pane reattaches automatically. A native Stop is never undone automatically; app replacement, settings/credential changes, revocation, runtime failure, or expiry starts fresh. No old transcript or provider/tool-result archive is loaded, sealed, compared, or restored.
 
 Ordinary Pi REST calls are separate authenticated backend requests. Backend authorization and data validation decide what each call can read or change. The Coach host does not compare Pi's transcript with a host copy or maintain a REST mutation journal. A lost write response is unknown, not proof of success or failure; there is no automatic retry. A deliberate retry must follow canonical backend readback or a backend-defined idempotency contract to avoid duplicate writes.
 

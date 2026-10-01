@@ -8,6 +8,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Store } from "./config/store.js";
 import { supervise } from "./update/supervisor.js";
 import { legacyServe } from "./update/legacy.js";
+import { assertSupportedNode } from "./runtime-version.js";
+assertSupportedNode();
 const dir = process.env.KATAFIT_COACH_HOME ?? join(homedir(), ".katafit-coach");
 const store = new Store(dir);
 const command = process.argv[2] ?? "help";
@@ -37,7 +39,7 @@ async function call(path: string, post = false) {
 async function main() {
   if (command === "help") {
     console.log(
-      "katafit-coach start | serve | open | status | run | pause | stop\nstart: background local studio; open: authenticated browser; run: start worker\npause: stop worker; stop: stop service. Node 22.19+ required.",
+      "katafit-coach start | serve | open | status | run | pause | stop\nstart: background local studio; open: authenticated browser; run: start worker\npause: stop worker; stop: stop service. Node 26.10+ (major 26 only) required.",
     );
     return;
   }

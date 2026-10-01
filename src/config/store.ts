@@ -409,6 +409,9 @@ export class Store {
     )
       ? 1
       : 2,
+    private readonly manualOnlyOwner = !/(?:^|\/)update\/runtime\.js$/.test(
+      process.argv[1] ?? "",
+    ),
   ) {
     this.skills = new SkillStore(
       dir,
@@ -436,6 +439,7 @@ export class Store {
     // an older owner cannot cold-read a head migrated by this child. This also
     // makes the old owner's normal candidate probe reject before HTTP acceptance.
     const script = process.argv[1] ?? "";
+    if (!this.manualOnlyOwner) throw new Error("LAUNCHER_UPGRADE_REQUIRED");
     if (
       basename(script) === "probe.js" &&
       basename(dirname(script)) === "update"
@@ -444,6 +448,11 @@ export class Store {
         const module = await import(
           pathToFileURL(join(dirname(script), "../config/skills.js")).href
         );
+        const capability = await import(
+          pathToFileURL(join(dirname(script), "capability.js")).href
+        );
+        if (capability.manualOnlySourceUpdates !== 1)
+          throw new Error("LAUNCHER_UPGRADE_REQUIRED");
         const ownerIds = module.stockSkills?.map(
           (skill: { id: string }) => skill.id,
         );

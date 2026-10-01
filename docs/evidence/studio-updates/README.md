@@ -6,7 +6,7 @@ Actual Studio HTML/CSS/JavaScript rendered in Chromium against the real authenti
 
 Run `npm run test:updates-browser` (Chrome required; `CHROME_PATH` supported). The harness uses disposable credentials/state and closes its browser and server.
 
-- Automatic source check after unlock; checking alone never installs.
+- Source check only on Updates entry or explicit Check; checking alone never installs.
 - Explicit full-revision confirmation; dismissing it does not install.
 - Unsaved configuration edits block upgrade confirmation.
 - Applying disables conflicting controls; connection loss is shown as unconfirmed/reconnecting rather than success.

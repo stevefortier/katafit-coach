@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { Updates } from "../src/update/updates.js";
-import { AutoUpdateSetting } from "../src/update/auto.js";
 import { NativeTerminal } from "../src/server/terminal.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -152,14 +151,7 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
     (this as any).options.pollMs = 10;
     return start.call(this);
   };
-  const app = await admin(
-    store,
-    0,
-    undefined,
-    undefined,
-    updates,
-    new AutoUpdateSetting(home),
-  );
+  const app = await admin(store, 0, undefined, undefined, updates);
   const headers = {
     Authorization: "Bearer " + store.secrets.admin,
     Origin: app.origin,
@@ -197,7 +189,10 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
       "manual apply must not abort the original worker",
     );
     assert.equal(updates.lastOperation, undefined);
-    assert.equal((await post("/api/update/auto/quiesce")).status, 409);
+    assert.equal(
+      (await post("/api/update/quiesce", { confirm: true })).status,
+      409,
+    );
     assert.equal(owned?.state, "idle");
     await post("/api/stop");
     assert.equal(owned?.state, "stopped");
@@ -231,10 +226,10 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
     );
     assert.equal(archived.attempted_result_sha256, attemptedDigest);
     assert.deepEqual(archived.receipt, options.receipt);
-    const eligible = await post("/api/update/auto/quiesce");
+    const eligible = await post("/api/update/quiesce", { confirm: true });
     assert.equal(eligible.status, 200);
     assert.equal((await eligible.json()).wasRunning, false);
-    assert.equal((await post("/api/update/auto/release")).status, 200);
+    assert.equal((await post("/api/update/release")).status, 200);
     assert.equal(
       f.calls.filter((c) => c.name === "coach_complete_task").length,
       completionWrites,
@@ -330,7 +325,11 @@ test("stopped admin keeps invalidated task identity when durable archive publica
     "Content-Type": "application/json",
   };
   const post = (path: string) =>
-    fetch(app.origin + path, { method: "POST", headers, body: "{}" });
+    fetch(app.origin + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(path.endsWith("quiesce") ? { confirm: true } : {}),
+    });
   try {
     await post("/api/run");
     for (let n = 0; n < 200 && !owned?.incidents.length; n++) await sleep(10);

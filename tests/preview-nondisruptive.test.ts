@@ -413,7 +413,7 @@ test("manual update and automatic quiesce stay excluded from a running preview",
       await Promise.race([gate.gate, aborted(signal)]);
       return "Synthetic preview answer";
     },
-    { updates, auto: true },
+    { updates, quiesce: true },
   );
   try {
     h.enqueue("Live member question");
@@ -424,11 +424,11 @@ test("manual update and automatic quiesce stay excluded from a running preview",
     const apply = await h.post("update/apply", { sha, confirm: true });
     assert.equal(apply.status, 409);
     assert.match(((await apply.json()) as any).hint, /preview/i);
-    const quiesce = await h.post("update/auto/quiesce");
+    const quiesce = await h.post("update/quiesce", { confirm: true });
     assert.equal(quiesce.status, 409);
-    assert.equal(((await quiesce.json()) as any).error, "AUTO_UPDATE_BUSY");
+    assert.equal(((await quiesce.json()) as any).error, "UPDATE_BUSY");
     const s = await h.status();
-    assert.equal(s.autoQuiesced, false);
+    assert.equal(s.updateQuiesced, false);
     assert.notEqual(s.state, "stopped");
     assert.equal(h.work.signals[0].aborted, false, "live work untouched");
     assert.equal(applications, 0, "nothing applied");

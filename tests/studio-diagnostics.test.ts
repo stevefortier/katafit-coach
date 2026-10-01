@@ -80,7 +80,8 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
         ),
       );
       for (const id of [
-        "coachTab",
+        "coachLauncher",
+        "dashboardTab",
         "settingsTab",
         "diagnosticsTab",
         "logRefresh",
@@ -99,11 +100,19 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
         fullPage: true,
       });
     }
-    for (const target of ["#settingsTab", "#coachTab", "#lockStudio"]) {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    // A docked Coach pane leaves Activity visible, so polling continues.
+    await page.locator("#coachLauncher").click();
+    const docked = requests;
+    await page.waitForTimeout(2200);
+    assert.ok(requests > docked, "docked Coach keeps Activity polling");
+    for (const target of ["#settingsTab", "#coachPaneExpand", "#lockStudio"]) {
       await page.locator(target).click();
       const stopped = requests;
       await page.waitForTimeout(2200);
       assert.equal(requests, stopped, target + " stops polling");
+      if (target === "#coachPaneExpand")
+        await page.locator("#coachPaneExpand").click();
       if (target !== "#lockStudio")
         await page.locator("#diagnosticsTab").click();
     }

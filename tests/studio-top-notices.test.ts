@@ -589,10 +589,14 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       assert.equal((await noticeState(page)).severity, "warning");
       handler = undefined;
 
-      // Other pages: the same notice stays above the primary tabs.
-      await page.locator("#coachTab").click();
+      // Other pages: the same notice stays above the primary tabs and is not
+      // covered by the docked Coach pane.
+      await page.locator("#coachLauncher").click();
+      await page.locator("#coachPane").waitFor({ state: "visible" });
+      // Narrow Coach is full-screen; Back returns to the page and its notice.
+      if (width < 900) await page.locator("#coachPaneBack").click();
       state = await noticeState(page);
-      assert.equal(state.route, "/chat/operator");
+      assert.match(state.route, /^\/settings/);
       assert.equal(state.severity, "warning");
       assertAboveNav(state);
       assert.ok(state.hitsNotice);

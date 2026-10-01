@@ -7,7 +7,8 @@ import {
 import { Store } from "../config/store.js";
 import { launcherSkillCatalog } from "../config/skills.js";
 import { Updates, validSha } from "./updates.js";
-import { AutoUpdater, AutoUpdateDeferred, AutoUpdateSetting } from "./auto.js";
+import { manualOnlySourceUpdates } from "./capability.js";
+
 import { UpdateJournal, atomicWrite } from "./journal.js";
 import {
   stage,
@@ -39,8 +40,7 @@ interface Boundary {
     home: string,
     signal: AbortSignal,
   ) => Promise<string | undefined>;
-  autoRetryMs?: number;
-  autoTimer?: typeof setTimeout;
+  recoveryTimer?: typeof setTimeout;
   request?: typeof fetch;
 }
 export async function supervise(
@@ -72,8 +72,7 @@ export async function supervise(
     origin = "";
   const controller = new AbortController();
   let operation: Promise<void> | undefined;
-  const autoSetting = new AutoUpdateSetting(home);
-  let autoAttempt: string | undefined;
+
   let ambiguousQuiesce = false;
   let recoveryWasRunning: boolean | undefined;
   let recoverySha: string | undefined;
@@ -168,7 +167,7 @@ export async function supervise(
       }
       if (message.method === "cancelPreparation") {
         const sha = message.sha;
-        await releaseReservation(sha, "manual").catch(() => {});
+        await releaseReservation(sha).catch(() => {});
         manualPending = false;
         reply(updates.snapshot());
         return;
@@ -216,13 +215,12 @@ export async function supervise(
                 ambiguousQuiesce = true;
                 recoveryOutcome =
                   updates.installed === sha ? "running" : "restored-running";
-                updates.autoOutcome = { sha, state: "resume-failed" };
+                updates.recoveryOutcome = { sha, state: "resume-failed" };
               }
               send({ type: "state", data: updates.snapshot() });
               if (resume) await recoverAmbiguousQuiesce();
               if (ambiguousQuiesce && !closing) {
-                clearTimeout(autoTimer);
-                schedule(10000, "recovery");
+                scheduleRecovery();
               }
               send({ type: "state", data: updates.snapshot() });
             });
@@ -232,7 +230,7 @@ export async function supervise(
         } catch (error) {
           const sha =
             message.sha?.resume === true ? message.sha.sha : message.sha;
-          await releaseReservation(sha, "manual").catch(() => {});
+          await releaseReservation(sha).catch(() => {});
           manualPending = false;
           reply(
             undefined,
@@ -285,6 +283,7 @@ export async function supervise(
               ...updates.snapshot(),
               installed: revision,
               launcherSkillCatalog,
+              manualOnlySourceUpdates,
             },
           },
           () => {},
@@ -320,8 +319,6 @@ export async function supervise(
     sha: string;
     candidate: string;
     image?: string;
-    owner: "manual" | "auto";
-    waitingForSource?: boolean;
   };
   type CandidateCleanup = {
     sha: string;
@@ -369,43 +366,16 @@ export async function supervise(
       throw pending.retryError ?? error;
     }
   };
-  const releaseReservation = async (
-    sha: string,
-    owner?: Preparation["owner"],
-  ) => {
+  const releaseReservation = async (sha: string) => {
     const prepared = reservation;
-    if (
-      !prepared ||
-      prepared.sha !== sha ||
-      (owner && prepared.owner !== owner)
-    )
-      return;
+    if (!prepared || prepared.sha !== sha) return;
     reservation = undefined;
     await cleanupCandidate(prepared.candidate, prepared.sha).catch(() => {
       updates.cleanupWarning = true;
     });
   };
-  const prepareReservation = async (
-    sha: string,
-    owner: Preparation["owner"],
-  ) => {
-    // A completed automatic preparation waiting only for source approval must
-    // not monopolize manual admission. Transfer the exact candidate, or release
-    // it before preparing a different manually confirmed target.
-    if (
-      owner === "manual" &&
-      reservation?.owner === "auto" &&
-      reservation.waitingForSource &&
-      !autoAttempt &&
-      !prepareWork &&
-      !operation
-    ) {
-      if (reservation.sha === sha) {
-        reservation.owner = "manual";
-        reservation.waitingForSource = false;
-      } else await releaseReservation(reservation.sha, "auto");
-    }
-    if (reservation?.sha === sha && reservation.owner === owner) return;
+  const prepareReservation = async (sha: string) => {
+    if (reservation?.sha === sha) return;
     if (reservation || prepareWork || operation)
       throw new Error("UPDATE_IN_PROGRESS");
     await drainCandidateCleanup(sha);
@@ -433,7 +403,7 @@ export async function supervise(
         );
         if (closing || controller.signal.aborted)
           throw new Error("BUILD_CANCELLED");
-        reservation = { sha, candidate, image, owner };
+        reservation = { sha, candidate, image };
       } catch (error) {
         if (candidate)
           await cleanupCandidate(candidate, sha, error).catch(() => {});
@@ -449,14 +419,6 @@ export async function supervise(
       await work;
     } finally {
       if (prepareWork === work) prepareWork = undefined;
-    }
-  };
-  const prepareAuto = async (sha: string) => {
-    updates.preparing = true;
-    try {
-      await prepareReservation(sha, "auto");
-    } finally {
-      updates.preparing = false;
     }
   };
   const apply = async (sha: string) => {
@@ -553,8 +515,8 @@ export async function supervise(
     supported ? apply : null,
     boundary.request,
     (operation) => journal.write(operation),
-    (sha) => prepareReservation(sha, "manual"),
-    (sha) => releaseReservation(sha, "manual"),
+    (sha) => prepareReservation(sha),
+    (sha) => releaseReservation(sha),
   );
   const journal = new UpdateJournal(home);
   updates.lastOperation = await journal.recover(installed);
@@ -639,11 +601,15 @@ export async function supervise(
       if (!response.ok) return false;
       const state = (await response.json()) as any;
       if (closing) return false;
-      if (state.autoQuiesced) {
-        if (!state.autoQuiesceReady) return false;
-        recoveryWasRunning = state.autoWasRunning === true;
+      if (state.updateQuiesced || state.autoQuiesced) {
+        if (!(state.updateQuiesceReady ?? state.autoQuiesceReady)) return false;
+        recoveryWasRunning =
+          (state.updateWasRunning ?? state.autoWasRunning) === true;
         if (closing) return false;
-        if (!(await postRetry("/api/update/auto/release")).ok) return false;
+        let released = await postRetry("/api/update/release");
+        if (released.status === 404 && !closing)
+          released = await postRetry("/api/update/auto/release");
+        if (!released.ok) return false;
       }
       if (recoveryWasRunning && state.state === "stopped") {
         if (closing) return false;
@@ -681,7 +647,7 @@ export async function supervise(
         if (!confirmed) return false;
       }
       if (recoverySha)
-        updates.autoOutcome = {
+        updates.recoveryOutcome = {
           sha: recoverySha,
           state: recoveryOutcome,
           ...(recoveryOutcome === "deferred"
@@ -705,325 +671,27 @@ export async function supervise(
       return false;
     }
   }
-  const auto = new AutoUpdater(autoSetting, {
-    check: async () => {
-      if (closing || !supported || updates.applying)
-        return { installed: null, latest: null };
-      const state = await updates.check(true);
-      if (
-        reservation?.owner === "auto" &&
-        reservation.waitingForSource &&
-        (state.installed === reservation.sha ||
-          (state.latest !== null && state.latest !== reservation.sha))
-      )
-        await releaseReservation(reservation.sha, "auto");
-      return { installed: state.installed, latest: state.latest };
-    },
-    isDescendant: (old, next) => updates.isDescendant(old, next),
-    suppressed: (sha) => {
-      updates.autoOutcome = {
-        sha,
-        state: "suppressed",
-        reason: "FAILED_TARGET",
-      };
-    },
-    apply: async (sha) => {
-      if (
-        closing ||
-        !supported ||
-        manualPending ||
-        updates.preparing ||
-        reservation?.owner === "manual" ||
-        updates.checking ||
-        updates.checkError ||
-        updates.latest !== sha
-      )
-        return;
-      autoAttempt = sha;
-      try {
-        await prepareAuto(sha);
-        if (reservation) reservation.waitingForSource = false;
-      } catch (error) {
-        autoAttempt = undefined;
-        if (closing || controller.signal.aborted)
-          throw new AutoUpdateDeferred(sha, boundary.autoRetryMs);
-        if (
-          error instanceof Error &&
-          error.message === "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED"
-        ) {
-          updates.autoOutcome = {
-            sha,
-            state: "deferred",
-            reason: "ARTIFACT_NOT_READY",
-          };
-          throw new AutoUpdateDeferred(sha, boundary.autoRetryMs);
-        }
-        await updates.recordPreparationFailure(sha, error).catch(() => {});
-        throw error;
-      }
-      let enabled: boolean;
-      try {
-        enabled = (await autoSetting.read()).enabled;
-      } catch (error) {
-        await releaseReservation(sha, "auto");
-        autoAttempt = undefined;
-        throw error;
-      }
-      if (
-        closing ||
-        !enabled ||
-        updates.installed === sha ||
-        (updates.latest !== null && updates.latest !== sha)
-      ) {
-        await releaseReservation(sha, "auto");
-        autoAttempt = undefined;
-        updates.autoOutcome = {
-          sha,
-          state: "deferred",
-          reason: "AUTO_UPDATE_DISABLED",
-        };
-        return;
-      }
-      // Local readiness can outlive approval. Keep the single exact completed
-      // candidate until a cadence-compliant ref check approves it again.
-      if (
-        updates.checking ||
-        updates.checkError ||
-        updates.latest !== sha ||
-        Date.now() - updates.checkedAt > 300000
-      ) {
-        if (reservation) reservation.waitingForSource = true;
-        autoAttempt = undefined;
-        throw new AutoUpdateDeferred(
-          sha,
-          Math.max(1000, updates.checkedAt + 900000 - Date.now()),
-        );
-      }
-      // A local transport failure before acceptance is not a bad source SHA.
-      const paused = await postRetry("/api/update/auto/quiesce");
-      if (!paused.ok) {
-        await releaseReservation(sha, "auto");
-        autoAttempt = undefined;
-        if (
-          paused.status === 503 ||
-          paused.data?.error === "WORKER_STOP_UNCONFIRMED"
-        ) {
-          ambiguousQuiesce = true;
-          recoverySha = sha;
-          recoveryOutcome = "deferred";
-          const recovered = await recoverAmbiguousQuiesce();
-          updates.autoOutcome = {
-            sha,
-            state: recovered ? "deferred" : "resume-failed",
-            reason: "LOCAL_UNAVAILABLE",
-          };
-        } else
-          updates.autoOutcome = {
-            sha,
-            state: "deferred",
-            reason:
-              paused.data?.error === "AUTO_UPDATE_BUSY"
-                ? "AUTO_UPDATE_BUSY"
-                : paused.data?.error === "WORKER_STOP_UNCONFIRMED"
-                  ? "WORKER_STOP_UNCONFIRMED"
-                  : "LOCAL_UNAVAILABLE",
-          };
-        return; // Busy/unavailable; no source operation was accepted.
-      }
-      const wasRunning = paused.data.wasRunning === true;
-      let failure: unknown;
-      let attempted = false;
-      try {
-        if (
-          !closing &&
-          (await autoSetting.read()).enabled &&
-          !updates.checking &&
-          !updates.checkError &&
-          updates.latest === sha &&
-          Date.now() - updates.checkedAt <= 300000
-        ) {
-          attempted = true;
-          await updates.apply(sha, false, true);
-        } else {
-          await releaseReservation(sha, "auto");
-        }
-      } catch (error) {
-        failure = error;
-        await releaseReservation(sha, "auto").catch(() => {
-          updates.cleanupWarning = true;
-        });
-      } finally {
-        autoAttempt = undefined;
-      }
-      try {
-        send({ type: "state", data: updates.snapshot() });
-        // IPC state is asynchronous; release must not race the child's stale applying flag.
-        for (let n = 0; n < 30; n++) {
-          try {
-            const state = await fetch(origin + "/api/update", {
-              headers: { Authorization: "Bearer " + store.secrets.admin },
-              signal: AbortSignal.timeout(2000),
-            });
-            if (state.ok && !((await state.json()) as any).applying) break;
-          } catch {
-            // The child can briefly disconnect during replacement; retry.
-          }
-          await sleep(50);
-        }
-        const released = await postRetry("/api/update/auto/release");
-        if (!released.ok) throw new Error("AUTO_RELEASE_FAILED");
-        if (wasRunning && !closing) {
-          const resumed = await postRetry("/api/run");
-          if (!resumed.ok) throw new Error("AUTO_RESUME_FAILED");
-          let confirmed = false;
-          for (let n = 0; n < 3; n++) {
-            try {
-              const status = await fetch(origin + "/api/status", {
-                headers: { Authorization: "Bearer " + store.secrets.admin },
-                signal: AbortSignal.timeout(5000),
-              });
-              const state = status.ok ? ((await status.json()) as any) : {};
-              if (
-                ["idle", "connecting", "working", "task-working"].includes(
-                  state.state,
-                )
-              ) {
-                confirmed = true;
-                break;
-              }
-            } catch {
-              // A lost read is not proof that the worker failed to start.
-            }
-            if (n < 2) await sleep(200);
-          }
-          if (!confirmed) throw new Error("AUTO_RESUME_UNCONFIRMED");
-          updates.autoOutcome = {
-            sha,
-            state: !attempted
-              ? "deferred"
-              : failure
-                ? "restored-running"
-                : "running",
-          };
-        } else
-          updates.autoOutcome = {
-            sha,
-            state: failure ? "failed" : attempted ? "stopped" : "deferred",
-          };
-      } catch {
-        updates.autoOutcome = { sha, state: "resume-failed" };
-        if (!closing) {
-          ambiguousQuiesce = true;
-          recoverySha = sha;
-          recoveryWasRunning = wasRunning;
-          recoveryOutcome = !attempted
-            ? "deferred"
-            : failure
-              ? wasRunning
-                ? "restored-running"
-                : "failed"
-              : wasRunning
-                ? "running"
-                : "stopped";
-        }
-      }
-      if (!attempted && updates.autoOutcome?.state === "deferred")
-        updates.autoOutcome.reason = "AUTO_UPDATE_DISABLED";
-      if (failure) throw failure;
-    },
-  });
-  const tickAuto = async () => {
-    if (manualPending || updates.applying || updates.preparing) return;
-    if (ambiguousQuiesce) {
-      await recoverAmbiguousQuiesce();
-      return; // Restore the previous worker first; check source on a later tick.
-    }
-    try {
-      await auto.tick();
-    } finally {
-      // AutoUpdater skips its hooks when consent is off. Reconcile retained
-      // preparation here too, including an unreadable consent file.
-      const enabled = await autoSetting.read().then(
-        (setting) => setting.enabled,
-        () => false,
-      );
-      if (!enabled && reservation?.owner === "auto" && !autoAttempt)
-        await releaseReservation(reservation.sha, "auto");
-    }
-  };
-  let autoTimer: ReturnType<typeof setTimeout> | undefined;
-  let autoTimerWork: Promise<void> | undefined;
-  const schedule = (
-    ms: number,
-    reason: NonNullable<Updates["autoSchedule"]>["reason"],
-  ) => {
-    const now = Date.now();
-    if (
-      reason !== "recovery" &&
-      reason !== "readiness" &&
-      updates.sourceRetryAt &&
-      updates.sourceRetryAt > now
-    ) {
-      ms = Math.max(ms, updates.sourceRetryAt - now);
-      reason = "check-failed";
-    }
-    updates.autoSchedule = { nextAttemptAt: now + ms, reason };
-    autoTimer = (boundary.autoTimer ?? setTimeout)(() => {
-      updates.autoSchedule = { nextAttemptAt: null, reason: "running" };
+  // This timer only reconciles a durable, already accepted manual operation.
+  // It cannot discover source, prepare a candidate or activate one.
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let recoveryWork: Promise<void> | undefined;
+  const scheduleRecovery = (ms = 10000) => {
+    if (closing || !ambiguousQuiesce) return;
+    clearTimeout(recoveryTimer);
+    recoveryTimer = (boundary.recoveryTimer ?? setTimeout)(() => {
       const work = (async () => {
         if (closing) return;
-        try {
-          await tickAuto();
-        } catch {
-          /* Journal carries failure; no secret output. */
-        }
-        if (!closing)
-          schedule(
-            ambiguousQuiesce
-              ? 10000
-              : auto.retryDelay() !== undefined
-                ? Math.max(1000, auto.retryDelay()!)
-                : 900000,
-            ambiguousQuiesce
-              ? "recovery"
-              : auto.retryDelay() !== undefined
-                ? "readiness"
-                : updates.latest === null && updates.checkedAt
-                  ? "check-failed"
-                  : "poll",
-          );
+        await recoverAmbiguousQuiesce();
+        if (!closing && ambiguousQuiesce) scheduleRecovery();
       })();
-      autoTimerWork = work;
-      void work.then(
-        () => {
-          if (autoTimerWork === work) autoTimerWork = undefined;
-        },
-        () => {
-          if (autoTimerWork === work) autoTimerWork = undefined;
-        },
-      );
+      recoveryWork = work;
+      void work.finally(() => {
+        if (recoveryWork === work) recoveryWork = undefined;
+      });
     }, ms);
-    autoTimer.unref();
+    recoveryTimer.unref();
   };
-  updates.onSourceCooldown = () => {
-    const armed = updates.autoSchedule;
-    if (
-      closing ||
-      !armed?.nextAttemptAt ||
-      armed.reason === "recovery" ||
-      armed.reason === "readiness"
-    )
-      return;
-    if (updates.sourceRetryAt && armed.nextAttemptAt < updates.sourceRetryAt) {
-      clearTimeout(autoTimer);
-      schedule(0, "check-failed");
-    }
-  };
-  if (supported)
-    schedule(
-      ambiguousQuiesce ? 1 : 900000,
-      ambiguousQuiesce ? "recovery" : "poll",
-    );
+  if (ambiguousQuiesce) scheduleRecovery(1);
   // Refresh state even for code-driven updates and across a replaced child.
   const timer = setInterval(
     () => send({ type: "state", data: updates.snapshot() }),
@@ -1037,15 +705,13 @@ export async function supervise(
       return child?.pid;
     },
     updates,
-    auto: { tick: tickAuto },
+
     async close() {
       closing = true;
-      if (autoTimer) clearTimeout(autoTimer);
-      updates.autoSchedule = undefined;
+      clearTimeout(recoveryTimer);
       controller.abort();
       clearInterval(timer);
-      await autoTimerWork?.catch(() => {});
-      await auto.settle();
+      await recoveryWork?.catch(() => {});
       await manualWork?.catch(() => {});
       await prepareWork?.catch(() => {});
       await operation?.catch(() => {});
