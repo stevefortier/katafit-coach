@@ -4,19 +4,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { Actions } from "../src/chat/actions.js";
-import { operatorBackend } from "./operator-tools.test.js";
 
-test("generic action identity and completed/unknown receipts survive restart without SEND reconciliation", async () => {
-  const f = await operatorBackend();
+test("retired generic Operator receipts survive restart without legacy reconciliation", async () => {
   const dir = await mkdtemp(tmpdir() + "/operator-generic-receipts-");
   try {
     const store = new Store(dir);
     await store.init();
-    await store.save({
-      ...store.publicConfig(),
-      origin: f.origin,
-      token: "synthetic-token",
-    });
     const actions = new Actions(store);
     actions.save({
       session_id: "synthetic-session",
@@ -32,26 +25,17 @@ test("generic action identity and completed/unknown receipts survive restart wit
       status: "pending",
     } as any);
     const restored = new Actions(store);
-    await restored.reconcile();
+    assert.equal("reconcile" in restored, false);
     assert.deepEqual(
       restored.snapshot().map((a) => a.status),
-      ["completed", "unknown"],
+      ["completed", "pending"],
     );
     assert.equal(
-      (restored.snapshot()[1] as any).tool_name,
+      restored.snapshot()[1].tool_name,
       "studio_operator_future_write",
     );
     assert.equal(restored.snapshot()[1].idempotency_key, "unknown-key");
-    assert.equal(
-      f.calls.some((c) => c.params?.name === "studio_operator_get_action"),
-      false,
-    );
-    assert.equal(
-      f.calls.some((c) => c.params?.name === "studio_operator_future_write"),
-      false,
-    );
   } finally {
-    await f.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

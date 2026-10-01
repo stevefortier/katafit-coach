@@ -151,7 +151,7 @@ test("REST tool uses the existing installation credential with no identity looku
     relay = await startRelay(gateway);
     const ext = await loadExtension(relay);
     assert.equal(ext.tools.has("katafit_rest_request"), true);
-    assert.ok(ext.tools.has("studio_operator_list_members"));
+    assert.equal(ext.tools.has("studio_operator_list_members"), false);
     assert.equal(f.calls.filter((c) => c.method === "GET").length, 0);
   } finally {
     await relay?.close();

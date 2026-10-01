@@ -64,16 +64,16 @@ test("native gateway authority covers every credential slot, including added one
   try {
     await gateway.handle({
       kind: "tool",
-      name: "studio_operator_list_members",
-      args: {},
+      name: "katafit_rest_request",
+      args: { method: "GET", path: "/api/docs/coach" },
     });
     // Same revision, one more private slot: the captured authority is stale.
     f.store.secrets["provider." + "f".repeat(32)] = "synthetic-added-slot";
     await assert.rejects(
       gateway.handle({
         kind: "tool",
-        name: "studio_operator_list_members",
-        args: {},
+        name: "katafit_rest_request",
+        args: { method: "GET", path: "/api/docs/coach" },
       }),
       /NATIVE_SESSION_REVOKED/,
     );

@@ -19,17 +19,9 @@ test("live catalog contains ordinary REST, not arbitrary backend MCP reads", asy
   try {
     const catalog = await gateway.handle({ kind: "catalog" });
     const names = catalog.tools.map((tool: any) => tool.name);
-    assert.ok(names.includes("katafit_rest_request"));
-    assert.ok(names.includes("studio_operator_send_message"));
-    assert.ok(names.includes("send_to_operator") === false); // no attachment owner in this fixture
-    assert.ok(names.includes("studio_operator_list_members")); // explicit recipient lookup for legacy send
-    assert.ok(!names.includes("studio_operator_future_read"));
-    assert.ok(!names.includes("studio_operator_read_dojo_checkin_image"));
-    assert.ok(!names.includes("studio_operator_list_dojo_checkins"));
+    assert.deepEqual(names, ["katafit_rest_request"]);
     assert.equal(
-      f.calls.filter(
-        (call) => call.body?.params?.name === "studio_operator_open_session",
-      ).length,
+      f.calls.filter((call) => call.path === "/api/agents/coach/mcp").length,
       0,
     );
   } finally {
