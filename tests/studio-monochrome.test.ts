@@ -438,8 +438,15 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       );
       const dojoShell = await page.evaluate(() => {
         const map = document.querySelector<HTMLElement>("#dashboardMap")!;
-        const date =
-          document.querySelector<HTMLInputElement>("#dashboardMapDate")!;
+        const date = document.querySelector<HTMLElement>(
+          ".dashboard-map-date",
+        )!;
+        const dayTrack = document.querySelector<HTMLElement>(
+          ".dashboard-day-track",
+        )!;
+        const selects = document.querySelector<HTMLElement>(
+          ".dashboard-date-selects",
+        )!;
         const status = document.querySelector<HTMLElement>(
           "#dashboardMapStatus",
         )!;
@@ -453,10 +460,18 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           .querySelector<HTMLElement>(".dashboard-map-layout")!
           .getBoundingClientRect();
         return {
-          dateName:
-            date.getAttribute("aria-label") ||
-            date.labels?.[0]?.textContent?.trim(),
+          dateName: document
+            .querySelector<HTMLInputElement>("#dashboardMapDay")!
+            .getAttribute("aria-label"),
           dateWidth: dateBox.width,
+          trackWidth: dayTrack.getBoundingClientRect().width,
+          centered:
+            Math.abs(
+              (selects.getBoundingClientRect().left +
+                selects.getBoundingClientRect().right) /
+                2 -
+                (dateBox.left + dateBox.right) / 2,
+            ) < 2,
           gap: mapBox.top - dateBox.bottom,
           aligned:
             dateBox.left >= layoutBox.left && dateBox.right <= layoutBox.right,
@@ -467,9 +482,12 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           overflow: document.documentElement.scrollWidth > innerWidth,
         };
       });
-      assert.match(dojoShell.dateName || "", /activity creation date/i);
+      assert.equal(dojoShell.dateName, "Day of month");
+      assert.ok(dojoShell.centered, "month/year pair is centered");
       assert.ok(
-        dojoShell.dateWidth >= 120 && dojoShell.mapWidth >= 240,
+        dojoShell.dateWidth >= 240 &&
+          dojoShell.trackWidth >= 120 &&
+          dojoShell.mapWidth >= 240,
         JSON.stringify(dojoShell),
       );
       assert.ok(
