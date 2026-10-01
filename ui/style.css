@@ -912,13 +912,18 @@ header {
   position: sticky;
   top: calc(var(--header-offset, 0px) + var(--notice-offset, 0px));
   z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 14px 0 22px;
+  padding: 0;
+  background: #151515;
+}
+.dashboard-member-rail {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(270px, 1fr);
+  grid-auto-columns: minmax(320px, 1fr);
   gap: 12px;
-  margin: 14px 0 22px;
-  padding: 8px 0;
-  background: #151515;
   overflow-x: auto;
   overscroll-behavior-x: contain;
 }
@@ -926,13 +931,15 @@ header {
   display: none;
 }
 .dashboard-member-card {
+  margin: 0;
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
-  gap: 4px 12px;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 0;
   text-align: left;
   min-width: 0;
   min-height: 134px;
-  padding: 12px;
+  padding: 0;
+  overflow: hidden;
   background: linear-gradient(145deg, #252d38, #151515 70%);
   border: 1px solid #87909b;
   border-top: 3px solid #bcc5d0;
@@ -946,18 +953,28 @@ header {
 }
 .dashboard-member-card strong {
   grid-column: 2;
+  padding: 6px 12px 4px;
   font-size: 15px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 .dashboard-member-all {
+  margin: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   align-self: start;
-  min-height: 54px;
+  min-height: 44px;
+  width: max-content;
+  max-width: 100%;
+  padding: 8px 12px;
   background: #191919;
-  border-top-width: 1px;
+  border: 1px solid #888;
+  color: #f3f3f3;
+}
+.dashboard-member-all[aria-pressed="true"] {
+  border-color: #fff;
+  background: #303030;
 }
 .dashboard-member-all strong {
   text-align: center;
@@ -967,7 +984,10 @@ header {
   font-size: 13px;
   line-height: 1.2;
   border-top: 1px solid #454b53;
-  padding-top: 3px;
+  padding: 2px 12px;
+}
+.dashboard-member-card > span:last-child {
+  padding-bottom: 6px;
 }
 .dashboard-member-portrait {
   grid-column: 1;
@@ -975,18 +995,21 @@ header {
   position: relative;
   display: grid;
   place-items: center;
-  width: 74px;
-  height: 100px;
+  align-self: stretch;
+  min-height: 0;
   background: #303744;
-  border: 2px solid #d6dce5;
+  border: 0;
   overflow: hidden;
   font-size: 24px;
-  box-shadow: 0 0 0 2px #101010;
+  box-shadow: none;
 }
 .dashboard-member-portrait img {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 .dashboard-filtered {
   display: none !important;

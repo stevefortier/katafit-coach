@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { chromium } from "playwright-core";
+import sharp from "sharp";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 
@@ -29,6 +30,13 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     page.setDefaultTimeout(10000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    const portrait = await sharp(
+      Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="300"><rect width="100" height="300" fill="#365878"/><circle cx="50" cy="35" r="20" fill="#deb998"/><path d="M25 65h50v140H25zM25 205h20v90H25zM55 205h20v90H55z" fill="#deb998"/></svg>',
+      ),
+    )
+      .png()
+      .toBuffer();
     const members = ["Ada", "Bob"].map((name, i) => ({
       _id: String(i + 1).repeat(24),
       display_name: `Synthetic ${name}`,
@@ -49,7 +57,12 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     await page.route(/\/api\/dashboard(?:[/?]|$)/, async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (path === "/api/dashboard/avatar") {
-        await route.fulfill({ status: 404, body: "" });
+        await route.fulfill(
+          new URL(route.request().url()).searchParams.get("id") ===
+            members[0]._id
+            ? { contentType: "image/png", body: portrait }
+            : { status: 404, body: "" },
+        );
       } else if (path === "/api/dashboard/members") {
         await route.fulfill({ json: { members } });
       } else if (path === "/api/dashboard/timeline") {
@@ -112,6 +125,14 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     await page.locator("#dashboardCharts h3").waitFor();
     await page.waitForFunction(
       () =>
+        (
+          document.querySelector(
+            ".dashboard-member-portrait img",
+          ) as HTMLImageElement
+        )?.naturalHeight === 300,
+    );
+    await page.waitForFunction(
+      () =>
         !document
           .querySelector("#dashboardTimeline")!
           .textContent!.includes("Loading authorized day events"),
@@ -148,6 +169,22 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
           headerBottom: header.getBoundingClientRect().bottom,
           stickyTop: parseFloat(getComputedStyle(cards).top),
           rosterHeight: cards.offsetHeight,
+          allRect: cards
+            .querySelector(".dashboard-member-all")!
+            .getBoundingClientRect()
+            .toJSON(),
+          memberRect: cards
+            .querySelector(".dashboard-member-card")!
+            .getBoundingClientRect()
+            .toJSON(),
+          portraitRect: cards
+            .querySelector(".dashboard-member-portrait")!
+            .getBoundingClientRect()
+            .toJSON(),
+          memberBottomBorder: parseFloat(
+            getComputedStyle(cards.querySelector(".dashboard-member-card")!)
+              .borderBottomWidth,
+          ),
           overflow: document.documentElement.scrollWidth > innerWidth,
           rootScroll: scrollY,
           rootHeight: document.documentElement.scrollHeight,
@@ -183,6 +220,13 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     };
     const top = await geometry("desktop-top");
     assert.ok(top.cardsBottom < top.mapTop);
+    assert.ok(top.allRect.bottom <= top.memberRect.top);
+    assert.ok(top.allRect.width < 170);
+    assert.equal(top.portraitRect.top, top.memberRect.top + 3);
+    assert.equal(
+      top.portraitRect.bottom,
+      top.memberRect.bottom - top.memberBottomBorder,
+    );
     assert.ok(top.rootMax >= 650, JSON.stringify(top));
     assert.equal(top.rosterPosition, "sticky");
     if (evidence) {
@@ -273,6 +317,13 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
       assert.ok(g.cardsBottom <= g.panelBottom);
       assert.equal(g.overflow, false);
       assert.ok(g.rosterHeight < 200, JSON.stringify({ width, g }));
+      assert.ok(g.allRect.bottom <= g.memberRect.top);
+      assert.ok(g.allRect.width < 170);
+      assert.equal(g.portraitRect.top, g.memberRect.top + 3);
+      assert.equal(
+        g.portraitRect.bottom,
+        g.memberRect.bottom - g.memberBottomBorder,
+      );
       assert.ok(Math.abs(g.cardsTop - g.stickyTop) < 2);
       await page
         .locator("#dashboardMemberCards")
@@ -293,9 +344,19 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
         Math.abs(after.rootScroll - 650) < 2,
         JSON.stringify({ width, before, scrolled: g, after }),
       );
-      if (evidence && width === 390)
+      await page
+        .getByRole("button", { name: "All members", exact: true })
+        .focus();
+      await page.keyboard.press("Enter");
+      assert.equal(
+        await page
+          .getByRole("button", { name: "All members", exact: true })
+          .getAttribute("aria-pressed"),
+        "true",
+      );
+      if (evidence)
         await page.screenshot({
-          path: evidence + "/mobile-sticky-synthetic.png",
+          path: evidence + `/mobile-${width}-sticky-synthetic.png`,
         });
     }
     assert.deepEqual(errors, []);

@@ -834,7 +834,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
         (await page.locator("#dashboardMapSelection").textContent()) || "",
         /denied|revoked|removed/i,
       );
-      assert.equal(await rosterCards(), 3, "429 keeps member cards");
+      assert.equal(await rosterCards(), 2, "429 keeps member cards");
       assert.equal(
         await page.locator("#dashboardMap .dashboard-activity-pin").count(),
         activityPinsBefore,
@@ -864,7 +864,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
         await page.locator("#dashboardMapStatus").innerText(),
         /denied|revoked/i,
       );
-      assert.equal(await rosterCards(), 3, "503 roster keeps member cards");
+      assert.equal(await rosterCards(), 2, "503 roster keeps member cards");
       assert.match(
         await page.locator("#dashboardMemberCards").innerText(),
         /Weight: 68 kg/,
@@ -1409,8 +1409,15 @@ test("roster cards load independently when the map endpoint fails or Leaflet is 
         await page
           .locator("#dashboardMemberCards .dashboard-member-card")
           .count(),
-        3,
-        "all-members toggle plus complete authorized roster",
+        2,
+        "complete authorized member roster",
+      );
+      assert.equal(
+        await page
+          .getByRole("button", { name: "All members", exact: true })
+          .count(),
+        1,
+        "separate all-members toggle",
       );
       assert.equal(await page.locator(".dashboard-activity-pin").count(), 0);
       assert.equal(await page.locator(".dashboard-member-pin").count(), 0);
