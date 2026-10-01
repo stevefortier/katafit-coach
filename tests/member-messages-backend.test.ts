@@ -373,7 +373,7 @@ test(
         for (const [actor, recipient] of [
           [p.member, p.other],
           [p.chief, p.outsiderMember],
-          [p.chief, p.chief],
+          [p.member, p.chief],
         ]) {
           const proxy = await lossyProxy(b.origin);
           const s = await coachStore(proxy.origin, await b.coachToken(actor));
@@ -628,115 +628,125 @@ test(
       },
     );
 
-    await t.test(
-      "actual Pi discovers, resolves the roster, sends and verifies through real routes",
-      async () => {
-        const p = await seed(b);
-        const proxy = await lossyProxy(b.origin);
-        const s = await coachStore(proxy.origin, await b.coachToken(p.chief));
-        const provider = await providerStub();
-        let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
-        let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
-        try {
-          await s.store.save({
-            ...s.store.publicConfig(),
-            provider: { baseUrl: provider.origin + "/v1", model: MODEL },
-            apiKey: "synthetic-provider-credential",
-          });
-          provider.reply = (body: any) => {
-            const results = body.messages.filter((m: any) => m.role === "tool");
-            const last = results.at(-1)?.content ?? "";
-            const steps = [
-              { method: "GET", path: "/api/docs/coach" },
-              { method: "GET", path: "/api/dojos/my" },
-              () => {
-                const dojo = JSON.parse(last);
-                return {
-                  method: "GET",
-                  path: `/api/dojos/${dojo._id ?? dojo.dojo?._id}/members`,
-                };
-              },
-              () => {
-                const members = JSON.parse(last);
-                const list = Array.isArray(members)
-                  ? members
-                  : (members.members ?? []);
-                const target = list.find((m: any) =>
-                  JSON.stringify(m).includes("Synthetic member"),
-                );
-                const recipient = target.user_id ?? target._id ?? target.id;
-                return {
-                  method: "POST",
-                  path: `/api/coach/member-messages/${recipient}`,
-                  body: { text: "Synthetic Pi roster message" },
-                };
+    for (const recipientRole of ["member", "chief"] as const)
+      await t.test(
+        `actual Pi discovers, resolves the ${recipientRole}, sends and verifies through real routes`,
+        async () => {
+          const p = await seed(b);
+          const recipientId = p[recipientRole];
+          const recipientName =
+            recipientRole === "chief" ? "Synthetic chief" : "Synthetic member";
+          const proxy = await lossyProxy(b.origin);
+          const s = await coachStore(proxy.origin, await b.coachToken(p.chief));
+          const provider = await providerStub();
+          let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
+          let gateway:
+            | Awaited<ReturnType<typeof openNativeGateway>>
+            | undefined;
+          try {
+            await s.store.save({
+              ...s.store.publicConfig(),
+              provider: { baseUrl: provider.origin + "/v1", model: MODEL },
+              apiKey: "synthetic-provider-credential",
+            });
+            provider.reply = (body: any) => {
+              const results = body.messages.filter(
+                (m: any) => m.role === "tool",
+              );
+              const last = results.at(-1)?.content ?? "";
+              const steps = [
+                { method: "GET", path: "/api/docs/coach" },
+                { method: "GET", path: "/api/dojos/my" },
+                () => {
+                  const dojo = JSON.parse(last);
+                  return {
+                    method: "GET",
+                    path: `/api/dojos/${dojo._id ?? dojo.dojo?._id}/members`,
+                  };
+                },
+                () => {
+                  const members = JSON.parse(last);
+                  const list = Array.isArray(members)
+                    ? members
+                    : (members.members ?? []);
+                  const target = list.find((m: any) =>
+                    JSON.stringify(m).includes(recipientName),
+                  );
+                  const recipient = target.user_id ?? target._id ?? target.id;
+                  return {
+                    method: "POST",
+                    path: `/api/coach/member-messages/${recipient}`,
+                    body: { text: "Synthetic Pi roster message" },
+                  };
+                },
+              ];
+              const step = steps[results.length];
+              if (!step)
+                return `data: ${JSON.stringify({ id: "x", choices: [{ index: 0, delta: { content: "Sent and verified." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+              const args = typeof step === "function" ? step() : step;
+              return sse([{ id: `call_${results.length}`, args }]);
+            };
+            gateway = await openNativeGateway(s.store);
+            relay = await startRelay(gateway);
+            const ext = await loadExtension(relay);
+            const tool = ext.tools.get("katafit_rest_request");
+            const messages: any[] = [
+              {
+                role: "user",
+                content: `Tell ${recipientName} to rest.`,
+                timestamp: 1,
               },
             ];
-            const step = steps[results.length];
-            if (!step)
-              return `data: ${JSON.stringify({ id: "x", choices: [{ index: 0, delta: { content: "Sent and verified." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
-            const args = typeof step === "function" ? step() : step;
-            return sse([{ id: `call_${results.length}`, args }]);
-          };
-          gateway = await openNativeGateway(s.store);
-          relay = await startRelay(gateway);
-          const ext = await loadExtension(relay);
-          const tool = ext.tools.get("katafit_rest_request");
-          const messages: any[] = [
-            {
-              role: "user",
-              content: "Tell Synthetic member to rest.",
-              timestamp: 1,
-            },
-          ];
-          for (let turn = 0; turn < 6; turn++) {
-            const selected = await piTurn(relay, MODEL, messages);
-            if (selected.stopReason === "stop") break;
-            const call = selected.content.find(
-              (c: any) => c.type === "toolCall",
+            for (let turn = 0; turn < 6; turn++) {
+              const selected = await piTurn(relay, MODEL, messages);
+              if (selected.stopReason === "stop") break;
+              const call = selected.content.find(
+                (c: any) => c.type === "toolCall",
+              );
+              const result = await tool.execute(
+                call.id,
+                validateToolArguments(tool, call),
+              );
+              assert.equal(
+                Boolean(result.isError),
+                false,
+                JSON.stringify(result),
+              );
+              messages.push(selected, {
+                role: "toolResult",
+                toolCallId: call.id,
+                toolName: call.name,
+                content: result.content,
+                isError: false,
+                timestamp: 2 + turn,
+              });
+            }
+            assert.deepEqual(
+              (await canonical(b, recipientId)).map((m) => m.text),
+              ["Synthetic Pi roster message"],
             );
-            const result = await tool.execute(
-              call.id,
-              validateToolArguments(tool, call),
+            assert.deepEqual(
+              proxy.state.calls.map(
+                (c) => c.method + " " + c.path.split("?")[0],
+              ),
+              [
+                "GET /api/docs/coach",
+                "GET /api/dojos/my",
+                `GET /api/dojos/${p.dojo}/members`,
+                "GET /api/coach/member-messages/context",
+                `POST /api/coach/member-messages/${recipientId}`,
+                `GET /api/coach/member-messages/${recipientId}/receipts/${new Actions(s.store).memberDeliveries()[0].idempotency_key}`,
+              ],
             );
-            assert.equal(
-              Boolean(result.isError),
-              false,
-              JSON.stringify(result),
-            );
-            messages.push(selected, {
-              role: "toolResult",
-              toolCallId: call.id,
-              toolName: call.name,
-              content: result.content,
-              isError: false,
-              timestamp: 2 + turn,
-            });
+          } finally {
+            await relay?.close();
+            await gateway?.close();
+            await provider.close();
+            await s.close();
+            await proxy.close();
           }
-          assert.deepEqual(
-            (await canonical(b, p.member)).map((m) => m.text),
-            ["Synthetic Pi roster message"],
-          );
-          assert.deepEqual(
-            proxy.state.calls.map((c) => c.method + " " + c.path.split("?")[0]),
-            [
-              "GET /api/docs/coach",
-              "GET /api/dojos/my",
-              `GET /api/dojos/${p.dojo}/members`,
-              "GET /api/coach/member-messages/context",
-              `POST /api/coach/member-messages/${p.member}`,
-              `GET /api/coach/member-messages/${p.member}/receipts/${new Actions(s.store).memberDeliveries()[0].idempotency_key}`,
-            ],
-          );
-        } finally {
-          await relay?.close();
-          await gateway?.close();
-          await provider.close();
-          await s.close();
-          await proxy.close();
-        }
-      },
-    );
+        },
+      );
   },
 );
 

@@ -4,10 +4,24 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { SkillStore, stockSkills } from "../src/config/skills.js";
+import { restRequestTool } from "../src/katafit/restGet.js";
+
+test("chief messaging guidance is explicit in both the always-advertised tool and upgraded API skill", () => {
+  for (const text of [
+    restRequestTool.description,
+    stockSkills[0].instructions,
+  ]) {
+    assert.match(text, /including the dojo chief/i);
+    assert.match(text, /exactly \{text\}/);
+    assert.match(text, /never supply idempotency_key/i);
+    assert.match(text, /not.*evidence.*recipient.*ineligible/i);
+  }
+  assert.equal(stockSkills[0].defaultVersion, 5);
+});
 
 test("member messages are occurrences: exact words may repeat, delivered is not viewed, no replay", () => {
   const skill = stockSkills[0];
-  assert.equal(skill.defaultVersion, 4);
+  assert.equal(skill.defaultVersion, 5);
   const text = skill.instructions;
   assert.doesNotMatch(
     text,
@@ -31,7 +45,7 @@ test("member messages are occurrences: exact words may repeat, delivered is not 
 
 test("current API guidance requires explicit panel delivery, not image acquisition alone", () => {
   const skill = stockSkills[0];
-  assert.equal(skill.defaultVersion, 4);
+  assert.equal(skill.defaultVersion, 5);
   assert.match(skill.instructions, /send_to_operator/);
   assert.match(skill.instructions, /image_receipt/);
   assert.match(skill.instructions, /not proof.*display/i);
@@ -43,6 +57,8 @@ for (const [from, customized] of [
   [1, true],
   [3, false],
   [3, true],
+  [4, false],
+  [4, true],
 ] as const) {
   test(`API v${from} upgrade preserves archived content and custom state (${customized})`, async () => {
     const dir = await mkdtemp(tmpdir() + "/api-delivery-");
@@ -75,7 +91,7 @@ for (const [from, customized] of [
       const store = new SkillStore(dir, () => []);
       await store.init();
       const current = store.view().skills[0];
-      assert.equal(current.defaultVersion, 4);
+      assert.equal(current.defaultVersion, 5);
       assert.equal(current.enabled, old.enabled);
       assert.equal(
         current.instructions,
