@@ -6,7 +6,7 @@ A local Node service with a browser studio for your Kata.fit connection, an expl
 
 ## Install from this repository
 
-Requires Linux or macOS and **Node 22.19+**. Linux is the tested platform. Windows permissions/service management are not supported by this pilot.
+Requires Linux or macOS and **Node 26.10+ (major 26 only)**. Linux is the tested platform. Windows permissions/service management are not supported by this pilot. See [supported Node and CI qualification policy](docs/ci.md) for the latest-patch policy and parallel gates.
 
 ```sh
 git clone https://github.com/stevefortier/katafit-coach.git

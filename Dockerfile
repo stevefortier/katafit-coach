@@ -1,5 +1,5 @@
-# Pinned Node 22 base; update the digest deliberately with routine image maintenance.
-FROM node:22-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS build
+# Pinned supported Node 26 base; update patch/digest deliberately with image maintenance.
+FROM node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS build
 WORKDIR /build
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
@@ -16,7 +16,7 @@ RUN KATAFIT_BUILD_REVISION="$KATAFIT_BUILD_REVISION" npm run build \
     && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM docker:29.1.3-cli@sha256:4fa0ee1f3a7e4354c4ea34558b6d4ee32859baf4973d4c8ccc8e7fe3dd730c04 AS dockercli
-FROM node:22-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9
+FROM node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2
 # Trusted control plane ONLY. Docker authority never enters the Pi sibling.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates util-linux \

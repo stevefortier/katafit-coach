@@ -1,0 +1,17 @@
+name: Prepare exact Coach source
+description: Install and build the checked-out revision on the latest Node 26 patch.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "26.x"
+        check-latest: true
+        cache: npm
+    - name: Enforce supported Node floor
+      shell: bash
+      run: node --experimental-strip-types --input-type=module -e 'import { assertSupportedNode } from "./src/runtime-version.ts"; assertSupportedNode();'
+    - shell: bash
+      run: npm ci --ignore-scripts
+    - shell: bash
+      run: npm run build

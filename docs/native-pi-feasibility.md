@@ -11,7 +11,7 @@ an application runtime selection. Legacy launchers reject native releases; the
 new launcher accepts legacy rollback applications. Source updating never builds
 or pulls sandbox images.
 
-Prerequisites: Linux Docker Engine on `/var/run/docker.sock`, Node >=22.19, and the installation's saved Coach backend and OpenAI-compatible provider configuration. The control-plane process must have Docker permission; the sandbox must never receive that socket. Docker is mandatory: there is no host execution fallback.
+Prerequisites: Linux Docker Engine on `/var/run/docker.sock`, Node 26.10+ (major 26 only), and the installation's saved Coach backend and OpenAI-compatible provider configuration. The control-plane process must have Docker permission; the sandbox must never receive that socket. Docker is mandatory: there is no host execution fallback.
 
 ```sh
 npm ci --ignore-scripts
