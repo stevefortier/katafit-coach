@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "source": "Local Node 26.10.0 wall-clock measurements on source base 004e61a; each file ran as an independent serial node --import tsx --test --test-concurrency=1 --test-force-exit process (two independent measurement processes maximum); receipts in /home/kai/task-evidence/ci-round2/coach/local-duration-receipts.json. Hosted run 36852310364 has no named file-wall durations, so none were inferred or seeded.",
+  "durationsMs": {
+    "tests/apply-restart-browser.test.ts": 2675,
+    "tests/backend-wire-budget.test.ts": 11438,
+    "tests/cli.test.ts": 33939,
+    "tests/coach-memory-browser.test.ts": 5880,
+    "tests/coach-pane-browser.test.ts": 49919,
+    "tests/data-tools.test.ts": 11538,
+    "tests/diagnostics-admin.test.ts": 21999,
+    "tests/diagnostics-storage.test.ts": 5575,
+    "tests/manual-update-restart.test.ts": 8178,
+    "tests/native-attachments-browser-lifecycle.test.ts": 12988,
+    "tests/native-ephemeral-lifecycle.test.ts": 32175,
+    "tests/presence.test.ts": 23912,
+    "tests/studio-backend-diagnostics.test.ts": 7226,
+    "tests/studio-diagnostics.test.ts": 13353,
+    "tests/supervisor.test.ts": 19708,
+    "tests/update-publication.test.ts": 16544
+  }
+}
