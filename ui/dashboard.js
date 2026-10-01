@@ -100,9 +100,16 @@ window.CoachDashboard = (() => {
   let timelineController;
   let filterTimeline = () => {};
   let timelineResize = null;
-  let linkActivity = () => {};
-  let purgeMapMember = () => {};
-  let removeMapActivity = () => {};
+  // Canonical day ledger shared by map and timeline: {date,start,end,items,users,complete}.
+  let ledger = null;
+  let ledgerGeneration = 0;
+  // Members whose current Position audience a fresh exact read withheld in
+  // this ledger generation; only a new page-one load can restore their GPS.
+  const withheldMembers = new Set();
+  let selectedEventId = null;
+  let syncMap = () => {};
+  let refreshMap = () => {};
+  let revealEvent = () => {};
   let forgetMember = () => {};
   // Only a true 401/403 means access was denied; 429, 5xx and network
   // failures are transient and must never be treated as revoked sharing.
@@ -579,7 +586,7 @@ window.CoachDashboard = (() => {
         selectedMember = id;
         selectionEpoch++;
         $("dashboardMapSelection")?.replaceChildren();
-        highlightActivity(null);
+        highlightEvent(null);
         renderMemberCards();
         filterMap();
         filterFeed();
@@ -769,9 +776,11 @@ window.CoachDashboard = (() => {
         .map(([key, item]) => [key, safeActivityData(item, depth + 1)]),
     );
   };
-  function showDetail(detail, name) {
+  // Current subject state is optional enrichment for a historical ledger event.
+  // It never supplies, moves or reauthorizes the event's recorded time or location.
+  function subjectDetail(detail) {
     const rows = [
-      text("h4", name),
+      text("h4", "Current subject activity"),
       text("p", detail.name || detail.type || "Activity"),
       text(
         "p",
@@ -829,65 +838,132 @@ window.CoachDashboard = (() => {
     rows.push(
       text(
         "p",
-        position(detail.position)
-          ? `Position: ${detail.position.latitude}, ${detail.position.longitude}`
-          : "Position unavailable.",
+        "Current subject state is separate from this event; the event's recorded time and location remain authoritative.",
         "hint",
       ),
     );
-    rows.push(
-      text(
-        "p",
-        position(detail.position)
-          ? "Position reauthorized for this read; map pin is not a live location."
-          : "No authorized position was returned; activity detail is still available.",
-        "hint",
-      ),
-    );
-    $("dashboardMapSelection").replaceChildren(...rows);
+    return rows;
   }
-
-  function highlightActivity(activityId) {
-    for (const mark of document.querySelectorAll(
-      ".dashboard-timeline-mark, .dashboard-activity-pin",
+  // Only an event's own validated, currently shared ledger fix is a location.
+  function eventPosition(item) {
+    const fix = item?.position;
+    return fix?.availability === "available" &&
+      position(fix) &&
+      !withheldMembers.has(item.user_id)
+      ? fix
+      : null;
+  }
+  function eventLocation(item) {
+    const fix = eventPosition(item);
+    const line = text(
+      "p",
+      fix
+        ? `Event location: ${fix.latitude}, ${fix.longitude}${Number.isFinite(fix.accuracy) ? ` (±${fix.accuracy} m)` : ""} · recorded with this event, not live tracking.`
+        : item?.position?.reason === "private" ||
+            withheldMembers.has(item?.user_id)
+          ? "No shared location for this event."
+          : "No available location for this event.",
+      "hint",
+    );
+    line.dataset.eventLocation = "";
+    return line;
+  }
+  // A private Position DTO is member-scoped authority: every loaded fix for
+  // that member leaves the map, while the permitted timeline rows remain.
+  function withholdMember(memberId) {
+    withheldMembers.add(memberId);
+    syncMap();
+    const shown = ledger?.items.get(selectedEventId);
+    if (shown?.user_id === memberId)
+      $("dashboardMapSelection")
+        .querySelector("[data-event-location]")
+        ?.replaceWith(eventLocation(shown));
+  }
+  const memberName = (memberId) =>
+    ledger?.users.get(memberId)?.display_name || "Member";
+  function highlightEvent(eventId) {
+    selectedEventId = eventId;
+    for (const node of document.querySelectorAll(
+      ".dashboard-timeline-mark, .dashboard-event-dot, .dashboard-map-choice",
     ))
-      mark.setAttribute(
+      node.setAttribute(
         "aria-pressed",
-        String(mark.dataset.activityId === activityId),
+        String(!!eventId && node.dataset.eventId === eventId),
       );
+    for (const cluster of document.querySelectorAll(
+      ".dashboard-timeline-cluster",
+    ))
+      cluster.setAttribute(
+        "aria-pressed",
+        String(
+          !!eventId && JSON.parse(cluster.dataset.eventIds).includes(eventId),
+        ),
+      );
+    refreshMap();
   }
-  async function selectActivity(
-    entry,
-    name,
+  // Scroll the selected occurrence, or the cluster that owns it, into view.
+  function revealTimelineEvent(eventId) {
+    const mark = [
+      ...document.querySelectorAll(".dashboard-timeline-mark"),
+    ].find((node) => node.dataset.eventId === eventId);
+    const owner = mark?.hidden
+      ? [...document.querySelectorAll(".dashboard-timeline-cluster")].find(
+          (node) => JSON.parse(node.dataset.eventIds).includes(eventId),
+        )
+      : mark;
+    owner?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+  // A confirmed 401/403 removes everything loaded for that member at once.
+  function denyMember(memberId) {
+    suppressedMembers.add(memberId);
+    mapMembers.delete(memberId);
+    rosterCache?.delete(memberId);
+    const url = avatarCache.get(memberId);
+    if (url) {
+      URL.revokeObjectURL(url);
+      avatarCache.delete(memberId);
+    }
+    forgetMember(memberId);
+    filterTimeline();
+    syncMap();
+    renderMemberCards();
+  }
+  // One shared selected ledger event for map and timeline. Selection freshly
+  // reauthorizes that exact event; subject detail is optional enrichment.
+  // The timeline stays selectable without the map: absent a ledger, the day
+  // window comes from the selected local date.
+  async function selectEvent(
+    item,
     adminKey,
     pan = false,
-    historical = null,
+    name = memberName(item.user_id),
   ) {
+    if (suppressedMembers.has(item.user_id)) return;
     const choice = ++selectionEpoch,
       day = mapEpoch,
-      loadId = epoch;
-    const selectedDate = $("dashboardMapDate").value;
-    const [year, month, date] = selectedDate.split("-").map(Number);
-    const start = new Date(0);
-    start.setFullYear(year, month - 1, date);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
+      loadId = epoch,
+      generation = ledgerGeneration;
+    let scope = ledger;
+    if (!scope) {
+      const date = $("dashboardMapDate").value;
+      const [year, month, dayOfMonth] = date.split("-").map(Number);
+      const start = new Date(0);
+      start.setFullYear(year, month - 1, dayOfMonth);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      scope = { date, start, end };
+    }
     const selection = $("dashboardMapSelection");
-    highlightActivity(entry._id);
-    if (historical)
-      for (const mark of document.querySelectorAll(".dashboard-timeline-mark"))
-        mark.setAttribute(
-          "aria-pressed",
-          String(mark.dataset.eventId === historical.id),
-        );
+    highlightEvent(item.id);
     selection.replaceChildren(
-      ...(historical ? eventSnapshot(historical, name) : []),
-      text("p", "Checking current activity access…"),
+      ...eventSnapshot(item, name),
+      eventLocation(item),
+      text("p", "Checking current event access…"),
     );
-    try {
+    const read = async (path) => {
       const response = await dashboardFetch(
-        `/api/dashboard/activity?${new URLSearchParams({ id: entry._id })}`,
+        path,
         {
           headers: { Authorization: `Bearer ${adminKey}` },
           cache: "no-store",
@@ -896,82 +972,135 @@ window.CoachDashboard = (() => {
         mapController?.signal,
       );
       if (!response.ok)
-        throw httpError("Activity read failed", response.status);
-      const envelope = await response.json();
-      if (loadId !== epoch || day !== mapEpoch || choice !== selectionEpoch)
-        return;
+        throw httpError("Dashboard read failed", response.status);
+      return response.json();
+    };
+    const current = () =>
+      loadId === epoch &&
+      day === mapEpoch &&
+      generation === ledgerGeneration &&
+      choice === selectionEpoch;
+    let fresh;
+    try {
+      const data = await read(
+        `/api/dashboard/event?${new URLSearchParams({ event_id: item.id, date: scope.date, start: scope.start.toISOString(), end: scope.end.toISOString() })}`,
+      );
+      fresh = Array.isArray(data?.events) && data.events[0];
+      const exact =
+        data.events.length === 1 &&
+        fresh?.id === item.id &&
+        fresh.user_id === item.user_id &&
+        fresh.occurred_at === item.occurred_at;
+      // Like a late denial, a validated private Position withdrawal still
+      // applies behind a newer selection, but never across a reload or date.
       if (
-        envelope.owner?._id !== entry.user_id ||
-        envelope.activity?._id !== entry._id ||
-        envelope.activity?.user_id !== entry.user_id
+        exact &&
+        fresh.position?.availability === "unavailable" &&
+        fresh.position.reason === "private" &&
+        loadId === epoch &&
+        day === mapEpoch &&
+        generation === ledgerGeneration
       )
-        throw httpError("Activity unavailable", 404);
-      const fresh = envelope.activity,
-        stamp = Date.parse(fresh.created_at);
-      if (
-        !historical &&
-        (!Number.isFinite(stamp) ||
-          stamp < +start ||
-          stamp >= +end ||
-          !(
-            ["complete", "completed"].includes(fresh.status) ||
-            (fresh.status === "ongoing" &&
-              Date.now() >= +start &&
-              Date.now() < +end)
-          ))
-      )
-        throw httpError("Activity unavailable", 404);
-      if (suppressedMembers.has(entry.user_id)) return;
-      showDetail(envelope.activity, name);
-      if (historical)
-        selection.prepend(
-          ...eventSnapshot(historical, name),
-          text("h3", "Current authorized activity"),
-        );
-      linkActivity(envelope.activity, pan);
+        withholdMember(item.user_id);
+      if (!current()) return;
+      if (!exact) throw httpError("Event unavailable", 404);
     } catch (error) {
-      if (loadId !== epoch) return;
-      if (denied(error)) {
-        suppressedMembers.add(entry.user_id);
-        mapMembers.delete(entry.user_id);
-        rosterCache?.delete(entry.user_id);
-        const url = avatarCache.get(entry.user_id);
-        if (url) {
-          URL.revokeObjectURL(url);
-          avatarCache.delete(entry.user_id);
-        }
-        purgeMapMember(entry.user_id);
-        forgetMember(entry.user_id);
-        filterTimeline();
-        renderMemberCards();
-      } else if (error.status === 404 && day === mapEpoch) {
-        removeMapActivity(entry._id);
-        for (const mark of document.querySelectorAll(
-          ".dashboard-timeline-mark",
-        ))
-          if (mark.dataset.activityId === entry._id) mark.remove();
+      // A denial applies even after the selection changed; never across a reload.
+      // Purging redraws the timeline, so decide whether to report it first.
+      const shown = current();
+      if (loadId === epoch && denied(error)) denyMember(item.user_id);
+      if (
+        error.status === 409 &&
+        loadId === epoch &&
+        day === mapEpoch &&
+        generation === ledgerGeneration
+      ) {
+        void loadTimeline(adminKey, null, 1);
+        if (shown)
+          selection.replaceChildren(
+            text(
+              "p",
+              "Event authority changed (409); the day is reloading from the first page.",
+            ),
+          );
+        return;
       }
-      if (day !== mapEpoch || choice !== selectionEpoch) return;
+      if (denied(error)) {
+        if (shown)
+          selection.replaceChildren(
+            text(
+              "p",
+              `Event access denied (${error.status}); this member's events, locations and loaded details were removed.`,
+            ),
+          );
+        return;
+      }
+      if (!current()) return;
+      if (error.status === 404) {
+        // Empty exact reads do not disclose why; the event leaves both views.
+        ledger?.items.delete(item.id);
+        filterTimeline();
+        syncMap();
+        selection.replaceChildren(
+          text(
+            "p",
+            "Event unavailable (404); it was removed from the map and timeline.",
+          ),
+        );
+        return;
+      }
       selection.replaceChildren(
-        ...(historical && !denied(error)
-          ? eventSnapshot(historical, name)
-          : []),
+        ...eventSnapshot(item, name),
         text(
           "p",
-          denied(error)
-            ? `Activity access denied (${error.status}); this member's pins, card and loaded details were removed.`
-            : error.status === 404
-              ? "Activity unavailable (404); this activity was removed. Refresh to recheck."
-              : `Activity detail temporarily unavailable${error.status ? ` (${error.status})` : ""}. Pins and cards were kept; try again shortly.`,
+          `Event access could not be rechecked${error.status ? ` (${error.status})` : ""}.`,
         ),
       );
-      if (!denied(error) && error.status !== 404) {
-        const retry = text("button", "Retry activity detail");
-        retry.type = "button";
-        retry.onclick = () =>
-          void selectActivity(entry, name, adminKey, pan, historical);
-        selection.append(retry);
-      }
+      return;
+    }
+    // The fresh ledger row is authoritative: withheld Position removes the
+    // event's geometry while its permitted timeline occurrence remains.
+    ledger?.items.set(item.id, fresh);
+    if (eventPosition(item) && !eventPosition(fresh)) syncMap();
+    selection.replaceChildren(
+      ...eventSnapshot(fresh, name),
+      eventLocation(fresh),
+      text("p", "Event access rechecked for this read.", "hint"),
+    );
+    if (pan) revealEvent(fresh);
+    if (
+      !Object.hasOwn(activityColors, fresh.subject?.type) ||
+      !/^[0-9a-f]{24}$/.test(fresh.subject?.id || "")
+    )
+      return;
+    const pending = text("p", "Checking current subject activity…", "hint");
+    selection.append(pending);
+    try {
+      const envelope = await read(
+        `/api/dashboard/activity?${new URLSearchParams({ id: fresh.subject.id })}`,
+      );
+      if (!current()) return;
+      if (
+        envelope.owner?._id !== item.user_id ||
+        envelope.activity?._id !== fresh.subject.id ||
+        envelope.activity?.user_id !== item.user_id
+      )
+        throw httpError("Subject unavailable", 404);
+      pending.replaceWith(...subjectDetail(envelope.activity));
+    } catch (error) {
+      const shown = current();
+      if (loadId === epoch && denied(error)) denyMember(item.user_id);
+      if (!shown) return;
+      if (denied(error))
+        selection.replaceChildren(
+          text(
+            "p",
+            `Activity access denied (${error.status}); this member's events, locations and loaded details were removed.`,
+          ),
+        );
+      // A missing current subject never removes its historical ledger event.
+      else
+        pending.textContent = `Current subject activity unavailable${error.status ? ` (${error.status})` : ""}; this historical event remains.`;
     }
   }
   const activityColors = {
@@ -982,32 +1111,14 @@ window.CoachDashboard = (() => {
     survey: "#f59e0b",
     status_change: "#6b7280",
   };
+  // 50 pages × the BFF's fixed limit of 100 bounds one load at 5,000 events.
+  const TIMELINE_MAX_PAGES = 50;
+  // A member's located events farther apart than this are not connected.
+  const GAP_HOURS = 4;
+  const eventCategory = (item) => item.event_type?.split(".")[0] || "other";
+  const eventColor = (item) => activityColors[eventCategory(item)] || "#6b7280";
   function eventLabel(kind) {
     return typeof kind === "string" ? kind.replace(/[._]/g, " ") : "Event";
-  }
-  function showEvent(item, name, adminKey) {
-    if (suppressedMembers.has(item.user_id)) return;
-    selectionEpoch++;
-    highlightActivity(null);
-    for (const mark of document.querySelectorAll(".dashboard-timeline-mark"))
-      mark.setAttribute(
-        "aria-pressed",
-        String(mark.dataset.eventId === item.id),
-      );
-    $("dashboardMapSelection").replaceChildren(...eventSnapshot(item, name));
-    if (
-      adminKey &&
-      Object.hasOwn(activityColors, item.subject?.type) &&
-      /^[0-9a-f]{24}$/.test(item.subject?.id || "")
-    ) {
-      void selectActivity(
-        { _id: item.subject.id, user_id: item.user_id },
-        name,
-        adminKey,
-        true,
-        item,
-      );
-    }
   }
   function eventSnapshot(item, name) {
     const heading = text(
@@ -1116,7 +1227,7 @@ window.CoachDashboard = (() => {
   function renderEventTimeline(target, items, users, start, end, adminKey) {
     timelineInteraction(false);
     let renderEpoch = timelineEpoch;
-    const category = (item) => item.event_type?.split(".")[0] || "other";
+    const category = eventCategory;
     const name = (item) => users.get(item.user_id)?.display_name || "Member";
     const time = (item) =>
       new Date(item.occurred_at).toLocaleTimeString([], {
@@ -1129,7 +1240,6 @@ window.CoachDashboard = (() => {
       `${name(item)} · ${eventLabel(item.event_type)} · ${time(item)}`;
     let selectedCategory = null,
       zoom = 1,
-      activeEvent = null,
       inspectorOwner = null;
     const count = text("div", "", "dashboard-timeline-count");
     count.setAttribute("role", "status");
@@ -1192,16 +1302,8 @@ window.CoachDashboard = (() => {
     const select = (item) => {
       if (!interactive()) return;
       if (!visibleItems().some((event) => event.id === item.id)) return;
-      activeEvent = item.id;
-      showEvent(item, name(item), adminKey);
+      void selectEvent(item, adminKey, true, name(item));
       dismissAndRestoreFocus();
-      for (const cluster of track.querySelectorAll(
-        ".dashboard-timeline-cluster",
-      ))
-        cluster.setAttribute(
-          "aria-pressed",
-          String(JSON.parse(cluster.dataset.eventIds).includes(item.id)),
-        );
     };
     const preview = (group, owner, choose = false) => {
       if (!interactive() || !owner.isConnected) return;
@@ -1290,13 +1392,14 @@ window.CoachDashboard = (() => {
         ".dashboard-event-detail",
       );
       if (
-        (activeEvent && !events.some((item) => item.id === activeEvent)) ||
+        (selectedEventId &&
+          !events.some((item) => item.id === selectedEventId)) ||
         (selected &&
           (suppressedMembers.has(selected.dataset.memberId) ||
             (selectedMember && selectedMember !== selected.dataset.memberId)))
       ) {
         selectionEpoch++;
-        activeEvent = null;
+        highlightEvent(null);
         $("dashboardMapSelection").replaceChildren();
       }
       count.textContent = `${events.length} visible · ${items.size} loaded events across all members`;
@@ -1340,6 +1443,7 @@ window.CoachDashboard = (() => {
         const mark = text("button", "", "dashboard-timeline-mark");
         mark.type = "button";
         mark.dataset.eventId = item.id;
+        mark.dataset.activityId = item.subject?.id || "";
         mark.dataset.memberId = item.user_id;
         mark.dataset.eventType = item.event_type;
         mark.style.left = `${fraction(Date.parse(item.occurred_at)) * 100}%`;
@@ -1347,7 +1451,7 @@ window.CoachDashboard = (() => {
         mark.style.backgroundColor =
           activityColors[category(item)] || "#6b7280";
         mark.setAttribute("aria-label", label(item));
-        mark.setAttribute("aria-pressed", String(activeEvent === item.id));
+        mark.setAttribute("aria-pressed", String(selectedEventId === item.id));
         mark.classList.toggle(
           "dashboard-timeline-future-event",
           now >= +start && now < +end && Date.parse(item.occurred_at) > now,
@@ -1390,7 +1494,7 @@ window.CoachDashboard = (() => {
         );
         cluster.setAttribute(
           "aria-pressed",
-          String(group.items.some((item) => item.id === activeEvent)),
+          String(group.items.some((item) => item.id === selectedEventId)),
         );
         cluster.onpointerenter = (event) => {
           if (event.pointerType !== "touch") preview(group.items, cluster);
@@ -1598,11 +1702,13 @@ window.CoachDashboard = (() => {
       }
     };
   }
-  async function loadTimeline(adminKey, resume = null) {
+  // `restarts` counts page-one reloads after a 409 authority change (at most two).
+  async function loadTimeline(adminKey, resume = null, restarts = 0) {
     const target = $("dashboardTimeline");
     if (!target) return;
     selectionEpoch++;
     $("dashboardMapSelection").replaceChildren();
+    if (restarts) highlightEvent(null);
     const id = ++timelineEpoch;
     timelinePending = true;
     timelineInteraction(false);
@@ -1611,7 +1717,8 @@ window.CoachDashboard = (() => {
     const signal = timelineController.signal,
       date = $("dashboardMapDate").value;
     const live = () => id === timelineEpoch && !signal.aborted;
-    if (target.dataset.date !== date) {
+    // Changed authority invalidates the retained inventory, not only its geometry.
+    if (target.dataset.date !== date || restarts) {
       target.replaceChildren();
       timelineInteraction = () => {};
       filterTimeline = () => {};
@@ -1626,6 +1733,13 @@ window.CoachDashboard = (() => {
       inspector.replaceChildren();
       inspector.hidden = true;
     }
+    if (!resume) {
+      // A new page-one read never mixes with an older inventory or geometry.
+      ledgerGeneration++;
+      ledger = null;
+      withheldMembers.clear();
+    }
+    syncMap();
     const status = text("p", "Loading authorized day events…", "hint");
     status.setAttribute("role", "status");
     target.append(status);
@@ -1640,12 +1754,60 @@ window.CoachDashboard = (() => {
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
+    const users = new Map(resume?.users),
+      items = new Map(resume?.items);
+    let cursor = resume?.cursor,
+      coverage = resume?.coverage,
+      pages = 0;
+    // Render loaded events; `failure` marks a transiently interrupted partial day.
+    const publish = (failure = null) => {
+      timelinePending = false;
+      ledger = { date, start, end, items, users, complete: !cursor };
+      status.textContent = failure
+        ? `Timeline read failed (${failure.status}); partial day. Retry to continue loading.`
+        : cursor
+          ? "More events available; partial day. Load more to continue."
+          : "Complete loaded pages.";
+      const info = text("details", "", "dashboard-timeline-info");
+      info.append(
+        text("summary", "About this timeline"),
+        text(
+          "p",
+          `All authorized event types · ${date} · device timezone. Occurrence times, not activity duration. Historical aggregate events may not contain individual sets/items; no reconstruction is inferred. Use arrows to navigate, Enter to select, Escape to dismiss. Tap a cluster to choose an event.`,
+        ),
+      );
+      status.hidden = !cursor;
+      target.replaceChildren(
+        text("h3", `Day timeline · ${date}`, "dashboard-timeline-heading"),
+        status,
+      );
+      renderEventTimeline(target, items, users, start, end, adminKey);
+      target.append(info);
+      if (cursor) {
+        const more = text(
+          "button",
+          failure ? "Retry timeline" : "Load more events",
+        );
+        more.type = "button";
+        more.onclick = () => {
+          more.disabled = true;
+          void loadTimeline(adminKey, { users, items, cursor, coverage });
+        };
+        target.append(more);
+      }
+      if (coverage && typeof coverage === "object") {
+        const summary = text("details");
+        summary.append(text("summary", "Backend event coverage"));
+        // Coverage is a bounded backend DTO, not raw source activity data.
+        summary.append(
+          text("pre", JSON.stringify(coverage, null, 2).slice(0, 8000)),
+        );
+        target.append(summary);
+      }
+      filterTimeline();
+      syncMap();
+    };
     try {
-      const users = new Map(resume?.users),
-        items = new Map(resume?.items);
-      let cursor = resume?.cursor,
-        coverage = resume?.coverage,
-        pages = 0;
       const seenCursors = new Set();
       do {
         const query = new URLSearchParams({
@@ -1699,50 +1861,27 @@ window.CoachDashboard = (() => {
           throw new Error("Timeline display limit or nonadvancing cursor");
         cursor = data.hasMore ? data.nextCursor : undefined;
         if (cursor) seenCursors.add(cursor);
-      } while (cursor && pages < 10);
+        // Page serially to the terminal cursor so every event (and its GPS) loads,
+        // within an explicit safety bound; beyond it the day stays visibly partial.
+      } while (cursor && pages < TIMELINE_MAX_PAGES);
       if (!live()) return;
-      timelinePending = false;
-      status.textContent = cursor
-        ? "More events available; partial day. Load more to continue."
-        : "Complete loaded pages.";
-      const info = text("details", "", "dashboard-timeline-info");
-      info.append(
-        text("summary", "About this timeline"),
-        text(
-          "p",
-          `All authorized event types · ${date} · device timezone. Occurrence times, not activity duration. Historical aggregate events may not contain individual sets/items; no reconstruction is inferred. Use arrows to navigate, Enter to select, Escape to dismiss. Tap a cluster to choose an event.`,
-        ),
-      );
-      status.hidden = !cursor;
-      target.replaceChildren(
-        text("h3", `Day timeline · ${date}`, "dashboard-timeline-heading"),
-        status,
-      );
-      renderEventTimeline(target, items, users, start, end, adminKey);
-      target.append(info);
-      if (cursor) {
-        const more = text("button", "Load more events");
-        more.type = "button";
-        more.onclick = () => {
-          more.disabled = true;
-          void loadTimeline(adminKey, { users, items, cursor, coverage });
-        };
-        target.append(more);
-      }
-      if (coverage && typeof coverage === "object") {
-        const summary = text("details");
-        summary.append(text("summary", "Backend event coverage"));
-        // Coverage is a bounded backend DTO, not raw source activity data.
-        summary.append(
-          text("pre", JSON.stringify(coverage, null, 2).slice(0, 8000)),
-        );
-        target.append(summary);
-      }
-      filterTimeline();
+      publish();
     } catch (error) {
       if (!live()) return;
+      if (error.status === 409 && restarts < 2)
+        return void loadTimeline(adminKey, null, restarts + 1);
+      // A transient failure after progress keeps the loaded events as a visibly
+      // partial day (no connections); retry resumes at the failed cursor.
+      if (
+        error.status &&
+        !denied(error) &&
+        error.status !== 409 &&
+        cursor &&
+        (pages || resume)
+      )
+        return publish(error);
       timelinePending = false;
-      if (denied(error)) {
+      if (denied(error) || error.status === 409) {
         $("dashboardMapSelection").replaceChildren();
         selectionEpoch++;
         filterTimeline = () => {};
@@ -1752,22 +1891,29 @@ window.CoachDashboard = (() => {
       } else {
         timelineInteraction(true);
       }
-      status.textContent = `Timeline unavailable${error.status ? ` (${error.status})` : ""}; try again.${!denied(error) && target.querySelector(".dashboard-timeline-track") ? " Retained events are stale; authorization could not be refreshed." : ""}`;
+      status.textContent =
+        error.status === 409
+          ? "Timeline unavailable (409): event authority changed while loading; try again."
+          : `Timeline unavailable${error.status ? ` (${error.status})` : ""}; try again.${!denied(error) && target.querySelector(".dashboard-timeline-track") ? " Retained events are stale; authorization could not be refreshed." : ""}`;
       const retry = text("button", "Retry timeline");
       retry.type = "button";
       retry.onclick = () => void loadTimeline(adminKey);
       target.append(retry);
+      syncMap();
     }
   }
   async function loadMap(adminKey) {
     selectionEpoch++;
-    linkActivity = () => {};
-    purgeMapMember = () => {};
-    removeMapActivity = () => {};
-    void loadTimeline(adminKey);
+    // A new date replaces every mark, so only the shared selection is reset.
+    selectedEventId = null;
+    syncMap = () => {};
+    refreshMap = () => {};
+    revealEvent = () => {};
     mapEpoch++;
     mapController?.abort();
     mapController = new AbortController();
+    // Map and timeline share this one complete day-events reader.
+    void loadTimeline(adminKey);
     const signal = mapController.signal,
       id = mapEpoch;
     const live = () => !signal.aborted && id === mapEpoch;
@@ -1781,6 +1927,8 @@ window.CoachDashboard = (() => {
     map.replaceChildren();
     selection.replaceChildren();
     status.removeAttribute("data-tone");
+    let rosterNote = "";
+    let showStatus = () => {};
     const request = async (path) => {
       const response = await dashboardFetch(`/api/${path}`, {
         headers: { Authorization: `Bearer ${adminKey}` },
@@ -1840,20 +1988,11 @@ window.CoachDashboard = (() => {
             const url = URL.createObjectURL(blob);
             avatarUrls.push(url);
             avatarCache.set(memberId, url);
-            for (const pin of [
-              ...map.querySelectorAll(".dashboard-member-pin"),
-              ...$("dashboardMemberCards").querySelectorAll(
-                ".dashboard-member-portrait",
-              ),
-            ]) {
+            for (const pin of $("dashboardMemberCards").querySelectorAll(
+              ".dashboard-member-portrait",
+            )) {
               if (pin.dataset.memberId !== memberId) continue;
-              const image = text(
-                "img",
-                "",
-                pin.classList.contains("dashboard-member-portrait")
-                  ? "dashboard-roster-image"
-                  : "dashboard-map-avatar",
-              );
+              const image = text("img", "", "dashboard-roster-image");
               image.alt = "";
               image.src = url;
               image.onerror = () => image.remove();
@@ -1868,8 +2007,7 @@ window.CoachDashboard = (() => {
         void readAvatar();
     };
     // The roster is not date-scoped: request it at once so authorized member
-    // cards never wait on, or disappear with, the map read or Leaflet. Only
-    // this separately authorized endpoint may create profile pins.
+    // cards never wait on, or disappear with, the event read or Leaflet.
     const rosterReady = request("dashboard/members")
       .then((roster) => {
         if (!Array.isArray(roster?.members))
@@ -1884,50 +2022,36 @@ window.CoachDashboard = (() => {
       })
       .catch((error) => ({ error }))
       .then(({ members, error }) => {
-        if (!live()) return { latestPositions: [], note: "" };
+        if (!live()) return { note: "" };
         const code = error?.status ? ` (${error.status})` : "";
         let note = "Member cards use the separately authorized roster.";
         if (members) rosterCache = members;
         else if (denied(error)) {
           rosterCache = null;
-          note = `Member roster access denied${code}; roster stats and positions removed.`;
+          note = `Member roster access denied${code}; roster stats removed.`;
         } else
           note = rosterCache
-            ? `Member roster refresh failed${code}; showing previously loaded members and positions.`
+            ? `Member roster refresh failed${code}; showing previously loaded members.`
             : `Member roster unavailable${code}; member cards show loaded shared data only.`;
         mapMembers = new Map(
           [...(rosterCache || [])].filter(([id]) => !suppressedMembers.has(id)),
         );
         renderMemberCards();
         startAvatars();
-        return {
-          fresh: !!members,
-          note,
-          latestPositions: [...mapMembers.values()].filter(
-            (m) =>
-              position(m.last_position?.position) &&
-              Number.isFinite(Date.parse(m.last_position.occurred_at)) &&
-              Date.parse(m.last_position.occurred_at) <= Date.now(),
-          ),
-        };
+        rosterNote = members ? "" : ` ${note}`;
+        showStatus();
+        return { note };
       });
     const fail = async (message) => {
+      showStatus = () => {};
       status.dataset.tone = "error";
       status.textContent = message;
       const { note } = await rosterReady;
       if (live()) status.textContent = `${message} ${note}`;
     };
     const date = $("dashboardMapDate").value;
-    if (!validDay(date)) return fail("Choose a valid activity creation date.");
-    const [year, month, day] = date.split("-").map(Number);
-    const start = new Date(0);
-    start.setFullYear(year, month - 1, day);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
-    const startMs = start.getTime(),
-      endMs = end.getTime();
-    status.textContent = `Loading authorized positions for ${date} (activity creation date in your device timezone)…`;
+    if (!validDay(date)) return fail("Choose a valid event date.");
+    status.textContent = `Loading authorized event locations for ${date} (event occurrence time in your device timezone)…`;
     if (!window.L) return fail("Map unavailable: Leaflet could not load.");
     const L = window.L;
     const instance = L.map(map, { zoomControl: true, worldCopyJump: true });
@@ -1940,413 +2064,382 @@ window.CoachDashboard = (() => {
     instance.setView([0, 0], 2); // Neutral initial view; never request device location.
     const overlay = text("div", "", "dashboard-map-overlay");
     map.append(overlay);
-
-    try {
-      const users = new Map(),
-        byMember = new Map();
-      let cursor,
-        count = 0,
-        pages = 0;
-      const seenActivities = new Set();
-      do {
-        const query = new URLSearchParams({
-          date,
-          start: start.toISOString(),
-          end: end.toISOString(),
-        });
-        if (cursor) query.set("cursor", cursor);
-        const data = await request(`dashboard/map?${query}`);
-        if (!live()) return;
-        if (
-          !Array.isArray(data.users) ||
-          !Array.isArray(data.activities) ||
-          typeof data.hasMore !== "boolean"
-        )
-          throw new Error("Invalid map response.");
-        for (const user of data.users)
-          if (typeof user?._id === "string") users.set(user._id, user);
-        for (const activity of data.activities) {
-          if (count >= 5000)
-            throw new Error(
-              "Selected date exceeds the safe map display limit.",
-            );
-          if (
-            typeof activity?._id !== "string" ||
-            typeof activity?.user_id !== "string" ||
-            !position(activity.position) ||
-            !Number.isFinite(Date.parse(activity.created_at)) ||
-            Date.parse(activity.created_at) < startMs ||
-            Date.parse(activity.created_at) >= endMs ||
-            seenActivities.has(activity._id)
+    let chooserOwner = null;
+    const chooser = text("div", "", "dashboard-map-chooser");
+    chooser.hidden = true;
+    chooser.setAttribute("role", "group");
+    chooser.setAttribute("aria-label", "Events at this recorded location");
+    const note = text(
+      "p",
+      `Recorded event locations—not live tracking. Dashed straight connections show each member's event order, not a travelled route; gaps over ${GAP_HOURS} hours or events without a recorded shared location break connections.`,
+      "dashboard-map-note",
+    );
+    map.after(chooser, note);
+    const closeChooser = (restore = true) => {
+      chooser.hidden = true;
+      chooser.replaceChildren();
+      if (restore && chooserOwner?.isConnected)
+        chooserOwner.focus({ preventScroll: true });
+      chooserOwner = null;
+    };
+    // Dispose with the date-owned map, including a detached chooser's handlers.
+    signal.addEventListener(
+      "abort",
+      () => {
+        closeChooser(false);
+        chooser.remove();
+        note.remove();
+      },
+      { once: true },
+    );
+    chooser.onkeydown = (event) => {
+      if (!live()) return;
+      if (event.key === "Escape") {
+        closeChooser();
+        event.preventDefault();
+      } else if (
+        ["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(event.key)
+      ) {
+        const choices = [...chooser.querySelectorAll(".dashboard-map-choice")];
+        const step = ["ArrowDown", "ArrowRight"].includes(event.key) ? 1 : -1;
+        choices[
+          Math.max(
+            0,
+            Math.min(
+              choices.length - 1,
+              choices.indexOf(document.activeElement) + step,
+            ),
           )
-            throw new Error(
-              "Invalid or repeated positioned activity in map response.",
-            );
-          seenActivities.add(activity._id);
-          count++;
-          if (!byMember.has(activity.user_id))
-            byMember.set(activity.user_id, []);
-          byMember.get(activity.user_id).push(activity);
-        }
-        pages++;
-        const next = data.nextCursor;
-        if (
-          data.hasMore &&
-          (pages >= 50 || typeof next !== "string" || !next || next === cursor)
-        )
-          throw new Error(
-            "Map date is too large or its cursor did not advance.",
-          );
-        cursor = data.hasMore ? next : undefined;
-      } while (cursor && live());
-      if (!live()) return;
-      // A date-scoped map cannot establish global last-known position.
-      const roster = await rosterReady;
-      if (!live()) return;
-      const { latestPositions } = roster;
-      const entriesWithPins = [];
-      const badges = new Map();
-      for (const [memberId, entries] of byMember) {
-        if (suppressedMembers.has(memberId)) continue;
-        const name = users.get(memberId)?.display_name || "Member";
-        const initials = (name.match(/[\p{L}\p{N}]+/gu) || ["M"])
-          .slice(-2)
-          .map((word) => word[0].toUpperCase())
-          .join("");
-        const seen = badges.get(initials) || 0;
-        badges.set(initials, seen + 1);
-        const badge = initials + (seen ? seen + 1 : "");
-        const hue =
-          ([...memberId].reduce(
-            (hash, char) => Math.imul(hash ^ char.codePointAt(0), 16777619),
-            2166136261,
-          ) >>>
-            0) %
-          360;
-        for (const entry of entries) {
-          const marker = text(
-            "button",
-            "•",
-            "dashboard-map-marker dashboard-activity-pin",
-          );
-          marker.type = "button";
-          marker.dataset.memberId = memberId;
-          marker.style.backgroundColor = `hsl(${hue} 64% 28%)`;
-          marker.setAttribute(
-            "aria-label",
-            `${name} activity: ${entry.name || entry.type || "Activity"}`,
-          );
-          marker.dataset.activityId = entry._id;
-          marker.setAttribute("aria-pressed", "false");
-          marker.addEventListener(
-            "click",
-            () => void selectActivity(entry, name, adminKey),
-          );
-          const anchor = text("span", "", "dashboard-map-anchor");
-          const link = text("span", "", "dashboard-map-pin-link");
-          overlay.append(link, anchor, marker);
-          entriesWithPins.push({ entry, marker, anchor, link });
-        }
+        ]?.focus();
+        event.preventDefault();
       }
-      for (const member of latestPositions) {
-        const name =
-          member.display_name ||
-          users.get(member._id)?.display_name ||
-          "Member";
-        const stamp = Date.parse(member.last_position.occurred_at);
-        const localDay = (date) =>
-          Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
-        const elapsed = Math.max(
-          0,
-          Math.round(
-            (localDay(new Date()) - localDay(new Date(stamp))) / 86400000,
-          ),
+    };
+    let dots = [],
+      links = [],
+      groups = [],
+      fitted = false,
+      initialView;
+    const initials = (memberId) =>
+      (memberName(memberId).match(/[\p{L}\p{N}]+/gu) || ["M"])
+        .slice(-2)
+        .map((word) => word[0].toUpperCase())
+        .join("");
+    const clock = (item) =>
+      new Date(item.occurred_at).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    const scoped = () => (ledger?.date === date ? ledger : null);
+    showStatus = () => {
+      if (!live()) return;
+      const day = scoped();
+      status.removeAttribute("data-tone");
+      if (!day)
+        status.textContent = timelinePending
+          ? `Loading authorized event locations for ${date} (event occurrence time in your device timezone)…${rosterNote}`
+          : `Event locations unavailable for ${date}; the day's authorized events could not be loaded.${rosterNote}`;
+      else {
+        const total = [...day.items.values()].filter(
+          (item) => !suppressedMembers.has(item.user_id),
+        ).length;
+        status.textContent = `${date} event occurrence time (device timezone) · ${dots.length} of ${total} authorized events have a shared location${day.complete ? " · complete day as loaded (not live)." : " · partial day: not every event is loaded, so event connections are hidden."}${rosterNote}`;
+      }
+    };
+    const choose = (item) => {
+      if (!live() || suppressedMembers.has(item.user_id)) return;
+      void selectEvent(item, adminKey);
+      revealTimelineEvent(item.id);
+    };
+    const openChooser = (group) => {
+      if (!live()) return;
+      closeChooser(false);
+      chooserOwner = group.marker;
+      chooser.hidden = false;
+      const close = text("button", "Close location chooser");
+      close.type = "button";
+      close.onclick = () => closeChooser();
+      chooser.append(
+        text(
+          "p",
+          `Events recorded at ${group.fix.latitude}, ${group.fix.longitude}`,
+          "hint",
+        ),
+        close,
+      );
+      for (const { item } of group.pins.filter(visible)) {
+        const choice = text(
+          "button",
+          `${clock(item)} · ${initials(item.user_id)} · ${memberName(item.user_id)} · ${eventLabel(item.event_type)}`,
+          "dashboard-map-choice",
         );
-        const age =
-          elapsed === 0
-            ? "today"
-            : `${elapsed} day${elapsed === 1 ? "" : "s"} ago`;
+        choice.type = "button";
+        choice.dataset.eventId = item.id;
+        choice.setAttribute(
+          "aria-pressed",
+          String(item.id === selectedEventId),
+        );
+        choice.style.borderLeftColor = eventColor(item);
+        choice.onclick = () => {
+          if (!live()) return;
+          closeChooser();
+          choose(item);
+        };
+        chooser.append(choice);
+      }
+      chooser.querySelector(".dashboard-map-choice")?.focus();
+    };
+    const visible = ({ item }) =>
+      !suppressedMembers.has(item.user_id) &&
+      (!selectedMember || item.user_id === selectedMember);
+    // Rebuild the event layer from the canonical ledger.
+    syncMap = () => {
+      if (!live()) return;
+      closeChooser(false);
+      overlay.replaceChildren();
+      const day = scoped();
+      const ordered = day
+        ? [...day.items.values()]
+            .filter((item) => !suppressedMembers.has(item.user_id))
+            .sort(
+              (a, b) =>
+                Date.parse(a.occurred_at) - Date.parse(b.occurred_at) ||
+                a.id.localeCompare(b.id),
+            )
+        : [];
+      const paths = svg("svg", { class: "dashboard-map-connections" });
+      paths.setAttribute("aria-hidden", "true");
+      overlay.append(paths);
+      dots = [];
+      links = [];
+      const anchors = new Map(),
+        last = new Map();
+      for (const item of ordered) {
+        const fix = eventPosition(item);
+        if (!fix) {
+          // Without a shared location the order through this event is unknown.
+          last.delete(item.user_id);
+          continue;
+        }
         const marker = text(
           "button",
-          (name.match(/[\p{L}\p{N}]+/gu) || ["M"])
-            .slice(-2)
-            .map((s) => s[0].toUpperCase())
-            .join(""),
-          "dashboard-member-pin",
+          "",
+          "dashboard-map-marker dashboard-event-dot",
         );
         marker.type = "button";
-        marker.dataset.memberId = member._id;
+        marker.dataset.eventId = item.id;
+        marker.dataset.memberId = item.user_id;
+        marker.style.backgroundColor = eventColor(item);
         marker.setAttribute(
           "aria-label",
-          `${name} latest authorized position, from positioned activity ${age}`,
+          `${memberName(item.user_id)} · ${eventLabel(item.event_type)} · ${clock(item)}`,
         );
-        const avatar = avatarCache.get(member._id);
-        if (avatar) {
-          const image = text("img", "", "dashboard-map-avatar");
-          image.alt = "";
-          image.src = avatar;
-          image.onerror = () => image.remove();
-          marker.prepend(image);
-        }
-        // Inside the pin, so hiding, filtering or revoking it removes the note.
-        marker.append(
-          text(
-            "span",
-            `Position from activity ${age} · not live`,
-            "dashboard-member-pin-note",
-          ),
+        marker.setAttribute(
+          "aria-pressed",
+          String(item.id === selectedEventId),
         );
-        marker.addEventListener("click", () => {
-          selectedMember = member._id;
-          selectionEpoch++;
-          selection.replaceChildren(
-            text(
-              "p",
-              `${name} · position from activity ${age}. Select an activity pin for freshly authorized detail.`,
-            ),
-          );
-          renderMemberCards();
-          filterMap(false);
-          filterFeed();
-          filterTimeline();
-        });
-        const anchor = text("span", "", "dashboard-map-anchor");
-        const link = text("span", "", "dashboard-map-pin-link");
-        overlay.append(link, anchor, marker);
-        entriesWithPins.push({
-          entry: {
-            user_id: member._id,
-            position: member.last_position.position,
-          },
-          marker,
-          anchor,
-          link,
-        });
-      }
-      const removePins = (predicate) => {
-        for (const pin of entriesWithPins.filter(({ entry }) =>
-          predicate(entry),
-        )) {
-          pin.marker.remove();
-          pin.anchor.remove();
-          pin.link.remove();
-        }
-      };
-      purgeMapMember = (memberId) =>
-        removePins((entry) => entry.user_id === memberId);
-      removeMapActivity = (activityId) =>
-        removePins((entry) => entry._id === activityId);
-      linkActivity = (detail, pan) => {
-        const pin = entriesWithPins.find(
-          ({ entry, marker }) => entry._id === detail._id && marker.isConnected,
-        );
-        if (!pin) return;
+        marker.onclick = () => choose(item);
+        const dot = { item, fix, marker };
+        dots.push(dot);
+        const key = `${fix.latitude},${fix.longitude}`;
+        if (!anchors.has(key)) anchors.set(key, []);
+        anchors.get(key).push(dot);
+        const before = last.get(item.user_id);
+        last.set(item.user_id, dot);
+        // Unloaded pages could hide a location-less event: connect complete days only.
         if (
-          !position(detail.position) ||
-          detail.position.latitude !== pin.entry.position.latitude ||
-          detail.position.longitude !== pin.entry.position.longitude
-        ) {
-          removeMapActivity(detail._id);
-          $("dashboardMapSelection").append(
-            text(
-              "p",
-              "Map position unavailable or location changed. Refresh the map to recheck sharing.",
-              "hint",
-            ),
-          );
-          return;
-        }
-        if (pan)
-          instance.panTo(
-            [detail.position.latitude, detail.position.longitude],
-            {
-              animate: false,
-            },
-          );
-      };
-      let initialView;
-      filterMap = (clearSelection = true) => {
-        if (clearSelection) {
-          selectionEpoch++;
-          selection.replaceChildren();
-        }
-        for (const { entry, marker, anchor, link } of entriesWithPins) {
-          const visible = !selectedMember || entry.user_id === selectedMember;
-          marker.classList.toggle("dashboard-filtered", !visible);
-          anchor.classList.toggle("dashboard-filtered", !visible);
-          link.classList.toggle("dashboard-filtered", !visible);
-        }
-        if (clearSelection && selectedMember) {
-          const latest = latestPositions.find((m) => m._id === selectedMember);
-          if (latest)
-            instance.setView(
-              [
-                latest.last_position.position.latitude,
-                latest.last_position.position.longitude,
-              ],
-              14,
-            );
-        } else if (clearSelection && initialView) {
-          instance.setView(initialView.center, initialView.zoom);
-        }
-        placePins();
-      };
-      const placePins = () => {
-        if (!live()) return;
-        const placed = [];
-        for (const { entry, marker, anchor, link } of entriesWithPins) {
-          if (
-            !marker.isConnected ||
-            marker.classList.contains("dashboard-filtered")
-          ) {
-            if (!marker.isConnected) {
-              anchor.remove();
-              link.remove();
-            }
-            continue;
-          }
-          const longitude =
-            entry.position.longitude +
-            360 *
-              Math.round(
-                (instance.getCenter().lng - entry.position.longitude) / 360,
-              );
-          const point = instance.latLngToContainerPoint([
-            entry.position.latitude,
-            longitude,
-          ]);
-          if (
-            point.x < 0 ||
-            point.x > map.clientWidth ||
-            point.y < 0 ||
-            point.y > map.clientHeight
-          ) {
-            marker.hidden = true;
-            anchor.hidden = true;
-            link.hidden = true;
-            continue;
-          }
-          marker.hidden = false;
-          let dx = 0,
-            dy = 0;
-          let insideFallback;
-          for (let slot = 0; slot < 200; slot++) {
-            const column = slot % 5,
-              row = Math.floor(slot / 5);
-            const candidateDx =
-              column * 42 * (point.x > map.clientWidth / 2 ? -1 : 1);
-            const candidateDy =
-              row * 42 * (point.y > map.clientHeight / 2 ? -1 : 1);
-            const candidateX = point.x + candidateDx,
-              candidateY = point.y + candidateDy;
-            if (
-              candidateX < 18 ||
-              candidateX > map.clientWidth - 18 ||
-              candidateY < 18 ||
-              candidateY > map.clientHeight - 18
-            )
-              continue;
-            insideFallback = [candidateDx, candidateDy];
-            if (
-              placed.every(
-                ([x, y]) =>
-                  Math.abs(candidateX - x) >= 38 ||
-                  Math.abs(candidateY - y) >= 38,
-              )
-            ) {
-              dx = candidateDx;
-              dy = candidateDy;
-              insideFallback = undefined;
-              break;
-            }
-          }
-          if (insideFallback) [dx, dy] = insideFallback;
-          placed.push([point.x + dx, point.y + dy]);
-          marker.style.left = `${point.x + dx}px`;
-          marker.style.top = `${point.y + dy}px`;
-          anchor.style.left = `${point.x}px`;
-          anchor.style.top = `${point.y}px`;
-          anchor.hidden = !(dx || dy);
-          link.hidden = !(dx || dy);
-          link.style.left = `${point.x}px`;
-          link.style.top = `${point.y}px`;
-          link.style.width = `${Math.hypot(dx, dy)}px`;
-          link.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
-        }
-      };
-      instance.on("move zoom resize", placePins);
-      const fitPins = (pins) => {
-        if (!pins.length) return;
-        const longitudes = pins
-          .map(({ entry }) => (entry.position.longitude + 360) % 360)
-          .sort((a, b) => a - b);
-        let arcStart = longitudes[0];
-        if (longitudes.length > 1) {
-          let largestGap = -1;
-          for (let i = 0; i < longitudes.length; i++) {
-            const next =
-              i + 1 < longitudes.length
-                ? longitudes[i + 1]
-                : longitudes[0] + 360;
-            if (next - longitudes[i] > largestGap) {
-              largestGap = next - longitudes[i];
-              arcStart = next % 360;
-            }
-          }
-        }
-        const coords = pins.map(({ entry }) => {
-          const wrapped = (entry.position.longitude + 360) % 360;
-          return [
-            entry.position.latitude,
-            wrapped < arcStart ? wrapped + 360 : wrapped,
-          ];
+          !day.complete ||
+          !before ||
+          Date.parse(item.occurred_at) - Date.parse(before.item.occurred_at) >
+            GAP_HOURS * 3600000
+        )
+          continue;
+        // Colored by the destination event's category.
+        const line = svg("line", {
+          class: "dashboard-map-connection",
+          stroke: eventColor(item),
         });
-        if (coords.length === 1)
-          instance.setView(
-            [coords[0][0], pins[0].entry.position.longitude],
-            16,
-            { animate: false },
-          );
-        else
-          instance.fitBounds(L.latLngBounds(coords), {
-            padding: [48, 48],
-            maxZoom: 16,
-            animate: false,
-          });
-      };
-      mapResizeObserver = new ResizeObserver(() => {
-        instance.invalidateSize();
-        placePins();
-        const active = entriesWithPins.filter(
-          ({ marker }) =>
-            marker.isConnected &&
-            !marker.classList.contains("dashboard-filtered"),
+        line.dataset.memberId = item.user_id;
+        line.dataset.from = before.item.id;
+        line.dataset.to = item.id;
+        paths.append(line);
+        links.push({ from: before, to: dot, line });
+      }
+      groups = [];
+      for (const pins of anchors.values()) {
+        if (pins.length < 2) continue;
+        const marker = text(
+          "button",
+          "",
+          "dashboard-map-marker dashboard-map-group",
         );
-        // A desktop fit may leave every marker offscreen when the map narrows.
-        // Refit only then, preserving deliberate user panning when one is visible.
-        if (active.length && active.every(({ marker }) => marker.hidden)) {
-          fitPins(active);
-          if (!selectedMember)
-            initialView = {
-              center: instance.getCenter(),
-              zoom: instance.getZoom(),
-            };
-          placePins();
-        }
-      });
-      mapResizeObserver.observe(map);
-      const boundsPins = entriesWithPins.filter(({ marker }) =>
-        marker.classList.contains("dashboard-activity-pin"),
+        marker.type = "button";
+        const group = { fix: pins[0].fix, pins, marker };
+        marker.onclick = () => openChooser(group);
+        groups.push(group);
+      }
+      overlay.append(
+        ...dots.map(({ marker }) => marker),
+        ...groups.map(({ marker }) => marker),
       );
-      const fittedPins = boundsPins.length ? boundsPins : entriesWithPins;
-      fitPins(fittedPins);
-      initialView = { center: instance.getCenter(), zoom: instance.getZoom() };
+      if (!fitted && dots.length) {
+        fitted = true;
+        fitPins(dots);
+        initialView = {
+          center: instance.getCenter(),
+          zoom: instance.getZoom(),
+        };
+      }
+      refreshMap();
+      showStatus();
+    };
+    const project = (fix, near) =>
+      instance.latLngToContainerPoint([
+        fix.latitude,
+        fix.longitude + 360 * Math.round((near - fix.longitude) / 360),
+      ]);
+    const offscreen = (point) =>
+      point.x < 0 ||
+      point.x > map.clientWidth ||
+      point.y < 0 ||
+      point.y > map.clientHeight;
+    const placePins = () => {
+      if (!live()) return;
+      const center = instance.getCenter().lng;
+      for (const { fix, marker } of dots) {
+        const point = project(fix, center);
+        marker.hidden = offscreen(point);
+        marker.style.left = `${point.x}px`;
+        marker.style.top = `${point.y}px`;
+      }
+      for (const { from, to, line } of links) {
+        // Unwrap the destination beside its origin: the shortest arc in one world copy.
+        const a = project(from.fix, center),
+          b = project(to.fix, instance.containerPointToLatLng(a).lng);
+        line.setAttribute("x1", a.x);
+        line.setAttribute("y1", a.y);
+        line.setAttribute("x2", b.x);
+        line.setAttribute("y2", b.y);
+      }
+      for (const group of groups) {
+        const active = group.pins.filter(visible);
+        const point = project(group.fix, center);
+        group.marker.hidden = active.length < 2 || offscreen(point);
+        group.marker.style.left = `${point.x}px`;
+        group.marker.style.top = `${point.y}px`;
+        group.marker.textContent = String(active.length);
+        group.marker.dataset.count = String(active.length);
+        group.marker.setAttribute(
+          "aria-label",
+          `${active.length} events at this recorded location; choose an event`,
+        );
+        // The selected event keeps its own exact dot above the count badge.
+        if (active.length > 1)
+          for (const { item, marker } of active)
+            if (item.id !== selectedEventId) marker.hidden = true;
+      }
+    };
+    // A selected event emphasizes its member's sequence and dims, never hides,
+    // everyone else; the explicit member filter keeps hiding other members.
+    refreshMap = () => {
+      if (!live()) return;
+      const focus = ledger?.items.get(selectedEventId)?.user_id;
+      const dim = (memberId) => !!focus && memberId !== focus;
+      for (const { item, marker } of dots) {
+        marker.classList.toggle("dashboard-filtered", !visible({ item }));
+        marker.classList.toggle("dashboard-map-dim", dim(item.user_id));
+        marker.setAttribute(
+          "aria-pressed",
+          String(item.id === selectedEventId),
+        );
+      }
+      for (const { to, line } of links) {
+        line.classList.toggle("dashboard-filtered", !visible(to));
+        line.classList.toggle("dashboard-map-dim", dim(to.item.user_id));
+      }
+      for (const { pins, marker } of groups)
+        marker.classList.toggle(
+          "dashboard-map-dim",
+          !!focus && pins.every(({ item }) => dim(item.user_id)),
+        );
       placePins();
-      filterMap();
-      status.textContent = `${date} activity creation date (device timezone) · ${byMember.size} members with authorized position · ${count} activities · complete selected date as loaded (not live). ${roster.fresh ? "Latest profile pins are separately authorized and may be older than this date." : roster.note}${avatarLimited ? " Profile pictures limited to the first 80 members; remaining pins show initials." : ""}`;
-    } catch (error) {
-      if (live()) await fail(`Map unavailable: ${error.message}`);
-    }
+    };
+    // Pan only when the event is offscreen, to its nearest world copy; keep zoom.
+    revealEvent = (item) => {
+      const fix = eventPosition(item);
+      if (!live() || !fix) return;
+      const center = instance.getCenter().lng;
+      if (offscreen(project(fix, center)))
+        instance.panTo(
+          [
+            fix.latitude,
+            fix.longitude + 360 * Math.round((center - fix.longitude) / 360),
+          ],
+          { animate: false },
+        );
+    };
+    filterMap = (clearSelection = true) => {
+      closeChooser(false);
+      if (clearSelection) {
+        selectionEpoch++;
+        selection.replaceChildren();
+        highlightEvent(null);
+      }
+      if (clearSelection && initialView)
+        instance.setView(initialView.center, initialView.zoom);
+      refreshMap();
+    };
+    instance.on("move zoom resize", placePins);
+    const fitPins = (pins) => {
+      if (!pins.length) return;
+      const longitudes = pins
+        .map(({ fix }) => (fix.longitude + 360) % 360)
+        .sort((a, b) => a - b);
+      let arcStart = longitudes[0];
+      if (longitudes.length > 1) {
+        let largestGap = -1;
+        for (let i = 0; i < longitudes.length; i++) {
+          const next =
+            i + 1 < longitudes.length ? longitudes[i + 1] : longitudes[0] + 360;
+          if (next - longitudes[i] > largestGap) {
+            largestGap = next - longitudes[i];
+            arcStart = next % 360;
+          }
+        }
+      }
+      const coords = pins.map(({ fix }) => {
+        const wrapped = (fix.longitude + 360) % 360;
+        return [fix.latitude, wrapped < arcStart ? wrapped + 360 : wrapped];
+      });
+      if (coords.length === 1)
+        instance.setView([pins[0].fix.latitude, pins[0].fix.longitude], 16, {
+          animate: false,
+        });
+      else
+        instance.fitBounds(L.latLngBounds(coords), {
+          padding: [48, 48],
+          maxZoom: 16,
+          animate: false,
+        });
+    };
+    mapResizeObserver = new ResizeObserver(() => {
+      instance.invalidateSize();
+      placePins();
+      const shown = dots.filter(visible);
+      // A desktop fit may leave every event offscreen when the map narrows.
+      // Refit only then, preserving deliberate user panning when one is visible.
+      if (shown.length && shown.every(({ marker }) => marker.hidden)) {
+        fitPins(shown);
+        if (!selectedMember)
+          initialView = {
+            center: instance.getCenter(),
+            zoom: instance.getZoom(),
+          };
+        placePins();
+      }
+    });
+    mapResizeObserver.observe(map);
+    syncMap();
   }
   async function load(_api, adminKey) {
     clear();
@@ -2387,7 +2480,7 @@ window.CoachDashboard = (() => {
     forgetMember = (memberId) => {
       suppressedMembers.add(memberId);
       filterTimeline();
-      purgeMapMember(memberId);
+      syncMap();
       revoked.add(memberId);
       users.delete(memberId);
       feedMembers.delete(memberId);

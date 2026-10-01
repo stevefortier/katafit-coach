@@ -308,7 +308,8 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       );
       await page.route("**/api/**", async (route) => {
         const path = new URL(route.request().url()).pathname;
-        if (path === "/api/dashboard/map" && denyMap)
+        // The map shares the day-events reader with the timeline.
+        if (path === "/api/dashboard/timeline" && denyMap)
           return route.fulfill({ status: 403, json: { error: "DENIED" } });
         const bodies: Record<string, unknown> = {
           "/api/config": config,
