@@ -920,9 +920,8 @@ header {
   background: #151515;
 }
 .dashboard-member-rail {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(320px, 1fr);
+  display: flex;
+  align-items: flex-start;
   gap: 12px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -930,10 +929,51 @@ header {
 .dashboard-member-cards:empty {
   display: none;
 }
+.dashboard-member-entry {
+  position: relative;
+  flex: 0 0 auto;
+}
+.dashboard-member-info {
+  position: absolute;
+  right: 8px;
+  bottom: 28px;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #bcc5d0;
+  font-size: 15px;
+  line-height: 1;
+}
+.dashboard-member-info:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+.dashboard-member-tooltip {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: min(260px, calc(100vw - 16px));
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid #87909b;
+  background: #191919;
+  color: #f3f3f3;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .dashboard-member-card {
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: 320px;
   margin: 0;
   display: grid;
   grid-template-columns: 100px minmax(0, 1fr);
+  grid-template-rows: minmax(32px, 1fr) 22px 22px 24px 26px;
   gap: 0;
   text-align: left;
   min-width: 0;
@@ -946,6 +986,11 @@ header {
   color: #f3f3f3;
   box-shadow: inset 0 0 0 2px #111;
 }
+@media (max-width: 700px) {
+  .dashboard-member-card {
+    grid-template-columns: 90px minmax(0, 1fr);
+  }
+}
 .dashboard-member-card[aria-pressed="true"] {
   border: 2px solid #fff;
   border-top-width: 3px;
@@ -957,6 +1002,10 @@ header {
   font-size: 15px;
   line-height: 1.25;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 .dashboard-member-all {
   margin: 0;
@@ -985,6 +1034,12 @@ header {
   line-height: 1.2;
   border-top: 1px solid #454b53;
   padding: 2px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dashboard-member-card > span.dashboard-member-bodyfat {
+  padding-right: 36px;
 }
 .dashboard-member-card > span:last-child {
   padding-bottom: 6px;

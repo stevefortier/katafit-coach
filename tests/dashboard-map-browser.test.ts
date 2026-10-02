@@ -399,7 +399,11 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
         "one latest authorized position pin per member, independent of the selected date",
       );
       assert.equal(
-        await page.locator("#dashboardMemberCards button").count(),
+        await page
+          .locator(
+            "#dashboardMemberCards .dashboard-member-all, #dashboardMemberCards .dashboard-member-card",
+          )
+          .count(),
         3,
         "all-members toggle and authorized roster cards",
       );
@@ -409,7 +413,7 @@ test("synthetic authorized map: local date, separate member pins, fresh detail, 
       );
       assert.match(
         await page.locator("#dashboardMemberCards").innerText(),
-        /Weight: 68 kg.*Height: 170 cm.*Body fat \(photo estimate\): 21 %.*Age: 30.*Weight: Unavailable.*Height: Unavailable.*Body fat \(photo estimate\): Unavailable.*Age: Unavailable/s,
+        /Weight: 68 kg.*Height: 170 cm.*Body fat: 21 %.*Age: 30.*Weight: Unavailable.*Height: Unavailable.*Body fat: Unavailable.*Age: Unavailable/s,
       );
       assert.match(
         (await page
@@ -1411,7 +1415,7 @@ test("roster cards load independently when the map endpoint fails or Leaflet is 
       });
       // Cards arrive while the date-scoped map read is still pending.
       await page.waitForFunction(() =>
-        /Synthetic Ada.*Weight: 68 kg.*Height: 170 cm.*Body fat \(photo estimate\): 21 %.*Age: 30.*Synthetic Bob.*Weight: Unavailable/s.test(
+        /Synthetic Ada.*Weight: 68 kg.*Height: 170 cm.*Body fat: 21 %.*Age: 30.*Synthetic Bob.*Weight: Unavailable/s.test(
           (document.querySelector("#dashboardMemberCards") as HTMLElement)
             ?.innerText || "",
         ),
