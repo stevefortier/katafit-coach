@@ -4,6 +4,7 @@ import { Actions } from "../chat/actions.js";
 import { NativeTerminal } from "./terminal.js";
 import { contentDisposition } from "../sandbox/attachments.js";
 import { StudioReads } from "../katafit/studio.js";
+import { accountMemoryError, accountMemoryRoutes } from "./accountMemory.js";
 import { restGet } from "../katafit/restGet.js";
 import { Updates } from "../update/updates.js";
 
@@ -163,6 +164,12 @@ export async function admin(
   };
   const memoryCall = (name: string, args: unknown) =>
     memoryOperation()(name, args);
+  // Default "My memories": ordinary account REST. The retired Studio MCP
+  // collection is reachable only under its own separately labeled path.
+  const accountMemory = accountMemoryRoutes(
+    store,
+    () => !closing && !updates.applying,
+  );
   // One server-owned operation holds busy from admission through resume. HTTP
   // disconnects never cancel configuration application or restart recovery.
   let lifecycle:
@@ -777,11 +784,22 @@ export async function admin(
           throw new Error("INVALID_SKILL_REVISION");
         return send(200, store.skills.history(Number(id)));
       }
+      const legacyMemoryPath = /^\/api\/legacy-memories(?=[/?]|$)/.test(path)
+        ? path.replace("/api/legacy-memories", "/api/memories")
+        : null;
+      if (req.method === "GET" && /^\/api\/memories(?:[/?]|$)/.test(path)) {
+        const result = await accountMemory.get(path);
+        return result === undefined
+          ? send(404, { error: "NOT_FOUND" })
+          : send(200, result);
+      }
       if (
         req.method === "GET" &&
-        (path === "/api/memories" || path.startsWith("/api/memories?"))
+        legacyMemoryPath &&
+        (legacyMemoryPath === "/api/memories" ||
+          legacyMemoryPath.startsWith("/api/memories?"))
       ) {
-        const url = new URL(path, origin);
+        const url = new URL(legacyMemoryPath, origin);
         const params = url.searchParams;
         if (
           [...params.keys()].some(
@@ -838,9 +856,10 @@ export async function admin(
       }
       if (
         req.method === "GET" &&
-        /^\/api\/memories\/(?:history\/)?[a-f0-9]{24}$/i.test(path)
+        legacyMemoryPath &&
+        /^\/api\/memories\/(?:history\/)?[a-f0-9]{24}$/i.test(legacyMemoryPath)
       ) {
-        const id = path.split("/").at(-1)!;
+        const id = legacyMemoryPath.split("/").at(-1)!;
         return send(
           200,
           await memoryCall("studio_memory_get", { memory_id: id }),
@@ -1073,10 +1092,17 @@ export async function admin(
               }
             : { error: "OPERATION_IN_PROGRESS" },
         );
-      const memoryMutation =
-        /^\/api\/memories(?:\/([a-f0-9]{24})(?:\/(archive|forget))?)?$/i.exec(
-          path,
-        );
+      if (/^\/api\/memories(?:\/|$)/.test(path)) {
+        const result = await accountMemory.post(path, body);
+        return result === undefined
+          ? send(404, { error: "NOT_FOUND" })
+          : send(200, result);
+      }
+      const memoryMutation = legacyMemoryPath
+        ? /^\/api\/memories(?:\/([a-f0-9]{24})(?:\/(archive|forget))?)?$/i.exec(
+            legacyMemoryPath,
+          )
+        : null;
       if (memoryMutation) {
         const [, id, action] = memoryMutation;
         const call = memoryOperation();
@@ -1532,6 +1558,8 @@ export async function admin(
         busy = false;
       }
     } catch (e: any) {
+      const account = accountMemoryError(e);
+      if (account) return send(account.status, account.body);
       const memory = memoryError(e);
       if (memory) return send(memory.status, memory.body);
       if ((e as Error)?.message === "NATIVE_HISTORY_BUSY")

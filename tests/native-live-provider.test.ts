@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fixture } from "./helpers/native.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 
-test("native provider relays current Pi messages without automatic memory or delivery capture", async () => {
+test("on a backend without account memory, native provider relays current Pi messages without memory or delivery capture", async () => {
   const f = await fixture((name, result) =>
     name === "provider"
       ? `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "Current answer" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`

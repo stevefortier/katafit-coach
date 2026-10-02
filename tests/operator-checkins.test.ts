@@ -130,6 +130,12 @@ export async function fixture(
       );
       return;
     }
+    // No ordinary REST routes (for example account memory) on this fixture.
+    if (req.method === "GET") {
+      res.writeHead(404, { "content-type": "text/html" });
+      res.end("Cannot GET");
+      return;
+    }
     let raw = "";
     for await (const part of req) raw += part;
     const body = JSON.parse(raw),

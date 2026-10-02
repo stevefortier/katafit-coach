@@ -8,6 +8,7 @@ import { createServer, type IncomingMessage } from "node:http";
 export async function memberBackend(accounts: Record<string, string>) {
   const calls: { method: string; path: string; auth?: string; body?: any }[] =
     [];
+  const memoryCalls: { method: string; path: string }[] = [];
   const messages: { id: string; recipient: string; text: string }[] = [];
   const receipts = new Map<string, any>();
   const state = {
@@ -29,6 +30,15 @@ export async function memberBackend(accounts: Record<string, string>) {
     for await (const chunk of req) raw += chunk;
     const url = new URL(req.url!, "http://loopback");
     const body = raw ? JSON.parse(raw) : undefined;
+    // The host's optional per-turn account-memory acquisition is a separate
+    // concern: this older-backend stand-in has no such route (framework 404),
+    // and member-message assertions observe only member-message traffic.
+    if (url.pathname.startsWith("/api/coach/memory")) {
+      memoryCalls.push({ method: req.method!, path: req.url! });
+      res.writeHead(404, { "content-type": "text/html" });
+      res.end("Cannot " + req.method);
+      return;
+    }
     calls.push({
       method: req.method!,
       path: req.url!,
@@ -102,6 +112,7 @@ export async function memberBackend(accounts: Record<string, string>) {
   return {
     origin: `http://127.0.0.1:${(server.address() as any).port}`,
     calls,
+    memoryCalls,
     messages,
     state,
     posts: () => calls.filter((c) => c.method === "POST"),

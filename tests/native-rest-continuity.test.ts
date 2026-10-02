@@ -64,12 +64,22 @@ test("ordinary REST image survives sharing change in actual Pi provider serializ
     const response = await piTurn(relay, "approved-custom-model", transcript);
     assert.equal(response.stopReason, "stop");
     assert.match(JSON.stringify(response.content), /retained-image response/);
+    // The continuation acquires no new memory recall; the previous turn's
+    // delivered-reply learning may still read the account learning setting.
     assert.deepEqual(
-      f.calls.slice(before).map((c) => c.path),
+      f.calls
+        .slice(before)
+        .map((c) => c.path)
+        .filter((p) => !p.startsWith("/api/coach/memory/")),
       ["/v1/chat/completions"],
     );
     await assert.rejects(() => ext.call("katafit_rest_request", args), /403/);
-    assert.equal(f.calls.filter((c) => c.method === "GET").length, 2);
+    assert.equal(
+      f.calls.filter(
+        (c) => c.method === "GET" && !c.path.startsWith("/api/coach/memory"),
+      ).length,
+      2,
+    );
     assert.ok(
       !f.calls.some(
         (c) => c.body?.params?.name === "studio_operator_authorize_context",
