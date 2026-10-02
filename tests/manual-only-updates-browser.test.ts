@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -91,9 +92,9 @@ test("source checks occur only on Updates entry and explicit Check, not unlock o
     await page.waitForTimeout(100);
     assert.equal(checks, 0, "dashboard unlock cannot check source");
     await page.locator("#settingsTab").click();
-    await page.getByRole("tab", { name: "Persona", exact: true }).click();
+    await settingsTab(page, "Persona");
     assert.equal(checks, 0);
-    await page.getByRole("tab", { name: "Updates", exact: true }).click();
+    await settingsTab(page, "Updates");
     await page.waitForFunction(
       () =>
         document.getElementById("updateLatest")?.textContent === "aaaaaaaaaaaa",
@@ -105,7 +106,7 @@ test("source checks occur only on Updates entry and explicit Check, not unlock o
         .count(),
       0,
     );
-    await page.getByRole("tab", { name: "Updates", exact: true }).click();
+    await settingsTab(page, "Updates");
     await page.evaluate(() =>
       document.dispatchEvent(new Event("visibilitychange")),
     );
@@ -114,7 +115,7 @@ test("source checks occur only on Updates entry and explicit Check, not unlock o
     await page.locator("#updateCheck").click();
     await page.waitForTimeout(100);
     assert.equal(checks, 2);
-    await page.getByRole("tab", { name: "Persona", exact: true }).click();
+    await settingsTab(page, "Persona");
     await page.goBack();
     await page.waitForTimeout(100);
     assert.equal(checks, 3, "history entry checks once");

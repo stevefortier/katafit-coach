@@ -2268,3 +2268,17 @@ html.coach-covered #workspaceScroll {
 .dashboard-gallery-sentinel {
   height: 1px;
 }
+
+@media (max-width: 480px) {
+  .studio-tabs #dashboardTab,
+  .studio-tabs #diagnosticsTab {
+    flex: 0 0 auto;
+  }
+  .studio-tabs #settingsTab,
+  .studio-tabs #coachSettingsTab {
+    white-space: normal;
+    flex-basis: 90px;
+    padding-block: 6px;
+    line-height: 16px;
+  }
+}

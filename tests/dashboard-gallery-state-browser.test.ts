@@ -363,6 +363,41 @@ test("Gallery scopes held reads, explicit retries, empty/repeated cursors and ac
         ?.textContent?.includes("backend does not support"),
     );
     assert.equal(await page.locator("#dashboardGallery article").count(), 0);
+    const unsupportedSummary =
+      "Gallery unavailable: backend does not support filtered cursor pagination.";
+    const unsupportedCalls = calls.length;
+    for (const member of ["Synthetic Bob", "Synthetic Ada"]) {
+      await page
+        .locator(".dashboard-member-card")
+        .filter({ hasText: member })
+        .click();
+      await page.waitForTimeout(100);
+      assert.equal(
+        await page.locator("#dashboardGallery [role=status]").innerText(),
+        unsupportedSummary,
+        "member selection preserves the unsupported terminal diagnostic",
+      );
+      assert.equal(calls.length, unsupportedCalls, "no read on member switch");
+      assert.equal(
+        await page
+          .getByRole("button", {
+            name: "Load older photos",
+            exact: true,
+            includeHidden: true,
+          })
+          .isHidden(),
+        true,
+        "unsupported terminal paging stays hidden",
+      );
+    }
+    await page
+      .getByRole("button", { name: "All members", exact: true })
+      .click();
+    assert.equal(
+      await page.locator("#dashboardGallery [role=status]").innerText(),
+      unsupportedSummary,
+    );
+    assert.equal(calls.length, unsupportedCalls);
     mode = "empty";
     const emptyStart = calls.length;
     await load();

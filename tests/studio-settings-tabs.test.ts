@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -8,6 +9,20 @@ import { chromium } from "playwright-core";
 test("Settings sections are exclusive accessible tabs and preserve drafts", async () => {
   const server = createServer(async (req, res) => {
     const path = new URL(req.url!, "http://localhost").pathname;
+    // Optional vendor assets are unavailable in this settings-only fixture;
+    // return a real 404, never index.html as JavaScript.
+    if (
+      [
+        "/xterm.js",
+        "/xterm-fit.js",
+        "/xterm.css",
+        "/leaflet.js",
+        "/leaflet.css",
+      ].includes(path)
+    ) {
+      res.writeHead(404).end();
+      return;
+    }
     const file = [
       "/backend-performance.js",
       "/dashboard.js",
@@ -36,7 +51,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       args: ["--no-sandbox"],
     });
     const page = await browser.newPage({
-      viewport: { width: 1280, height: 900 },
+      viewport: { width: 1440, height: 900 },
     });
     await page.route("**/api/**", async (route) => {
       const path = new URL(route.request().url()).pathname;
@@ -53,6 +68,11 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
                 name: "Synthetic Coach",
                 voice: "Supportive",
                 verbosity: "Balanced",
+                initiative: "Offer one synthetic next step.",
+                principles: "Synthetic fixture: build sustainable habits.",
+                examples: "Synthetic example: start at a comfortable pace.",
+                boundaries: "Synthetic fixture: do not diagnose injuries.",
+                markdown: "Use short paragraphs.",
               },
             }
           : path === "/api/members"
@@ -62,8 +82,17 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
               : path === "/api/terminal/receipts"
                 ? { actions: [] }
                 : path === "/api/memories"
-                  ? { revision: 0, items: [], total: 0 }
-                  : {};
+                  ? {
+                      revision: 0,
+                      items: [],
+                      members: [],
+                      total: 0,
+                      has_more: false,
+                      next_cursor: null,
+                    }
+                  : path === "/api/skills"
+                    ? { revision: 1, skills: [] }
+                    : {};
       await route.fulfill({ json: body });
     });
     await page.goto(
@@ -73,7 +102,14 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     const tabs = page.getByRole("tab");
-    assert.equal(await tabs.count(), 8);
+    assert.deepEqual(
+      await page
+        .locator(".studio-tabs button")
+        .allTextContents()
+        .then((names) => names.map((name) => name.trim())),
+      ["Dojo", "Activity", "Server Settings", "Coach Settings"],
+    );
+    assert.equal(await tabs.count(), 3);
     assert.equal(await page.locator("#diagnosticsTab").count(), 1);
     assert.equal(await page.getByRole("tabpanel").count(), 1);
     await page.locator("#token").fill("unsaved-secret");
@@ -87,7 +123,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       "Models",
       "Kata.fit",
     ]) {
-      await page.getByRole("tab", { name, exact: true }).click();
+      await settingsTab(page, name);
       assert.equal(await page.getByRole("tabpanel").count(), 1);
       assert.equal(
         await page.getByRole("tabpanel").getAttribute("id"),
@@ -115,9 +151,24 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       .press("ArrowRight");
     assert.equal(
       await page.getByRole("tab", { selected: true }).innerText(),
-      "Persona",
+      "Updates",
     );
+    await page
+      .getByRole("tab", { name: "Updates", exact: true })
+      .press("ArrowRight");
+    assert.equal(
+      await page.getByRole("tab", { selected: true }).innerText(),
+      "Kata.fit",
+    );
+    await page.getByRole("tab", { name: "Kata.fit", exact: true }).press("End");
+    assert.equal(
+      await page.getByRole("tab", { selected: true }).innerText(),
+      "Updates",
+    );
+    await page.getByRole("tab", { name: "Updates", exact: true }).press("Home");
+    await settingsTab(page, "Persona");
     assert.equal(new URL(page.url()).search, "?section=persona");
+    assert.equal(await tabs.count(), 5);
     await page.locator("#name").fill("Draft coach");
     await page.getByRole("tab", { name: "Persona", exact: true }).press("End");
     assert.equal(
@@ -129,20 +180,31 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       .press("ArrowRight");
     assert.equal(
       await page.getByRole("tab", { selected: true }).innerText(),
-      "Kata.fit",
+      "Persona",
     );
     await page
-      .getByRole("tab", { name: "Kata.fit", exact: true })
+      .getByRole("tab", { name: "Persona", exact: true })
       .press("ArrowLeft");
+    assert.equal(
+      await page.getByRole("tab", { selected: true }).innerText(),
+      "Worker",
+    );
     await page.getByRole("tab", { name: "Worker", exact: true }).press("Home");
-    await page
-      .getByRole("tab", { name: "Kata.fit", exact: true })
-      .press("ArrowRight");
-    await page
-      .getByRole("tab", { name: "Models", exact: true })
-      .press("ArrowRight");
+    await settingsTab(page, "Models");
+    await page.locator("#coachSettingsTab").click();
+    assert.equal(
+      await page.getByRole("tab", { selected: true }).innerText(),
+      "Persona",
+    );
+    await page.locator("#settingsTab").click();
+    assert.equal(
+      await page.getByRole("tab", { selected: true }).innerText(),
+      "Models",
+    );
+    assert.equal(await page.locator("#token").inputValue(), "unsaved-secret");
+    await page.locator("#coachSettingsTab").click();
     assert.equal(await page.locator("#name").inputValue(), "Draft coach");
-    await page.getByRole("tab", { name: "Preview", exact: true }).click();
+    await settingsTab(page, "Preview");
     await page.goBack();
     assert.equal(
       await page.getByRole("tab", { selected: true }).innerText(),
@@ -241,7 +303,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.getByRole("button", { name: "Activity", exact: true }).click();
     await loaded;
     await page.locator("#settingsTab").click();
-    await page.getByRole("tab", { name: "Persona", exact: true }).click();
+    await settingsTab(page, "Persona");
     const stoppedCount = logRequests;
     await page.waitForTimeout(2200);
     assert.equal(logRequests, stoppedCount, "hidden diagnostics must not poll");
@@ -249,39 +311,68 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       process.env.COACH_EVIDENCE_DIR || `${tmpdir()}/katafit-settings-evidence`;
     await mkdir(evidence, { recursive: true });
     await page.evaluate(() => scrollTo(0, 0));
-    await page.screenshot({
-      path: `${evidence}/settings-desktop.png`,
-      fullPage: true,
-    });
-    await page.setViewportSize({ width: 390, height: 844 });
-    for (const name of [
-      "Kata.fit",
-      "Models",
-      "Persona",
-      "Preview",
-      "Skills",
-      "Updates",
-      "Worker",
+    for (const [group, name] of [
+      ["server", "Kata.fit"],
+      ["coach", "Persona"],
     ]) {
-      await page.getByRole("tab", { name, exact: true }).click();
-      assert.equal(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-        true,
+      await settingsTab(page, name);
+      assert.notEqual(
+        await page.locator("#noticeRegion").getAttribute("role"),
+        "alert",
+        "synthetic evidence fixture has no API-shape errors",
       );
-      const box = await page
-        .getByRole("tab", { name, exact: true })
-        .boundingBox();
-      assert.ok(
-        box && box.x >= 0 && box.x + box.width <= 390 && box.height >= 44,
-      );
-      assert.equal(await page.getByRole("tabpanel").count(), 1);
       await page.evaluate(() => scrollTo(0, 0));
       await page.screenshot({
-        path: `${evidence}/settings-mobile-${name.toLowerCase().replace(".", "")}.png`,
+        path: `${evidence}/${group}-desktop.png`,
         fullPage: true,
       });
+    }
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      assert.equal(
+        await page
+          .locator(".studio-tabs button")
+          .evaluateAll((buttons) =>
+            buttons.every((button) => button.scrollWidth <= button.clientWidth),
+          ),
+        true,
+        "all primary names must fit, not ellipsize",
+      );
+      for (const name of [
+        "Kata.fit",
+        "Models",
+        "Persona",
+        "Preview",
+        "Skills",
+        "Memories",
+        "Updates",
+        "Worker",
+      ]) {
+        await settingsTab(page, name);
+        assert.equal(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+          true,
+        );
+        const box = await page
+          .getByRole("tab", { name, exact: true })
+          .boundingBox();
+        assert.ok(
+          box && box.x >= 0 && box.x + box.width <= width && box.height >= 44,
+        );
+        assert.equal(await page.getByRole("tabpanel").count(), 1);
+        assert.notEqual(
+          await page.locator("#noticeRegion").getAttribute("role"),
+          "alert",
+          "synthetic evidence fixture has no API-shape errors",
+        );
+        await page.evaluate(() => scrollTo(0, 0));
+        await page.screenshot({
+          path: `${evidence}/settings-mobile-${width}-${name.toLowerCase().replace(".", "")}.png`,
+          fullPage: true,
+        });
+      }
     }
   } finally {
     await browser?.close();

@@ -2743,8 +2743,9 @@ window.CoachDashboard = (() => {
         ) {
           stopped = true;
           more.hidden = true;
-          status.textContent =
+          pageSummary =
             "Gallery unavailable: backend does not support filtered cursor pagination.";
+          status.textContent = pageSummary;
           return;
         }
         for (const user of data.users)

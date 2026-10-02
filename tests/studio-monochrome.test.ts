@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -132,7 +133,7 @@ async function tabHierarchy(page: Page) {
       active.getAttribute("aria-controls")!,
     )!;
     const secondary = document.querySelector<HTMLElement>(
-      '#settingsPanel:not([hidden]) [aria-selected="true"], #coachPanel:not([hidden]) .conversation-tabs [aria-pressed="true"]',
+      '#settingsPanel:not([hidden]) .settings-tabs:not([hidden]) [aria-selected="true"], #coachPanel:not([hidden]) .conversation-tabs [aria-pressed="true"]',
     );
     const style = getComputedStyle(active);
     return {
@@ -373,7 +374,8 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         [
           ["BUTTON", "Dojo"],
           ["BUTTON", "Activity"],
-          ["BUTTON", "Settings"],
+          ["BUTTON", "Server Settings"],
+          ["BUTTON", "Coach Settings"],
         ],
         "primary route controls keep their existing semantics with Settings last",
       );
@@ -385,9 +387,9 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       const primaryGeometry = await page
         .locator(".studio-tabs")
         .evaluate((nav) => {
-          const [dashboard, activity, settings] = Array.from(nav.children).map(
-            (el) => el.getBoundingClientRect(),
-          );
+          const [dashboard, activity, serverSettings, settings] = Array.from(
+            nav.children,
+          ).map((el) => el.getBoundingClientRect());
           const row = nav.getBoundingClientRect();
           return {
             rowLeft: row.left,
@@ -537,20 +539,20 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       await page.locator("#settingsTab").click();
       await primaryContrast(page, "#settings-katafit-tab");
       await capture("settings-katafit");
-      await page.getByRole("tab", { name: "Models", exact: true }).click();
+      await settingsTab(page, "Models");
       await page.locator(".saved-badge").waitFor();
       await primaryContrast(page, "#settings-models-tab");
       await capture("settings-models");
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await capture("settings-persona");
       await page.locator("#name").fill("Unsaved synthetic draft");
-      await page.getByRole("tab", { name: "Kata.fit", exact: true }).click();
+      await settingsTab(page, "Kata.fit");
       await page.locator("#token").fill("unsaved-synthetic-secret");
       for (const [key, name] of [
         ["ArrowRight", "Models"],
-        ["End", "Worker"],
+        ["End", "Updates"],
         ["ArrowRight", "Kata.fit"],
-        ["ArrowLeft", "Worker"],
+        ["ArrowLeft", "Updates"],
         ["Home", "Kata.fit"],
       ] as const) {
         await page.evaluate(() => scrollTo(0, 0));
@@ -578,7 +580,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         "unsaved-synthetic-secret",
       );
       for (const section of ["Preview", "Updates", "Worker"]) {
-        await page.getByRole("tab", { name: section, exact: true }).click();
+        await settingsTab(page, section);
         await capture("settings-" + section.toLowerCase());
       }
       await page.locator("#coachLauncher").focus();
@@ -629,8 +631,15 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           .evaluate((el) => el === document.activeElement),
         "keyboard order follows DOM order",
       );
+      await page.keyboard.press("Tab");
+      assert.ok(
+        await page
+          .locator("#coachSettingsTab")
+          .evaluate((el) => el === document.activeElement),
+        "Coach Settings immediately follows Server Settings",
+      );
       await page.keyboard.press("Enter");
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       assert.equal(
         await page.locator("#name").inputValue(),
         "Unsaved synthetic draft",
@@ -647,7 +656,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       );
       await page.goForward();
       assert.equal(new URL(page.url()).pathname, "/dashboard");
-      await page.locator("#settingsTab").click();
+      await page.locator("#coachSettingsTab").click();
       await page.reload();
       await page
         .getByRole("tabpanel", { name: "Persona", exact: true })
