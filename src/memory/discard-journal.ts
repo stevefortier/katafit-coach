@@ -129,6 +129,9 @@ export class DiscardJournal {
         const v = JSON.parse(this.bytes(join(this.dir, name)));
         if (
           v.version !== 1 ||
+          Object.keys(v).sort().join(",") !==
+            "credential,discovery,key,origin,version" ||
+          typeof v.discovery !== "boolean" ||
           !/^[a-f0-9]{64}$/.test(v.origin) ||
           !/^[a-f0-9]{64}$/.test(v.credential) ||
           !captureKey(v.key)

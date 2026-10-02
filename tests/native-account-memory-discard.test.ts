@@ -479,6 +479,17 @@ test("unsafe and corrupt journal files never become empty recovery permission", 
     const file = join(dir, (await readdir(dir))[0]);
     await writeFile(file, "not json");
     assert.throws(() => j.pending());
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        origin: "a".repeat(64),
+        credential: "b".repeat(64),
+        key: "discovery:original",
+        discovery: "true",
+      }),
+    );
+    assert.throws(() => j.pending(), /UNSAFE_DISCARD_JOURNAL/);
     await rm(file);
     await symlink("/dev/null", file);
     assert.throws(() => j.pending());
