@@ -113,107 +113,123 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
       res.end(
         JSON.stringify({
           users: [{ _id: member, display_name: "Fixture Ada" }],
-          events: (paged ? kinds.slice(0, 1) : kinds).map((event_type, i) => ({
-            id: `event-${paged ? offset : i}`,
-            user_id: member,
-            occurred_at: new Date(Date.parse(start) + 9000000).toISOString(),
-            event_type,
-            subject: {
-              type: event_type.split(".")[0],
-              id: "dddddddddddddddddddddddd",
-            },
-            details: {
-              ...(event_type.includes("status_changed") ||
-              /\.(started|stopped|resumed|completed|reopened)$/.test(event_type)
-                ? { from_status: "ongoing", to_status: "complete" }
-                : {}),
-              ...(event_type.startsWith("meal.food_") &&
-              event_type !== "meal.food_occurrence_changed"
-                ? {
-                    food_id: "rice",
-                    instance_id: "two",
-                    quantity: 2,
-                    unit: "g",
-                    ...(event_type === "meal.food_updated"
-                      ? { previous_quantity: 1, previous_unit: "g" }
-                      : {}),
-                  }
-                : {}),
-              ...(event_type.startsWith("workout.set_")
-                ? {
-                    exercise_id: "bbbbbbbbbbbbbbbbbbbbbbbb",
-                    set_id: "cccccccccccccccccccccccc",
-                    exercise_index: 0,
-                    set_index: i,
-                    changed_fields: ["complete"],
-                  }
-                : {}),
-              ...(event_type === "meal.food_occurrence_changed"
-                ? {
-                    food_index: 3,
-                    change: "updated",
-                    changed_fields: ["quantity"],
-                    instance_id: "two",
-                  }
-                : {}),
-              ...(event_type.endsWith("metadata_changed")
-                ? { changed_fields: ["name"] }
-                : {}),
-              ...(event_type === "member_settings.changed"
-                ? { changed_fields: ["location_capture_enabled"] }
-                : {}),
-              ...(event_type.startsWith("app.")
-                ? {
-                    event_id: "fixture-observation",
-                    session_id: "fixture-session",
-                    sequence: i,
-                    platform: "web",
-                    observed_at: new Date(
-                      Date.parse(start) + 9000000,
-                    ).toISOString(),
-                    ...(event_type === "app.opened"
-                      ? { start_reason: "launch" }
-                      : {}),
-                  }
-                : {}),
-              ...(event_type.includes("foods_") ||
-              event_type.includes("recipe_") ||
-              event_type === "meal.upgraded"
-                ? { food_count: 2 }
-                : {}),
-              ...(event_type === "metric.measurements_changed"
-                ? { measurement_count: 2 }
-                : {}),
-              ...(event_type.startsWith("survey.") &&
-              event_type.endsWith("changed") &&
-              !event_type.includes("metadata") &&
-              !event_type.includes("status")
-                ? {
-                    question_count: 2,
-                    ...(event_type === "survey.answers_changed"
-                      ? { answered_count: 1 }
-                      : {}),
-                  }
-                : {}),
-              ...(event_type === "media.files_changed" ||
-              event_type === "media.processing_changed"
-                ? {
-                    file_count: 2,
-                    ...(event_type === "media.processing_changed"
-                      ? { accepted_count: 1, rejected_count: 1 }
-                      : {}),
-                  }
-                : {}),
-              ...(event_type === "workout.exercises_changed" ||
-              event_type === "workout.sets_changed"
-                ? { exercise_count: 1, set_count: 2 }
-                : {}),
-              name: "<img src=x onerror=alert(1)>",
-            },
-            actor_type: "member",
-            source: "interactive",
-          })),
-          hasMore: paged && offset < 11,
+          events: (paged ? kinds.slice(0, 1) : kinds)
+            .map((event_type, i) => ({
+              id: (1 + (paged ? offset : i)).toString(16).padStart(24, "0"),
+              user_id: member,
+              occurred_at: new Date(Date.parse(start) + 9000000).toISOString(),
+              event_type,
+              subject: {
+                type: event_type.split(".")[0],
+                id: "dddddddddddddddddddddddd",
+              },
+              details: {
+                ...(event_type.includes("status_changed") ||
+                /\.(started|stopped|resumed|completed|reopened)$/.test(
+                  event_type,
+                )
+                  ? { from_status: "ongoing", to_status: "complete" }
+                  : {}),
+                ...(event_type.startsWith("meal.food_") &&
+                event_type !== "meal.food_occurrence_changed"
+                  ? {
+                      food_id: "rice",
+                      instance_id: "two",
+                      quantity: 2,
+                      unit: "g",
+                      ...(event_type === "meal.food_updated"
+                        ? { previous_quantity: 1, previous_unit: "g" }
+                        : {}),
+                    }
+                  : {}),
+                ...(event_type.startsWith("workout.set_")
+                  ? {
+                      exercise_id: "bbbbbbbbbbbbbbbbbbbbbbbb",
+                      set_id: "cccccccccccccccccccccccc",
+                      exercise_index: 0,
+                      set_index: i,
+                      changed_fields: ["complete"],
+                    }
+                  : {}),
+                ...(event_type === "meal.food_occurrence_changed"
+                  ? {
+                      food_index: 3,
+                      change: "updated",
+                      changed_fields: ["quantity"],
+                      instance_id: "two",
+                    }
+                  : {}),
+                ...(event_type.endsWith("metadata_changed")
+                  ? { changed_fields: ["name"] }
+                  : {}),
+                ...(event_type === "member_settings.changed"
+                  ? { changed_fields: ["location_capture_enabled"] }
+                  : {}),
+                ...(event_type.startsWith("app.")
+                  ? {
+                      event_id: "fixture-observation",
+                      session_id: "fixture-session",
+                      sequence: i,
+                      platform: "web",
+                      observed_at: new Date(
+                        Date.parse(start) + 9000000,
+                      ).toISOString(),
+                      ...(event_type === "app.opened"
+                        ? { start_reason: "launch" }
+                        : {}),
+                    }
+                  : {}),
+                ...(event_type.includes("foods_") ||
+                event_type.includes("recipe_") ||
+                event_type === "meal.upgraded"
+                  ? { food_count: 2 }
+                  : {}),
+                ...(event_type === "metric.measurements_changed"
+                  ? { measurement_count: 2 }
+                  : {}),
+                ...(event_type.startsWith("survey.") &&
+                event_type.endsWith("changed") &&
+                !event_type.includes("metadata") &&
+                !event_type.includes("status")
+                  ? {
+                      question_count: 2,
+                      ...(event_type === "survey.answers_changed"
+                        ? { answered_count: 1 }
+                        : {}),
+                    }
+                  : {}),
+                ...(event_type === "media.files_changed" ||
+                event_type === "media.processing_changed"
+                  ? {
+                      file_count: 2,
+                      ...(event_type === "media.processing_changed"
+                        ? { accepted_count: 1, rejected_count: 1 }
+                        : {}),
+                    }
+                  : {}),
+                ...(event_type === "workout.exercises_changed" ||
+                event_type === "workout.sets_changed"
+                  ? { exercise_count: 1, set_count: 2 }
+                  : {}),
+                name: "<img src=x onerror=alert(1)>",
+              },
+              actor_type: "member",
+              source: "interactive",
+            }))
+            .filter(
+              (e) =>
+                !new URL(req.url!, "http://fixture").searchParams.has(
+                  "event_id",
+                ) ||
+                e.id ===
+                  new URL(req.url!, "http://fixture").searchParams.get(
+                    "event_id",
+                  ),
+            ),
+          hasMore:
+            !new URL(req.url!, "http://fixture").searchParams.has("event_id") &&
+            paged &&
+            offset < 11,
           nextCursor: paged && offset < 11 ? `${offset + 1}.signature` : null,
           coverage: { historical_aggregates: true },
         }),
@@ -249,7 +265,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
     await page.goto(app.origin + "/dashboard");
     assert.match(
       await page.locator('label[for="dashboardMapDate"]').innerText(),
-      /event occurrence/,
+      /event occurrence/i,
     );
     await page.evaluate(async (key) => {
       document.getElementById("studio")!.hidden = false;
@@ -302,7 +318,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
       "future_event",
     ]) {
       const i = kinds.indexOf(kind);
-      await selectEvent(`event-${i}`);
+      await selectEvent((i + 1).toString(16).padStart(24, "0"));
       const detail = await page.locator("#dashboardMapSelection").innerText();
       assert.match(detail, /Fixture Ada/);
       assert.ok(detail.includes(kind.replace(/[._]/g, " ")));
@@ -372,7 +388,9 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
         "meal.food_updated",
         "workout.completed",
       ]) {
-        await selectEvent(`event-${kinds.indexOf(kind)}`);
+        await selectEvent(
+          (kinds.indexOf(kind) + 1).toString(16).padStart(24, "0"),
+        );
         await page.locator("#dashboardMapSelection").screenshot({
           path: `${evidence}/fixture-detail-${kind}-${width}.png`,
         });
@@ -385,7 +403,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
       await page.locator(".dashboard-timeline-mark").count(),
       kinds.length,
     );
-    await selectEvent("event-0");
+    await selectEvent("000000000000000000000001");
     status = 200;
     await page.getByRole("button", { name: "Retry timeline" }).click();
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
@@ -396,15 +414,7 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
     );
     paged = true;
     await page.locator("#dashboardMapDate").dispatchEvent("change");
-    await page
-      .getByRole("button", { name: "Load more events" })
-      .waitFor({ timeout: 3000 });
-    assert.equal(await page.locator(".dashboard-timeline-mark").count(), 10);
-    assert.match(
-      await page.locator("#dashboardTimeline").innerText(),
-      /More events available/,
-    );
-    await page.getByRole("button", { name: "Load more events" }).click();
+    // Canonical GPS chronology requires automatically loading to the terminal cursor.
     await page.waitForFunction(
       () => document.querySelectorAll(".dashboard-timeline-mark").length === 12,
     );

@@ -1225,40 +1225,16 @@ header {
   pointer-events: none;
   z-index: 400;
 }
-.dashboard-map-pin-link,
-.dashboard-map-anchor {
-  position: absolute;
-  pointer-events: none;
-}
-.dashboard-map-pin-link {
-  height: 2px;
-  background: #fbbf24;
-  transform-origin: left center;
-}
-.dashboard-map-anchor {
-  width: 8px;
-  height: 8px;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background: #fbbf24;
-  border: 1px solid #111;
-}
-.dashboard-map-marker[hidden],
-.dashboard-member-pin[hidden],
-.dashboard-map-anchor[hidden],
-.dashboard-map-pin-link[hidden] {
+.dashboard-map-marker[hidden] {
   display: none;
 }
-.dashboard-map-marker,
-.dashboard-member-pin {
+/* Exact recorded coordinates: no margin or offset may move a dot off its point. */
+.dashboard-map-marker {
   position: absolute;
   transform: translate(-50%, -50%);
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
-  min-height: 34px;
+  margin: 0;
   padding: 0;
   box-sizing: border-box;
   line-height: 1;
@@ -1266,46 +1242,91 @@ header {
   border-radius: 50%;
   background: #0a0a0a;
   color: #fff;
-  font-size: 14px;
   cursor: pointer;
   pointer-events: auto;
   overflow: hidden;
   z-index: 1;
-  box-shadow: 0 0 0 2px #111;
+  box-shadow: 0 0 0 1px #111;
 }
-.dashboard-activity-pin {
-  width: 18px;
-  height: 18px;
-  min-width: 18px;
-  min-height: 18px;
-  font-size: 16px;
-  border-width: 1px;
+.dashboard-event-dot {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  font-size: 0;
+  border-width: 2px;
 }
-.dashboard-member-pin {
+.dashboard-map-marker.dashboard-map-group,
+.dashboard-map-marker.dashboard-map-group:hover,
+.dashboard-map-marker.dashboard-map-group:focus-visible {
+  z-index: 4; /* The exact-location chooser remains pointer-accessible over selection. */
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  font: 700 11px system-ui;
+  font-variant-numeric: tabular-nums;
+  background: #f5f5f5;
+  color: #111;
+  border-color: #111;
+  box-shadow: 0 0 0 2px #fff;
+}
+/* A selected co-located event stays at its exact point, painted above the badge. */
+.dashboard-event-dot[aria-pressed="true"] {
   z-index: 3;
-  overflow: visible;
 }
-.dashboard-member-pin-note {
-  position: absolute;
-  top: calc(100% + 3px);
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 1px 4px;
-  background: rgb(10 10 10 / 88%);
-  border: 1px solid #777;
-  color: #fff;
-  font-size: 10px;
-  line-height: 1.2;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.dashboard-map-avatar {
+/* Event order, not a travelled route: dashed straight lines beneath the dots. */
+.dashboard-map-connections {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  border-radius: 50%;
+  overflow: visible;
+  pointer-events: none;
+}
+.dashboard-map-connection {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-dasharray: 6 5;
+}
+.dashboard-map-dim {
+  opacity: 0.3;
+}
+.dashboard-map-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.dashboard-map-chooser {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: #151515;
+  max-height: 260px;
+  overflow: auto;
+}
+.dashboard-map-chooser[hidden] {
+  display: none;
+}
+.dashboard-map-chooser button {
+  margin: 0;
+  min-width: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.dashboard-map-choice {
+  border: 1px solid var(--line);
+  border-left: 6px solid #6b7280;
+  background: transparent;
+  color: #f0f0f0;
+  font-weight: 500;
+  padding: 8px 10px;
+}
+.dashboard-map-choice:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 1px;
 }
 .dashboard-map-marker:hover {
   z-index: 2;
@@ -2032,7 +2053,7 @@ html.coach-covered #workspaceScroll {
 }
 .dashboard-timeline-mark[aria-pressed="true"],
 .dashboard-timeline-cluster[aria-pressed="true"],
-.dashboard-activity-pin[aria-pressed="true"] {
+.dashboard-event-dot[aria-pressed="true"] {
   outline: 2px solid white;
   outline-offset: 2px;
 }

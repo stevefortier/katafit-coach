@@ -8,6 +8,9 @@ import { chromium, type Page } from "playwright-core";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 
+const dateEventId = (date: string) =>
+  date.slice(0, 10).replaceAll("-", "").padStart(24, "0");
+
 async function fixture(
   run: (page: Page, calls: string[], key: string) => Promise<void>,
 ) {
@@ -26,11 +29,11 @@ async function fixture(
       url.pathname === "/api/friends/dojo/day-events" && start
         ? [
             {
-              id: `event-${start.slice(0, 10)}`,
+              id: dateEventId(start),
               user_id: member._id,
               occurred_at: new Date(Date.parse(start) + 3600000).toISOString(),
               event_type: "app.opened",
-              subject: { type: "app", id: "synthetic-app" },
+              subject: { type: "app", id: "cccccccccccccccccccccccc" },
               details: { platform: "web", start_reason: "launch" },
               actor_type: "member",
               source: "interactive",
@@ -106,9 +109,24 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
       position: { latitude: 40.72, longitude: -74.04 },
       data: {},
     };
-    await page.route(/\/api\/dashboard\/map\?/, (route) =>
+    const event = {
+      id: dateEventId("2026-03-10"),
+      user_id: owner._id,
+      occurred_at: activity.created_at,
+      event_type: "workout.completed",
+      subject: { type: "workout", id: activity._id },
+      details: {},
+      position: {
+        availability: "available",
+        ...activity.position,
+        accuracy: 8,
+        source: "gps",
+        captured_at: activity.created_at,
+      },
+    };
+    await page.route(/\/api\/dashboard\/(timeline|event)\?/, (route) =>
       route.fulfill({
-        json: { users: [owner], activities: [activity], hasMore: false },
+        json: { users: [owner], events: [event], hasMore: false },
       }),
     );
     let detailReads = 0;
@@ -123,7 +141,7 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
     await setDay(page, "2026-03-10");
     const input = page.locator("#dashboardMapDate");
     const pin = page.locator(
-      `.dashboard-activity-pin[data-activity-id="${activity._id}"]`,
+      `.dashboard-event-dot[data-event-id="${event.id}"]`,
     );
     await pin.waitFor();
     const geometry = () =>
@@ -131,7 +149,7 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
         return Object.fromEntries(
           [
             ["map", "#dashboardMap"],
-            ["pin", ".dashboard-activity-pin"],
+            ["pin", ".dashboard-event-dot"],
             ["timeline", "#dashboardTimeline"],
             ["strip", ".dashboard-map-date"],
           ].map(([name, selector]) => {
@@ -150,6 +168,9 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
       await page.setViewportSize({ width, height: 1000 });
       await page.getByRole("button", { name: "Next day", exact: true }).focus();
       await pin.scrollIntoViewIfNeeded();
+      // Both date entry and the smaller exact event dot fit the viewport;
+      // avoid measuring native focus auto-scroll as a layout displacement.
+      await page.evaluate(() => window.scrollTo(0, 0));
       const unfocused = await geometry();
       await page.keyboard.press("Tab");
       await page.evaluate(
@@ -474,7 +495,7 @@ test("native arrows, range preview/release and Today share civil-date reads with
     assert.equal(reads.length, before);
     await range.dispatchEvent("change");
     await page.waitForTimeout(100);
-    assert.equal(reads.length - before, 2);
+    assert.equal(reads.length - before, 1);
     await page.clock.install({ time: new Date("2026-03-10T03:59:00Z") });
     await page.clock.setFixedTime(new Date("2026-03-10T04:01:00Z"));
     await page.getByRole("button", { name: "Today", exact: true }).click();
@@ -493,9 +514,13 @@ test("native arrows, range preview/release and Today share civil-date reads with
 test("native pointer preview fences held dates, retains member and removes old-key handlers on clear/reload", async () => {
   await fixture(async (page, _calls, key) => {
     await setDay(page, "2026-03-10");
-    await page.locator('[data-event-id="event-2026-03-10"]').waitFor();
+    await page
+      .locator(`[data-event-id="${dateEventId("2026-03-10")}"]`)
+      .waitFor();
     await page.locator(".dashboard-member-card").click();
-    await page.locator('[data-event-id="event-2026-03-10"]').click();
+    await page
+      .locator(`[data-event-id="${dateEventId("2026-03-10")}"]`)
+      .click();
     assert.match(
       await page.locator("#dashboardMapSelection").innerText(),
       /Synthetic Ada/,
@@ -522,11 +547,11 @@ test("native pointer preview fences held dates, retains member and removes old-k
     });
     try {
       await page.getByRole("button", { name: "Next day", exact: true }).click();
-      for (let n = 0; n < 100 && held < 2; n++) await page.waitForTimeout(10);
+      for (let n = 0; n < 100 && held < 1; n++) await page.waitForTimeout(10);
       assert.equal(
         held,
-        2,
-        "map and timeline old-date responses are really held",
+        1,
+        "the shared map/timeline old-date stream is really held",
       );
       const range = page.getByLabel("Day of month", { exact: true });
       const box = (await range.boundingBox())!;
@@ -548,18 +573,22 @@ test("native pointer preview fences held dates, retains member and removes old-k
         "",
       );
       const beforeRelease = reads.length;
-      assert.equal(beforeRelease, 2, "pointer movements dispatch no reads");
+      assert.equal(beforeRelease, 1, "pointer movements dispatch no reads");
       await page.mouse.up();
-      await page.locator('[data-event-id="event-2026-03-22"]').waitFor();
+      await page
+        .locator(`[data-event-id="${dateEventId("2026-03-22")}"]`)
+        .waitFor();
       release();
       await page.waitForTimeout(100);
       assert.equal(
-        await page.locator('[data-event-id="event-2026-03-11"]').count(),
+        await page
+          .locator(`[data-event-id="${dateEventId("2026-03-11")}"]`)
+          .count(),
         0,
       );
       assert.equal(
         reads.length - beforeRelease,
-        2,
+        1,
         "native release commits each date-scoped path once",
       );
       assert.equal(
@@ -629,7 +658,7 @@ test("civil navigation preserves leap-century and DST day boundaries in actual m
       ["2026-03-08", 23],
       ["2026-11-01", 25],
     ] as const) {
-      const responses = ["map", "timeline"].map((path) =>
+      const responses = ["timeline"].map((path) =>
         page.waitForResponse((response) => {
           const url = new URL(response.url());
           return (
@@ -660,7 +689,7 @@ test("civil navigation preserves leap-century and DST day boundaries in actual m
 test("late activity privacy denial survives new date navigation and cannot resurrect member inventory", async () => {
   await fixture(async (page) => {
     // Synthetic transport boundaries; retain the real served renderer and auth/date lifecycle.
-    await page.route(/\/api\/dashboard\/timeline\?/, async (route) => {
+    await page.route(/\/api\/dashboard\/(timeline|event)\?/, async (route) => {
       const response = await route.fetch();
       const data = await response.json();
       for (const event of data.events) {
@@ -684,10 +713,14 @@ test("late activity privacy denial survives new date navigation and cannot resur
     try {
       await setDay(page, "2026-03-10");
       const detailRequest = page.waitForRequest(/\/api\/dashboard\/activity\?/);
-      await page.locator('[data-event-id="event-2026-03-10"]').click();
+      await page
+        .locator(`[data-event-id="${dateEventId("2026-03-10")}"]`)
+        .click();
       await detailRequest;
       await page.getByRole("button", { name: "Next day", exact: true }).click();
-      await page.locator('[data-event-id="event-2026-03-11"]').waitFor();
+      await page
+        .locator(`[data-event-id="${dateEventId("2026-03-11")}"]`)
+        .waitFor();
       release();
       await page.waitForFunction(
         () => !document.querySelector(".dashboard-timeline-mark"),

@@ -426,13 +426,15 @@ export async function admin(
               : url.pathname === "/api/dashboard/map" ||
                   url.pathname === "/api/dashboard/timeline"
                 ? ["date", "start", "end", "cursor"]
-                : url.pathname === "/api/dashboard/activity"
-                  ? ["id"]
-                  : url.pathname === "/api/dashboard/avatar"
+                : url.pathname === "/api/dashboard/event"
+                  ? ["event_id", "date", "start", "end"]
+                  : url.pathname === "/api/dashboard/activity"
                     ? ["id"]
-                    : url.pathname === "/api/dashboard/photo"
-                      ? ["activity_id", "file_id"]
-                      : [];
+                    : url.pathname === "/api/dashboard/avatar"
+                      ? ["id"]
+                      : url.pathname === "/api/dashboard/photo"
+                        ? ["activity_id", "file_id"]
+                        : [];
         if (
           (url.pathname !== "/api/dashboard/members" && !allowed.length) ||
           [...params.keys()].some(
@@ -470,7 +472,8 @@ export async function admin(
             throw new SafeError("ARGUMENTS_REJECTED");
           if (
             url.pathname === "/api/dashboard/map" ||
-            url.pathname === "/api/dashboard/timeline"
+            url.pathname === "/api/dashboard/timeline" ||
+            url.pathname === "/api/dashboard/event"
           ) {
             const date = params.get("date");
             const start = params.get("start");
@@ -507,15 +510,26 @@ export async function admin(
                   ).test(cursor)))
             )
               throw new SafeError("ARGUMENTS_REJECTED");
-            target =
-              (url.pathname === "/api/dashboard/timeline"
-                ? "/api/friends/dojo/day-events?start="
-                : "/api/friends/dojo/positioned-activities?start=") +
-              encodeURIComponent(start) +
-              "&end=" +
-              encodeURIComponent(end) +
-              "&limit=100" +
-              (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
+            const eventId = params.get("event_id");
+            // Exact-event reauthorization: one ledger ID in the same day window, never a cursor.
+            if (url.pathname === "/api/dashboard/event") {
+              if (!eventId || !/^[0-9a-f]{24}$/.test(eventId))
+                throw new SafeError("ARGUMENTS_REJECTED");
+              target =
+                `/api/friends/dojo/day-events?event_id=${eventId}&limit=1&start=` +
+                encodeURIComponent(start) +
+                "&end=" +
+                encodeURIComponent(end);
+            } else
+              target =
+                (url.pathname === "/api/dashboard/timeline"
+                  ? "/api/friends/dojo/day-events?start="
+                  : "/api/friends/dojo/positioned-activities?start=") +
+                encodeURIComponent(start) +
+                "&end=" +
+                encodeURIComponent(end) +
+                "&limit=100" +
+                (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
           } else {
             target =
               "/api/friends/feed/dojo?limit=20" +

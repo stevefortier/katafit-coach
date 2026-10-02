@@ -18,6 +18,7 @@ test(
     const second = "bbbbbbbbbbbbbbbbbbbbbbbb";
     const calls: string[] = [];
     const held = new Map<ServerResponse, () => void>();
+    const avatarReads = new WeakSet<ServerResponse>();
     let active = 0,
       maximum = 0;
     let activeAvatars = 0,
@@ -31,7 +32,10 @@ test(
       active++;
       maximum = Math.max(maximum, active);
       const avatar = url.pathname.includes("/avatar/");
-      if (avatar) maximumAvatars = Math.max(maximumAvatars, ++activeAvatars);
+      if (avatar) {
+        avatarReads.add(res);
+        maximumAvatars = Math.max(maximumAvatars, ++activeAvatars);
+      }
       res.once("close", () => {
         active--;
         if (avatar) activeAvatars--;
@@ -86,6 +90,15 @@ test(
                     occurred_at: entry.created_at,
                     subject: { type: "workout", id: entry._id },
                     details: {},
+                    // The map plots the event's own canonical recorded fix.
+                    position: {
+                      availability: "available",
+                      latitude: 42,
+                      longitude: -71,
+                      accuracy: 5,
+                      captured_at: entry.created_at,
+                      source: "gps",
+                    },
                   },
                 ]
               : [],
@@ -146,10 +159,13 @@ test(
       );
       assert.ok(!statuses.includes(429), `initial self-throttle: ${statuses}`);
       holdPrimary = false;
-      release();
+      // Map and timeline share one day-events read, so an avatar may already
+      // hold the third lane; release only primaries and keep avatars held.
+      for (const [res, finish] of [...held])
+        if (!avatarReads.has(res)) finish();
       await assertEventually(() => [...held.keys()].length === 2);
       await page.waitForFunction(
-        () => document.querySelectorAll(".dashboard-activity-pin").length === 1,
+        () => document.querySelectorAll(".dashboard-event-dot").length === 1,
       );
       const change = async (date: string) => {
         await page.locator("#dashboardMapDate").fill(date);
@@ -159,16 +175,14 @@ test(
       // prematurely removed from admission just because their caller aborts.
       await change("2026-09-28");
       await assertEventually(() =>
-        calls.some((url) =>
-          url.includes("positioned-activities?start=2026-09-28"),
-        ),
+        calls.some((url) => url.includes("day-events?start=2026-09-28")),
       );
       await page.waitForFunction(
         () =>
           document
             .querySelector("#dashboardTimeline")
             ?.textContent?.includes("2026-09-28") &&
-          document.querySelectorAll(".dashboard-activity-pin").length === 1,
+          document.querySelectorAll(".dashboard-event-dot").length === 1,
       );
       assert.ok(!statuses.includes(429), `date self-throttle: ${statuses}`);
       assert.ok(maximum <= 3, `date held upstream concurrency ${maximum}`);
@@ -222,7 +236,7 @@ test(
         "locked date handler must not dispatch more reads",
       );
       assert.equal(await page.locator(".dashboard-timeline-mark").count(), 0);
-      assert.equal(await page.locator(".dashboard-activity-pin").count(), 0);
+      assert.equal(await page.locator(".dashboard-event-dot").count(), 0);
       assert.ok(!statuses.includes(429), `self-throttle: ${statuses}`);
       console.log(
         JSON.stringify({

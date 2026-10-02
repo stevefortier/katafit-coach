@@ -308,7 +308,8 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       );
       await page.route("**/api/**", async (route) => {
         const path = new URL(route.request().url()).pathname;
-        if (path === "/api/dashboard/map" && denyMap)
+        // The map shares the day-events reader with the timeline.
+        if (path === "/api/dashboard/timeline" && denyMap)
           return route.fulfill({ status: 403, json: { error: "DENIED" } });
         const bodies: Record<string, unknown> = {
           "/api/config": config,
@@ -463,6 +464,10 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           dateName: document
             .querySelector<HTMLInputElement>("#dashboardMapDay")!
             .getAttribute("aria-label"),
+          occurrenceLabel: document
+            .querySelector('label[for="dashboardMapDate"]')
+            ?.textContent?.replace(/\s+/g, " ")
+            .trim(),
           dateWidth: dateBox.width,
           trackWidth: dayTrack.getBoundingClientRect().width,
           centered:
@@ -484,6 +489,12 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       });
       assert.equal(dojoShell.dateName, "Day of month");
       assert.ok(dojoShell.centered, "month/year pair is centered");
+      // Map and timeline both place events by their own occurrence time.
+      assert.match(
+        dojoShell.occurrenceLabel || "",
+        /event occurrence day.*map and timeline/i,
+      );
+      assert.doesNotMatch(dojoShell.occurrenceLabel || "", /creation/i);
       assert.ok(
         dojoShell.dateWidth >= 240 &&
           dojoShell.trackWidth >= 120 &&
