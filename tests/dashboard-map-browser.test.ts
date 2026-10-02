@@ -180,3 +180,171 @@ test("a held previous-date stream cannot resurrect points after a newer empty da
     },
   );
 });
+
+test("served event timeline uses local DST occurrence scale without Leaflet", async () => {
+  const { createServer } = await import("node:http");
+  const { chromium } = await import("playwright-core");
+  const { Store } = await import("../src/config/store.js");
+  const { admin } = await import("../src/server/admin.js");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const home = await mkdtemp("/tmp/coach-timeline-dst-");
+  const calls: string[] = [];
+  const backend = createServer((req, res) => {
+    calls.push(req.url!);
+    res.setHeader("content-type", "application/json");
+    if (req.url?.startsWith("/api/friends/dojo/day-events?")) {
+      const params = new URL(req.url!, "http://fixture").searchParams;
+      const start = params.get("start")!;
+      res.end(
+        JSON.stringify({
+          users: [{ _id: ada, display_name: "Synthetic Ada" }],
+          events: [0, 1, 2]
+            .map((i) => ({
+              id: ev(i + 1),
+              user_id: ada,
+              event_type: "workout.set_completed",
+              occurred_at: new Date(Date.parse(start) + 9000000).toISOString(),
+              subject: { type: "workout", id: ada },
+              details: { set_index: i },
+              actor_type: "member",
+              source: "interactive",
+            }))
+            .filter(
+              (e) => !params.has("event_id") || e.id === params.get("event_id"),
+            ),
+          hasMore: false,
+        }),
+      );
+    } else
+      res.end(
+        JSON.stringify({
+          members: [],
+          users: [],
+          activities: [],
+          hasMore: false,
+        }),
+      );
+  });
+  await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
+  const store = new Store(home);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: `http://127.0.0.1:${(backend.address() as any).port}`,
+    token: "synthetic-token",
+  });
+  const app = await admin(store, 0);
+  const browser = await chromium.launch({
+    executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
+    headless: true,
+    args: ["--no-sandbox"],
+  });
+  try {
+    const page = await browser.newPage({
+      timezoneId: "America/New_York",
+      viewport: { width: 1440, height: 900 },
+    });
+    await page.goto(app.origin + "/dashboard");
+    await page.evaluate(async (key) => {
+      document.getElementById("studio")!.hidden = false;
+      document.getElementById("login")!.hidden = true;
+      (window as any).L = undefined;
+      await (window as any).CoachDashboard.load(null, key);
+    }, store.secrets.admin);
+    for (const [day, hours, start, end] of [
+      [
+        "2026-11-01",
+        25,
+        "2026-11-01T04:00:00.000Z",
+        "2026-11-02T05:00:00.000Z",
+      ],
+      [
+        "2026-03-08",
+        23,
+        "2026-03-08T05:00:00.000Z",
+        "2026-03-09T04:00:00.000Z",
+      ],
+      [
+        "2026-11-02",
+        24,
+        "2026-11-02T05:00:00.000Z",
+        "2026-11-03T05:00:00.000Z",
+      ],
+    ] as const) {
+      await page.locator("#dashboardMapDate").fill(day);
+      await page.locator("#dashboardMapDate").dispatchEvent("change");
+      await page.waitForFunction(
+        (day) =>
+          document
+            .querySelector(".dashboard-timeline-heading")
+            ?.textContent?.includes(day) &&
+          document.querySelectorAll(".dashboard-timeline-mark").length === 3,
+        day,
+      );
+      assert.ok(
+        calls.some((c) =>
+          c.includes(
+            `day-events?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+          ),
+        ),
+      );
+      const geometry = await page
+        .locator(".dashboard-timeline-mark")
+        .evaluateAll((nodes) =>
+          nodes.map((n) => ({
+            left: (n as HTMLElement).style.left,
+            top: (n as HTMLElement).style.top,
+          })),
+        );
+      assert.equal(new Set(geometry.map((g) => g.top)).size, 1);
+      assert.equal(
+        await page.locator(".dashboard-timeline-cluster").textContent(),
+        "3",
+      );
+      assert.ok(
+        Math.abs(parseFloat(geometry[0].left) - (2.5 / hours) * 100) < 0.001,
+      );
+      assert.equal(
+        await page.locator(".dashboard-timeline-end").textContent(),
+        "00:00",
+      );
+      const rects = await page
+        .locator(".dashboard-timeline-tick")
+        .evaluateAll((nodes) =>
+          nodes.map((n) => {
+            const r = n.getBoundingClientRect();
+            return { left: r.left, right: r.right };
+          }),
+        );
+      for (let i = 1; i < rects.length; i++)
+        assert.ok(
+          rects[i].left >= rects[i - 1].right,
+          "tick labels do not overlap",
+        );
+      await page.locator(".dashboard-timeline-cluster").click();
+      await page
+        .locator(`.dashboard-timeline-choice[data-event-id="${ev(1)}"]`)
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#dashboardMapSelection")
+          ?.textContent?.includes("Event access rechecked"),
+      );
+      assert.equal(
+        await page
+          .locator(`.dashboard-timeline-mark[data-event-id="${ev(1)}"]`)
+          .getAttribute("aria-pressed"),
+        "true",
+      );
+      assert.match(
+        await page.locator("#dashboardMapSelection").innerText(),
+        /set index: 0/,
+      );
+    }
+  } finally {
+    await browser.close();
+    await app.close();
+    await new Promise<void>((r) => backend.close(() => r()));
+    await rm(home, { recursive: true, force: true });
+  }
+});
