@@ -178,7 +178,7 @@ test("served Gallery independently pages historical inventories, lazily decodes 
       calls.filter((x) => x.startsWith("/api/media/")).length,
       count,
     );
-    const evidence = "/home/kai/task-evidence/coach-dashboard-gallery";
+    const evidence = process.env.GALLERY_BROWSER_EVIDENCE || home + "/evidence";
     await mkdir(evidence, { recursive: true });
     await page.screenshot({
       path: evidence + "/gallery-desktop-fullscreen.png",
