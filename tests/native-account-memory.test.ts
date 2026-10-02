@@ -272,7 +272,7 @@ test("'don't save this conversation' turns learning off for the whole runtime an
     const system = systems(
       f.provider.bodies.filter((b) => !isExtraction(b)).at(-1),
     )[0].content;
-    assert.match(system, /off for this chat/);
+    assert.match(system, /off locally for this chat/);
     // Recall still works while learning is off.
     assert.ok(
       f.backend.requests.some((r) => r.path.startsWith("/api/coach/memory?")),

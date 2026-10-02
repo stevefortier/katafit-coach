@@ -36,14 +36,25 @@ test(
     const dir = await mkdtemp(tmpdir() + "/native-account-memory-docker-");
     const bodies: any[] = [];
     let extract: () => unknown = () => ({ proposals: [] });
+    let holdExtraction = false;
+    let extractionHeld = false;
+    let releaseExtraction!: () => void;
+    const extractionGate = new Promise<void>((r) => {
+      releaseExtraction = r;
+    });
     const provider = createServer(async (req, res) => {
       let raw = "";
       for await (const chunk of req) raw += chunk;
       const body = JSON.parse(raw);
       bodies.push(body);
       res.setHeader("content-type", "text/event-stream");
-      if (isExtraction(body))
+      if (isExtraction(body)) {
+        if (holdExtraction) {
+          extractionHeld = true;
+          await extractionGate;
+        }
         return res.end(sseText(JSON.stringify(extract())));
+      }
       const human = JSON.stringify(
         body.messages.findLast((m: any) => m.role === "user"),
       );
@@ -304,8 +315,59 @@ test(
         () => active().some((i) => i.text === TUESDAYS),
         "new runtime learns again",
       );
+      // Real Pi/relay delivery followed by host-owned opt-out while the
+      // separate extractor HTTP response is genuinely in flight.
+      holdExtraction = true;
+      extract = () => ({
+        proposals: [proposal("Prefers short morning workouts.")],
+      });
+      await say(
+        "ACCOUNT_OPTOUT_TURN: I prefer short morning workouts.",
+        "OPTOUT",
+      );
+      await waitFor(() => extractionHeld, "in-flight extraction");
+      ws!.send(JSON.stringify({ type: "memory-capture", enabled: false }));
+      await waitFor(
+        () =>
+          notices.some((n) =>
+            /part of this chat was already committed/.test(n.note ?? ""),
+          ),
+        "confirmed durable discard",
+      );
+      const fence = backend.requests
+        .filter((r) => r.path.endsWith("/discard"))
+        .at(-1)!;
+      assert.ok(fence.body.idempotency_key.startsWith("native:"));
+      assert.ok(
+        [...backend.captures.values()].some(
+          (c) =>
+            c.key === fence.body.idempotency_key &&
+            c.status === "discarded" &&
+            c.evidence === null,
+        ),
+      );
+      releaseExtraction();
+      holdExtraction = false;
+      assert.equal(
+        (
+          await fetch(origin + "/api/terminal/stop", {
+            method: "POST",
+            headers,
+            body: "{}",
+          })
+        ).status,
+        200,
+      );
+      ws?.terminate();
+      await connect();
+      await say("ACCOUNT_FRESH_TURN: hello", "FRESH");
+      assert.ok(
+        !active().some((i) => i.text === "Prefers short morning workouts."),
+        "fresh actual Pi recovery cannot learn opted-out evidence",
+      );
       assert.deepEqual(errors, []);
     } finally {
+      releaseExtraction();
       ws?.terminate();
       await app?.close();
       provider.closeAllConnections();

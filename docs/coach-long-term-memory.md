@@ -33,8 +33,29 @@ proposes candidates from the delivered human/assistant text and redacted tool
 evidence, and host guards drop ungrounded, inferred-sensitive, ephemeral and
 instruction-like proposals before the backend commits them. A compact
 "Remembered" notice appears only for committed receipts. "Don't save this
-conversation" turns automatic learning off for the runtime. The backend pause
-setting survives restarts.
+conversation" turns automatic learning off locally for the runtime and awaits
+`POST /api/coach/memory/interactions/discard` for every exact host-owned capture
+creation key, tracked before dispatch. The discard request is independent of
+aborted extraction/runtime signals and bounded to 15 seconds; its response must
+echo `coach.memory.v1`, the exact key and `discarded` or `committed` within 4 KiB.
+Only `discarded` confirms a durable backend fence against creation, commit and
+recovery. `committed` is explicitly not a retraction. An unknown, denied or
+unsupported outcome remains unverified, never a promise that nothing will be
+saved. Capture/discard/commit are host-only, not model-selected routes or keys.
+
+Before cancellation/network dispatch, unresolved discard intents are fsynced as
+content-free private journal files under the installation's `memory-discards`
+directory (keys and origin/credential fingerprints only, no evidence or token).
+Fresh runtime recovery reconciles those exact keys first; failed, corrupt,
+unsafe or unresolved discovery journals block local recovery rather than losing
+the privacy fence. If a process dies before a pending-key discovery ACK, its
+discovery hold remains fail-closed. Credential rotation with unresolved intents
+also remains fail-closed: without verified account rebinding, a different bearer
+never clears an old account's intent. These conservative holds need explicit
+reconciliation; deleting them is not a privacy-safe workaround. Account pending
+entries supply exact creation keys before resume; legacy captures lacking those
+keys cannot be automatically recovered safely. Existing account-wide pause
+behavior is separate and survives restarts.
 
 Every memory acquired during a runtime (recall, memory reads through tools and
 Coach writes) stays a capture coherence fence for the rest of that runtime,

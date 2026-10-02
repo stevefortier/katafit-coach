@@ -705,7 +705,7 @@ test("Coach pane memory notices offer View, Edit and Forget for committed receip
     );
     assert.match(
       await page.locator("#coachMemoryState").innerText(),
-      /won't be saved/,
+      /off locally/,
     );
     assert.deepEqual(f.errors, []);
   } finally {

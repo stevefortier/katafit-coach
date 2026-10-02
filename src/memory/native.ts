@@ -251,7 +251,9 @@ export function classifyMemoryWrite(
   path: string,
   body: unknown,
 ): MemoryWrite | "reject" | undefined {
-  if (!/^\/api\/coach\/memory(?:[/?]|$)/.test(path) || method === "GET")
+  if (/^\/api\/coach\/memory\/interactions\/discard(?:[/?]|$)/i.test(path))
+    return "reject";
+  if (!/^\/api\/coach\/memory(?:[/?]|$)/i.test(path) || method === "GET")
     return undefined;
   if (path.includes("?") || (body !== undefined && !plain(body)))
     return "reject";
@@ -339,7 +341,11 @@ type Turn = {
   failed: unknown;
 };
 
+import { DiscardJournal } from "./discard-journal.js";
+
 export class NativeMemory {
+  private journal?: DiscardJournal;
+  private journalFailed = false;
   private readonly runtime = randomBytes(12).toString("hex");
   private sequence = 0;
   private turn?: Turn;
@@ -379,10 +385,18 @@ export class NativeMemory {
         context: string,
         signal: AbortSignal,
       ) => Promise<string>;
+      discardJournalDir?: string;
       onDiagnostic?: BackendLogger;
       hooks?: NativeMemoryHooks;
     },
-  ) {}
+  ) {
+    if (options.discardJournalDir && options.token)
+      this.journal = new DiscardJournal(
+        options.discardJournalDir,
+        options.origin,
+        options.token,
+      );
+  }
   // An older backend without account memory (framework 404) keeps today's
   // behavior for this runtime: no evidence block, no learning, no re-probing.
   private unsupported = false;
@@ -432,23 +446,104 @@ export class NativeMemory {
       /* A UI hook failure never affects chat or memory state. */
     }
   }
+  private readonly captureKeys = new Set<string>();
+  private recoveryDiscovery?: Promise<
+    Awaited<ReturnType<AccountMemory["pending"]>>
+  >;
+  private discarding?: Promise<"discarded" | "committed" | "unverified">;
+  private discardStatus: "pending" | "discarded" | "committed" | "unverified" =
+    "pending";
   /** Host-observed request to keep this chat out of automatic learning. */
   inhibit(source: "user" | "chat") {
-    if (this.inhibited) return;
+    if (this.discarding) return this.discarding;
     this.inhibited = true;
     this.pending = undefined;
+    this.discardStatus = "pending";
     const turn = this.turn;
     if (turn) turn.block = this.format(turn.recalled, turn.failed, turn.paused);
+    // Write intent before cancellation or any discard network request.
+    try {
+      if (this.recoveryDiscovery)
+        this.journal?.put(`discovery:${this.runtime}`, true);
+      for (const key of this.captureKeys) this.journal?.put(key);
+    } catch (error) {
+      this.journalFailed = true;
+      this.diag("memory-discard-journal-unavailable", error);
+    }
     for (const controller of this.work) controller.abort();
     this.notice({
       action: "learning-off",
       source: "user",
       items: [],
-      note:
-        source === "chat"
-          ? "You asked not to save this conversation: automatic learning is off for this chat until you start a new one. Anything already saved stays in Memories."
-          : "Automatic learning is off for this chat until you start a new one. Anything already saved stays in Memories.",
+      note: "Automatic learning is off for this chat. Confirming discard of pending captures; don't-save is not confirmed yet. Anything already saved stays in Memories.",
     });
+    return (this.discarding = this.discardCaptures()
+      .then((status) => {
+        this.discardStatus = status;
+        if (this.turn)
+          this.turn.block = this.format(
+            this.turn.recalled,
+            this.turn.failed,
+            this.turn.paused,
+          );
+        this.notice({
+          action: "learning-off",
+          source: "user",
+          items: [],
+          note:
+            status === "unverified"
+              ? "Automatic learning is off locally, but pending capture discard is unverified or unavailable. Another runtime may still recover this chat; do not assume it won't be saved."
+              : status === "committed"
+                ? "Pending captures were fenced where possible, but part of this chat was already committed and cannot be retracted by don't-save. Review or Forget it in Memories. Automatic learning is off for this chat."
+                : "Pending captures were discarded and fenced against recovery. Automatic learning is off for this chat until you start a new one. Anything already saved stays in Memories.",
+        });
+        return status;
+      })
+      .finally(() => {
+        this.discarding = undefined;
+      }));
+  }
+  private async discardCaptures(): Promise<
+    "discarded" | "committed" | "unverified"
+  > {
+    let status: "discarded" | "committed" | "unverified" = this.journalFailed
+      ? "unverified"
+      : "discarded";
+    // A pending recovery ACK may reveal keys after opt-out. Do not claim a
+    // fence until that independent discovery has settled.
+    try {
+      const pending = await this.recoveryDiscovery;
+      for (const c of pending?.captures.slice(0, 2) ?? []) {
+        if (!c.idempotency_key)
+          throw new Error("MEMORY_DISCARD_KEY_UNAVAILABLE");
+        this.captureKeys.add(c.idempotency_key);
+        this.journal?.put(c.idempotency_key);
+      }
+      // Known key intents are now durable, replacing the unknown-discovery hold.
+      this.journal?.remove(`discovery:${this.runtime}`);
+    } catch (error) {
+      status = "unverified";
+      this.diag("memory-discard-unverified", error);
+    }
+    // Independent of extraction cancellation and runtime lifetime; bounded.
+    const memory = new AccountMemory(
+      this.options.origin,
+      this.options.token ?? "",
+      AbortSignal.timeout(15000),
+      this.options.secrets,
+    );
+    for (const key of this.captureKeys) {
+      try {
+        const receipt = await memory.discard(key);
+        this.journal?.remove(key);
+        if (receipt.status === "committed" && status !== "unverified")
+          status = "committed";
+      } catch (error) {
+        status = "unverified";
+        this.diag("memory-discard-unverified", error);
+      }
+    }
+    return status;
   }
   get learningOff() {
     return this.inhibited || this.ancestryClosed;
@@ -547,7 +642,7 @@ export class NativeMemory {
       .update(JSON.stringify([index, messages[index]?.content ?? null]))
       .digest("hex");
     if (this.turn?.key !== key) {
-      if (human && wantsNoCapture(human)) this.inhibit("chat");
+      if (human && wantsNoCapture(human)) await this.inhibit("chat");
       const signal = AbortSignal.any([
         AbortSignal.timeout(8000),
         ...(requestSignal ? [requestSignal] : []),
@@ -619,7 +714,7 @@ export class NativeMemory {
   }
   private format(items: AccountItem[], failed: unknown, paused?: boolean) {
     const learning = this.inhibited
-      ? "off for this chat (the user asked not to save it); do not say anything will be remembered automatically"
+      ? `off locally for this chat (the user asked not to save it); pending capture discard is ${this.discardStatus}; ${this.discardStatus === "discarded" ? "pending captures are durably fenced" : this.discardStatus === "committed" ? "some capture was already committed and cannot be retracted by don't-save" : "do not promise this chat will not be saved: another runtime may recover pending evidence"}; do not say anything will be remembered automatically`
       : this.ancestryClosed
         ? "off until the user starts a new chat (memories used earlier in this chat changed or exceeded what can be tracked); do not say anything will be remembered automatically"
         : paused === true
@@ -809,10 +904,15 @@ export class NativeMemory {
     const settings = await memory.settings();
     if (settings.learning_paused || this.learningOff) return;
     const evidence = this.evidence(pending.turn, pending.assistant);
+    // Retain the host-owned key BEFORE dispatch, including lost/aborted ACKs.
+    signal.throwIfAborted();
+    if (this.learningOff) return;
+    const idempotency_key = `native:${this.runtime}:${++this.sequence}`;
+    this.captureKeys.add(idempotency_key);
     let capture: AccountCapture;
     try {
       capture = await memory.capture({
-        idempotency_key: `native:${this.runtime}:${++this.sequence}`,
+        idempotency_key,
         ...evidence,
         recalled: [...this.acquired].map(([id, known]) => ({ id, ...known })),
       });
@@ -1191,7 +1291,35 @@ export class NativeMemory {
    * tools or reply. Bounded; never runs while learning is paused.
    */
   async recover() {
-    if (!this.available) return;
+    if (!this.available || this.learningOff) return;
+    // Do not scan/resume anything until every durable local privacy fence settles.
+    try {
+      for (const key of this.journal?.pending() ?? []) {
+        const receipt = await new AccountMemory(
+          this.options.origin,
+          this.options.token!,
+          AbortSignal.timeout(15000),
+          this.options.secrets,
+        ).discard(key);
+        this.journal?.remove(key);
+        if (receipt.status === "committed")
+          this.notice({
+            action: "learning-off",
+            source: "automatic",
+            items: [],
+            note: "A pending don't-save request found an already committed capture; it cannot be retracted. Review or Forget it in Memories.",
+          });
+      }
+    } catch (error) {
+      this.diag("memory-discard-unverified", error);
+      this.notice({
+        action: "learning-off",
+        source: "automatic",
+        items: [],
+        note: "A pending don't-save request is unverified. Recovery is blocked locally until its discard is confirmed; another runtime may still recover it.",
+      });
+      return;
+    }
     const controller = new AbortController();
     this.work.add(controller);
     try {
@@ -1200,12 +1328,30 @@ export class NativeMemory {
         AbortSignal.timeout(120000),
       ]);
       const memory = this.client(signal);
-      const pending = await memory.pending();
+      this.recoveryDiscovery = new AccountMemory(
+        this.options.origin,
+        this.options.token!,
+        AbortSignal.timeout(15000),
+        this.options.secrets,
+      ).pending();
+      const pending = await this.recoveryDiscovery;
+      // Register every selected key before resume dispatch. A legacy response
+      // without keys is not recoverable safely under the discard contract.
       if (pending.paused) return;
-      for (const { capture_id } of pending.captures.slice(0, 2)) {
+      for (const c of pending.captures.slice(0, 2)) {
+        if (!c.idempotency_key)
+          throw new Error("MEMORY_DISCARD_KEY_UNAVAILABLE");
+        this.captureKeys.add(c.idempotency_key);
+      }
+      for (const { capture_id, idempotency_key } of pending.captures.slice(
+        0,
+        2,
+      )) {
         if (this.inhibited || signal.aborted) return;
         try {
           const resumed = await memory.resume(capture_id);
+          if (resumed.capture.idempotency_key !== idempotency_key)
+            throw new Error("MEMORY_DISCARD_KEY_UNAVAILABLE");
           await this.extractAndCommit(memory, resumed.capture, {
             human: resumed.evidence.human_text,
             groundingHuman: resumed.evidence.human_text,
@@ -1222,6 +1368,7 @@ export class NativeMemory {
     } catch (error) {
       this.diag("memory-recovery-skipped", error);
     } finally {
+      this.recoveryDiscovery = undefined;
       this.work.delete(controller);
     }
   }

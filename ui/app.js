@@ -3703,7 +3703,7 @@ function renderCoachMemory() {
   }
   $("coachDontSave").disabled = coachMemoryChatOff;
   $("coachMemoryState").textContent = coachMemoryChatOff
-    ? "This chat won't be saved to memory. Start a new chat to turn learning back on."
+    ? "Automatic learning is off locally for this chat. Check the discard notice below: pending or unverified capture discard is not a guarantee that this chat won't be saved. Anything already committed stays in Memories."
     : coachMemoryNotices.length
       ? ""
       : "Notices appear here when your Coach saves, updates or forgets a memory in this chat.";

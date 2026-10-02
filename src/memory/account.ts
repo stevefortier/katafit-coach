@@ -54,6 +54,9 @@ const reject = (): never => {
   throw new AccountMemoryFailure("MEMORY_RESULT_REJECTED");
 };
 export const KEY_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
+// Capture keys use the additive backend contract, not manual-operation keys.
+export const captureKey = (key: unknown): key is string =>
+  typeof key === "string" && key.length >= 1 && key.length <= 128;
 const ID_PATTERN = /^[a-f0-9]{24}$/;
 const PRODUCERS = ["account_owner_session", "external_coach", "hosted_coach"];
 const MAX_TEXT_BYTES = 2048;
@@ -129,6 +132,7 @@ export interface AccountSettings {
 }
 export interface AccountCapture {
   capture_id: string;
+  idempotency_key?: string;
   memory_epoch: number;
   extraction_expires_at: string;
 }
@@ -345,8 +349,13 @@ function captureOf(value: unknown): AccountCapture {
     v.memory_epoch < 0
   )
     reject();
+  if (v.idempotency_key !== undefined && !captureKey(v.idempotency_key))
+    reject();
   return {
     capture_id: v.capture_id,
+    ...(v.idempotency_key !== undefined
+      ? { idempotency_key: v.idempotency_key as string }
+      : {}),
     memory_epoch: v.memory_epoch,
     extraction_expires_at: iso(v.extraction_expires_at),
   };
@@ -455,7 +464,12 @@ export class AccountMemory {
     readonly secrets: string[],
     private readonly timeoutMs = 15000,
   ) {}
-  async request(method: string, path: string, body?: unknown): Promise<any> {
+  async request(
+    method: string,
+    path: string,
+    body?: unknown,
+    responseLimit = 768 * 1024,
+  ): Promise<any> {
     let base: URL;
     try {
       base = new URL(this.origin);
@@ -536,7 +550,7 @@ export class AccountMemory {
         try {
           for await (const chunk of response.body ?? []) {
             size += chunk.length;
-            if (size > 768 * 1024)
+            if (size > responseLimit)
               throw new AccountMemoryFailure("MEMORY_LIMIT");
             chunks.push(Buffer.from(chunk));
           }
@@ -967,7 +981,38 @@ export class AccountMemory {
       `${ACCOUNT_MEMORY_ROOT}/interactions`,
       input,
     );
-    return this.acknowledged(() => captureOf(value));
+    return this.acknowledged(() => {
+      const capture = captureOf(value);
+      if (
+        capture.idempotency_key !== undefined &&
+        capture.idempotency_key !== input.idempotency_key
+      )
+        reject();
+      return capture;
+    });
+  }
+  /** Host-only account-scoped privacy fence, safe to repeat after a lost ACK. */
+  async discard(idempotency_key: string) {
+    if (!captureKey(idempotency_key))
+      throw new AccountMemoryFailure("MEMORY_INVALID");
+    const value = await this.request(
+      "POST",
+      `${ACCOUNT_MEMORY_ROOT}/interactions/discard`,
+      { idempotency_key },
+      4096,
+    );
+    return this.acknowledged(() => {
+      if (
+        value.protocol !== MEMORY_PROTOCOL ||
+        value.idempotency_key !== idempotency_key ||
+        !["discarded", "committed"].includes(value.status)
+      )
+        reject();
+      return {
+        idempotency_key,
+        status: value.status as "discarded" | "committed",
+      };
+    });
   }
   async commit(
     capture: AccountCapture,
@@ -1007,7 +1052,7 @@ export class AccountMemory {
   /** Scans continuation pages, including empty ones, within a fixed bound. */
   async pending() {
     let cursor: string | null = null;
-    const captures: { capture_id: string }[] = [];
+    const captures: { capture_id: string; idempotency_key?: string }[] = [];
     let paused = false;
     for (let page = 0; page < 8; page++) {
       const value = await this.request(
@@ -1024,7 +1069,14 @@ export class AccountMemory {
           !ID_PATTERN.test(c.capture_id)
         )
           reject();
-        captures.push({ capture_id: c.capture_id });
+        if (c.idempotency_key !== undefined && !captureKey(c.idempotency_key))
+          reject();
+        captures.push({
+          capture_id: c.capture_id,
+          ...(c.idempotency_key
+            ? { idempotency_key: c.idempotency_key as string }
+            : {}),
+        });
       }
       paused ||= value.learning_paused === true;
       let next: { has_more: boolean; next_cursor: string | null };

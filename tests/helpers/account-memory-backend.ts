@@ -51,6 +51,7 @@ export async function startAccountMemoryBackend(
   const history = new Map<string, any[]>();
   const operations = new Map<string, any>();
   const captures = new Map<string, any>();
+  const discardedKeys = new Set<string>();
   // Persisted fragment ancestry: cited (based_on) + superseded rows only.
   const ancestry = new Map<string, string[]>();
   const pendingErasure = new Set<string>();
@@ -246,7 +247,43 @@ export async function startAccountMemoryBackend(
         },
       };
     }
+    if (rest === "/interactions/discard" && request.method === "POST") {
+      if (
+        typeof body?.idempotency_key !== "string" ||
+        body.idempotency_key.length < 1 ||
+        body.idempotency_key.length > 128 ||
+        Object.keys(body).length !== 1
+      )
+        return fail(400, "MEMORY_INVALID");
+      const capture = [...captures.values()].find(
+        (c) => c.key === body.idempotency_key,
+      );
+      if (capture?.status !== "committed") {
+        discardedKeys.add(body.idempotency_key);
+        if (capture) {
+          capture.status = "discarded";
+          capture.evidence = null;
+        }
+      }
+      return {
+        status: 200,
+        body: {
+          protocol: "coach.memory.v1",
+          idempotency_key: body.idempotency_key,
+          status: capture?.status === "committed" ? "committed" : "discarded",
+        },
+      };
+    }
     if (rest === "/interactions" && request.method === "POST") {
+      if (discardedKeys.has(body?.idempotency_key))
+        return {
+          status: 200,
+          body: {
+            protocol: "coach.memory.v1",
+            idempotency_key: body.idempotency_key,
+            status: "discarded",
+          },
+        };
       if (settings.learning_paused) return fail(409, "MEMORY_LEARNING_PAUSED");
       if (
         typeof body?.idempotency_key !== "string" ||
@@ -283,6 +320,7 @@ export async function startAccountMemoryBackend(
       const dto = {
         protocol: "coach.memory.v1",
         capture_id,
+        idempotency_key: body.idempotency_key,
         audience: "account_private",
         memory_epoch: epoch,
         extraction_expires_at: new Date(Date.now() + 1800000).toISOString(),
@@ -306,7 +344,11 @@ export async function startAccountMemoryBackend(
     if (rest === "/interactions/pending" && request.method === "GET") {
       const open = [...captures.entries()]
         .filter(([, c]) => c.status === "open")
-        .map(([capture_id]) => ({ capture_id, origin: "operator_turn" }));
+        .map(([capture_id, c]) => ({
+          capture_id,
+          origin: "operator_turn",
+          idempotency_key: c.key,
+        }));
       const cursor = Number(url.searchParams.get("cursor") ?? 0);
       // Deterministic pagination: the first page is always an empty
       // continuation so clients must keep scanning.

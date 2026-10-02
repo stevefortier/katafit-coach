@@ -191,7 +191,7 @@ export class NativeTerminal {
         )
           // Host state, not a prompt: automatic learning stops for this
           // runtime until a new chat starts. Recall and explicit changes stay.
-          this.gateway?.inhibitMemory?.();
+          await this.gateway?.inhibitMemory?.();
         else throw new Error("FRAME");
       } catch (error) {
         this.send(ws, {

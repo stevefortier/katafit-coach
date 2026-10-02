@@ -194,6 +194,7 @@ export async function openNativeGateway(
     current,
     persona: compileOperator(config, Object.values(secrets)),
     personaRevision: String(config.revision),
+    discardJournalDir: store.dir + "/memory-discards",
     complete: (system, context, signal) =>
       providerComplete(
         {
@@ -536,7 +537,7 @@ export async function openNativeGateway(
     },
     /** Trusted host only: "Don't save this chat" from the Coach pane. */
     inhibitMemory() {
-      memory.inhibit("user");
+      return memory.inhibit("user");
     },
     memoryLearningOff: () => memory.learningOff,
     async handle(request: any, requestSignal?: AbortSignal): Promise<any> {
