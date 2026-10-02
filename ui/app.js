@@ -2494,6 +2494,7 @@ const logJSON = () =>
           : null,
         latest: sourceSha(updateData?.latest) ? updateData.latest : null,
         lastOperation: safeUpdateOperation(updateData?.lastOperation),
+        lastAdmission: safeUpdateOperation(updateData?.lastAdmission),
       },
     },
     null,
@@ -2532,6 +2533,14 @@ let updateData,
 const sourceSha = (value) =>
   typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const updateFailureHelp = {
+  UPDATE_BUSY:
+    "Stop Coach, wait for confirmed stopped presence and publication safety, then check and confirm again. No installation was accepted and no actions will be replayed.",
+  WORKER_STOP_UNCONFIRMED:
+    "Verify stopped presence and publication safety using supported Stop/recovery before confirming again.",
+  OPERATION_IN_PROGRESS:
+    "Finish or cancel the other operation before confirming again.",
+  UPDATE_NOT_ACCEPTED:
+    "Inspect protected-home storage and worker status before confirming again.",
   EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED:
     "Matching native artifact or bootstrap required. Provision and preflight the exact candidate image outside Pi. Manual updates need another confirmation; opted-in automatic updates retry after cooldown. The updater never builds or pulls sandbox images.",
   INSUFFICIENT_DISK:
@@ -2568,6 +2577,7 @@ const updateOutcomeNames = {
   succeeded: "Last upgrade succeeded",
   failed: "Last upgrade failed",
   interrupted: "Last upgrade was interrupted",
+  rejected: "Last upgrade request was not accepted",
 };
 function safeUpdateOperation(outcome) {
   if (
@@ -2588,10 +2598,10 @@ function safeUpdateOperation(outcome) {
     sha: outcome.sha,
     state: outcome.state,
     at: outcome.at,
-    ...(["preparing", "activating"].includes(outcome.phase)
+    ...(["preparing", "activating", "admission"].includes(outcome.phase)
       ? { phase: outcome.phase }
       : {}),
-    ...(outcome.state === "failed" &&
+    ...(["failed", "rejected"].includes(outcome.state) &&
     Object.hasOwn(updateFailureHelp, outcome.reason)
       ? { reason: outcome.reason }
       : {}),
@@ -2651,8 +2661,14 @@ function renderUpdate() {
     lifecycleBusy ||
     lifecycleUncertain ||
     serverTransition;
-  const outcome = safeUpdateOperation(data.lastOperation);
-  const failed = outcome && ["failed", "interrupted"].includes(outcome.state);
+  const admission = safeUpdateOperation(data.lastAdmission);
+  const operation = safeUpdateOperation(data.lastOperation);
+  const outcome =
+    admission && (!operation || admission.at >= operation.at)
+      ? admission
+      : operation;
+  const failed =
+    outcome && ["failed", "interrupted", "rejected"].includes(outcome.state);
   const failedLatest =
     failed && outcome.sha === data.latest && outcome.sha !== data.installed;
   $("updateReload").hidden =
@@ -2793,7 +2809,8 @@ async function refreshUpdate(check = false) {
       updateInitialRevision = data.installed;
     updateData = data;
 
-    updatePending = data.applying;
+    updatePending =
+      updateApplyRequest || data.preparing === true || data.applying === true;
     updateError = "";
   } catch {
     if (!controller.signal.aborted && generation === authGeneration)
@@ -2891,6 +2908,7 @@ action("updateReload", async () => {
   }
   location.reload();
 });
+let updateApplyRequest = false;
 action("updateConfirmApply", async () => {
   const generation = authGeneration;
   if (
@@ -2909,6 +2927,7 @@ action("updateConfirmApply", async () => {
     return;
   }
   updatePending = true;
+  updateApplyRequest = true;
   updateError = "Upgrade requested. Waiting for verified runtime status…";
   $("updateConfirm").hidden = true;
   renderUpdate();
@@ -2916,7 +2935,9 @@ action("updateConfirmApply", async () => {
     await api(
       "update/apply",
       { sha: updateTarget, confirm: true },
-      AbortSignal.timeout(15000),
+      // Source staging/build/probe takes longer than ordinary Studio reads.
+      // A lost response remains ambiguous; observe status, never replay apply.
+      AbortSignal.timeout(900000),
     );
   } catch (error) {
     if (generation !== authGeneration) return;
@@ -2926,6 +2947,8 @@ action("updateConfirmApply", async () => {
     } else
       updateError =
         "Studio is unavailable. The upgrade may have been accepted; reconnecting to verify.";
+  } finally {
+    if (generation === authGeneration) updateApplyRequest = false;
   }
   if (generation === authGeneration) await refreshUpdate();
 });
@@ -2953,6 +2976,7 @@ function lockSession(message, severity) {
     }).catch(() => {});
   native.reset();
   authGeneration++;
+  updateApplyRequest = false;
   key = "";
   lifecycleBusy = false;
   lifecycleUncertain = false;
