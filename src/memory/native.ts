@@ -9,6 +9,7 @@ import {
   type AccountItem,
   type AccountCapture,
   type CommitReceipt,
+  type CommitSkip,
 } from "./account.js";
 import {
   ExtractionRejected,
@@ -32,7 +33,12 @@ export type MemoryNoticeItem = {
   needs_review?: boolean;
 };
 export type MemoryNotice = {
-  action: "remembered" | "updated" | "forgotten" | "learning-off";
+  action:
+    | "remembered"
+    | "updated"
+    | "forgotten"
+    | "learning-off"
+    | "needs-review";
   source: "automatic" | "coach_request" | "user";
   items: MemoryNoticeItem[];
   at: string;
@@ -889,6 +895,49 @@ export class NativeMemory {
       skipped: receipt.skipped.length,
     });
     await this.announce(memory, receipt.created, input.source);
+    await this.review(memory, receipt.skipped, input.source);
+  }
+  /**
+   * One compact notice when an automatic replacement of protected memories
+   * was skipped: nothing changed, the owner decides. Content-free receipt ids
+   * are read back fresh; the skipped proposal text is never shown.
+   */
+  private async review(
+    memory: AccountMemory,
+    skipped: CommitSkip[],
+    source: MemoryNotice["source"],
+  ) {
+    const ids = [...new Set(skipped.flatMap((s) => s.memory_ids ?? []))];
+    if (!ids.length) return;
+    const count = Math.max(
+      ids.length,
+      skipped.reduce((n, s) => n + (s.count ?? 0), 0),
+    );
+    const items: MemoryNoticeItem[] = [];
+    for (const id of ids.slice(0, 8)) {
+      try {
+        const { item } = await memory.get(id);
+        if (item.status === "active" || item.status === "archived")
+          items.push({
+            id: item.id,
+            revision: item.revision,
+            kind: item.kind,
+            ...(item.text ? { text: item.text } : {}),
+            status: item.status,
+          });
+      } catch {
+        // Unreadable now (forgotten or denied): nothing to review.
+      }
+    }
+    if (!items.length) return;
+    this.notice({
+      action: "needs-review",
+      source,
+      items,
+      note: `New information in this chat conflicts with ${
+        count === 1 ? "1 protected memory" : `${count} protected memories`
+      }. Nothing was changed; review ${count === 1 ? "it" : "them"} in Memories.`,
+    });
   }
   /** Notice only what a committed receipt created, read back fresh. */
   async announce(

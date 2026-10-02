@@ -251,6 +251,17 @@ test("served My memories: empty, add, correct with history, pin, archive/restore
       /text already present in a chat or sent to a provider cannot be retracted/,
     );
     assert.doesNotMatch(panel, /new chat|open chat|erases the text/i);
+    // Precise correction copy: only text/kind corrections are protected; a
+    // pin is recall priority, never truth or protection.
+    assert.match(
+      panel,
+      /Correcting a memory's text or kind protects it from automatic replacement\./,
+    );
+    assert.match(
+      panel,
+      /Pinning only raises recall priority; it does not make a memory true or protected\./,
+    );
+    assert.doesNotMatch(panel, /will not overwrite/);
     const forget = writes(backend).at(-1)!;
     assert.equal(forget.method, "DELETE");
     assert.deepEqual(Object.keys(forget.body).sort(), [
@@ -696,6 +707,66 @@ test("Coach pane memory notices offer View, Edit and Forget for committed receip
       await page.locator("#coachMemoryState").innerText(),
       /won't be saved/,
     );
+    assert.deepEqual(f.errors, []);
+  } finally {
+    await f.close();
+    await backend.close();
+  }
+});
+
+test("Coach pane groups one compact Needs review notice for skipped protected replacements", async () => {
+  const backend = await startAccountMemoryBackend();
+  const morning = backend.seed({
+    kind: "preference",
+    text: "Prefers 25-minute morning workouts.",
+  });
+  const tuesday = backend.seed({ kind: "fact", text: "Trains on Tuesdays." });
+  const f = await served(backend);
+  try {
+    const { page } = f;
+    await statusText(page, /^2 memories\b/);
+    const before = writes(backend).length;
+    await page.route("**/api/terminal/ticket", (route) =>
+      route.fulfill({ status: 503, body: "unavailable" }),
+    );
+    await page.locator("#coachLauncher").click();
+    await page.locator("#coachMemory").waitFor({ state: "visible" });
+    await page.evaluate(
+      (items) =>
+        (window as any).coachMemory({
+          notice: {
+            action: "needs-review",
+            source: "automatic",
+            at: new Date().toISOString(),
+            note: "New information in this chat conflicts with 2 protected memories. Nothing was changed; review them in Memories.",
+            items: items.map((i: any) => ({
+              id: i.id,
+              revision: i.revision,
+              kind: i.kind,
+              text: i.text,
+              status: "active",
+            })),
+          },
+        }),
+      [morning, tuesday],
+    );
+    const list = page.locator("#coachMemoryList");
+    const text = await list.innerText();
+    // One compact notice: the note once, then each protected memory.
+    assert.equal(text.match(/Nothing was changed/g)?.length, 1, text);
+    assert.match(text, /Needs review: Prefers 25-minute morning workouts\./);
+    assert.match(text, /Needs review: Trains on Tuesdays\./);
+    assert.doesNotMatch(text, /needs-review|Remembered|Forgotten/);
+    assert.equal(await list.locator("li").count(), 1, "grouped, not per item");
+    // Review only: View and Edit, never a one-click Forget or overwrite.
+    assert.equal(await list.getByRole("button", { name: "Forget" }).count(), 0);
+    await list.getByRole("button", { name: "View" }).first().click();
+    await page.waitForFunction(
+      () =>
+        (document.querySelector("#memoryText") as HTMLTextAreaElement).value ===
+        "Prefers 25-minute morning workouts.",
+    );
+    assert.equal(writes(backend).length, before, "review writes nothing");
     assert.deepEqual(f.errors, []);
   } finally {
     await f.close();

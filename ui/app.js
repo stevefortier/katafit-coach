@@ -3608,6 +3608,40 @@ function renderCoachMemory() {
       list.append(detailText("li", n.note || "Automatic learning is off."));
       continue;
     }
+    if (n.action === "needs-review") {
+      // One compact notice: nothing changed; the owner reviews protected
+      // memories a newer automatic replacement would have overwritten.
+      const li = document.createElement("li");
+      li.className = "coach-memory-notice";
+      li.append(
+        detailText(
+          "p",
+          n.note ||
+            "New information in this chat conflicts with a protected memory. Nothing was changed.",
+        ),
+      );
+      for (const item of n.items) {
+        li.append(detailText("p", `Needs review: ${item.text || "a memory"}`));
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        for (const [label, editing] of [
+          ["View", false],
+          ["Edit", true],
+        ]) {
+          const b = detailText("button", label);
+          b.type = "button";
+          b.className = "secondary";
+          b.onclick = () =>
+            openMemory(item.id, editing).catch((error) => {
+              if (!error.stale) notice(error.message, "error");
+            });
+          actions.append(b);
+        }
+        li.append(actions);
+      }
+      list.append(li);
+      continue;
+    }
     for (const item of n.items) {
       const li = document.createElement("li");
       li.className = "coach-memory-notice";

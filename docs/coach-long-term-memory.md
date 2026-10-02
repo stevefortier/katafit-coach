@@ -55,6 +55,15 @@ that a new chat removes anything: "Forgotten from future memory retrieval. Text
 already present in this chat or sent to a provider cannot be retracted." Diagnostics carry only
 allowlisted error codes, never error messages.
 
+Only a text or kind correction protects a memory from automatic replacement;
+pins and review dates are metadata, never a factual correction. When a commit
+skips an automatic replacement of protected memories (account-only skip
+`{index, reason:"protected_memory", memory_ids, count}`, strictly validated),
+nothing is written or overwritten and the chat continues. The Coach pane shows
+one compact Needs review notice listing those memories, read back fresh, with
+View and Edit; the skipped proposal text is never shown. Empty or duplicate
+extraction stays silent.
+
 ## Learning and recall (legacy Studio memory)
 
 The host uses the configured model to propose bounded structured memories from

@@ -397,9 +397,29 @@ export async function startAccountMemoryBackend(
         )
           return fail(400, "MEMORY_INVALID");
         const created: { id: string; revision: number }[] = [];
-        const skipped: { index: number; reason: string }[] = [];
+        const skipped: {
+          index: number;
+          reason: string;
+          memory_ids?: string[];
+          count?: number;
+        }[] = [];
         const superseded: { id: string; revision: number }[] = [];
         (body.proposals ?? []).forEach((proposal: any, index: number) => {
+          // Account-only: automatic replacement of protected (manual or
+          // corrected) memories is skipped with content-free owned ids.
+          const guarded = (proposal.supersedes ?? []).filter(
+            (id: string) =>
+              items.get(id)?.protected && items.get(id)?.status === "active",
+          );
+          if (guarded.length) {
+            skipped.push({
+              index,
+              reason: "protected_memory",
+              memory_ids: guarded,
+              count: guarded.length,
+            });
+            return;
+          }
           if (
             [...items.values()].some(
               (i) => i.text === proposal.text && i.status === "active",

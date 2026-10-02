@@ -355,8 +355,35 @@ export interface CommitReceipt {
   capture_id: string;
   created: { id: string; revision: number }[];
   superseded: { id: string; revision: number }[];
-  skipped: { index: number; reason: string }[];
+  skipped: CommitSkip[];
   idempotent: boolean;
+}
+/**
+ * Account-only `protected_memory` skips carry the content-free owned ids of
+ * the protected memories an automatic replacement would have overwritten.
+ */
+export type CommitSkip = {
+  index: number;
+  reason: string;
+  memory_ids?: string[];
+  count?: number;
+};
+function skipOf(s: any): CommitSkip {
+  if (!record(s) || !Number.isSafeInteger(s.index) || s.index < 0) reject();
+  const reason = short(s.reason, 64);
+  if (reason !== "protected_memory") return { index: s.index, reason };
+  const ids = s.memory_ids;
+  if (
+    !Array.isArray(ids) ||
+    !ids.length ||
+    ids.length > 20 ||
+    ids.some((id) => typeof id !== "string" || !ID_PATTERN.test(id)) ||
+    new Set(ids).size !== ids.length ||
+    !Number.isSafeInteger(s.count) ||
+    s.count < ids.length
+  )
+    reject();
+  return { index: s.index, reason, memory_ids: [...ids], count: s.count };
 }
 function receiptOf(value: unknown, captureId: string): CommitReceipt {
   if (!record(value)) reject();
@@ -386,10 +413,7 @@ function receiptOf(value: unknown, captureId: string): CommitReceipt {
     capture_id: captureId,
     created: refs(v.created),
     superseded: refs(v.superseded ?? []),
-    skipped: v.skipped.map((s: any) => ({
-      index: Number.isSafeInteger(s?.index) ? s.index : reject(),
-      reason: short(s?.reason, 64),
-    })),
+    skipped: v.skipped.map(skipOf),
     idempotent: v.idempotent === true,
   };
 }
