@@ -685,7 +685,7 @@ test("Coach pane memory notices offer View, Edit and Forget for committed receip
       (window as any).coachMemory({
         notice: {
           action: "forgotten",
-          source: "coach_request",
+          source: "coach-request",
           at: new Date().toISOString(),
           note: "Forgotten. 2 related memories that depended on it are unavailable now; cleanup of their stored text is pending.",
           items: [

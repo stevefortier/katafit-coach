@@ -39,7 +39,7 @@ export type MemoryNotice = {
     | "forgotten"
     | "learning-off"
     | "needs-review";
-  source: "automatic" | "coach_request" | "user";
+  source: "automatic" | "coach-request" | "user";
   items: MemoryNoticeItem[];
   at: string;
   note?: string;
@@ -1041,7 +1041,7 @@ export class NativeMemory {
           ).settings;
       this.notice({
         action: "learning-off",
-        source: "coach_request",
+        source: "coach-request",
         items: [],
         note: settings?.learning_paused
           ? "Automatic learning is paused for your account. Recall and manual changes still work."
@@ -1096,7 +1096,7 @@ export class NativeMemory {
             : ` ${related(count)} that depended on it are unavailable now.`;
       this.notice({
         action: "forgotten",
-        source: "coach_request",
+        source: "coach-request",
         items: [
           {
             id: op.id,
@@ -1142,7 +1142,7 @@ export class NativeMemory {
     if (shown)
       this.notice({
         action: op.kind === "create" ? "remembered" : "updated",
-        source: "coach_request",
+        source: "coach-request",
         items: [shown],
       });
     return this.text({

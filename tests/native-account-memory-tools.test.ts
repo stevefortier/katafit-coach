@@ -54,7 +54,7 @@ test("an explicit remember request is one host-keyed write, confirmed only from 
     assert.match(post.body.idempotency_key, /^nl:[a-f0-9]{40}$/);
     assert.equal(post.auth, "Bearer " + f.backend.token);
     const notice = f.notices.find((n) => n.action === "remembered");
-    assert.equal(notice.source, "coach_request");
+    assert.equal(notice.source, "coach-request");
     assert.equal(notice.items[0].text, "Prefers kettlebell circuits.");
     // A retransmission of the same selected call never writes again.
     const again = parse(await call(f, "call_remember", args));
