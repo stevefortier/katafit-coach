@@ -111,7 +111,7 @@ test("photo midpoint renders as an estimate and manual fat never charts", async 
     await load();
     assert.match(
       await page.locator("#dashboardMemberCards").innerText(),
-      /Body fat \(photo estimate\): 18 %/,
+      /Body fat: 18 %/,
     );
     assert.match(
       await page.locator("#dashboardCharts").innerText(),
@@ -130,7 +130,7 @@ test("photo midpoint renders as an estimate and manual fat never charts", async 
     await load();
     assert.match(
       await page.locator("#dashboardMemberCards").innerText(),
-      /Body fat \(photo estimate\): Unavailable/,
+      /Body fat: Unavailable/,
     );
     // Canonical Stats accepts strict decimal strings, and presentation rounds
     // percent values to one decimal rather than leaking float artifacts.
@@ -154,7 +154,7 @@ test("photo midpoint renders as an estimate and manual fat never charts", async 
     await load();
     assert.match(
       await page.locator("#dashboardMemberCards").innerText(),
-      /Body fat \(photo estimate\): 11\.5 %/,
+      /Body fat: 11\.5 %/,
     );
     assert.doesNotMatch(
       await page.locator("#dashboardMemberCards").innerText(),
@@ -244,7 +244,7 @@ test("photo midpoint renders as an estimate and manual fat never charts", async 
       await load();
       assert.match(
         await page.locator("#dashboardMemberCards").innerText(),
-        /Body fat \(photo estimate\): Unavailable/,
+        /Body fat: Unavailable/,
       );
       assert.deepEqual(await labels(), []);
       assert.match(
@@ -260,7 +260,7 @@ test("photo midpoint renders as an estimate and manual fat never charts", async 
       await load();
       assert.match(
         await page.locator("#dashboardMemberCards").innerText(),
-        /Body fat \(photo estimate\): Unavailable/,
+        /Body fat: Unavailable/,
       );
     }
   } finally {

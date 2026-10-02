@@ -120,7 +120,9 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     await page.locator("#unlock").click();
     await page.waitForFunction(
       () =>
-        document.querySelectorAll("#dashboardMemberCards button").length === 3,
+        document.querySelectorAll(
+          "#dashboardMemberCards .dashboard-member-card, #dashboardMemberCards .dashboard-member-all",
+        ).length === 3,
     );
     await page.locator("#dashboardCharts h3").waitFor();
     await page.waitForFunction(
@@ -241,12 +243,14 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     assert.equal(g.overflow, false);
     await page
       .locator("#dashboardMemberCards")
-      .getByRole("button", { name: /Synthetic Bob/ })
+      .locator(".dashboard-member-card")
+      .filter({ hasText: "Synthetic Bob" })
       .click();
     assert.equal(
       await page
         .locator("#dashboardMemberCards")
-        .getByRole("button", { name: /Synthetic Bob/ })
+        .locator(".dashboard-member-card")
+        .filter({ hasText: "Synthetic Bob" })
         .getAttribute("aria-pressed"),
       "true",
     );
@@ -276,12 +280,14 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     assert.ok(g.cardsTop >= g.headerBottom - 1);
     await page
       .locator("#dashboardMemberCards")
-      .getByRole("button", { name: /Synthetic Ada/ })
+      .locator(".dashboard-member-card")
+      .filter({ hasText: "Synthetic Ada" })
       .click();
     assert.equal(
       await page
         .locator("#dashboardMemberCards")
-        .getByRole("button", { name: /Synthetic Ada/ })
+        .locator(".dashboard-member-card")
+        .filter({ hasText: "Synthetic Ada" })
         .getAttribute("aria-pressed"),
       "true",
     );
@@ -327,12 +333,14 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
       assert.ok(Math.abs(g.cardsTop - g.stickyTop) < 2);
       await page
         .locator("#dashboardMemberCards")
-        .getByRole("button", { name: /Synthetic Bob/ })
+        .locator(".dashboard-member-card")
+        .filter({ hasText: "Synthetic Bob" })
         .click();
       assert.equal(
         await page
           .locator("#dashboardMemberCards")
-          .getByRole("button", { name: /Synthetic Bob/ })
+          .locator(".dashboard-member-card")
+          .filter({ hasText: "Synthetic Bob" })
           .getAttribute("aria-pressed"),
         "true",
       );

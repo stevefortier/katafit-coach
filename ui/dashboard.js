@@ -88,6 +88,7 @@ window.CoachDashboard = (() => {
   // snapshot. A fresh dashboard load is required to recheck this member.
   const suppressedMembers = new Set();
   let selectedMember = null;
+  let closeMemberTooltip = () => {};
   let mapMembers = new Map();
   let feedMembers = new Map();
   let filterFeed = () => {};
@@ -326,6 +327,7 @@ window.CoachDashboard = (() => {
     sync();
   }
   function clear() {
+    closeMemberTooltip();
     clearDateNavigation();
     clearDateNavigation = () => {};
     if ($("dashboardMapDate")) $("dashboardMapDate").onchange = null;
@@ -379,6 +381,7 @@ window.CoachDashboard = (() => {
     for (const url of avatarUrls.splice(0)) URL.revokeObjectURL(url);
   }
   function renderMemberCards() {
+    closeMemberTooltip();
     const target = $("dashboardMemberCards");
     if (!target) return;
     const heading = $("dashboardMemberHeading");
@@ -434,8 +437,12 @@ window.CoachDashboard = (() => {
       );
       button.type = "button";
       button.setAttribute("aria-pressed", String(selectedMember === id));
+      const entry = all ? null : text("div", "", "dashboard-member-entry");
+      entry?.append(button);
       const name = all ? "All members" : user.display_name || "Member";
-      button.append(text("strong", name));
+      const nameNode = text("strong", name);
+      nameNode.title = name;
+      button.append(nameNode);
       if (!all) {
         const portrait = text("span", "", "dashboard-member-portrait");
         portrait.dataset.memberId = id;
@@ -457,7 +464,7 @@ window.CoachDashboard = (() => {
           ["Weight", stat(stats?.weight, "weight", 2000)],
           ["Height", stat(stats?.height_cm, "cm", 300)],
           [
-            "Body fat (photo estimate)",
+            "Body fat",
             stat(
               stats?.body_fat_estimate?.source === "ai" &&
                 stats?.body_fat_estimate?.estimated === true &&
@@ -469,8 +476,104 @@ window.CoachDashboard = (() => {
             ),
           ],
           ["Age", stat(stats?.age_years, "", 130)],
-        ])
-          button.append(text("span", `${label}: ${value}`));
+        ]) {
+          const row = text("span", `${label}: ${value}`);
+          row.title = row.textContent;
+          button.append(row);
+          if (label !== "Body fat" || value === "Unavailable") continue;
+          row.className = "dashboard-member-bodyfat";
+          // A sibling native button keeps the member's selection button valid
+          // and prevents pointer/keyboard provenance reads from selecting it.
+          const info = text("button", "ⓘ", "dashboard-member-info");
+          info.type = "button";
+          info.setAttribute(
+            "aria-label",
+            `About body fat estimate for ${name}`,
+          );
+          const tooltip = text(
+            "div",
+            "Body fat is estimated from progress photos.",
+            "dashboard-member-tooltip",
+          );
+          tooltip.id = `dashboard-bodyfat-${id}`;
+          tooltip.setAttribute("role", "tooltip");
+          tooltip.setAttribute("popover", "auto");
+          info.setAttribute("aria-describedby", tooltip.id);
+          let pinned = false;
+          let hideTimer;
+          let floatingEvents;
+          let focusFrame;
+          const cancelHide = () => clearTimeout(hideTimer);
+          const hide = () => {
+            cancelHide();
+            cancelAnimationFrame(focusFrame);
+            pinned = false;
+            floatingEvents?.abort();
+            floatingEvents = null;
+            if (tooltip.matches(":popover-open")) tooltip.hidePopover();
+            if (closeMemberTooltip === hide) closeMemberTooltip = () => {};
+          };
+          const show = () => {
+            cancelHide();
+            if (!tooltip.matches(":popover-open")) {
+              closeMemberTooltip();
+              closeMemberTooltip = hide;
+              tooltip.showPopover();
+              floatingEvents = new AbortController();
+              const options = { signal: floatingEvents.signal, capture: true };
+              document.addEventListener("scroll", hide, options);
+              window.addEventListener("resize", hide, options);
+            }
+            const anchor = info.getBoundingClientRect();
+            const bounds = tooltip.getBoundingClientRect();
+            tooltip.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - bounds.width - 8))}px`;
+            tooltip.style.top = `${Math.max(8, Math.min(anchor.bottom + 6, innerHeight - bounds.height - 8))}px`;
+          };
+          info.addEventListener("pointerenter", (event) => {
+            if (event.pointerType === "mouse") show();
+          });
+          const leave = () => {
+            if (!pinned && document.activeElement !== info)
+              hideTimer = setTimeout(hide, 160);
+          };
+          info.addEventListener("pointerleave", leave);
+          tooltip.addEventListener("pointerenter", cancelHide);
+          tooltip.addEventListener("pointerleave", leave);
+          info.addEventListener("focus", () => {
+            if (!info.matches(":focus-visible")) return;
+            // Native Tab may scroll the horizontal rail after focus dispatch.
+            // Open after that scroll, rather than instantly dismissing a fresh
+            // keyboard preview via the floating tooltip's scroll listener.
+            focusFrame = requestAnimationFrame(() => {
+              focusFrame = requestAnimationFrame(() => {
+                if (
+                  info.isConnected &&
+                  document.activeElement === info &&
+                  info.matches(":focus-visible")
+                )
+                  show();
+              });
+            });
+          });
+          info.addEventListener("blur", hide);
+          info.addEventListener("click", () => {
+            if (pinned) hide();
+            else {
+              show();
+              pinned = true;
+            }
+          });
+          info.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              hide();
+            }
+          });
+          tooltip.addEventListener("toggle", () => {
+            if (!tooltip.matches(":popover-open")) hide();
+          });
+          entry.append(info, tooltip);
+        }
       }
       button.addEventListener("click", () => {
         selectedMember = id;
@@ -482,7 +585,7 @@ window.CoachDashboard = (() => {
         filterFeed();
         filterTimeline();
       });
-      (all ? target : rail).append(button);
+      (all ? target : rail).append(entry || button);
     };
     makeCard(null, {}, true);
     target.append(rail);
