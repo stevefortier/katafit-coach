@@ -10,6 +10,7 @@ import { classifyMemoryWrite } from "../src/memory/native.js";
 import { stockSkills } from "../src/config/skills.js";
 import { chromePath } from "./helpers/chrome.js";
 import {
+  isExtraction,
   memoryFixture,
   scriptProvider,
   sseText,
@@ -557,6 +558,263 @@ test(
             "RECALLED: " + TEXT,
           );
           await settle(1000);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+
+    const chat = (f: Awaited<ReturnType<typeof memoryFixture>>) =>
+      f.provider.bodies.filter((body: any) => !isExtraction(body)).at(-1);
+    const paired = () =>
+      memoryFixture({
+        backend: { origin: b.origin, token: b.token, close: async () => {} },
+      } as any);
+    const reviewTurn = async (
+      f: Awaited<ReturnType<typeof memoryFixture>>,
+      human: string,
+      proposals: unknown,
+    ) => {
+      scriptProvider(f, {
+        proposals: () => proposals,
+        reply: () => sseText("Noted."),
+      });
+      const final = await f.turn([
+        { role: "user", content: human, timestamp: 1 },
+      ]);
+      assert.equal(final.stopReason, "stop", "chat is never blocked");
+    };
+
+    await t.test(
+      "a based_on derivation shows in the real forget-impact preview and Forget erases it with a receipt",
+      async () => {
+        const owner = client(b, b.token);
+        const { item: source } = await owner.create(
+          { kind: "fact", text: "Paired: owns kettlebells at home." },
+          "pair:anc:create01",
+        );
+        const DERIVED = "Paired: kettlebell swings every Monday.";
+        const f = await paired();
+        try {
+          await reviewTurn(
+            f,
+            "I do kettlebell swings every Monday with my kettlebells.",
+            {
+              proposals: [
+                {
+                  kind: "commitment",
+                  text: DERIVED,
+                  confidence: 0.9,
+                  importance: 0.7,
+                  based_on: [source.id],
+                },
+              ],
+            },
+          );
+          await until(
+            () => f.notices.find((n) => n.action === "remembered"),
+            20000,
+          );
+          await settle(1000);
+        } finally {
+          await f.close();
+        }
+        const [row] = await rowText(b, DERIVED);
+        const derived = String(row._id);
+        const impact = await owner.forgetImpact(source.id);
+        assert.equal(impact.related_count, 1);
+        assert.deepEqual(
+          impact.examples.map((e) => e.id),
+          [derived],
+        );
+        assert.equal(impact.has_more, false);
+        const forgot = await owner.forget(
+          source.id,
+          impact.revision,
+          "pair:anc:forget01",
+        );
+        assert.deepEqual(forgot.erasure, {
+          status: "complete",
+          related_count: 1,
+        });
+        assert.deepEqual(forgot.cascaded, [derived]);
+        assert.equal(forgot.operation.erasure?.status, "complete");
+        assert.ok(await failure(owner.get(derived)));
+      },
+    );
+
+    await t.test(
+      "replacing manual protected memories through the real commit writes nothing and shows one Needs review",
+      async () => {
+        const owner = client(b, b.token);
+        const MORNING = "Paired: 25-minute morning workouts before work.";
+        const TUESDAY = "Paired: trains on Tuesdays.";
+        const { item: morning } = await owner.create(
+          { kind: "preference", text: MORNING },
+          "pair:rev:create01",
+        );
+        const { item: tuesday } = await owner.create(
+          { kind: "fact", text: TUESDAY },
+          "pair:rev:create02",
+        );
+        const before = JSON.stringify(
+          [await owner.get(morning.id), await owner.get(tuesday.id)].map(
+            (i: any) => [i.text, i.revision],
+          ),
+        );
+        const f = await paired();
+        try {
+          await reviewTurn(
+            f,
+            "I prefer 40-minute evening workouts now and train on Fridays instead of Tuesdays.",
+            {
+              proposals: [
+                {
+                  kind: "preference",
+                  text: "Paired: 40-minute evening workouts.",
+                  confidence: 0.9,
+                  importance: 0.8,
+                  supersedes: [morning.id],
+                },
+                {
+                  kind: "fact",
+                  text: "Paired: trains on Fridays.",
+                  confidence: 0.9,
+                  importance: 0.8,
+                  supersedes: [tuesday.id],
+                },
+              ],
+            },
+          );
+          const notice = await until(
+            () => f.notices.find((n) => n.action === "needs-review"),
+            20000,
+          );
+          await settle(1000);
+          assert.equal(
+            f.notices.filter((n) => n.action === "needs-review").length,
+            1,
+          );
+          assert.deepEqual(
+            notice.items.map((i: any) => [i.id, i.text]),
+            [
+              [morning.id, MORNING],
+              [tuesday.id, TUESDAY],
+            ],
+          );
+          assert.match(notice.note, /2 protected memories/);
+          assert.doesNotMatch(JSON.stringify(notice), /evening|Fridays/);
+          assert.ok(!f.notices.some((n) => n.action === "remembered"));
+        } finally {
+          await f.close();
+        }
+        assert.equal(
+          JSON.stringify(
+            [await owner.get(morning.id), await owner.get(tuesday.id)].map(
+              (i: any) => [i.text, i.revision],
+            ),
+          ),
+          before,
+        );
+        assert.equal(
+          (await rowText(b, "Paired: trains on Fridays.")).length,
+          0,
+        );
+      },
+    );
+
+    await t.test(
+      "a metadata-only edit of a retained memory does not stop learning against the real content_revision fence",
+      async () => {
+        const owner = client(b, b.token);
+        const { item: laps } = await owner.create(
+          { kind: "preference", text: "Paired: swims laps on Sundays." },
+          "pair:crv:create01",
+        );
+        await owner.create(
+          { kind: "fact", text: "Paired: shoulders stiffen after desk work." },
+          "pair:crv:create02",
+        );
+        const f = await paired();
+        try {
+          scriptProvider(f, {
+            proposals: () => ({ proposals: [] }),
+            reply: () => sseText("Keep the laps easy."),
+          });
+          const u1 = {
+            role: "user",
+            content: "How many laps should I swim?",
+            timestamp: 1,
+          };
+          await f.turn([u1]);
+          assert.match(chat(f).messages[0].content, /swims laps on Sundays/);
+          await settle(1500);
+          await owner.update(
+            laps.id,
+            { importance: 0.2 },
+            1,
+            "pair:crv:meta01",
+          );
+          const LEARNED = "Paired: wants shoulder mobility drills.";
+          scriptProvider(f, {
+            proposals: () => ({
+              proposals: [
+                {
+                  kind: "goal",
+                  text: LEARNED,
+                  confidence: 0.9,
+                  importance: 0.7,
+                },
+              ],
+            }),
+            reply: () => sseText("Try wall slides."),
+          });
+          await f.turn([
+            u1,
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "Keep the laps easy." }],
+              api: "openai-completions",
+              provider: "katafit",
+              model: "synthetic-memory-model",
+              usage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 0,
+                cost: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  total: 0,
+                },
+              },
+              stopReason: "stop",
+              timestamp: 2,
+            },
+            {
+              role: "user",
+              content: "My shoulders are stiff; I want mobility drills.",
+              timestamp: 3,
+            },
+          ]);
+          assert.doesNotMatch(
+            chat(f).messages[0].content,
+            /swims laps/,
+            "the edited memory is retained, not re-recalled",
+          );
+          await until(
+            () =>
+              f.notices.find(
+                (n) =>
+                  n.action === "remembered" &&
+                  n.items.some((i: any) => i.text === LEARNED),
+              ),
+            20000,
+          );
+          assert.ok(!f.notices.some((n) => n.action === "learning-off"));
         } finally {
           await f.close();
         }
