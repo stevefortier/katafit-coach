@@ -4,6 +4,12 @@ import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
 import { ToolFailure, type BackendLogger } from "../katafit/client.js";
 import { providerFailure } from "../runtime/errors.js";
+import { complete as providerComplete } from "../runtime/piAdapter.js";
+import {
+  NativeMemory,
+  classifyMemoryWrite,
+  type NativeMemoryHooks,
+} from "../memory/native.js";
 import {
   restRequest,
   restRequestTool,
@@ -143,6 +149,8 @@ export interface NativeGatewayHooks {
     publish(item: AttachmentItem): boolean;
     connected?(): boolean;
   };
+  /** Trusted host owner of committed account-memory notices. */
+  memory?: NativeMemoryHooks;
 }
 
 /** A runtime-owned capability, not an HTTP proxy. No caller-selected destinations. */
@@ -176,6 +184,32 @@ export async function openNativeGateway(
         store.secrets[k as keyof typeof secrets],
     );
   const owner = hooks.attachments;
+  // Account memory: per-turn recall acquisition and delivered-only learning.
+  // The bearer stays here; Pi only sees the bounded untrusted evidence block.
+  const memory = new NativeMemory({
+    origin: config.origin,
+    token: secrets.token,
+    secrets: Object.values(secrets).filter((v): v is string => !!v),
+    lifetime,
+    current,
+    persona: compileOperator(config, Object.values(secrets)),
+    personaRevision: String(config.revision),
+    discardJournalDir: store.dir + "/memory-discards",
+    complete: (system, context, signal) =>
+      providerComplete(
+        {
+          ...config.provider,
+          apiKey: secrets.apiKey,
+          secrets: Object.values(secrets),
+          onDiagnostic: hooks.onDiagnostic,
+        },
+        system,
+        context,
+        signal,
+      ),
+    onDiagnostic: hooks.onDiagnostic,
+    hooks: hooks.memory,
+  });
   const receipts = new ImageReceipts();
   const attachments = new OperatorAttachments();
 
@@ -202,6 +236,8 @@ export async function openNativeGateway(
     secrets,
   });
   await messages.reconcile();
+  // Finish learning captured before a restart (never replays chat or tools).
+  setTimeout(() => void memory.recover(), 1000).unref();
   // Runtime-only provider-selected tool-call slots; no transcript retained.
   const selections = new NativeSelections();
 
@@ -215,6 +251,7 @@ export async function openNativeGateway(
   const close = () => {
     closed = true;
     clearTimeout(deadline);
+    memory.close();
     abort.abort();
     receipts.clear();
     attachments.clear();
@@ -491,6 +528,18 @@ export async function openNativeGateway(
     },
     /** Content-free continuity state for the trusted host only. */
     continuity: () => session.continuity(),
+    /**
+     * Trusted relay acknowledgement that this exact final provider response
+     * was written to Pi. Learning starts at most once and never delays chat.
+     */
+    confirmDelivery(id: string) {
+      if (!closed && typeof id === "string") memory.confirmDelivery(id);
+    },
+    /** Trusted host only: "Don't save this chat" from the Coach pane. */
+    inhibitMemory() {
+      return memory.inhibit("user");
+    },
+    memoryLearningOff: () => memory.learningOff,
     async handle(request: any, requestSignal?: AbortSignal): Promise<any> {
       let admitted = false;
       try {
@@ -776,6 +825,32 @@ export async function openNativeGateway(
       if (request.name === restRequestTool.name && secrets.token) {
         const args = restRequestArgs(request.args);
         assertNoSecrets(request.args, Object.values(secrets));
+        // Memory writes carry their own exact key/receipt contract: bound to
+        // the selected call, host-keyed, reconciled by receipt, never resent.
+        const memoryWrite = classifyMemoryWrite(
+          args.method,
+          args.path,
+          request.args.body,
+        );
+        if (memoryWrite === "reject")
+          throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+        if (memoryWrite) {
+          const occurrence = selections.bind(
+            request.toolCallId,
+            request.name,
+            request.args,
+          );
+          if (!occurrence) throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+          const result = await memory.write(
+            memoryWrite,
+            occurrence,
+            requestSignal
+              ? AbortSignal.any([lifetime, requestSignal])
+              : lifetime,
+          );
+          check();
+          return result;
+        }
         const target = classifyMemberMessageRequest(args.method, args.path);
         if (target.kind === "reject")
           throw new NativeFailure("NATIVE_REQUEST_REJECTED");
@@ -815,6 +890,7 @@ export async function openNativeGateway(
           if (mutation) throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
           throw error;
         }
+        memory.observeTool(request.name, request.args, result);
         const image = result.content?.find((part) => part.type === "image");
         if (owner && image && "data" in image) {
           const bytes = Buffer.from(image.data!, "base64");
@@ -875,6 +951,17 @@ export async function openNativeGateway(
       throw authority(error);
     }
     if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
+    // A new human turn is a new backend acquisition; failure keeps chat going.
+    let wire = admitted.wire;
+    const prepared = await memory.prepare(request.body, requestSignal);
+    check();
+    if (prepared !== request.body)
+      try {
+        wire = nativeProviderAdmission(prepared).wire;
+      } catch {
+        // Near the native budget the original request is sent without memory.
+        wire = admitted.wire;
+      }
     const timeout = AbortSignal.timeout(120000);
 
     // Transport failures are classified by cause only; never by error text.
@@ -901,7 +988,7 @@ export async function openNativeGateway(
           "content-type": "application/json",
           Authorization: "Bearer " + secrets.apiKey,
         },
-        body: admitted.wire,
+        body: wire,
       });
     } catch (error) {
       throw transport(error);
@@ -965,7 +1052,8 @@ export async function openNativeGateway(
       : "application/json";
     // Only this complete, screened response delivered to Pi selects slots.
     selections.observe(body, type);
-    return { body, type };
+    const completion_id = memory.observeResponse(body, type);
+    return { body, type, ...(completion_id ? { completion_id } : {}) };
   }
 }
 type OpenedGateway = Awaited<ReturnType<typeof openNativeGateway>>;
@@ -980,5 +1068,8 @@ export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
       | "readAttachment"
       | "snapshot"
       | "authorizeTranscript"
+      | "confirmDelivery"
+      | "inhibitMemory"
+      | "memoryLearningOff"
     >
   >;

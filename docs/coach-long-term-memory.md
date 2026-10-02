@@ -4,7 +4,93 @@ Coach memory is stored in the Kata.fit backend, under the canonical owner and
 explicit audience. The installation keeps no local fallback copy of memory prose.
 A backend without `coach.memory.v1` leaves durable memory unavailable.
 
-## Learning and recall
+## Account memories (default)
+
+Settings → Memories manages the account owner's memories through the ordinary
+account REST domain (`/api/coach/memory`) with the saved Coach connection:
+add, edit with history, pin, archive/restore, Forget, search, type filter,
+pagination and pausing automatic learning. Every write carries a host-generated
+idempotency key and expected revision. A lost acknowledgement is reconciled by
+its exact operation receipt (key, kind and target), never retried with a new
+key. A conflict keeps the draft. Unsupported, expired, denied and unavailable
+backends are shown as such, never as an empty list. Labels name the producer
+("Manually saved", "Saved by standalone Coach", "Saved by hosted Coach",
+"Learned by … from a chat"); a manual save is not proof that the user said it.
+Pinning changes recall priority only. Older Studio notes stay under the separate
+"Legacy private notes" section.
+
+The native Pi gets a fresh, bounded recall (pinned items first, then matches) in
+its single leading system message, as untrusted JSON data. Matches come from the
+backend's exact-word search over topic words taken from the latest human message
+(stop words dropped, at most 500 characters). When nothing matches, a small
+recent-items fallback is used instead. At most 8 pinned, 12 matches and 20 items
+in total are sent. This is a bounded selection rather than global relevance, and
+the preface tells the model that it is not the complete memory. Pi holds no memory
+credential; it uses the documented domain through the generic REST tool, and the
+host adds keys and validates receipts. Learning starts only after the relay
+confirms delivery of a final response to Pi. A separate no-tool extraction call
+proposes candidates from the delivered human/assistant text and redacted tool
+evidence, and host guards drop ungrounded, inferred-sensitive, ephemeral and
+instruction-like proposals before the backend commits them. A compact
+"Remembered" notice appears only for committed receipts. "Don't save this
+conversation" turns automatic learning off locally for the runtime and awaits
+`POST /api/coach/memory/interactions/discard` for every exact host-owned capture
+creation key, tracked before dispatch. The discard request is independent of
+aborted extraction/runtime signals and bounded to 15 seconds; its response must
+echo `coach.memory.v1`, the exact key and `discarded` or `committed` within 4 KiB.
+Only `discarded` confirms a durable backend fence against creation, commit and
+recovery. `committed` is explicitly not a retraction. An unknown, denied or
+unsupported outcome remains unverified, never a promise that nothing will be
+saved. Capture/discard/commit are host-only, not model-selected routes or keys.
+
+Before cancellation/network dispatch, unresolved discard intents are fsynced as
+content-free private journal files under the installation's `memory-discards`
+directory (keys and origin/credential fingerprints only, no evidence or token).
+Fresh runtime recovery reconciles those exact keys first; failed, corrupt,
+unsafe or unresolved discovery journals block local recovery rather than losing
+the privacy fence. If a process dies before a pending-key discovery ACK, its
+discovery hold remains fail-closed. Credential rotation with unresolved intents
+also remains fail-closed: without verified account rebinding, a different bearer
+never clears an old account's intent. These conservative holds need explicit
+reconciliation; deleting them is not a privacy-safe workaround. Account pending
+entries supply exact creation keys before resume; legacy captures lacking those
+keys cannot be automatically recovered safely. Existing account-wide pause
+behavior is separate and survives restarts.
+
+Every memory acquired during a runtime (recall, memory reads through tools and
+Coach writes) stays a capture coherence fence for the rest of that runtime,
+checked by its semantic `content_revision` when the backend supplies one (raw
+revision otherwise). Metadata-only edits (importance, pin, review date) do not
+stop learning. After a Forget or a text/kind correction, or after more than 20
+tracked memories, automatic learning is off, with a visible notice, until a new
+chat. Acquired text can remain in the current chat but cannot be saved again
+automatically. Persisted ancestry is narrower: an extracted proposal cites the
+recalled memories it actually relied on in the optional `based_on` list (plus
+`supersedes`); an independent observation cites none.
+
+Forget is previewed first. Settings, the Coach pane and the native Coach read
+`GET /api/coach/memory/:id/forget-impact` and show how many related memories
+(cited descendants) will also become unavailable, with the caveat that the count
+is a snapshot and cleanup can finish later. If the preview fails or the memory
+changed, nothing is deleted and no count is invented. The native Coach gets
+`preview_required` and deletes only when the user confirms and the call is
+repeated. The DELETE `erasure` receipt is reported truthfully: `complete` means
+related stored text was erased; `queued` means the related memories are already
+unavailable but cleanup of their stored text is pending. Forget copy never promises
+that a new chat removes anything: "Forgotten from future memory retrieval. Text
+already present in this chat or sent to a provider cannot be retracted." Diagnostics carry only
+allowlisted error codes, never error messages.
+
+Only a text or kind correction protects a memory from automatic replacement;
+pins and review dates are metadata, never a factual correction. When a commit
+skips an automatic replacement of protected memories (account-only skip
+`{index, reason:"protected_memory", memory_ids, count}`, strictly validated),
+nothing is written or overwritten and the chat continues. The Coach pane shows
+one compact Needs review notice listing those memories, read back fresh, with
+View and Edit; the skipped proposal text is never shown. Empty or duplicate
+extraction stays silent.
+
+## Learning and recall (legacy Studio memory)
 
 The host uses the configured model to propose bounded structured memories from
 original member context, tool evidence, accepted event results, and completed

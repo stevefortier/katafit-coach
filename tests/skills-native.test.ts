@@ -140,6 +140,8 @@ test(
           headers.authorization,
           "Bearer synthetic-backend-credential",
         );
+        // Per-turn account memory recall is host-side, not a Pi REST call.
+        if (path.startsWith("/api/coach/memory")) return { status: 404 };
         assert.equal(path, "/api/user");
         return {
           body: JSON.stringify({
@@ -188,7 +190,9 @@ test(
       assert.ok(JSON.stringify(requests[1]).includes(skillSentinel));
       assert.match(JSON.stringify(requests[2]), /Synthetic Alice/);
       const backendCalls = f.calls.filter(
-        (call) => call.path !== "/v1/chat/completions",
+        (call) =>
+          call.path !== "/v1/chat/completions" &&
+          !call.path.startsWith("/api/coach/memory"),
       );
       assert.equal(backendCalls.length, 1);
       assert.equal(backendCalls[0].method, "GET");

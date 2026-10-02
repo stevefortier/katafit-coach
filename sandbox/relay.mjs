@@ -326,7 +326,12 @@ const server = createServer(async (req, res) => {
       (id) => (requestId = id),
     );
     res.setHeader("content-type", tool ? "application/json" : result.type);
-    res.end(tool ? JSON.stringify(result) : result.body);
+    res.end(tool ? JSON.stringify(result) : result.body, () => {
+      // This fixed relay, never a tool/model argument, acknowledges a final
+      // provider reply only after its HTTP response was written to Pi.
+      if (!tool && result.completion_id && !res.destroyed && requestId)
+        process.stdout.write(JSON.stringify({ delivered: requestId }) + "\n");
+    });
   } catch (error) {
     fail(res, error);
   }

@@ -46,7 +46,7 @@ async function fixture() {
       handle = h;
     },
     request: (path: string, body?: unknown) =>
-      fetch(app.origin + "/api/memories" + path, {
+      fetch(app.origin + "/api/legacy-memories" + path, {
         method: body ? "POST" : "GET",
         headers: {
           Authorization: "Bearer " + store.secrets.admin,
@@ -68,7 +68,7 @@ for (const path of [
   "/000000000000000000000001",
   "/000000000000000000000001/forget",
 ]) {
-  test(`memory ${path || "list"} fences replaced credential before disclosing response`, async () => {
+  test(`legacy memory ${path || "list"} fences replaced credential before disclosing response`, async () => {
     const f = await fixture();
     let release!: () => void, entered!: () => void;
     const waiting = new Promise<void>((r) => {
@@ -102,7 +102,7 @@ for (const path of [
     }
   });
 }
-test("memory create and update reject every configured secret before dispatch", async () => {
+test("legacy memory create and update reject every configured secret before dispatch", async () => {
   const f = await fixture();
   try {
     for (const secret of Object.values(f.store.secrets)) {

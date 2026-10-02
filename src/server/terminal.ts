@@ -6,6 +6,7 @@ import { NativeRuntime } from "../sandbox/runtime.js";
 import { nativeImage } from "../sandbox/artifact.js";
 import { openNativeGateway, type NativeGateway } from "../sandbox/gateway.js";
 import { AttachmentFailure } from "../sandbox/attachments.js";
+import type { MemoryNotice } from "../memory/native.js";
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 /** Installation-admin terminal only; not a managed multi-tenant service. */
@@ -26,6 +27,10 @@ export class NativeTerminal {
   private generation = 0;
   private controller?: AbortController;
   private output = "";
+  // Committed-receipt memory notices of the current runtime only, so a
+  // reconnecting pane can show them again. Never written to disk; erased with
+  // the runtime.
+  private notices: MemoryNotice[] = [];
 
   // Random per runtime; scopes the private attachment endpoint to it.
   private session?: string;
@@ -158,6 +163,11 @@ export class NativeTerminal {
           await this.start();
           if (this.ws === ws && this.session) {
             this.send(ws, { type: "ready" });
+            this.send(ws, {
+              type: "memory-notices",
+              notices: this.notices,
+              learning_off: this.gateway?.memoryLearningOff?.() ?? false,
+            });
 
             void this.replay(ws, this.session, replayOutput);
           }
@@ -174,6 +184,14 @@ export class NativeTerminal {
           if (runtime) this.gateway?.noteHumanInput?.(message.data);
         } else if (message.type === "resize")
           await this.runtime?.resize(message.cols, message.rows);
+        else if (
+          message.type === "memory-capture" &&
+          message.enabled === false &&
+          Object.keys(message).length === 2
+        )
+          // Host state, not a prompt: automatic learning stops for this
+          // runtime until a new chat starts. Recall and explicit changes stay.
+          await this.gateway?.inhibitMemory?.();
         else throw new Error("FRAME");
       } catch (error) {
         this.send(ws, {
@@ -200,6 +218,15 @@ export class NativeTerminal {
       let owned: NativeRuntime | undefined;
       const gateway = await this.openGateway(this.store, controller.signal, {
         onDiagnostic: this.onDiagnostic,
+        memory: {
+          notice: (event) => {
+            if (generation !== this.generation || this.session !== session)
+              return;
+            this.notices = [...this.notices, event].slice(-20);
+            if (this.ws)
+              this.send(this.ws, { type: "memory-notice", notice: event });
+          },
+        },
         attachments: {
           // Only this generation's own container; never a sandbox-named path.
           read: (parts, limit, signal) => {
@@ -403,6 +430,7 @@ export class NativeTerminal {
     }
     this.ws = undefined;
     this.output = "";
+    this.notices = [];
     const starting = this.starting;
     return (this.stopping = (async () => {
       await starting?.catch(() => {});

@@ -93,8 +93,13 @@ for (const image of [false, true])
       const reply = await piTurn(relay, "approved-custom-model", messages);
       assert.equal(reply.stopReason, "stop", JSON.stringify(reply));
       assert.match(JSON.stringify(reply.content), /Synthetic result based/);
+      // Optional per-turn account-memory acquisition is separate from the
+      // REST exchange under test.
       assert.deepEqual(
-        f.calls.slice(before).map((c) => c.path),
+        f.calls
+          .slice(before)
+          .map((c) => c.path)
+          .filter((p) => !p.startsWith("/api/coach/memory")),
         ["/v1/chat/completions"],
       );
       await assert.rejects(

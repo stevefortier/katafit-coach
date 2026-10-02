@@ -48,6 +48,8 @@ test(
         headers.authorization,
         "Bearer synthetic-backend-credential",
       );
+      // Per-turn account memory recall is host-side, not a Pi REST call.
+      if (path.startsWith("/api/coach/memory")) return { status: 404 };
       assert.equal(path, "/api/user");
       return {
         body: JSON.stringify({
@@ -192,9 +194,12 @@ test(
           (t: any) => t.function.name === "katafit_rest_request",
         ),
       );
-      assert.equal(f.calls.length, 1);
-      assert.equal(f.calls[0].method, "GET");
-      assert.equal(f.calls[0].path, "/api/user");
+      const rest = f.calls.filter(
+        (call) => !call.path.startsWith("/api/coach/memory"),
+      );
+      assert.equal(rest.length, 1);
+      assert.equal(rest[0].method, "GET");
+      assert.equal(rest[0].path, "/api/user");
       runtime.input("/mcp\r");
       await wait("Kata.fit MCP");
       hold = true;
@@ -245,9 +250,12 @@ test(
       runtime.input("Read my authorized profile.\r");
       await wait("Authorized profile belongs to Synthetic Alice.");
       assert.equal(requests.length, priorRequests + 2);
-      assert.equal(f.calls.length, 2);
+      const restCalls = f.calls.filter(
+        (call) => !call.path.startsWith("/api/coach/memory"),
+      );
+      assert.equal(restCalls.length, 2);
       assert.ok(
-        f.calls.every(
+        restCalls.every(
           (call) => call.method === "GET" && call.path === "/api/user",
         ),
       );

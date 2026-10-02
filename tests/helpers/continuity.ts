@@ -725,6 +725,13 @@ export async function continuityFixture(options: ContinuityOptions = {}) {
     }
   };
   const server = createServer(async (req, res) => {
+    // This legacy MCP fixture offers no ordinary REST routes (for example
+    // account memory): answer like an older backend's framework 404.
+    if (req.method === "GET") {
+      res.writeHead(404, { "content-type": "text/html" });
+      res.end("Cannot GET");
+      return;
+    }
     let raw = "";
     for await (const c of req) raw += c;
     const body = JSON.parse(raw);

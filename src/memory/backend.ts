@@ -92,6 +92,8 @@ export interface MemoryProposal {
   goal_relevance?: number | null;
   review_after_days?: number;
   supersedes?: string[];
+  /** Account-only: the recalled ids this proposal actually relied on. */
+  based_on?: string[];
 }
 interface Transport {
   rpc(

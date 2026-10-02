@@ -134,31 +134,39 @@ test(
       await page.goto(
         app.origin + "/settings?section=memories#" + store.secrets.admin,
       );
-      await page.locator("#memoryMore").waitFor({ state: "visible" });
-      assert.equal(await page.locator(".memory-card").count(), 25);
-      await page.locator("#memoryMore").click();
-      await page.waitForFunction(
-        () => document.querySelectorAll(".memory-card").length === 50,
+      await page.locator("#legacyMemories > summary").click();
+      await page.locator("#legacyMemoryMore").waitFor({ state: "visible" });
+      assert.equal(
+        await page.locator("#legacyMemoryList .memory-card").count(),
+        25,
       );
-      await page.locator("#memoryMore").click();
+      await page.locator("#legacyMemoryMore").click();
       await page.waitForFunction(
-        () => document.querySelectorAll(".memory-card").length === 52,
+        () =>
+          document.querySelectorAll("#legacyMemoryList .memory-card").length ===
+          50,
+      );
+      await page.locator("#legacyMemoryMore").click();
+      await page.waitForFunction(
+        () =>
+          document.querySelectorAll("#legacyMemoryList .memory-card").length ===
+          52,
       );
       const card = page
-        .locator(".memory-card")
+        .locator("#legacyMemoryList .memory-card")
         .filter({ hasText: "Prefers early morning strength sessions." });
       await card.getByRole("button", { name: "Edit", exact: true }).click();
       await page.waitForFunction(
         () =>
-          (document.querySelector("#memoryText") as HTMLTextAreaElement)
+          (document.querySelector("#legacyMemoryText") as HTMLTextAreaElement)
             ?.value === "Prefers early morning strength sessions.",
       );
       await page
-        .locator("#memoryText")
+        .locator("#legacyMemoryText")
         .fill("Prefers midday strength sessions after a schedule change.");
-      await page.locator("#memoryReviewAt").fill("2027-01-12");
-      await page.locator("#memorySave").click();
-      await page.getByText("Memory saved.", { exact: true }).waitFor();
+      await page.locator("#legacyMemoryReviewAt").fill("2027-01-12");
+      await page.locator("#legacyMemorySave").click();
+      await page.getByText("Legacy note saved.", { exact: true }).waitFor();
       const corrected = await db
         .collection("coach_memories")
         .findOne({ _id: learned._id });
@@ -168,12 +176,14 @@ test(
       );
       assert.equal(corrected.protected, true);
       assert.equal(corrected.revision, 2);
-      await page.locator("#memorySearch").fill("midday strength");
+      await page.locator("#legacyMemorySearch").fill("midday strength");
       await page.waitForFunction(
-        () => document.querySelectorAll(".memory-card").length === 1,
+        () =>
+          document.querySelectorAll("#legacyMemoryList .memory-card").length ===
+          1,
       );
       assert.match(
-        await page.locator("#memoryList").innerText(),
+        await page.locator("#legacyMemoryList").innerText(),
         /midday strength/,
       );
       assert.match(
@@ -191,9 +201,10 @@ test(
       await page.goto(
         app.origin + "/settings?section=memories#" + store.secrets.admin,
       );
-      await page.locator("#memorySearch").fill("midday strength");
+      await page.locator("#legacyMemories > summary").click();
+      await page.locator("#legacyMemorySearch").fill("midday strength");
       await page
-        .locator(".memory-card")
+        .locator("#legacyMemoryList .memory-card")
         .filter({ hasText: "midday strength" })
         .waitFor();
       const evidence = process.env.COACH_MEMORY_EVIDENCE;
@@ -205,7 +216,10 @@ test(
         });
       }
       page.once("dialog", (dialog) => dialog.accept());
-      await page.getByRole("button", { name: "Forget", exact: true }).click();
+      await page
+        .locator("#legacyMemoryList")
+        .getByRole("button", { name: "Forget", exact: true })
+        .click();
       await page
         .getByText("Memory forgotten. Matching stale extraction is fenced.", {
           exact: true,
