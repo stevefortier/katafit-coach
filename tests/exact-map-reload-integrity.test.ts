@@ -138,7 +138,19 @@ test("roster transient and denied reads retain or remove stats without substitut
       );
       assert.match(
         await page.locator("#dashboardMemberCards").innerText(),
-        /Height: 170 cm.*Body fat \(photo estimate\): 21 %.*Age: 30/s,
+        /Height: 170 cm.*Body fat: 21 %.*Age: 30/s,
+      );
+      assert.equal(
+        await page
+          .getByRole("button", {
+            name: "About body fat estimate for Synthetic Ada",
+          })
+          .count(),
+        1,
+      );
+      assert.equal(
+        await page.locator(`#dashboard-bodyfat-${ada}`).textContent(),
+        "Body fat is estimated from progress photos.",
       );
       assert.equal(await page.locator(".dashboard-member-pin").count(), 0);
       status = 503;
