@@ -76,7 +76,15 @@
               aria-controls="settingsPanel"
               aria-pressed="false"
             >
-              Settings
+              Server Settings
+            </button>
+            <button
+              id="coachSettingsTab"
+              class="secondary"
+              aria-controls="settingsPanel"
+              aria-pressed="false"
+            >
+              Coach Settings
             </button>
           </nav>
           <section
@@ -196,9 +204,10 @@
           </section>
           <section id="settingsPanel" hidden>
             <div
+              id="serverSettingsTabs"
               class="settings-tabs"
               role="tablist"
-              aria-label="Settings sections"
+              aria-label="Server Settings sections"
             >
               <button
                 type="button"
@@ -222,6 +231,25 @@
               >
                 Models
               </button>
+              <button
+                type="button"
+                id="settings-updates-tab"
+                role="tab"
+                aria-controls="updates"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Updates
+              </button>
+            </div>
+            <div
+              id="coachSettingsTabs"
+              class="settings-tabs"
+              role="tablist"
+              aria-label="Coach Settings sections"
+              hidden
+            >
               <button
                 type="button"
                 id="settings-persona-tab"
@@ -265,17 +293,6 @@
                 class="secondary"
               >
                 Memories
-              </button>
-              <button
-                type="button"
-                id="settings-updates-tab"
-                role="tab"
-                aria-controls="updates"
-                aria-selected="false"
-                tabindex="-1"
-                class="secondary"
-              >
-                Updates
               </button>
               <button
                 type="button"

@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
@@ -119,7 +120,7 @@ test(
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.locator("#coachPaneExpand").click();
       await page.locator("#settingsTab").click();
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await page.locator("#name").fill("Warden");
       assert.notEqual(
         await page.locator("#coachLauncherName").innerText(),
@@ -156,7 +157,7 @@ test(
       }
       await page.locator("#settingsTab").click();
       const longName = "Persona " + "W".repeat(7990);
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await page.locator("#name").fill(longName);
       assert.equal(
         await page.locator("#coachLauncherName").innerText(),
@@ -186,7 +187,7 @@ test(
       await page.locator("#coachPaneBack").click();
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.locator("#settingsTab").click();
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await page.locator("#name").fill("Unsaved restoration draft");
       assert.equal(
         await page.locator("#coachLauncherName").innerText(),

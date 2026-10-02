@@ -1420,16 +1420,14 @@ let logData = { entries: [] },
   logPaused = false,
   logTimer,
   logController;
-const settingsSections = [
-  "katafit",
-  "models",
-  "persona",
-  "preview",
-  "skills",
-  "memories",
-  "updates",
-  "worker",
-];
+const settingsGroups = {
+  settings: ["katafit", "models", "updates"],
+  coachSettings: ["persona", "preview", "skills", "memories", "worker"],
+};
+const settingsSections = Object.values(settingsGroups).flat();
+const rememberedSettings = { settings: "katafit", coachSettings: "persona" };
+const settingsGroup = (section) =>
+  settingsGroups.coachSettings.includes(section) ? "coachSettings" : "settings";
 let settingsSection = "katafit";
 function settingsPath() {
   return settingsSection === "katafit"
@@ -1440,6 +1438,11 @@ function selectSettingsSection(section, navigate = true) {
   // The former Connection section's links open its Kata.fit successor.
   if (section === "connection") section = "katafit";
   settingsSection = settingsSections.includes(section) ? section : "katafit";
+  rememberedSettings[settingsGroup(settingsSection)] = settingsSection;
+  $("serverSettingsTabs").hidden =
+    settingsGroup(settingsSection) !== "settings";
+  $("coachSettingsTabs").hidden =
+    settingsGroup(settingsSection) !== "coachSettings";
   for (const name of settingsSections) {
     const selected = name === settingsSection;
     $(name).hidden = !selected;
@@ -1459,24 +1462,26 @@ function selectSettingsSection(section, navigate = true) {
   logVisibility();
   updateRouteEntry();
 }
-for (const [index, section] of settingsSections.entries()) {
+for (const section of settingsSections) {
   const tab = $("settings-" + section + "-tab");
-  tab.onclick = () => selectSettingsSection(section);
+  tab.onclick = () => selectStudioTab(settingsGroup(section), true, section);
   tab.onkeydown = (event) => {
+    const sections = settingsGroups[settingsGroup(section)];
+    const index = sections.indexOf(section);
     const next =
       event.key === "Home"
         ? 0
         : event.key === "End"
-          ? settingsSections.length - 1
+          ? sections.length - 1
           : event.key === "ArrowRight"
-            ? (index + 1) % settingsSections.length
+            ? (index + 1) % sections.length
             : event.key === "ArrowLeft"
-              ? (index + settingsSections.length - 1) % settingsSections.length
+              ? (index + sections.length - 1) % sections.length
               : null;
     if (next === null || event.altKey || event.ctrlKey || event.metaKey) return;
     event.preventDefault();
-    selectSettingsSection(settingsSections[next]);
-    $("settings-" + settingsSections[next] + "-tab").focus({
+    selectSettingsSection(sections[next]);
+    $("settings-" + sections[next] + "-tab").focus({
       preventScroll: true,
     });
   };
@@ -1805,7 +1810,8 @@ const paneStateKey = "katafit-coach-pane",
   tabLabels = {
     dashboard: "Dojo",
     diagnostics: "Activity",
-    settings: "Settings",
+    settings: "Server Settings",
+    coachSettings: "Coach Settings",
   };
 const dockedQuery = matchMedia("(min-width: 900px)");
 let paneOpen = false,
@@ -2084,7 +2090,7 @@ function studioRoute() {
       (location.hash === "#logsView" ? "diagnostics" : location.hash.slice(1));
     return section === "diagnostics"
       ? { tab: "diagnostics", legacy: true }
-      : { tab: "settings", section };
+      : { tab: settingsGroup(section), section };
   }
   return { tab: "dashboard" };
 }
@@ -2106,8 +2112,6 @@ function restoreStudioRoute(restartDiagnostics = false) {
     paneOpen = paneExpanded = true;
     history.replaceState(null, "", studioPath(route.tab));
   } else if (route.legacy) history.replaceState(null, "", "/diagnostics");
-  if (route.tab === "settings" && !route.chat)
-    selectSettingsSection(route.section, false);
   if (route.tab === "diagnostics" && !route.chat)
     selectDiagnosticsSection(route.section, false);
   if (
@@ -2116,7 +2120,7 @@ function restoreStudioRoute(restartDiagnostics = false) {
       route.tab !== "diagnostics" ||
       $("diagnostics").hidden)
   )
-    selectStudioTab(route.tab, false);
+    selectStudioTab(route.tab, false, route.chat ? undefined : route.section);
   if (route.chat) openPane(true);
 }
 window.addEventListener("popstate", () => {
@@ -2130,16 +2134,23 @@ window.addEventListener("hashchange", () => {
   )
     restoreStudioRoute();
 });
-function selectStudioTab(tab, navigate = true) {
+function selectStudioTab(
+  tab,
+  navigate = true,
+  section = rememberedSettings[tab],
+) {
   const dashboard = tab === "dashboard";
+  if (tab === "settings" || tab === "coachSettings")
+    selectSettingsSection(section, false);
   studioTab = tab;
   $("dashboardPanel").hidden = !dashboard;
-  $("settingsPanel").hidden = tab !== "settings";
+  $("settingsPanel").hidden = tab !== "settings" && tab !== "coachSettings";
   $("diagnostics").hidden = tab !== "diagnostics";
   if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
     ["dashboardTab", dashboard],
     ["settingsTab", tab === "settings"],
+    ["coachSettingsTab", tab === "coachSettings"],
     ["diagnosticsTab", tab === "diagnostics"],
   ]) {
     $(id).setAttribute("aria-pressed", String(active));
@@ -2170,6 +2181,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => CoachDashboard.clear());
 $("settingsTab").onclick = () => selectStudioTab("settings");
+$("coachSettingsTab").onclick = () => selectStudioTab("coachSettings");
 $("diagnosticsTab").onclick = () => selectStudioTab("diagnostics");
 const logActive = () =>
   key && !$("diagnostics").hidden && !document.hidden && !pageCovered();

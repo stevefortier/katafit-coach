@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
@@ -61,7 +62,7 @@ test("real Studio confirms save restart, cancel retains draft, and resume failur
         .querySelector("#notice")
         ?.textContent?.includes("Worker started"),
     );
-    await page.locator("#settings-persona-tab").click();
+    await settingsTab(page, "Persona");
     await page.locator("#name").fill("Synthetic retained draft");
     const revision = store.publicConfig().revision;
     let dialogs = 0;

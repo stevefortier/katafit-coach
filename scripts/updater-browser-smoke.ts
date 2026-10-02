@@ -1,3 +1,4 @@
+import { settingsTab } from "../tests/helpers/settings-navigation.js";
 import { chromium } from "playwright-core";
 import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -58,7 +59,7 @@ try {
   await page.goto(app.origin + "/#" + store.secrets.admin);
   await page.locator("#studio").waitFor({ state: "visible" });
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   assert.equal(
     await page
       .locator("#updateAuto, #updateSchedule, #updateAutoStatus")
@@ -111,7 +112,7 @@ try {
   await page
     .locator("#updates")
     .screenshot({ path: evidence + "/studio-updates-desktop.png" });
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   await page.locator("#updateApply").click();
   await page.locator("#updateConfirm").waitFor({ state: "visible" });
   assert.match(
@@ -132,29 +133,29 @@ try {
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.locator("#updateCancel").click();
   assert.equal(applies, 0, "dismissed confirmation never installs");
-  await page.getByRole("tab", { name: "Persona", exact: true }).click();
+  await settingsTab(page, "Persona");
   await page.locator("#name").fill("Unsaved changes");
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   await page.locator("#updateApply").click();
   assert.match(await page.locator("#notice").innerText(), /Unsaved edits/);
   assert.equal(await page.locator("#updateConfirm").isVisible(), false);
-  await page.getByRole("tab", { name: "Persona", exact: true }).click();
+  await settingsTab(page, "Persona");
   await page.locator("#name").fill(store.publicConfig().persona.name);
   // Models drafts, including an unsaved private key, also block upgrade.
-  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  await settingsTab(page, "Models");
   const registryKey = page.locator('[data-field="apiKey"]').first();
   await registryKey.fill("synthetic-unsaved-upgrade-registry-key");
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   await page.locator("#updateApply").click();
   assert.match(await page.locator("#notice").innerText(), /Unsaved edits/);
   assert.equal(await page.locator("#updateConfirm").isVisible(), false);
-  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  await settingsTab(page, "Models");
   assert.equal(
     await registryKey.inputValue(),
     "synthetic-unsaved-upgrade-registry-key",
   );
   await registryKey.fill("");
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   await page.locator("#updateApply").click();
   const accepted = page.waitForResponse((r) =>
     r.url().endsWith("/api/update/apply"),
@@ -219,7 +220,7 @@ try {
       .querySelector("#updateLatest")
       ?.textContent?.includes("cccccccccccc"),
   );
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   await page.locator("#updateApply").click();
   await page.locator("#updateConfirmApply").click();
   await page.waitForFunction(() =>
@@ -309,8 +310,10 @@ try {
     JSON.stringify(diagnostic.update).includes(store.secrets.admin),
     false,
   );
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Server Settings", exact: true })
+    .click();
+  await settingsTab(page, "Updates");
   for (const width of [320, 360, 1280]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.equal(
@@ -384,7 +387,7 @@ try {
   ]);
   await page.locator("#studio").waitFor({ state: "visible", timeout: 5000 });
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   assert.equal(
     await page.locator("#updateOutcome").count(),
     1,
@@ -407,7 +410,7 @@ try {
     lateStatus = route;
     captured();
   });
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   await page.locator("#updateApply").click();
   await statusCaptured;
   await page.locator("#lockStudio").click();
@@ -457,7 +460,7 @@ try {
       !document.querySelector<HTMLElement>("#studio")?.hidden,
   );
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   await page.route("**/api/update/check", (route) =>
     route.fulfill({
       status: 401,
@@ -500,7 +503,7 @@ try {
   await page.locator("#unlock").click();
   await page.locator("#studio").waitFor({ state: "visible" });
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   const oldConfigResponse = page.waitForResponse("**/api/config");
   await oldConfig.fulfill({
     status: 401,
@@ -538,7 +541,7 @@ try {
     await legacyPage.goto(oldLauncher.origin + "/#" + store.secrets.admin);
     await legacyPage.locator("#studio").waitFor({ state: "visible" });
     await legacyPage.locator("#settingsTab").click();
-    await legacyPage.getByRole("tab", { name: "Updates", exact: true }).click();
+    await settingsTab(legacyPage, "Updates");
     await legacyPage.waitForFunction(
       () =>
         document.querySelector("#updateLatest")?.textContent?.trim() !==

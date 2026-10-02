@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -449,7 +450,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       assertCleared(await noticeState(page));
 
       // Information: stock persona restored into the editor only.
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await page.locator("#resetPersona").click();
       const restored =
         "Restored stock persona in the editor. Save a new revision to apply it.";
@@ -516,7 +517,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
 
       // Warning: unsaved edits block preview; progress while preview runs.
       await page.evaluate(() => window.scrollTo(0, 0));
-      await page.getByRole("tab", { name: "Preview", exact: true }).click();
+      await settingsTab(page, "Preview");
       await page.locator("#previewButton").click();
       const unsaved =
         "Unsaved edits: save a new revision or revert edits before previewing.";
@@ -525,9 +526,9 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       assertShown(state, "warning", "Warning", unsaved);
       assertAboveNav(state);
       await shot("warning");
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await page.locator("#name").fill(persona.name);
-      await page.getByRole("tab", { name: "Preview", exact: true }).click();
+      await settingsTab(page, "Preview");
       let releasePreview!: () => void;
       const previewHeld = new Promise<void>((r) => (releasePreview = r));
       handler = async (route, path) => {
@@ -554,7 +555,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       handler = undefined;
 
       // Worker presence outcome maps explicitly to success or warning.
-      await page.getByRole("tab", { name: "Worker", exact: true }).click();
+      await settingsTab(page, "Worker");
       handler = async (route, path) => {
         if (path !== "/api/run") return false;
         await route.fulfill({ json: { presence: "reported" } });
