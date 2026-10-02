@@ -23,7 +23,6 @@ const proposal = (text: string) => ({
   confidence: 0.9,
   importance: 0.8,
   goal_relevance: null,
-  review_after_days: null,
   supersedes: [],
 });
 
@@ -92,7 +91,14 @@ test(
         while (!(await check())) {
           if (Date.now() > end)
             throw new Error(
-              `Missing ${name}: ${errors.join(",")}\n${output.slice(-4000)}`,
+              `host logs: ${await fetch(origin + "/api/logs", { headers })
+                .then((r) => r.text())
+                .catch(String)}\n` +
+                `Missing ${name}: ${errors.join(",")}\nbackend: ${backend.requests
+                  .map((r) => r.method + " " + r.path)
+                  .join(", ")}\nprovider: ${bodies.length} (${
+                  bodies.filter(isExtraction).length
+                } extraction)\nnotices: ${JSON.stringify(notices)}\n${output.slice(-4000)}`,
             );
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
@@ -202,7 +208,7 @@ test(
 
       extract = () => ({ proposals: [] });
       const second = await say(
-        "ACCOUNT_SECOND_TURN: what reporting style should we use?",
+        "ACCOUNT_SECOND_TURN: what morning report style should we use?",
         "SECOND",
       );
       const leading = systems(second);
