@@ -320,7 +320,44 @@ export async function admin(
     }
   };
 
-  const updateSnapshot = async () => updates.snapshot();
+  // Child-owned admission observation: old launchers understand cancellation,
+  // but cannot journal a rejection that occurs inside the selected admin.
+  // Keep this separate from the owner's accepted/installed operation receipt.
+  const admissionHelp = {
+    UPDATE_BUSY:
+      "Upgrade not accepted: an active worker poll or task prevented safe admission. Stop Coach, wait for confirmed stopped presence and publication safety, then check and confirm again. Nothing was installed; no actions will be replayed.",
+    WORKER_STOP_UNCONFIRMED:
+      "Upgrade not accepted: stopped presence or publication safety is unconfirmed. Use supported Stop/recovery and verify worker status before confirming again.",
+    LAUNCHER_UPGRADE_REQUIRED:
+      "Upgrade not accepted: replace the reviewed stable launcher before retrying. Nothing was installed.",
+    OPERATION_IN_PROGRESS:
+      "Upgrade not accepted: finish or cancel the other operation before confirming again.",
+    UPDATE_NOT_ACCEPTED:
+      "Upgrade not accepted: inspect protected-home storage and worker status before confirming again.",
+  };
+  let lastAdmission:
+    | {
+        id: string;
+        sha: string;
+        state: "rejected";
+        phase: "admission";
+        at: number;
+        reason: keyof typeof admissionHelp;
+      }
+    | undefined;
+  const updateSnapshot = async () => {
+    const state = updates.snapshot();
+    return {
+      ...state,
+      lastAdmission,
+      ...(lastAdmission &&
+      !state.preparing &&
+      !state.applying &&
+      (!state.lastOperation || lastAdmission.at >= state.lastOperation.at)
+        ? { guidance: admissionHelp[lastAdmission.reason] }
+        : {}),
+    };
+  };
   const memberReads = new Set<AbortController>();
   const server = createServer(async (req, res) => {
     const ref = randomUUID();
@@ -426,22 +463,24 @@ export async function admin(
         const url = new URL(path, origin);
         const params = url.searchParams;
         const allowed =
-          url.pathname === "/api/dashboard"
-            ? ["before"]
-            : url.pathname === "/api/dashboard/members"
-              ? []
-              : url.pathname === "/api/dashboard/map" ||
-                  url.pathname === "/api/dashboard/timeline"
-                ? ["date", "start", "end", "cursor"]
-                : url.pathname === "/api/dashboard/event"
-                  ? ["event_id", "date", "start", "end"]
-                  : url.pathname === "/api/dashboard/activity"
-                    ? ["id"]
-                    : url.pathname === "/api/dashboard/avatar"
+          url.pathname === "/api/dashboard/gallery"
+            ? ["cursor"]
+            : url.pathname === "/api/dashboard"
+              ? ["before"]
+              : url.pathname === "/api/dashboard/members"
+                ? []
+                : url.pathname === "/api/dashboard/map" ||
+                    url.pathname === "/api/dashboard/timeline"
+                  ? ["date", "start", "end", "cursor"]
+                  : url.pathname === "/api/dashboard/event"
+                    ? ["event_id", "date", "start", "end"]
+                    : url.pathname === "/api/dashboard/activity"
                       ? ["id"]
-                      : url.pathname === "/api/dashboard/photo"
-                        ? ["activity_id", "file_id"]
-                        : [];
+                      : url.pathname === "/api/dashboard/avatar"
+                        ? ["id"]
+                        : url.pathname === "/api/dashboard/photo"
+                          ? ["activity_id", "file_id"]
+                          : [];
         if (
           (url.pathname !== "/api/dashboard/members" && !allowed.length) ||
           [...params.keys()].some(
@@ -538,8 +577,23 @@ export async function admin(
                 "&limit=100" +
                 (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
           } else {
+            const gallery = url.pathname === "/api/dashboard/gallery";
+            const cursor = params.get("cursor");
+            if (
+              gallery &&
+              params.has("cursor") &&
+              (!cursor ||
+                cursor.length > 1024 ||
+                !/^[A-Za-z0-9_-]+$/.test(cursor) ||
+                before)
+            )
+              throw new SafeError("ARGUMENTS_REJECTED");
             target =
               "/api/friends/feed/dojo?limit=20" +
+              (gallery
+                ? "&type=media&pagination=cursor"
+                : "&types=meal,media,metric,workout") +
+              (cursor ? "&cursor=" + encodeURIComponent(cursor) : "") +
               (before ? "&beforeDate=" + encodeURIComponent(before) : "");
           }
         }
@@ -1241,15 +1295,26 @@ export async function admin(
             });
           }
         }
-        const cancelPrepared = async () => {
-          if (prepared)
+        const cancelPrepared = async (
+          reason: keyof typeof admissionHelp = "UPDATE_NOT_ACCEPTED",
+        ) => {
+          if (prepared) {
             await updates.cancelPreparation(body.sha).catch(() => {});
+            lastAdmission = {
+              id: ref,
+              sha: body.sha,
+              state: "rejected",
+              phase: "admission",
+              at: Date.now(),
+              reason,
+            };
+          }
           prepared = false;
         };
         // Preparation can be slow. Recheck every mutable admission condition
         // before fencing claims or stopping a running worker.
         if (updateQuiesced || busy || preview || updates.recovering) {
-          await cancelPrepared();
+          await cancelPrepared("OPERATION_IN_PROGRESS");
           return send(409, {
             error: "OPERATION_IN_PROGRESS",
             hint: "Finish or cancel the other operation, then retry the upgrade.",
@@ -1260,11 +1325,11 @@ export async function admin(
           worker &&
           (!worker.safeToReplace || (!wasRunning && !worker.stopConfirmed))
         ) {
-          await cancelPrepared();
+          await cancelPrepared("WORKER_STOP_UNCONFIRMED");
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
         }
         if (wasRunning && !updates.snapshot().manualRestartSupported) {
-          await cancelPrepared();
+          await cancelPrepared("LAUNCHER_UPGRADE_REQUIRED");
           return send(409, {
             error: "LAUNCHER_UPGRADE_REQUIRED",
             hint: "This older launcher cannot preserve running Coach across a manual update. Nothing was stopped or applied. Replace the stable launcher with a reviewed current build using the same Coach home; settings and preview restarts do not need this upgrade.",
@@ -1274,8 +1339,11 @@ export async function admin(
         // busy fences new native tickets before teardown; stop closes the
         // gateway and reconciles its action journal before owner acceptance.
         if (wasRunning && !worker!.quiesceForUpdate()) {
-          await cancelPrepared();
-          return send(409, { error: "UPDATE_BUSY" });
+          await cancelPrepared("UPDATE_BUSY");
+          return send(409, {
+            error: "UPDATE_BUSY",
+            hint: admissionHelp.UPDATE_BUSY,
+          });
         }
         busy = true;
         try {
@@ -1287,6 +1355,7 @@ export async function admin(
           void updates.apply(body.sha, wasRunning).catch(() => {});
           prepared = false;
           await updates.accepted;
+          lastAdmission = undefined;
         } catch (error) {
           await cancelPrepared();
           if (

@@ -76,7 +76,15 @@
               aria-controls="settingsPanel"
               aria-pressed="false"
             >
-              Settings
+              Server Settings
+            </button>
+            <button
+              id="coachSettingsTab"
+              class="secondary"
+              aria-controls="settingsPanel"
+              aria-pressed="false"
+            >
+              Coach Settings
             </button>
           </nav>
           <section
@@ -190,15 +198,15 @@
                 ></aside>
               </div>
             </section>
-            <h3>Latest completed check-in photos among loaded data</h3>
-            <div id="dashboardRoster" class="dashboard-roster"></div>
             <div id="dashboardCharts"></div>
+            <section id="dashboardGallery" aria-label="Gallery"></section>
           </section>
           <section id="settingsPanel" hidden>
             <div
+              id="serverSettingsTabs"
               class="settings-tabs"
               role="tablist"
-              aria-label="Settings sections"
+              aria-label="Server Settings sections"
             >
               <button
                 type="button"
@@ -222,6 +230,25 @@
               >
                 Models
               </button>
+              <button
+                type="button"
+                id="settings-updates-tab"
+                role="tab"
+                aria-controls="updates"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Updates
+              </button>
+            </div>
+            <div
+              id="coachSettingsTabs"
+              class="settings-tabs"
+              role="tablist"
+              aria-label="Coach Settings sections"
+              hidden
+            >
               <button
                 type="button"
                 id="settings-persona-tab"
@@ -265,17 +292,6 @@
                 class="secondary"
               >
                 Memories
-              </button>
-              <button
-                type="button"
-                id="settings-updates-tab"
-                role="tab"
-                aria-controls="updates"
-                aria-selected="false"
-                tabindex="-1"
-                class="secondary"
-              >
-                Updates
               </button>
               <button
                 type="button"
@@ -1164,30 +1180,31 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               ></ul>
             </aside>
           </div>
-          <dialog id="attachmentDialog" aria-labelledby="attachmentDialogTitle">
-            <div class="attachment-dialog-bar">
-              <strong id="attachmentDialogTitle"></strong>
-              <a id="attachmentDialogDownload" class="button secondary"
-                >Download</a
-              ><button
-                id="attachmentDialogClose"
-                type="button"
-                class="secondary"
-              >
-                Close
-              </button>
-            </div>
-            <img id="attachmentDialogImage" alt="" />
-            <p id="attachmentDialogCaption" class="hint"></p>
-          </dialog>
           <p id="operatorStatus" role="status"></p>
           <div id="operatorActions" role="status" aria-live="polite"></div>
+          <details id="operatorDeliveryHistory" hidden>
+            <summary id="operatorDeliveryHistorySummary">
+              Delivery history
+            </summary>
+            <div id="operatorDeliveryHistoryRows"></div>
+          </details>
           <button id="operatorReconcile" type="button" class="secondary" hidden>
             Check delivery status
           </button>
         </div>
       </section>
     </aside>
+    <dialog id="attachmentDialog" aria-labelledby="attachmentDialogTitle">
+      <div class="attachment-dialog-bar">
+        <strong id="attachmentDialogTitle"></strong>
+        <a id="attachmentDialogDownload" class="button secondary">Download</a
+        ><button id="attachmentDialogClose" type="button" class="secondary">
+          Close
+        </button>
+      </div>
+      <img id="attachmentDialogImage" alt="" />
+      <p id="attachmentDialogCaption" class="hint"></p>
+    </dialog>
     <script src="/terminal.js"></script>
     <script src="/backend-performance.js"></script>
     <script src="/leaflet.js"></script>

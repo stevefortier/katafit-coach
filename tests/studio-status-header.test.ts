@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -171,7 +172,7 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
         JSON.stringify(geometry),
       );
       await page.locator("#settingsTab").click();
-      await page.getByRole("tab", { name: "Updates", exact: true }).click();
+      await settingsTab(page, "Updates");
       const anchor = await page.evaluate(() => ({
         headerBottom: document.querySelector("header")!.getBoundingClientRect()
           .bottom,

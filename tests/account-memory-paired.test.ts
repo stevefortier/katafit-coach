@@ -76,7 +76,7 @@ test(
           else assert.notEqual(host, undefined, op.method + " " + op.path);
         }
         assert.match(stockSkills[0].instructions, /memory domain from GET/);
-        assert.equal(stockSkills[0].defaultVersion, 6);
+        assert.equal(stockSkills[0].defaultVersion, 7);
       },
     );
 

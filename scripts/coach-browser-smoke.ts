@@ -1,3 +1,4 @@
+import { settingsTab } from "../tests/helpers/settings-navigation.js";
 import { chromium } from "playwright-core";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -178,7 +179,7 @@ try {
   assert.equal(logs, 0, "Activity covered by expanded Coach does not poll");
   await page.locator("#coachPaneExpand").click();
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Worker", exact: true }).click();
+  await settingsTab(page, "Worker");
   await page.locator("#run").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent === "IDLE",
@@ -188,7 +189,7 @@ try {
   assert.equal(await page.locator("#operatorText").count(), 0);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Persona", exact: true }).click();
+  await settingsTab(page, "Persona");
   await page.locator("#name").fill("Unsaved operator draft");
   await openCoach();
   assert.equal(await page.locator("#operatorSnapshot").count(), 0);
@@ -200,9 +201,9 @@ try {
   );
   const revisionBeforeDraft = store.publicConfig().revision;
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Persona", exact: true }).click();
+  await settingsTab(page, "Persona");
   await page.getByText("Advanced Markdown", { exact: true }).click();
-  await page.getByRole("tab", { name: "Persona", exact: true }).click();
+  await settingsTab(page, "Persona");
   await page.locator("#markdown").fill("Explicit Settings rule");
   await openCoach();
   assert.equal(await page.locator(".chat-user button").count(), 0);
@@ -212,7 +213,7 @@ try {
     "chat never writes config",
   );
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Worker", exact: true }).click();
+  await settingsTab(page, "Worker");
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.locator("#save").click();
   await page.waitForFunction(() =>
@@ -265,7 +266,7 @@ try {
   assert.equal(await page.locator("#nativeAttachments").isVisible(), true);
   await page.locator("#coachPaneExpand").click();
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Persona", exact: true }).click();
+  await settingsTab(page, "Persona");
   await page.locator("#name").fill("Synthetic authority reload");
   assert.notEqual(
     await page.locator("#coachLauncherName").innerText(),
@@ -281,7 +282,7 @@ try {
   await page.locator("#settingsTab").click();
   // Representative evidence uses the same real Pi transport; adversarial text
   // above remains tested, but does not stand in for the readable UI receipt.
-  await page.getByRole("tab", { name: "Worker", exact: true }).click();
+  await settingsTab(page, "Worker");
   await page.locator("#run").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent !== "STOPPED",

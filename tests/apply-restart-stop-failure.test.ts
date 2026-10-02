@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -59,7 +60,7 @@ test("native teardown failure preserves actual running status and the unsaved St
         .querySelector("#notice")
         ?.textContent?.includes("Worker started"),
     );
-    await page.locator("#settings-persona-tab").click();
+    await settingsTab(page, "Persona");
     await page.locator("#name").fill("Synthetic draft after unsafe stop");
     const revision = store.publicConfig().revision;
     NativeTerminal.prototype.stop = () =>

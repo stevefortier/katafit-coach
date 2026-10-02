@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -569,7 +570,8 @@ test(
       assert.deepEqual(await primaryNav(page), [
         "Dojo",
         "Activity",
-        "Settings",
+        "Server Settings",
+        "Coach Settings",
       ]);
       assert.equal(
         await page.locator("#dashboardTab").getAttribute("aria-pressed"),
@@ -659,7 +661,12 @@ test(
             document.querySelector("#nativeTerminal .xterm") ===
               (window as any).__xterm,
         );
-      for (const tab of ["#settingsTab", "#diagnosticsTab", "#dashboardTab"]) {
+      for (const tab of [
+        "#settingsTab",
+        "#coachSettingsTab",
+        "#diagnosticsTab",
+        "#dashboardTab",
+      ]) {
         await page.locator(tab).click();
         assert.equal(await paneMode(page), "docked", tab);
         assert.equal(await same(), true, tab);
@@ -780,7 +787,12 @@ test(
             .querySelector("#nativeStatus")
             ?.textContent?.startsWith("Connected"),
       );
-      for (const tab of ["#settingsTab", "#diagnosticsTab", "#dashboardTab"])
+      for (const tab of [
+        "#settingsTab",
+        "#coachSettingsTab",
+        "#diagnosticsTab",
+        "#dashboardTab",
+      ])
         await page.locator(tab).click();
       for (const width of [390, 1440])
         await page.setViewportSize({ width, height: 900 });
@@ -915,7 +927,7 @@ test(
       await page.waitForTimeout(2600);
       assert.ok(h.counts.logs > logs, "docked pane keeps page polling");
       await page.locator("#settingsTab").click();
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await page.locator("#name").fill("Unsaved pane draft");
       await page
         .locator("#workspaceScroll")
@@ -1001,7 +1013,7 @@ test(
         assert.equal(await page.locator("#coachPaneExpand").isVisible(), false);
         assert.equal(
           await page.locator("#coachPaneBack").innerText(),
-          "Back to Settings",
+          "Back to Server Settings",
         );
         assert.equal(await overflow(page), false);
         await shot(page, `mobile-${width}`);
@@ -1049,7 +1061,7 @@ test(
           "Open Dojo to load shared data.",
       );
       await page.locator("#settingsTab").click();
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await page.locator("#name").fill("History draft");
       await page.locator("#diagnosticsTab").click();
       await page.goBack();
@@ -1193,7 +1205,12 @@ test(
       );
       await page.waitForTimeout(2500);
       assert.equal(h.counts.tickets, 1, "visible pane does not restart Pi");
-      for (const tab of ["#settingsTab", "#diagnosticsTab", "#dashboardTab"])
+      for (const tab of [
+        "#settingsTab",
+        "#coachSettingsTab",
+        "#diagnosticsTab",
+        "#dashboardTab",
+      ])
         await page.locator(tab).click();
       await page.locator("#coachPaneExpand").click();
       await page.locator("#coachPaneExpand").click();

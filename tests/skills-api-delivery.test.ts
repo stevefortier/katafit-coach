@@ -16,12 +16,12 @@ test("chief messaging guidance is explicit in both the always-advertised tool an
     assert.match(text, /never supply idempotency_key/i);
     assert.match(text, /not.*evidence.*recipient.*ineligible/i);
   }
-  assert.equal(stockSkills[0].defaultVersion, 6);
+  assert.equal(stockSkills[0].defaultVersion, 7);
 });
 
 test("member messages are occurrences: exact words may repeat, delivered is not viewed, no replay", () => {
   const skill = stockSkills[0];
-  assert.equal(skill.defaultVersion, 6);
+  assert.equal(skill.defaultVersion, 7);
   const text = skill.instructions;
   assert.doesNotMatch(
     text,
@@ -45,14 +45,14 @@ test("member messages are occurrences: exact words may repeat, delivered is not 
 
 test("current API guidance requires explicit panel delivery, not image acquisition alone", () => {
   const skill = stockSkills[0];
-  assert.equal(skill.defaultVersion, 6);
+  assert.equal(skill.defaultVersion, 7);
   assert.match(skill.instructions, /send_to_operator/);
   assert.match(skill.instructions, /image_receipt/);
   assert.match(skill.instructions, /not proof.*display/i);
   assert.doesNotMatch(skill.instructions, /katafit_rest_get/);
 });
 
-test("v6 API guidance governs account memories through documented routes, host keys and exact targets", () => {
+test("v7 API guidance governs account memories through documented routes, host keys and exact targets", () => {
   const text = stockSkills[0].instructions;
   assert.match(text, /memory domain from GET \/api\/docs\/coach/);
   assert.match(text, /never guess memory routes or fields/);
@@ -71,60 +71,85 @@ test("v6 API guidance governs account memories through documented routes, host k
   assert.ok(text.length <= 16000);
 });
 
-for (const [from, customized] of [
-  [1, false],
-  [1, true],
-  [3, false],
-  [3, true],
-  [4, false],
-  [4, true],
-  [5, false],
-  [5, true],
-] as const) {
-  test(`API v${from} upgrade preserves archived content and custom state (${customized})`, async () => {
-    const dir = await mkdtemp(tmpdir() + "/api-delivery-");
-    try {
-      await mkdir(dir + "/skills-history");
-      const old = {
-        ...stockSkills[0],
-        defaultVersion: from,
-        basedOnDefaultVersion: from,
-        customized,
-        enabled: !customized,
-        instructions: `Saved API v${from} instructions`,
-      };
-      const bytes = Buffer.from(
-        JSON.stringify({
-          version: 1,
-          revision: 1,
-          previous: null,
-          savedAt: null,
-          skills: [old],
-        }),
-      );
-      const head =
-        "skills-" + createHash("sha256").update(bytes).digest("hex") + ".json";
-      await writeFile(dir + "/skills-history/" + head, bytes);
-      await writeFile(
-        dir + "/skills.json",
-        JSON.stringify({ version: 1, revision: 1, head }),
-      );
-      const store = new SkillStore(dir, () => []);
-      await store.init();
-      const current = store.view().skills[0];
-      assert.equal(current.defaultVersion, 6);
-      assert.equal(current.enabled, old.enabled);
-      assert.equal(
-        current.instructions,
-        customized ? old.instructions : stockSkills[0].instructions,
-      );
-      assert.equal(store.history(1).skills[0].instructions, old.instructions);
-      assert.deepEqual(await readFile(dir + "/skills-history/" + head), bytes);
-      const reload = new SkillStore(dir, () => []);
-      await reload.init();
-      assert.equal(reload.view().revision, store.view().revision);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
+// Both merged branches shipped v6 with different guidance; neither saved v6
+// may suppress the combined migration. Keep both bodies in the new revision.
+for (const from of [1, 3, 4, 5, 6]) {
+  for (const customized of [false, true]) {
+    for (const enabled of [false, true]) {
+      test(`API v${from} upgrade preserves archived content and custom state (${customized}, enabled=${enabled})`, async () => {
+        const dir = await mkdtemp(tmpdir() + "/api-delivery-");
+        try {
+          await mkdir(dir + "/skills-history");
+          const old = {
+            ...stockSkills[0],
+            defaultVersion: from,
+            basedOnDefaultVersion: from,
+            customized,
+            enabled,
+            instructions: `Saved API v${from} instructions`,
+          };
+          const bytes = Buffer.from(
+            JSON.stringify({
+              version: 1,
+              revision: 1,
+              previous: null,
+              savedAt: null,
+              skills: [old],
+            }),
+          );
+          const head =
+            "skills-" +
+            createHash("sha256").update(bytes).digest("hex") +
+            ".json";
+          await writeFile(dir + "/skills-history/" + head, bytes);
+          await writeFile(
+            dir + "/skills.json",
+            JSON.stringify({ version: 1, revision: 1, head }),
+          );
+          const store = new SkillStore(dir, () => []);
+          await store.init();
+          const current = store.view().skills[0];
+          assert.equal(current.defaultVersion, 7);
+          assert.equal(current.basedOnDefaultVersion, customized ? from : 7);
+          assert.equal(current.status, customized ? "customized" : "default");
+          assert.equal(current.defaultUpdateAvailable, customized);
+          assert.equal(current.enabled, old.enabled);
+          assert.equal(
+            current.instructions,
+            customized ? old.instructions : stockSkills[0].instructions,
+          );
+          assert.equal(
+            store.history(1).skills[0].instructions,
+            old.instructions,
+          );
+          assert.equal(store.history(1).skills[0].enabled, old.enabled);
+          assert.deepEqual(
+            await readFile(dir + "/skills-history/" + head),
+            bytes,
+          );
+          const manifest = JSON.parse(
+            await readFile(dir + "/skills.json", "utf8"),
+          );
+          const record = JSON.parse(
+            await readFile(dir + "/skills-history/" + manifest.head, "utf8"),
+          );
+          assert.equal(record.previous, head);
+          assert.equal(record.revision, 2);
+          assert.equal(record.skills[0].defaultVersion, 7);
+          assert.deepEqual(
+            record.skills[0],
+            customized
+              ? { ...old, defaultVersion: 7 }
+              : { ...stockSkills[0], enabled },
+          );
+          const reload = new SkillStore(dir, () => []);
+          await reload.init();
+          assert.equal(reload.view().revision, store.view().revision);
+          assert.deepEqual(reload.view().skills[0], current);
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
     }
-  });
+  }
 }

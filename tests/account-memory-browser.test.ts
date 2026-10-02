@@ -766,6 +766,16 @@ test("Coach pane groups one compact Needs review notice for skipped protected re
         (document.querySelector("#memoryText") as HTMLTextAreaElement).value ===
         "Prefers 25-minute morning workouts.",
     );
+    assert.equal(
+      await page.locator("#coachSettingsTab").getAttribute("aria-pressed"),
+      "true",
+    );
+    assert.equal(
+      await page.locator("#settingsTab").getAttribute("aria-pressed"),
+      "false",
+    );
+    assert.equal(await page.locator("#coachSettingsTabs").isVisible(), true);
+    assert.equal(new URL(page.url()).searchParams.get("section"), "memories");
     assert.equal(writes(backend).length, before, "review writes nothing");
     assert.deepEqual(f.errors, []);
   } finally {
