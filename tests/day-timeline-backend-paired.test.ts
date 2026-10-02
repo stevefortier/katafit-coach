@@ -14,7 +14,7 @@ import {
 // Disposable real Mongo/Express -> authenticated Coach BFF -> served Studio.
 // The only substituted network resource is the synthetic basemap tile.
 test(
-  "paired event snapshots include unpositioned subjects while map retains live creation-time detail",
+  "paired canonical event snapshots include unpositioned events and map exact occurrence GPS",
   {
     skip: !memoryBackendEnabled,
     timeout: 120000,
@@ -147,6 +147,19 @@ test(
           requestReceivedAt: a.created_at,
           eventType: `${a.type}.created`,
           details: {},
+          // Recorded event fix deliberately differs from current subject GPS.
+          ...(i <= 1
+            ? {
+                eventPosition: {
+                  availability: "available",
+                  latitude: 40.7,
+                  longitude: -73.9,
+                  accuracy: 8,
+                  captured_at: a.created_at.toISOString(),
+                  source: "gps",
+                },
+              }
+            : {}),
         }),
       }));
       await b.db.collection("user_activity_events").insertMany(events);
@@ -156,7 +169,19 @@ test(
         snapshot.events.map((e: any) => e.id).sort(),
         events.map((e) => String(e._id)).sort(),
       );
-      assert.ok(snapshot.events.every((e: any) => !e.position));
+      assert.equal(
+        snapshot.events.find((e: any) => e.id === String(events[0]._id))
+          .position.latitude,
+        40.7,
+      );
+      assert.ok(
+        snapshot.events
+          .filter(
+            (e: any) =>
+              !events.slice(0, 2).some((row) => String(row._id) === e.id),
+          )
+          .every((e: any) => e.position.availability === "unavailable"),
+      );
       browser = await chromium.launch({
         executablePath: process.env.CHROME_BIN || "/usr/bin/google-chrome",
         args: ["--no-sandbox"],
@@ -238,12 +263,35 @@ test(
             /historical event snapshot/,
           );
           const pin = page.locator(
-            `.dashboard-activity-pin[data-activity-id="${workout._id}"]`,
+            `.dashboard-event-dot[data-event-id="${events[0]._id}"]`,
           );
-          await pin.waitFor();
-          await pin.click();
+          await page.locator('.dashboard-map-group[data-count="2"]').click();
+          await page
+            .locator(`.dashboard-map-choice[data-event-id="${events[0]._id}"]`)
+            .click();
           await page.getByText("Synthetic workout", { exact: true }).waitFor();
+          assert.match(
+            await page.locator("#dashboardMapSelection").innerText(),
+            /Event location: 40\.7, -73\.9/,
+          );
+          assert.doesNotMatch(
+            await page.locator("#dashboardMapSelection").innerText(),
+            /42\.36|71\.05/,
+          );
           assert.equal(await pin.getAttribute("aria-pressed"), "true");
+          // Reopen via an ordinary pointer click, not force or DOM click.
+          await page
+            .locator('.dashboard-map-group[data-count="2"]')
+            .click({ timeout: 3000 });
+          await page
+            .locator(`.dashboard-map-choice[data-event-id="${events[1]._id}"]`)
+            .click();
+          await page.waitForFunction(() =>
+            document
+              .querySelector("#dashboardMapSelection")
+              ?.textContent?.includes("Event access rechecked"),
+          );
+          assert.equal(await mark.getAttribute("aria-pressed"), "true");
           await selectEvent();
           assert.equal(await mark.getAttribute("aria-pressed"), "true");
           assert.equal(
@@ -258,6 +306,53 @@ test(
             fullPage: true,
           });
           assert.deepEqual(errors, []);
+          await b.db
+            .collection("users")
+            .updateOne(
+              { _id: owner },
+              { $set: { "privacy_settings.position": [] } },
+            );
+          assert.deepEqual(
+            (await b.db.collection("users").findOne({ _id: owner }))
+              .privacy_settings.position,
+            [],
+          );
+          await page.locator('.dashboard-map-group[data-count="2"]').click();
+          await page
+            .locator(`.dashboard-map-choice[data-event-id="${events[0]._id}"]`)
+            .click();
+          await page.waitForFunction(() =>
+            document
+              .querySelector("#dashboardMapSelection")
+              ?.textContent?.includes("No shared location"),
+          );
+          assert.equal(
+            await page
+              .locator(
+                ".dashboard-event-dot,.dashboard-map-group,.dashboard-map-connection",
+              )
+              .count(),
+            0,
+          );
+          assert.equal(
+            await page.locator(".dashboard-timeline-mark").count(),
+            4,
+          );
+          assert.doesNotMatch(
+            await page.locator("#dashboardMapSelection").innerText(),
+            /40\.7|73\.9|8 m/,
+          );
+          await b.db
+            .collection("users")
+            .updateOne(
+              { _id: owner },
+              { $set: { "privacy_settings.position": ["dojo"] } },
+            );
+          assert.deepEqual(
+            (await b.db.collection("users").findOne({ _id: owner }))
+              .privacy_settings.position,
+            ["dojo"],
+          );
         } finally {
           await context.close();
         }
@@ -278,7 +373,9 @@ test(
       assert.equal(redacted.events.length, 3);
       assert.ok(
         redacted.events.every(
-          (e: any) => !e.position && e.subject.id !== String(meal._id),
+          (e: any) =>
+            e.position.availability !== "available" &&
+            e.subject.id !== String(meal._id),
         ),
       );
       const denied = await fetch(

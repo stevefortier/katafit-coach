@@ -227,4 +227,3 @@ export async function fixture(
     await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
   }
 }
-

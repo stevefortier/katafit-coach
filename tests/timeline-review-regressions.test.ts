@@ -246,7 +246,9 @@ for (const cluster of [false, true])
             await page.waitForFunction(() =>
               document
                 .querySelector("#dashboardTimeline > p")
-                ?.textContent?.match(/Timeline unavailable|Timeline read failed/),
+                ?.textContent?.match(
+                  /Timeline unavailable|Timeline read failed/,
+                ),
             );
             // Recovery reattaches the real ResizeObserver; settle its initial
             // layout notification before deliberate focus opens the inspector.

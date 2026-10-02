@@ -188,6 +188,35 @@ test(
         await b.db.collection("activities").countDocuments({ user_id: owner }),
         7,
       );
+      const build = b.require(
+        "./core/userActivityTimeline",
+      ).buildUserActivityEvent;
+      await b
+        .require("./core/userActivityTimelineStore")
+        .ensureUserActivityIndexes(b.db);
+      const metricEvent = {
+        _id: new b.ObjectId(),
+        ...build({
+          ownerUserId: owner,
+          actorUserId: owner,
+          actorType: "member",
+          source: "interactive",
+          requestId: "paired-metric",
+          eventKey: "paired-metric",
+          subjectType: "metric",
+          subjectId: metric._id,
+          occurredAt: now,
+          requestReceivedAt: now,
+          eventType: "metric.created",
+          details: {},
+          eventPosition: {
+            availability: "available",
+            ...metric.position,
+            captured_at: now.toISOString(),
+          },
+        }),
+      };
+      await b.db.collection("user_activity_events").insertOne(metricEvent);
       const human = b
         .require("jsonwebtoken")
         .sign(
@@ -415,14 +444,14 @@ test(
           );
           await page.waitForFunction(
             () =>
-              document.querySelectorAll("#dashboardMap .dashboard-map-marker")
+              document.querySelectorAll("#dashboardMap .dashboard-event-dot")
                 .length === 1,
             {},
             { timeout: 15000 },
           );
           assert.match(
             await page.locator("#dashboardMapStatus").innerText(),
-            /1 members with authorized position/,
+            /1 of 1 authorized events have a shared location/,
           );
           await page
             .locator("#dashboardMemberCards .dashboard-member-card")
@@ -436,13 +465,13 @@ test(
           );
           assert.equal(
             await page.locator("#dashboardMap .dashboard-member-pin").count(),
-            1,
+            0,
           );
           assert.ok(
             requestedTiles.length > 0,
             "served Studio uses OSM raster tiles",
           );
-          await page.locator("#dashboardMap .dashboard-map-marker").click();
+          await page.locator("#dashboardMap .dashboard-event-dot").click();
           await page.waitForFunction(
             () =>
               document
@@ -466,19 +495,19 @@ test(
             (selected) =>
               document
                 .querySelector("#dashboardMapStatus")
-                ?.textContent?.startsWith(selected + " activity creation date"),
+                ?.textContent?.startsWith(selected + " event occurrence time"),
             previousDay,
             { timeout: 10000 },
           );
           assert.equal(
-            await page.locator("#dashboardMap .dashboard-map-marker").count(),
+            await page.locator("#dashboardMap .dashboard-event-dot").count(),
             0,
           );
           await page.locator("#dashboardMapDate").fill(day);
           await page.locator("#dashboardMapDate").dispatchEvent("change");
           await page.waitForFunction(
             () =>
-              document.querySelectorAll("#dashboardMap .dashboard-map-marker")
+              document.querySelectorAll("#dashboardMap .dashboard-event-dot")
                 .length === 1,
             {},
             { timeout: 10000 },
@@ -555,7 +584,7 @@ test(
               () => document.documentElement.scrollWidth <= innerWidth + 1,
             ),
           );
-          await page.locator("#dashboardMap .dashboard-map-marker").click();
+          await page.locator("#dashboardMap .dashboard-event-dot").click();
           await page.waitForFunction(() =>
             document
               .querySelector("#dashboardMapSelection")
@@ -640,12 +669,14 @@ test(
             () =>
               document
                 .querySelector("#dashboardMapStatus")
-                ?.textContent?.includes("0 members with authorized position"),
+                ?.textContent?.includes(
+                  "0 of 1 authorized events have a shared location",
+                ),
             {},
             { timeout: 10000 },
           );
           assert.equal(
-            await page.locator("#dashboardMap .dashboard-map-marker").count(),
+            await page.locator("#dashboardMap .dashboard-event-dot").count(),
             0,
           );
           assert.deepEqual(errors, []);

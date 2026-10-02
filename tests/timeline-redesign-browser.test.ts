@@ -51,7 +51,7 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
         for (const [group, size] of [321, 102, 7].entries())
           for (let i = 0; i < size; i++)
             events.push({
-              id: (2000 + group * 1000 + i).toString(16).padStart(24,"0"),
+              id: (2000 + group * 1000 + i).toString(16).padStart(24, "0"),
               user_id: member,
               occurred_at: new Date(
                 start + 3600000 + group * 75 * 60000 + (i % 3) * 1000,
@@ -79,7 +79,9 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
             { _id: member, display_name: "Fixture Ada" },
             { _id: peer, display_name: "Fixture Bea" },
           ],
-          events: url.searchParams.has("event_id") ? events.filter(e => e.id === url.searchParams.get("event_id")) : events,
+          events: url.searchParams.has("event_id")
+            ? events.filter((e) => e.id === url.searchParams.get("event_id"))
+            : events,
           hasMore: false,
         }),
       );
@@ -232,7 +234,9 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       "arrows navigate individual occurrences inside a cluster",
     );
     await page
-      .locator('.dashboard-timeline-choice[data-event-id="000000000000000000000001"]')
+      .locator(
+        '.dashboard-timeline-choice[data-event-id="000000000000000000000001"]',
+      )
       .click();
     // Selecting an activity-backed occurrence automatically reauthorizes live detail, preserving history.
     await page
@@ -245,12 +249,16 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
     assert.equal(reads, 1);
     assert.equal(
       await page
-        .locator('.dashboard-timeline-mark[data-event-id="000000000000000000000001"]')
+        .locator(
+          '.dashboard-timeline-mark[data-event-id="000000000000000000000001"]',
+        )
         .getAttribute("aria-pressed"),
       "true",
     );
     const recordedLeft = await page
-      .locator('.dashboard-timeline-mark[data-event-id="000000000000000000001001"]')
+      .locator(
+        '.dashboard-timeline-mark[data-event-id="000000000000000000001001"]',
+      )
       .evaluate((n) => (n as HTMLElement).style.left);
     for (let i = 0; i < 7; i++) {
       const zoom = page
@@ -260,14 +268,18 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
     }
     assert.equal(
       await page
-        .locator('.dashboard-timeline-mark[data-event-id="000000000000000000001001"]')
+        .locator(
+          '.dashboard-timeline-mark[data-event-id="000000000000000000001001"]',
+        )
         .getAttribute("hidden"),
       null,
       "zoom must separate nearby occurrences without changing their recorded time",
     );
     assert.equal(
       await page
-        .locator('.dashboard-timeline-mark[data-event-id="000000000000000000001001"]')
+        .locator(
+          '.dashboard-timeline-mark[data-event-id="000000000000000000001001"]',
+        )
         .evaluate((n) => (n as HTMLElement).style.left),
       recordedLeft,
     );
@@ -279,7 +291,9 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       .locator("#dashboardTimeline")
       .screenshot({ path: `${evidence}/redesign-time-zoom.png` });
     await page
-      .locator('.dashboard-timeline-mark[data-event-id="000000000000000000001001"]')
+      .locator(
+        '.dashboard-timeline-mark[data-event-id="000000000000000000001001"]',
+      )
       .focus();
     assert.match(
       await page.locator(".dashboard-timeline-inspector").innerText(),
@@ -387,7 +401,9 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
         .locator("#dashboardTimeline")
         .screenshot({ path: `${evidence}/redesign-chooser-${width}.png` });
       await page
-        .locator('.dashboard-timeline-choice[data-event-id="000000000000000000000141"]')
+        .locator(
+          '.dashboard-timeline-choice[data-event-id="000000000000000000000141"]',
+        )
         .click();
       assert.match(
         await page.locator("#dashboardMapSelection").innerText(),
@@ -402,9 +418,13 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
     await page.locator(".dashboard-timeline-cluster").click();
     liveStatus = 404;
     await page
-      .locator('.dashboard-timeline-choice[data-event-id="000000000000000000000001"]')
+      .locator(
+        '.dashboard-timeline-choice[data-event-id="000000000000000000000001"]',
+      )
       .click();
-    await page.getByText(/Current subject activity unavailable \(404\)/).waitFor();
+    await page
+      .getByText(/Current subject activity unavailable \(404\)/)
+      .waitFor();
     assert.match(
       await page.locator("#dashboardMapSelection").innerText(),
       /Exercise 1 · Set 1/,
@@ -413,12 +433,17 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
     await page.locator(".dashboard-timeline-cluster").click();
     liveStatus = 403;
     await page
-      .locator('.dashboard-timeline-choice[data-event-id="000000000000000000000001"]')
+      .locator(
+        '.dashboard-timeline-choice[data-event-id="000000000000000000000001"]',
+      )
       .click();
     await page.waitForFunction(
       () => document.querySelectorAll(".dashboard-timeline-mark").length === 1,
     );
-    assert.match(await page.locator("#dashboardMapSelection").innerText(), /Activity access denied \(403\)/);
+    assert.match(
+      await page.locator("#dashboardMapSelection").innerText(),
+      /Activity access denied \(403\)/,
+    );
     assert.equal(
       await page.locator(".dashboard-timeline-inspector").innerText(),
       "",

@@ -31,7 +31,11 @@ test("late live-map detail denial purges a newer selected event snapshot of the 
               details: { exercise_index: 0, set_index: 0 },
               actor_type: "member",
               source: "interactive",
-              position: {availability:"available",latitude:42,longitude:-71},
+              position: {
+                availability: "available",
+                latitude: 42,
+                longitude: -71,
+              },
             },
           ],
           hasMore: false,
@@ -102,14 +106,14 @@ test("late live-map detail denial purges a newer selected event snapshot of the 
       /Fixture Ada/,
     );
     assert.equal(
-      await page
-        .locator(".dashboard-event-dot")
-        .getAttribute("aria-pressed"),
+      await page.locator(".dashboard-event-dot").getAttribute("aria-pressed"),
       "true",
     );
     const response = page.waitForResponse(
       (r) =>
-        r.url().includes("/api/dashboard/activity?id=111111111111111111111111") &&
+        r
+          .url()
+          .includes("/api/dashboard/activity?id=111111111111111111111111") &&
         r.status() === 403,
     );
     release();

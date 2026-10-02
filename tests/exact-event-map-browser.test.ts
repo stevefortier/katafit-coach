@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {fixture, ledger, ada, bob, id, ev, gps, type Event, type Override} from "./helpers/exact-map-fixture.js";
+import {
+  fixture,
+  ledger,
+  ada,
+  bob,
+  id,
+  ev,
+  gps,
+  type Event,
+  type Override,
+} from "./helpers/exact-map-fixture.js";
 
 // Offset between an element's centre and a coordinate projected into the
 // world copy the map currently displays (Leaflet container = padding box).
@@ -1423,14 +1433,32 @@ test("a failed same-date reload keeps a Position withdrawal: retained rows never
       await page.getByText("Timeline unavailable (503); try again.").waitFor();
       // Select another retained Ada occurrence while its exact read is held.
       const before = requests.length;
-      await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
-      const cluster = await page.locator('.dashboard-timeline-cluster').evaluateAll((nodes: any[], target: string) => nodes.findIndex(n => JSON.parse(n.dataset.eventIds).includes(target)), ev(6));
+      await page.evaluate(
+        () =>
+          new Promise((r) =>
+            requestAnimationFrame(() => requestAnimationFrame(r)),
+          ),
+      );
+      const cluster = await page
+        .locator(".dashboard-timeline-cluster")
+        .evaluateAll(
+          (nodes: any[], target: string) =>
+            nodes.findIndex((n) =>
+              JSON.parse(n.dataset.eventIds).includes(target),
+            ),
+          ev(6),
+        );
       if (cluster >= 0) {
-        await page.locator('.dashboard-timeline-cluster').nth(cluster).focus();
-        await page.keyboard.press('Enter');
-        await page.locator(`.dashboard-timeline-choice[data-event-id="${ev(6)}"]`).focus();
-      } else await page.locator(`.dashboard-timeline-mark[data-event-id="${ev(6)}"]`).focus();
-      await page.keyboard.press('Enter');
+        await page.locator(".dashboard-timeline-cluster").nth(cluster).focus();
+        await page.keyboard.press("Enter");
+        await page
+          .locator(`.dashboard-timeline-choice[data-event-id="${ev(6)}"]`)
+          .focus();
+      } else
+        await page
+          .locator(`.dashboard-timeline-mark[data-event-id="${ev(6)}"]`)
+          .focus();
+      await page.keyboard.press("Enter");
       while (
         !requests.slice(before).some((r) => r.includes(`event_id=${ev(6)}`))
       )
@@ -1503,10 +1531,12 @@ for (const [name, correction] of [
     await fixture(
       async (page, { requests }) => {
         await retry(page, requests);
-        await page.locator('.dashboard-map-group').focus();
-        await page.keyboard.press('Enter');
-        await page.locator(`.dashboard-map-choice[data-event-id="${ev(2)}"]`).focus();
-        await page.keyboard.press('Enter');
+        await page.locator(".dashboard-map-group").focus();
+        await page.keyboard.press("Enter");
+        await page
+          .locator(`.dashboard-map-choice[data-event-id="${ev(2)}"]`)
+          .focus();
+        await page.keyboard.press("Enter");
         await page.waitForFunction(
           () =>
             !document
@@ -1581,83 +1611,259 @@ for (const [name, correction] of [
     );
   });
 
-
 test("a private Position in the day stream suppresses all member GPS and a fresh authorized reload regrants", async () => {
- let privateRead = true;
- await fixture(async(page) => {
-   assert.equal(await page.locator(`.dashboard-event-dot[data-member-id="${ada}"]`).count(), 0);
-   assert.equal(await page.locator(`line[data-member-id="${ada}"]`).count(), 0);
-   assert.equal(await page.locator(`.dashboard-timeline-mark[data-member-id="${ada}"]`).count(), 6);
-   await selectFromTimeline(page, ev(3));
-   assert.match(await page.locator('#dashboardMapSelection').innerText(), /No shared location/);
-   privateRead = false;
-   await page.evaluate(() => document.querySelector('#dashboardMapDate')!.dispatchEvent(new Event('change')));
-   await page.waitForFunction(() => document.querySelectorAll('.dashboard-event-dot[data-member-id="aaaaaaaaaaaaaaaaaaaaaaaa"]').length === 5);
- }, {override: (url, events) => url.pathname === '/api/dashboard/timeline' ? {body: {users, events: events.map(e => e.id === ev(8) && privateRead ? {...e,position:withheld} : e),hasMore:false}} : undefined});
+  let privateRead = true;
+  await fixture(
+    async (page) => {
+      assert.equal(
+        await page
+          .locator(`.dashboard-event-dot[data-member-id="${ada}"]`)
+          .count(),
+        0,
+      );
+      assert.equal(
+        await page.locator(`line[data-member-id="${ada}"]`).count(),
+        0,
+      );
+      assert.equal(
+        await page
+          .locator(`.dashboard-timeline-mark[data-member-id="${ada}"]`)
+          .count(),
+        6,
+      );
+      await selectFromTimeline(page, ev(3));
+      assert.match(
+        await page.locator("#dashboardMapSelection").innerText(),
+        /No shared location/,
+      );
+      privateRead = false;
+      await page.evaluate(() =>
+        document
+          .querySelector("#dashboardMapDate")!
+          .dispatchEvent(new Event("change")),
+      );
+      await page.waitForFunction(
+        () =>
+          document.querySelectorAll(
+            '.dashboard-event-dot[data-member-id="aaaaaaaaaaaaaaaaaaaaaaaa"]',
+          ).length === 5,
+      );
+    },
+    {
+      override: (url, events) =>
+        url.pathname === "/api/dashboard/timeline"
+          ? {
+              body: {
+                users,
+                events: events.map((e) =>
+                  e.id === ev(8) && privateRead
+                    ? { ...e, position: withheld }
+                    : e,
+                ),
+                hasMore: false,
+              },
+            }
+          : undefined,
+    },
+  );
 });
 
+test("ordinary pointer selection can reopen the exact co-location chooser after selecting a point", async () =>
+  fixture(async (page) => {
+    const group = page.locator('.dashboard-map-group[data-count="3"]');
+    await group.click();
+    await page
+      .locator(`.dashboard-map-choice[data-event-id="${ev(2)}"]`)
+      .click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#dashboardMapSelection")
+        ?.textContent?.includes("Event access rechecked"),
+    );
+    await group.click({ timeout: 3000 });
+    await page
+      .locator(`.dashboard-map-choice[data-event-id="${ev(1)}"]`)
+      .click();
+    assert.equal(
+      await page
+        .locator('.dashboard-event-dot[aria-pressed="true"]')
+        .getAttribute("data-event-id"),
+      ev(1),
+    );
+    assert.ok(exact(await offset(group, 40.7, -73.9)));
+  }));
 
-test("ordinary pointer selection can reopen the exact co-location chooser after selecting a point", async () => fixture(async(page) => {
- const group = page.locator('.dashboard-map-group[data-count="3"]');
- await group.click();
- await page.locator(`.dashboard-map-choice[data-event-id="${ev(2)}"]`).click();
- await page.waitForFunction(() => document.querySelector('#dashboardMapSelection')?.textContent?.includes('Event access rechecked'));
- await group.click({timeout:3000});
- await page.locator(`.dashboard-map-choice[data-event-id="${ev(1)}"]`).click();
- assert.equal(await page.locator('.dashboard-event-dot[aria-pressed="true"]').getAttribute('data-event-id'),ev(1));
- assert.ok(exact(await offset(group,40.7,-73.9)));
-}));
-
-test("map selection reconciles a category filter while preserving timeline and map zoom", async () => fixture(async(page) => {
- await page.locator('.dashboard-timeline-legend button[data-category="metric"]').click();
- await page.locator('#dashboardTimeline').getByRole('button',{name:'Zoom in',exact:true}).click();
- await page.locator('#dashboardTimeline').getByRole('button',{name:'Zoom in',exact:true}).click();
- const before = await page.evaluate(() => ({width:document.querySelector<HTMLElement>('.dashboard-timeline-track')!.style.width,zoom:(window as any).fixtureMap.getZoom(),center:(window as any).fixtureMap.getCenter()}));
- await page.locator('.dashboard-timeline-scroll').evaluate((n:HTMLElement)=>n.scrollLeft=n.scrollWidth);
- await page.locator(`.dashboard-event-dot[data-event-id="${ev(7)}"]`).click();
- await page.waitForFunction(() => document.querySelector('#dashboardMapSelection')?.textContent?.includes('Event access rechecked'));
- const mark = page.locator(`.dashboard-timeline-mark[data-event-id="${ev(7)}"]`);
- assert.equal(await mark.isVisible(),true);
- assert.equal(await mark.getAttribute('aria-pressed'),'true');
- assert.equal(await page.locator('.dashboard-timeline-legend button[data-category=""]').getAttribute('aria-pressed'),'true');
- const after=await page.evaluate(() => ({width:document.querySelector<HTMLElement>('.dashboard-timeline-track')!.style.width,zoom:(window as any).fixtureMap.getZoom(),center:(window as any).fixtureMap.getCenter()}));
- assert.deepEqual(after,before);
- const visible = await mark.evaluate((n:HTMLElement) => {const a=n.getBoundingClientRect(),b=n.closest('.dashboard-timeline-scroll')!.getBoundingClientRect();return a.left>=b.left&&a.right<=b.right});
- assert.ok(visible);
-}));
-
+test("map selection reconciles a category filter while preserving timeline and map zoom", async () =>
+  fixture(async (page) => {
+    await page
+      .locator('.dashboard-timeline-legend button[data-category="metric"]')
+      .click();
+    await page
+      .locator("#dashboardTimeline")
+      .getByRole("button", { name: "Zoom in", exact: true })
+      .click();
+    await page
+      .locator("#dashboardTimeline")
+      .getByRole("button", { name: "Zoom in", exact: true })
+      .click();
+    const before = await page.evaluate(() => ({
+      width: document.querySelector<HTMLElement>(".dashboard-timeline-track")!
+        .style.width,
+      zoom: (window as any).fixtureMap.getZoom(),
+      center: (window as any).fixtureMap.getCenter(),
+    }));
+    await page
+      .locator(".dashboard-timeline-scroll")
+      .evaluate((n: HTMLElement) => (n.scrollLeft = n.scrollWidth));
+    await page
+      .locator(`.dashboard-event-dot[data-event-id="${ev(7)}"]`)
+      .click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#dashboardMapSelection")
+        ?.textContent?.includes("Event access rechecked"),
+    );
+    const mark = page.locator(
+      `.dashboard-timeline-mark[data-event-id="${ev(7)}"]`,
+    );
+    assert.equal(await mark.isVisible(), true);
+    assert.equal(await mark.getAttribute("aria-pressed"), "true");
+    assert.equal(
+      await page
+        .locator('.dashboard-timeline-legend button[data-category=""]')
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    const after = await page.evaluate(() => ({
+      width: document.querySelector<HTMLElement>(".dashboard-timeline-track")!
+        .style.width,
+      zoom: (window as any).fixtureMap.getZoom(),
+      center: (window as any).fixtureMap.getCenter(),
+    }));
+    assert.deepEqual(after, before);
+    const visible = await mark.evaluate((n: HTMLElement) => {
+      const a = n.getBoundingClientRect(),
+        b = n.closest(".dashboard-timeline-scroll")!.getBoundingClientRect();
+      return a.left >= b.left && a.right <= b.right;
+    });
+    assert.ok(visible);
+  }));
 
 test("a private resumed page scrubs an open selected location before a late positive exact read", async () => {
- let release!:()=>void; const hold=new Promise<void>(r=>release=r);
- let publishPage!:()=>void; const pageHold=new Promise<void>(r=>publishPage=r);
- const pages=partial((u,e) => ({hold:pageHold,body:{users,events:e.slice(3).map(x=>x.id===ev(8)?{...x,position:withheld}:x),hasMore:false}}));
- await fixture(async(page,{requests})=>{
-  await retry(page,requests);
-  await page.locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`).click();
-  await page.waitForFunction(()=>document.querySelector('#dashboardMapSelection')?.textContent?.includes('Checking current event access'));
-  assert.match(await page.locator('#dashboardMapSelection').innerText(),/40.72/);
-  publishPage();
-  await page.waitForFunction(()=>document.querySelector('#dashboardMapStatus')?.textContent?.includes('complete day'));
-  assert.equal(await page.locator(`.dashboard-event-dot[data-member-id="${ada}"]`).count(),0);
-  assert.equal(await page.locator(`.dashboard-timeline-mark[data-member-id="${ada}"]`).count(),6);
-  const text=await page.locator('#dashboardMapSelection').innerText();
-  assert.match(text,/No shared location/); assert.doesNotMatch(text,/40\.72|73\.92|8 m/);
-  release(); await page.evaluate(()=>new Promise(r=>setTimeout(r,100)));
-  assert.doesNotMatch(await page.locator('#dashboardMapSelection').innerText(),/40\.72|73\.92|8 m/);
- },{ready:'partial day',marks:null,override:(u,e)=>u.pathname==='/api/dashboard/event'?{hold,body:{users,events:[e[2]],hasMore:false}}:pages(u,e)});
+  let release!: () => void;
+  const hold = new Promise<void>((r) => (release = r));
+  let publishPage!: () => void;
+  const pageHold = new Promise<void>((r) => (publishPage = r));
+  const pages = partial((u, e) => ({
+    hold: pageHold,
+    body: {
+      users,
+      events: e
+        .slice(3)
+        .map((x) => (x.id === ev(8) ? { ...x, position: withheld } : x)),
+      hasMore: false,
+    },
+  }));
+  await fixture(
+    async (page, { requests }) => {
+      await retry(page, requests);
+      await page
+        .locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`)
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#dashboardMapSelection")
+          ?.textContent?.includes("Checking current event access"),
+      );
+      assert.match(
+        await page.locator("#dashboardMapSelection").innerText(),
+        /40.72/,
+      );
+      publishPage();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#dashboardMapStatus")
+          ?.textContent?.includes("complete day"),
+      );
+      assert.equal(
+        await page
+          .locator(`.dashboard-event-dot[data-member-id="${ada}"]`)
+          .count(),
+        0,
+      );
+      assert.equal(
+        await page
+          .locator(`.dashboard-timeline-mark[data-member-id="${ada}"]`)
+          .count(),
+        6,
+      );
+      const text = await page.locator("#dashboardMapSelection").innerText();
+      assert.match(text, /No shared location/);
+      assert.doesNotMatch(text, /40\.72|73\.92|8 m/);
+      release();
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 100)));
+      assert.doesNotMatch(
+        await page.locator("#dashboardMapSelection").innerText(),
+        /40\.72|73\.92|8 m/,
+      );
+    },
+    {
+      ready: "partial day",
+      marks: null,
+      override: (u, e) =>
+        u.pathname === "/api/dashboard/event"
+          ? { hold, body: { users, events: [e[2]], hasMore: false } }
+          : pages(u, e),
+    },
+  );
 });
 
-for(const deniedStatus of [401,403]) test(`resumed ${deniedStatus} fences a held positive exact read`,async()=>{
- let release!:()=>void;const hold=new Promise<void>(r=>release=r);
- const flow=partial(()=>({status:deniedStatus,body:{error:'denied'}}));
- await fixture(async(page,{requests})=>{
-  await page.locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`).click();
-  await page.waitForFunction(()=>document.querySelector('#dashboardMapSelection')?.textContent?.includes('Checking current event access'));
-  await retry(page,requests);
-  await page.getByText(`Timeline unavailable (${deniedStatus}); try again.`).waitFor();
-  release();await page.evaluate(()=>new Promise(r=>setTimeout(r,100)));
-  for(const selector of ['.dashboard-event-dot','.dashboard-map-choice','.dashboard-map-connection','.dashboard-timeline-mark'])assert.equal(await page.locator(selector).count(),0);
-  assert.equal(await page.locator('#dashboardMapSelection').innerText(),'');
- },{ready:'partial day',marks:null,override:(u,e)=>u.pathname==='/api/dashboard/event'?{hold,body:{users,events:[e[2]],hasMore:false}}:partialDenial(u,e)});
- function partialDenial(u:URL,e:Event[]){return flow(u,e)}
-});
+for (const deniedStatus of [401, 403])
+  test(`resumed ${deniedStatus} fences a held positive exact read`, async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const flow = partial(() => ({
+      status: deniedStatus,
+      body: { error: "denied" },
+    }));
+    await fixture(
+      async (page, { requests }) => {
+        await page
+          .locator(`.dashboard-event-dot[data-event-id="${ev(3)}"]`)
+          .click();
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapSelection")
+            ?.textContent?.includes("Checking current event access"),
+        );
+        await retry(page, requests);
+        await page
+          .getByText(`Timeline unavailable (${deniedStatus}); try again.`)
+          .waitFor();
+        release();
+        await page.evaluate(() => new Promise((r) => setTimeout(r, 100)));
+        for (const selector of [
+          ".dashboard-event-dot",
+          ".dashboard-map-choice",
+          ".dashboard-map-connection",
+          ".dashboard-timeline-mark",
+        ])
+          assert.equal(await page.locator(selector).count(), 0);
+        assert.equal(
+          await page.locator("#dashboardMapSelection").innerText(),
+          "",
+        );
+      },
+      {
+        ready: "partial day",
+        marks: null,
+        override: (u, e) =>
+          u.pathname === "/api/dashboard/event"
+            ? { hold, body: { users, events: [e[2]], hasMore: false } }
+            : partialDenial(u, e),
+      },
+    );
+    function partialDenial(u: URL, e: Event[]) {
+      return flow(u, e);
+    }
+  });

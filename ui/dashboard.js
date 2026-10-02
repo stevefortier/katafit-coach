@@ -1427,7 +1427,15 @@ window.CoachDashboard = (() => {
         const future = text("div", "", "dashboard-timeline-future");
         future.style.left = `${fraction(now) * 100}%`;
         track.append(future);
-        const marker = text("span", "Now", "dashboard-timeline-now");
+        const marker = text("span", "", "dashboard-timeline-now");
+        const nowLabel = text("span", "Now");
+        nowLabel.style.position = "absolute";
+        // Preserve the exact time anchor while keeping the label inside the
+        // full-day viewport, including the last minute before midnight.
+        nowLabel.style[fraction(now) > 0.5 ? "right" : "left"] = "4px";
+        marker.style.width = "0";
+        marker.style.paddingLeft = "0";
+        marker.append(nowLabel);
         marker.style.left = `${fraction(now) * 100}%`;
         marker.setAttribute(
           "aria-label",
@@ -1858,26 +1866,9 @@ window.CoachDashboard = (() => {
           typeof data.hasMore !== "boolean"
         )
           throw new Error("Invalid timeline response");
-        if (!resume && pages === 0) withheldMembers.clear();
-        coverage = data.coverage || coverage;
-        for (const user of data.users) users.set(user._id, user);
-        const newlyPrivate = new Set();
-        for (const item of data.events) {
-          const stamp = Date.parse(item.occurred_at);
-          if (
-            typeof item.id !== "string" ||
-            typeof item.user_id !== "string" ||
-            !Number.isFinite(stamp) ||
-            stamp < +start ||
-            stamp >= +end ||
-            items.has(item.id)
-          )
-            throw new Error("Invalid timeline event");
-          items.set(item.id, item);
-          if (item.position?.availability === "unavailable" && item.position.reason === "private" && !withheldMembers.has(item.user_id)) newlyPrivate.add(item.user_id);
-        }
-        for (const memberId of newlyPrivate) withholdMember(memberId);
-        pages++;
+        // Validate the whole page and continuation before accepting new
+        // authority. A malformed successful HTTP response is a failed reload,
+        // not permission to undo an existing member-wide Position withdrawal.
         if (
           data.hasMore &&
           (typeof data.nextCursor !== "string" ||
@@ -1886,6 +1877,37 @@ window.CoachDashboard = (() => {
             seenCursors.has(data.nextCursor))
         )
           throw new Error("Timeline display limit or nonadvancing cursor");
+        const pageIds = new Set();
+        for (const item of data.events) {
+          const stamp = Date.parse(item?.occurred_at);
+          if (
+            !item ||
+            typeof item.id !== "string" ||
+            typeof item.user_id !== "string" ||
+            !Number.isFinite(stamp) ||
+            stamp < +start ||
+            stamp >= +end ||
+            items.has(item.id) ||
+            pageIds.has(item.id)
+          )
+            throw new Error("Invalid timeline event");
+          pageIds.add(item.id);
+        }
+        if (!resume && pages === 0) withheldMembers.clear();
+        coverage = data.coverage || coverage;
+        for (const user of data.users) users.set(user._id, user);
+        const newlyPrivate = new Set();
+        for (const item of data.events) {
+          items.set(item.id, item);
+          if (
+            item.position?.availability === "unavailable" &&
+            item.position.reason === "private" &&
+            !withheldMembers.has(item.user_id)
+          )
+            newlyPrivate.add(item.user_id);
+        }
+        for (const memberId of newlyPrivate) withholdMember(memberId);
+        pages++;
         cursor = data.hasMore ? data.nextCursor : undefined;
         if (cursor) seenCursors.add(cursor);
         // Page serially to the terminal cursor so every event (and its GPS) loads,
@@ -2181,13 +2203,27 @@ window.CoachDashboard = (() => {
     };
     const choose = (original, generation) => {
       const item = scoped()?.items.get(original.id);
-      if (!live() || generation !== ledgerGeneration || !item || !eventPosition(item) || suppressedMembers.has(item.user_id)) return;
+      if (
+        !live() ||
+        generation !== ledgerGeneration ||
+        !item ||
+        !eventPosition(item) ||
+        suppressedMembers.has(item.user_id)
+      )
+        return;
       reconcileTimelineSelection(item);
       void selectEvent(item, adminKey);
       revealTimelineEvent(item.id);
     };
     const openChooser = (group) => {
-      if (!live() || group.generation !== ledgerGeneration || !group.pins.some(({item}) => eventPosition(scoped()?.items.get(item.id)))) return;
+      if (
+        !live() ||
+        group.generation !== ledgerGeneration ||
+        !group.pins.some(({ item }) =>
+          eventPosition(scoped()?.items.get(item.id)),
+        )
+      )
+        return;
       closeChooser(false);
       chooserOwner = group.marker;
       chooser.hidden = false;
