@@ -48,7 +48,17 @@ test(
         body.messages.findLast((m: any) => m.role === "user"),
       );
       const marker = /ACCOUNT_(\w+)_TURN/.exec(human)?.[1] ?? "UNKNOWN";
-      res.end(sseText(`ACCOUNT_${marker}_DONE`));
+      // Deterministic grounding: the reply may state the stored preference
+      // only when the supplied recall actually contains it.
+      const recall = String(body.messages[0]?.content ?? "");
+      res.end(
+        sseText(
+          `ACCOUNT_${marker}_DONE ` +
+            (recall.includes(PREFERENCE)
+              ? `RECALLED: ${PREFERENCE}`
+              : "MEMORY_MISSING"),
+        ),
+      );
     });
     await new Promise<void>((resolve) =>
       provider.listen(0, "127.0.0.1", resolve),
@@ -208,13 +218,18 @@ test(
 
       extract = () => ({ proposals: [] });
       const second = await say(
-        "ACCOUNT_SECOND_TURN: what morning report style should we use?",
+        "ACCOUNT_SECOND_TURN: what reporting style should we use?",
         "SECOND",
       );
       const leading = systems(second);
       assert.equal(leading.length, 1, "one leading persona system message");
       assert.equal(second.messages[0], leading[0]);
       assert.ok(String(leading[0].content).includes(PREFERENCE));
+      await waitFor(
+        () => output.includes(`ACCOUNT_SECOND_DONE RECALLED: ${PREFERENCE}`),
+        "terminal final grounded in the recalled preference",
+      );
+      assert.ok(!output.includes("ACCOUNT_SECOND_DONE MEMORY_MISSING"));
       await waitFor(
         () =>
           backend.requests.filter((r) => /\/commit$/.test(r.path)).length >= 2,
@@ -244,6 +259,10 @@ test(
       assert.ok(
         !String(systems(third)[0].content).includes(PREFERENCE),
         "fresh recall omits the forgotten memory",
+      );
+      await waitFor(
+        () => output.includes("ACCOUNT_THIRD_DONE MEMORY_MISSING"),
+        "terminal final states the forgotten memory is missing",
       );
       await waitFor(
         () => notices.some((n) => n.action === "learning-off"),

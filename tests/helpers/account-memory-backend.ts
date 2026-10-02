@@ -497,7 +497,20 @@ export async function startAccountMemoryBackend(
         if ([...url.searchParams.keys()].some((k) => !allowed.includes(k)))
           return fail(400, "MEMORY_INVALID");
         const status = url.searchParams.get("status") ?? "active";
-        const query = url.searchParams.get("query")?.toLowerCase();
+        const query = url.searchParams.get("query");
+        // Backend semantics (core/coachMemory.js terms/rank 'search'): query
+        // is at most 2000 chars and keeps rows sharing at least one exact
+        // NFKC-lowercased letter/number token of 3+ characters. No stemming.
+        if (query !== null && query.length > 2000)
+          return fail(400, "MEMORY_INVALID");
+        const terms = (text: string) =>
+          new Set(
+            text
+              .toLowerCase()
+              .normalize("NFKC")
+              .match(/[\p{L}\p{N}]{3,}/gu) ?? [],
+          );
+        const wanted = terms(query ?? "");
         const kind = url.searchParams.get("kind");
         const pinned = url.searchParams.get("pinned");
         const limit = Number(url.searchParams.get("limit") ?? 25);
@@ -508,13 +521,14 @@ export async function startAccountMemoryBackend(
               (status === "all" || i.status === status) &&
               (!kind || i.kind === kind) &&
               (pinned === null || i.pinned === (pinned === "true")) &&
-              (!query ||
-                query
-                  .split(/\W+/)
-                  .filter((w) => w.length > 2)
-                  .some((w) => i.text?.toLowerCase().includes(w))),
+              (!wanted.size ||
+                [...terms(i.text ?? "")].some((t) => wanted.has(t))),
           )
-          .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+          .sort(
+            (a, b) =>
+              Number(b.pinned) - Number(a.pinned) ||
+              b.updated_at.localeCompare(a.updated_at),
+          );
         const page = matched.slice(offset, offset + limit);
         const more = offset + limit < matched.length;
         return {

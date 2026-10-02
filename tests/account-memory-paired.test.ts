@@ -515,5 +515,52 @@ test(
         }
       },
     );
+
+    await t.test(
+      "a natural paraphrase sharing no exact word recalls an unpinned memory from the real backend (F8)",
+      async () => {
+        const TEXT = "Paired: prefers brief morning reports.";
+        await client(b, b.token).create(
+          { kind: "preference", text: TEXT },
+          "pair:f8:create01",
+        );
+        const f = await memoryFixture({
+          backend: {
+            origin: b.origin,
+            token: b.token,
+            close: async () => {},
+          } as any,
+        });
+        try {
+          scriptProvider(f, {
+            proposals: () => ({ proposals: [] }),
+            reply: (body) =>
+              sseText(
+                String(body.messages[0].content).includes(TEXT)
+                  ? "RECALLED: " + TEXT
+                  : "MEMORY_MISSING",
+              ),
+          });
+          const final = await f.turn([
+            {
+              role: "user",
+              content: "What reporting style should we use?",
+              timestamp: 1,
+            },
+          ]);
+          const system = f.provider.bodies.at(-1).messages[0].content;
+          assert.ok(system.includes(TEXT), system);
+          assert.match(system, /bounded selection/);
+          assert.equal(final.stopReason, "stop");
+          assert.deepEqual(
+            final.content.map((c: any) => c.text).join(""),
+            "RECALLED: " + TEXT,
+          );
+          await settle(1000);
+        } finally {
+          await f.close();
+        }
+      },
+    );
   },
 );

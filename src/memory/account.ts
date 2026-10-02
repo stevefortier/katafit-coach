@@ -418,6 +418,33 @@ function receiptOf(value: unknown, captureId: string): CommitReceipt {
   };
 }
 const write = (method: string) => method !== "GET";
+// Backend search keeps rows sharing an exact 3+ character letter/number token
+// with `query`; send the message's distinct topic terms, not its raw text.
+const STOP_WORDS = new Set(
+  (
+    "the and for are but not you your yours all any can had has have her him his how its may our out she was were who why with " +
+    "what when where which whom this that these those there their them they then than from into onto about above after again " +
+    "also been being both did does doing done each few more most much must nor now off once only other over same should " +
+    "some such too under until very will would could shall might just own let lets yes okay please tell know want need " +
+    "remember thanks thank hey hello i'm i've i'd don't can't won't it's that's what's"
+  ).split(" "),
+);
+export function topicQuery(text: string, max = 500) {
+  const terms: string[] = [];
+  let length = 0;
+  for (const term of new Set(
+    text
+      .toLowerCase()
+      .normalize("NFKC")
+      .match(/[\p{L}\p{N}]{3,}/gu) ?? [],
+  )) {
+    if (STOP_WORDS.has(term)) continue;
+    if (length + term.length + (terms.length ? 1 : 0) > max) break;
+    length += term.length + (terms.length ? 1 : 0);
+    terms.push(term);
+  }
+  return terms.join(" ");
+}
 
 /** One bounded, fenced transport bound to an exact origin and bearer. */
 export class AccountMemory {
@@ -856,28 +883,39 @@ export class AccountMemory {
     };
   }
   /** Bounded new acquisition for one turn: pinned core plus query matches. */
-  async recall(query: string, limits = { pinned: 8, matches: 12 }) {
+  /**
+   * Bounded per-turn selection, never the complete memory: pinned, topic
+   * matches for the message's terms, and only when nothing matched a few
+   * recent memories, so a paraphrase sharing no exact word still gets context.
+   */
+  async recall(
+    query: string,
+    limits = { pinned: 8, matches: 12, recent: 4, total: 20 },
+  ) {
+    const usable = (item: AccountItem) =>
+      item.availability === "available" && item.status === "active";
     const pinned = await this.list({
       status: "active",
       pinned: true,
       limit: limits.pinned,
     });
-    const text = query.trim();
-    const matched = text
+    const terms = topicQuery(query);
+    const matched = terms
       ? await this.list({
           status: "active",
-          query: text,
+          query: terms,
           limit: limits.matches,
         })
       : { items: [] as AccountItem[] };
+    const recent = matched.items.some(usable)
+      ? { items: [] as AccountItem[] }
+      : await this.list({ status: "active", limit: limits.recent });
     const seen = new Set<string>();
-    const items = [...pinned.items, ...matched.items].filter(
-      (item) =>
-        item.availability === "available" &&
-        item.status === "active" &&
-        !seen.has(item.id) &&
-        !!seen.add(item.id),
-    );
+    const items = [...pinned.items, ...matched.items, ...recent.items]
+      .filter(
+        (item) => usable(item) && !seen.has(item.id) && !!seen.add(item.id),
+      )
+      .slice(0, limits.total);
     if (Buffer.byteLength(JSON.stringify(items)) > 64 * 1024) reject();
     return items;
   }

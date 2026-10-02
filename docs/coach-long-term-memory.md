@@ -20,7 +20,12 @@ Pinning changes recall priority only. Older Studio notes stay under the separate
 "Legacy private notes" section.
 
 The native Pi gets a fresh, bounded recall (pinned items first, then matches) in
-its single leading system message, as untrusted JSON data. Pi holds no memory
+its single leading system message, as untrusted JSON data. Matches come from the
+backend's exact-word search over topic words taken from the latest human message
+(stop words dropped, at most 500 characters). When nothing matches, a small
+recent-items fallback is used instead. At most 8 pinned, 12 matches and 20 items
+in total are sent. This is a bounded selection rather than global relevance, and
+the preface tells the model that it is not the complete memory. Pi holds no memory
 credential; it uses the documented domain through the generic REST tool, and the
 host adds keys and validates receipts. Learning starts only after the relay
 confirms delivery of a final response to Pi. A separate no-tool extraction call

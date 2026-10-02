@@ -88,6 +88,14 @@ test("retained memories are fenced by content_revision, so metadata-only edits n
     assert.deepEqual(captures(f)[0].body.recalled, [
       { id: seeded.id, revision: 1, content_revision: 1 },
     ]);
+    // A topic match for the next question, so the bounded recall has a match
+    // and its no-match recent fallback does not re-observe the seeded item.
+    const rest = f.backend.seed({
+      kind: "fact",
+      text: "Rest at least eight hours after heavy sessions.",
+    });
+    const mine = (i: number) =>
+      captures(f)[i].body.recalled.filter((r: any) => r.id === seeded.id);
     // Importance changes out of band; the next turn does not recall it.
     await owner(f).update(seeded.id, { importance: 0.3 }, 1, "ui:meta-1");
     const second = await nextTurn(
@@ -97,7 +105,11 @@ test("retained memories are fenced by content_revision, so metadata-only edits n
       3,
     );
     await until(() => commits(f).length === 2 || undefined);
-    assert.deepEqual(captures(f)[1].body.recalled, [
+    assert.ok(
+      captures(f)[1].body.recalled.some((r: any) => r.id === rest.id),
+      "the next turn recalled its topic match",
+    );
+    assert.deepEqual(mine(1), [
       { id: seeded.id, revision: 1, content_revision: 1 },
     ]);
     // Pin and review date change; the next turn's recall re-observes it.
@@ -110,7 +122,7 @@ test("retained memories are fenced by content_revision, so metadata-only edits n
     );
     await nextTurn(f, second, "Any tips for sleeping better?", 5);
     await until(() => commits(f).length === 3 || undefined);
-    assert.deepEqual(captures(f)[2].body.recalled, [
+    assert.deepEqual(mine(2), [
       { id: seeded.id, revision: 4, content_revision: 1 },
     ]);
     assert.equal(learningOff(f), false);
