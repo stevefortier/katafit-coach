@@ -1645,7 +1645,16 @@ export async function admin(
         metadata: { elapsedMs: Date.now() - started },
         error: failure,
       });
-      send(400, {
+      const status =
+        req.method === "GET" &&
+        /^\/api\/dashboard(?:[/?]|$)/.test(req.url ?? "")
+          ? failure.code === "BACKEND_TIMEOUT"
+            ? 504
+            : failure.code === "CONNECTIVITY_ERROR"
+              ? 503
+              : 400
+          : 400;
+      send(status, {
         error: failure.code,
         hint: failure.hint,
         metadata: failure.metadata,
