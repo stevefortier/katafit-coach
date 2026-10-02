@@ -328,6 +328,25 @@ test("synthetic roster cards use bounded intrinsic widths across cache renders",
             node.scrollLeft = 0;
           });
         }
+        // A native closing toggle is delivered asynchronously. It can arrive
+        // after a new keyboard focus has scheduled its deferred reveal.
+        await info.click();
+        await tooltip.waitFor({ state: "visible" });
+        await page.keyboard.press("Escape");
+        await tooltip.waitFor({ state: "hidden" });
+        await page.keyboard.press("Tab");
+        await info.evaluate((node) => {
+          node.focus();
+          const tip = document.getElementById(
+            node.getAttribute("aria-describedby")!,
+          )!;
+          tip.dispatchEvent(
+            new ToggleEvent("toggle", { oldState: "open", newState: "closed" }),
+          );
+        });
+        await tooltip.waitFor({ state: "visible", timeout: 5000 });
+        await page.keyboard.press("Escape");
+        await tooltip.waitFor({ state: "hidden" });
         assert.deepEqual(await selected(), beforeInfo);
         await page.screenshot({
           path: join(evidence, `synthetic-roster-${width}.png`),

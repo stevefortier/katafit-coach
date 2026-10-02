@@ -570,7 +570,9 @@ window.CoachDashboard = (() => {
             }
           });
           tooltip.addEventListener("toggle", () => {
-            if (!tooltip.matches(":popover-open")) hide();
+            // Explicit hide already cleaned up. Its delayed closing event must
+            // not cancel a newer keyboard focus's pending reveal.
+            if (!tooltip.matches(":popover-open") && floatingEvents) hide();
           });
           entry.append(info, tooltip);
         }
