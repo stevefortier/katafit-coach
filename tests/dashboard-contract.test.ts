@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
 
-// Exercise the shipped renderer; HTTP contract fixtures are synthetic. The
+// Exercise chart extraction without Gallery; real Gallery paging/pixels/races live in browser tests.
+// HTTP contract fixtures are synthetic. The
 // separate Mongo/Express/browser pairing exercises the actual route responses.
 async function render(
   rows: any[],
@@ -62,7 +63,7 @@ async function render(
     addEventListener(k: string, f: any) {
       this.listeners[k] = f;
     }
-    after(n: Node) {
+    before(n: Node) {
       nodes.more = n;
     }
     remove() {
@@ -77,7 +78,8 @@ async function render(
   const context: any = {
     window: {},
     document: {
-      getElementById: (id: string) => (nodes[id] ||= new Node()),
+      getElementById: (id: string) =>
+        id === "dashboardGallery" ? null : (nodes[id] ||= new Node()),
       createElement: (tag: string) => new Node(tag),
       createElementNS: () => new Node(),
     },
@@ -179,17 +181,17 @@ test("feed detail 403 stays purged after the roster refresh it triggers", async 
     "fresh roster response cannot reintroduce a member after a same-load detail denial",
   );
 });
-test("a later photo-byte 403 removes earlier rendered photos and revokes their URLs", async () => {
+test("chart extraction never acquires photo pixels independently of Gallery", async () => {
   const row = metric([], {
     type: "media",
     data: { files: ["f1", "f2"].map((_id) => ({ _id, type: "image/jpeg" })) },
   });
-  const r = await render([row], [row], undefined, {}, [], { f2: 403 });
-  assert.ok(r.calls.some((url) => url.includes("file_id=f1")));
-  assert.ok(r.calls.some((url) => url.includes("file_id=f2")));
-  assert.equal(r.nodes.dashboardRoster.children.length, 0);
-  assert.ok(r.revokedUrls.includes("blob:synthetic"));
-  assert.match(r.nodes.dashboardStatus.textContent, /denied \(403\)/i);
+  const r = await render([row]);
+  assert.ok(r.calls.some((url) => url.includes("dashboard/activity")));
+  assert.equal(
+    r.calls.filter((url) => url.includes("dashboard/photo")).length,
+    0,
+  );
 });
 test("detail denials stay visible outside the gallery through page completion and reset on reload", async () => {
   const denial =
@@ -237,7 +239,7 @@ test("detail denials stay visible outside the gallery through page completion an
         r.nodes.dashboardStatus.textContent,
         /(?:incomplete|partial).*detail/i,
       );
-      assert.equal(r.nodes.dashboardRoster.children.length, 0);
+      assert.ok(!r.nodes.dashboardRoster);
     };
     assertFailure();
     r.nodes.more.listeners.click();
@@ -278,12 +280,12 @@ test("a true 403 purges that member's cached detail charts and photos; 429 does 
   const denied = await render(rows, rows, undefined, { m: 403 });
   assert.ok(!denied.labels().some((s: string) => s.includes("77 kg")));
   assert.ok(denied.labels().some((s: string) => s.includes("66 kg")));
-  assert.equal(denied.nodes.dashboardRoster.children.length, 0);
+  assert.ok(!denied.nodes.dashboardRoster);
   assert.match(denied.nodes.dashboardStatus.textContent, /denied \(403\)/);
   const throttled = await render(rows, rows, undefined, { m: 429 });
   assert.ok(throttled.labels().some((s: string) => s.includes("77 kg")));
   assert.ok(throttled.labels().some((s: string) => s.includes("66 kg")));
-  assert.equal(throttled.nodes.dashboardRoster.children.length, 1);
+  assert.ok(!throttled.nodes.dashboardRoster);
   assert.match(
     throttled.nodes.dashboardStatus.textContent,
     /partial.*detail.*failed \(429\)/i,
@@ -358,7 +360,7 @@ test("Health Connect stored lb requires exact provider, valid adjacent leaf day 
   );
 });
 
-test("gallery uses latest completed check-in per loaded member, not generic activities or older pending", async () => {
+test("chart history pages independently without acquiring gallery bytes", async () => {
   const photo = (id: string, day: string, status = "complete") => ({
     _id: id,
     user_id: "a",
@@ -403,10 +405,10 @@ test("gallery uses latest completed check-in per loaded member, not generic acti
       hasMore: false,
     },
   ]);
-  assert.equal(r.nodes.dashboardRoster.children.length, 1);
+  assert.ok(!r.nodes.dashboardRoster);
   assert.deepEqual(
     r.calls.filter((p) => p.includes("dashboard/photo")),
-    ["/api/dashboard/photo?activity_id=latest&file_id=latest-file"],
+    [],
   );
   assert.ok(r.labels().some((s: string) => s.includes("80 kg")));
   assert.match(r.nodes.dashboardStatus.textContent, /partial history/);
@@ -422,8 +424,8 @@ test("gallery uses latest completed check-in per loaded member, not generic acti
   // Click handler intentionally schedules async work. Wait for terminal status.
   for (let i = 0; i < 20 && !r.nodes.more.hidden; i++)
     await new Promise((r) => setTimeout(r, 1));
-  assert.equal(r.nodes.dashboardRoster.children.length, 1);
-  assert.equal(r.calls.filter((p) => p.includes("dashboard/photo")).length, 1);
+  assert.ok(!r.nodes.dashboardRoster);
+  assert.equal(r.calls.filter((p) => p.includes("dashboard/photo")).length, 0);
   assert.ok(r.labels().some((s: string) => s.includes("79 kg")));
   assert.match(r.nodes.dashboardStatus.textContent, /bounded|not a complete/i);
   assert.match(
@@ -463,14 +465,19 @@ test("the 200-activity display cap remains explicit even when the last fetched p
   const rows = Array.from({ length: 201 }, (_, i) => ({
     _id: "w" + i,
     user_id: "a",
-    type: "workout",
+    type: "metric",
     status: "complete",
     created_at: "2026-09-28T12:00:00Z",
+    data: { measurements: [{ type_id: "weight", value: 1, unit: "kg" }] },
   }));
   const r = await render(rows);
-  assert.equal(r.nodes.dashboardRoster.children.length, 0);
+  assert.ok(!r.nodes.dashboardRoster);
   assert.equal(r.nodes.more.hidden, true);
-  assert.ok(r.labels().some((s: string) => s.endsWith("200 workouts")));
+  assert.ok(r.labels().some((s: string) => s.endsWith("1 kg")));
+  assert.equal(
+    r.calls.filter((path) => path.includes("dashboard/activity")).length,
+    200,
+  );
   const copy = r
     .all(r.nodes.dashboardCoverage)
     .map((n) => n.textContent)
@@ -480,7 +487,7 @@ test("the 200-activity display cap remains explicit even when the last fetched p
   assert.match(copy, /Not a complete roster/);
 });
 
-test("a newer non-photo media activity is not a check-in and cannot displace loaded photos", async () => {
+test("non-photo media still permits chart extraction without image acquisition", async () => {
   const photo = {
     _id: "photo",
     user_id: "a",
@@ -498,9 +505,9 @@ test("a newer non-photo media activity is not a check-in and cannot displace loa
   const r = await render([video, photo]);
   assert.deepEqual(
     r.calls.filter((p) => p.includes("dashboard/photo")),
-    ["/api/dashboard/photo?activity_id=photo&file_id=f"],
+    [],
   );
-  assert.equal(r.nodes.dashboardRoster.children.length, 1);
+  assert.ok(!r.nodes.dashboardRoster);
 });
 
 test("a fresh incomplete media detail cannot leave a generic card under the photos heading", async () => {
@@ -513,6 +520,6 @@ test("a fresh incomplete media detail cannot leave a generic card under the phot
     data: { files: [{ _id: "f", type: "image/jpeg" }] },
   };
   const r = await render([photo], [{ ...photo, status: "pending" }]);
-  assert.equal(r.nodes.dashboardRoster.children.length, 0);
+  assert.ok(!r.nodes.dashboardRoster);
   assert.equal(r.calls.filter((p) => p.includes("dashboard/photo")).length, 0);
 });

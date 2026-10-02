@@ -118,7 +118,7 @@ test("saved v1 image guidance upgrades without enabling a disabled skill", async
     const upgraded: any = store
       .view()
       .skills.find((s: any) => s.id === "katafit-api");
-    assert.equal(upgraded.defaultVersion, 5);
+    assert.equal(upgraded.defaultVersion, 6);
     assert.equal(upgraded.enabled, false);
     assert.ok(upgraded.instructions.includes("katafit_rest_request"));
     assert.equal(store.view().revision, 2);

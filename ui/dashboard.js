@@ -8,7 +8,6 @@ window.CoachDashboard = (() => {
     (f.type === "image" || /^image\/(jpeg|png|webp)$/.test(f.type));
   let epoch = 0;
   let controller;
-  let observer;
   let mapController;
   let mapEpoch = 0;
   let leafletMap;
@@ -41,7 +40,8 @@ window.CoachDashboard = (() => {
         if (avatar) activeAvatarReads++;
         // Selection detail has only a queued signal: once dispatched, retain its
         // existing late-denial handling. Other callers reject promptly on abort.
-        if (!options.signal) queuedSignal?.removeEventListener("abort", cancel);
+        if (!options.signal || queuedSignal !== options.signal)
+          queuedSignal?.removeEventListener("abort", cancel);
         try {
           // A client abort is not an acknowledgment of server-side cleanup.
           // Drain an admitted read (bounded by the BFF REST deadline) before
@@ -92,6 +92,8 @@ window.CoachDashboard = (() => {
   let mapMembers = new Map();
   let feedMembers = new Map();
   let filterFeed = () => {};
+  let clearGallery = () => {};
+  let filterGallery = () => {};
   let filterMap = () => {};
   let selectionEpoch = 0;
   let timelineEpoch = 0;
@@ -337,6 +339,10 @@ window.CoachDashboard = (() => {
     sync();
   }
   function clear() {
+    clearGallery();
+    clearGallery = () => {};
+    filterGallery = () => {};
+    window.CoachImageViewer?.close("gallery");
     closeMemberTooltip();
     clearDateNavigation();
     clearDateNavigation = () => {};
@@ -372,10 +378,7 @@ window.CoachDashboard = (() => {
     forgetMember = () => {};
     if ($("dashboardMapStatus")) $("dashboardMapStatus").textContent = "";
     $("dashboardMapStatus")?.removeAttribute("data-tone");
-    observer?.disconnect();
-    observer = undefined;
     for (const url of urls.splice(0)) URL.revokeObjectURL(url);
-    $("dashboardRoster").replaceChildren();
     $("dashboardCharts").replaceChildren();
     $("dashboardCoverage").replaceChildren();
     $("dashboardCoverage").hidden = true;
@@ -2515,6 +2518,353 @@ window.CoachDashboard = (() => {
     mapResizeObserver.observe(map);
     syncMap();
   }
+  function startGallery({ request, detailFor, live, signal, users, revoked }) {
+    const host = $("dashboardGallery");
+    if (!host) return; // Legacy embedders without Gallery remain supported.
+    const status = text("p", "Loading historical media…", "hint");
+    status.setAttribute("role", "status");
+    const grid = text("div", "", "dashboard-gallery-history");
+    const more = text("button", "Load older photos", "secondary");
+    more.type = "button";
+    const sentinel = text("div", "", "dashboard-gallery-sentinel");
+    host.replaceChildren(text("h3", "Gallery"), status, grid, more, sentinel);
+    const entries = new Map();
+    const frames = new WeakMap();
+    const seenCursors = new Set();
+    let cursor,
+      loading = false,
+      stopped = false,
+      failed = false;
+    let scope = 0,
+      emptyPages = 0,
+      pageFailure = false,
+      pageSummary = "Loading historical media…";
+    let scopeController = new AbortController();
+    const visible = (entry) =>
+      !revoked.has(entry.activity.user_id) &&
+      (!selectedMember || selectedMember === entry.activity.user_id);
+    const imageObserver = new IntersectionObserver(
+      (changes) => {
+        for (const change of changes)
+          if (change.isIntersecting) {
+            const frame = frames.get(change.target);
+            if (frame) {
+              if (visible(frame.entry)) void loadFrame(frame);
+            } else {
+              const entry = entries.get(change.target.dataset.activityId);
+              if (entry && visible(entry) && !entry.error) void hydrate(entry);
+            }
+          }
+      },
+      { rootMargin: "400px" },
+    );
+    const pageObserver = new IntersectionObserver(
+      (changes) => {
+        if (changes.some((change) => change.isIntersecting) && !failed)
+          void page();
+      },
+      { rootMargin: "300px" },
+    );
+    function settleImages() {
+      const error = [...entries.values()]
+        .filter(visible)
+        .flatMap((entry) => [
+          entry.error,
+          ...(entry.frames || []).map((frame) => frame.error),
+        ])
+        .find(Boolean);
+      if (error) return report(error);
+      if (!pageFailure) {
+        failed = emptyPages >= 5;
+        status.textContent = pageSummary;
+        more.hidden = stopped;
+        more.textContent = "Load older photos";
+      }
+    }
+    function report(error, fromPage = false) {
+      if (fromPage) pageFailure = true;
+      failed = true;
+      status.textContent = `Gallery paused: ${error.message} Use Retry.`;
+      more.hidden = false;
+      more.textContent = "Retry";
+    }
+    async function hydrate(entry) {
+      if (entry.loading || entry.done || !live() || !visible(entry)) return;
+      entry.loading = true;
+      const generation = scope;
+      try {
+        const envelope = await detailFor(entry.activity._id);
+        if (!live() || generation !== scope || !visible(entry)) return;
+        const detail = envelope?.activity;
+        if (
+          !detail ||
+          detail._id !== entry.activity._id ||
+          detail.user_id !== entry.activity.user_id ||
+          envelope.owner?._id !== detail.user_id ||
+          detail.type !== "media"
+        )
+          throw new Error("Invalid media detail.");
+        if (
+          !["complete", "completed"].includes(detail.status) ||
+          detail.is_template === true
+        ) {
+          entry.done = true;
+          entry.node.remove();
+          settleImages();
+          return;
+        }
+        if (!entry.frames) {
+          entry.frames = (
+            Array.isArray(detail.data?.files) ? detail.data.files : []
+          )
+            .filter(isPhoto)
+            .map((photo, index, photos) => {
+              const button = text(
+                "button",
+                "Loading photo…",
+                "dashboard-photo",
+              );
+              button.type = "button";
+              const caption = `Photo ${index + 1} of ${photos.length} · ${users.get(detail.user_id)?.display_name || "Member"} · ${detail.completed_at || detail.created_at || "Date unavailable"}`;
+              button.setAttribute("aria-label", caption);
+              entry.node.append(button);
+              const frame = { photo, button, caption, entry };
+              frames.set(button, frame);
+              imageObserver.observe(button);
+              return frame;
+            });
+          entry.placeholder.remove();
+          if (!entry.frames.length) entry.node.remove();
+        }
+        entry.done = true;
+        imageObserver.unobserve(entry.node);
+        settleImages();
+      } catch (error) {
+        if (!live() || generation !== scope || !visible(entry)) return;
+        // Newly denied reads do not poll or retroactively revoke acquired pixels.
+        entry.error = error;
+        report(error);
+      } finally {
+        entry.loading = false;
+        if (live() && generation !== scope && visible(entry) && !entry.done) {
+          imageObserver.unobserve(entry.node);
+          imageObserver.observe(entry.node);
+        }
+      }
+    }
+    async function loadFrame(frame) {
+      const { entry } = frame;
+      if (
+        !live() ||
+        frame.loading ||
+        frame.url ||
+        frame.error ||
+        !visible(entry)
+      )
+        return;
+      frame.loading = true;
+      const generation = scope;
+      try {
+        frame.blob ||= await request(
+          "dashboard/photo?" +
+            new URLSearchParams({
+              activity_id: entry.activity._id,
+              file_id: frame.photo._id || frame.photo.id,
+            }),
+          true,
+          scopeController.signal,
+        );
+        if (!live() || generation !== scope || !visible(entry)) return;
+        frame.url = URL.createObjectURL(frame.blob);
+        frame.blob = null;
+        urls.push(frame.url);
+        const image = document.createElement("img");
+        image.alt = frame.caption;
+        image.loading = "lazy";
+        image.src = frame.url;
+        image.addEventListener("error", () => {
+          if (live())
+            frame.button.replaceChildren(
+              text("span", "Photo could not be decoded."),
+            );
+        });
+        frame.button.replaceChildren(image);
+        frame.button.onclick = () => {
+          if (live() && visible(entry))
+            window.CoachImageViewer?.open({
+              owner: "gallery",
+              url: frame.url,
+              filename: frame.photo.name || "Progress photo",
+              caption: frame.caption,
+              trigger: frame.button,
+            });
+        };
+        imageObserver.unobserve(frame.button);
+        settleImages();
+      } catch (error) {
+        if (!live() || generation !== scope) return;
+        frame.error = error;
+        imageObserver.unobserve(frame.button);
+        if (generation === scope && visible(entry)) report(error);
+      } finally {
+        frame.loading = false;
+        if (
+          live() &&
+          generation !== scope &&
+          visible(entry) &&
+          !frame.url &&
+          !frame.error
+        ) {
+          imageObserver.unobserve(frame.button);
+          imageObserver.observe(frame.button);
+        }
+      }
+    }
+    async function page() {
+      if (!live() || loading || stopped) return;
+      loading = true;
+      failed = false;
+      pageFailure = false;
+      more.disabled = true;
+      const generation = scope;
+      try {
+        const query = cursor ? new URLSearchParams({ cursor }) : null;
+        const data = await request(
+          "dashboard/gallery" + (query ? "?" + query : ""),
+          false,
+          scopeController.signal,
+        );
+        if (!live() || generation !== scope) return;
+        if (!Array.isArray(data.users) || !Array.isArray(data.activities))
+          throw new Error("Invalid gallery page.");
+        if (
+          !Object.prototype.hasOwnProperty.call(data, "nextCursor") &&
+          data.inDojo !== false
+        ) {
+          stopped = true;
+          more.hidden = true;
+          status.textContent =
+            "Gallery unavailable: backend does not support filtered cursor pagination.";
+          return;
+        }
+        for (const user of data.users)
+          if (!revoked.has(user._id)) users.set(user._id, user);
+        let added = 0;
+        for (const activity of data.activities) {
+          if (
+            activity.type !== "media" ||
+            !["complete", "completed"].includes(activity.status) ||
+            revoked.has(activity.user_id) ||
+            entries.has(activity._id)
+          )
+            continue;
+          const node = text("article", "", "dashboard-gallery-entry");
+          node.dataset.activityId = activity._id;
+          const placeholder = text(
+            "p",
+            "Photos load near the viewport.",
+            "hint",
+          );
+          node.append(
+            text(
+              "h4",
+              `${users.get(activity.user_id)?.display_name || "Member"} · ${activity.completed_at || activity.created_at || "Date unavailable"}`,
+            ),
+            placeholder,
+          );
+          const entry = { activity, node, placeholder };
+          entries.set(activity._id, entry);
+          node.hidden = !visible(entry);
+          grid.append(node);
+          imageObserver.observe(node);
+          if (visible(entry)) added++;
+        }
+        const next = data.nextCursor;
+        const advancing =
+          typeof next === "string" &&
+          next.length > 0 &&
+          !seenCursors.has(next) &&
+          next !== cursor;
+        if (data.hasMore && advancing) {
+          seenCursors.add(next);
+          cursor = next;
+          emptyPages = added ? 0 : emptyPages + 1;
+          status.textContent = `${entries.size} loaded media activities · partial history. Scroll or load older photos.`;
+          more.hidden = false;
+          more.textContent = "Load older photos";
+          if (emptyPages >= 5) {
+            failed = true;
+            status.textContent +=
+              " Automatic paging paused after 5 empty pages; continue manually.";
+          }
+        } else {
+          stopped = true;
+          more.hidden = true;
+          status.textContent = `${entries.size} loaded media activities · ${data.hasMore ? "paging stopped: server cursor did not advance" : "end of bounded server feed"}. Not a complete history.`;
+        }
+        pageSummary = status.textContent;
+        settleImages();
+      } catch (error) {
+        if (live() && generation === scope) report(error, true);
+      } finally {
+        loading = false;
+        more.disabled = false;
+        if (live() && generation !== scope) void page();
+        else if (live() && !stopped && !failed) {
+          const rect = sentinel.getBoundingClientRect();
+          if (rect.top < innerHeight + 300 && rect.bottom > -300) void page();
+        }
+      }
+    }
+    more.onclick = () => {
+      failed = false;
+      emptyPages = 0;
+      more.textContent = "Load older photos";
+      for (const entry of entries.values())
+        if (visible(entry)) {
+          if (entry.error) {
+            entry.error = null;
+            void hydrate(entry);
+          }
+          for (const frame of entry.frames || [])
+            if (frame.error) {
+              frame.error = null;
+              imageObserver.observe(frame.button);
+            }
+        }
+      void page();
+    };
+    filterGallery = () => {
+      scope++;
+      scopeController.abort();
+      scopeController = new AbortController();
+      window.CoachImageViewer?.close("gallery");
+      for (const entry of entries.values()) {
+        entry.node.hidden = !visible(entry);
+        imageObserver.unobserve(entry.node);
+        if (visible(entry) && !entry.done && !entry.error)
+          imageObserver.observe(entry.node);
+        for (const frame of entry.frames || []) {
+          imageObserver.unobserve(frame.button);
+          if (visible(entry) && !frame.url && !frame.error)
+            imageObserver.observe(frame.button);
+        }
+      }
+      // Selection changes which retained failures belong to the current view.
+      // Reconcile without retrying details or replaying acquired photo bytes.
+      settleImages();
+    };
+    clearGallery = () => {
+      scope++;
+      scopeController.abort();
+      imageObserver.disconnect();
+      pageObserver.disconnect();
+      host.replaceChildren();
+    };
+    signal.addEventListener("abort", clearGallery, { once: true });
+    pageObserver.observe(sentinel);
+    void page();
+  }
   async function load(_api, adminKey) {
     clear();
     if ($("dashboardMapDate")?.type === "date") {
@@ -2528,13 +2878,17 @@ window.CoachDashboard = (() => {
     controller = new AbortController();
     const signal = controller.signal;
     const live = () => id === epoch && !signal.aborted;
-    const request = async (path, binary = false) => {
-      const response = await dashboardFetch("/api/" + path, {
-        headers: { Authorization: "Bearer " + adminKey },
-        signal,
-        cache: "no-store",
-        redirect: "error",
-      });
+    const request = async (path, binary = false, queuedSignal = signal) => {
+      const response = await dashboardFetch(
+        "/api/" + path,
+        {
+          headers: { Authorization: "Bearer " + adminKey },
+          signal,
+          cache: "no-store",
+          redirect: "error",
+        },
+        queuedSignal,
+      );
       if (!response.ok)
         throw httpError(
           denied(response)
@@ -2544,11 +2898,22 @@ window.CoachDashboard = (() => {
         );
       return binary ? response.blob() : response.json();
     };
+    const details = new Map();
+    const detailFor = (activityId) => {
+      if (!details.has(activityId)) {
+        const acquired = request(
+          "dashboard/activity?" + new URLSearchParams({ id: activityId }),
+        );
+        details.set(activityId, acquired);
+        acquired.catch(() => {
+          if (details.get(activityId) === acquired) details.delete(activityId);
+        });
+      }
+      return details.get(activityId);
+    };
     const users = new Map(),
       activities = new Map(),
-      series = new Map(),
-      latestPhotos = new Map(),
-      photoTiles = new Map();
+      series = new Map();
     let detailError = null;
     const revoked = new Set();
     forgetMember = (memberId) => {
@@ -2562,19 +2927,6 @@ window.CoachDashboard = (() => {
         if (activity.user_id === memberId) activities.delete(key);
       for (const [key, value] of series)
         if (value.member_id === memberId) series.delete(key);
-      latestPhotos.delete(memberId);
-      const tile = photoTiles.get(memberId);
-      if (tile) {
-        for (const image of tile.querySelectorAll("img")) {
-          const index = urls.indexOf(image.src);
-          if (index !== -1) {
-            URL.revokeObjectURL(image.src);
-            urls.splice(index, 1);
-          }
-        }
-        tile.remove();
-        photoTiles.delete(memberId);
-      }
       filterFeed();
     };
     const addPoint = (activity, label, unit, value, average = false) => {
@@ -2634,20 +2986,6 @@ window.CoachDashboard = (() => {
     }
     async function renderActivity(activity) {
       if (revoked.has(activity.user_id)) return;
-      const tile = text("article", "", "dashboard-tile");
-      tile.dataset.memberId = activity.user_id;
-      tile.append(
-        text("h4", users.get(activity.user_id)?.display_name || "Member"),
-        text("p", activity.name || activity.type || "Activity"),
-        text(
-          "p",
-          [activity.status, activity.completed_at || activity.created_at]
-            .filter(Boolean)
-            .join(" · "),
-          "hint",
-        ),
-      );
-
       if (["complete", "completed"].includes(activity.status)) {
         if (activity.type === "workout") {
           addPoint(activity, "Completed workouts", "workouts", 1);
@@ -2684,9 +3022,7 @@ window.CoachDashboard = (() => {
       // Feed files are preview refs, not complete inventories. Detail is a new
       // ordinary backend fetch, not a local sharing/source-proof decision.
       try {
-        const envelope = await request(
-          "dashboard/activity?" + new URLSearchParams({ id: activity._id }),
-        );
+        const envelope = await detailFor(activity._id);
         if (!live() || revoked.has(activity.user_id)) return;
         const detail = envelope?.activity;
         if (
@@ -2832,55 +3168,6 @@ window.CoachDashboard = (() => {
             );
           }
         }
-        // Accumulate all loaded chart inputs; only the latest check-in is a gallery.
-        if (latestPhotos.get(activity.user_id)?._id !== activity._id) return;
-        const photos = (
-          Array.isArray(detail.data.files) ? detail.data.files : []
-        ).filter(isPhoto);
-        if (!photos.length) return;
-        photoTiles.get(activity.user_id)?.remove();
-        photoTiles.set(activity.user_id, tile);
-        $("dashboardRoster").append(tile);
-        tile.hidden = !!selectedMember && selectedMember !== activity.user_id;
-        const gallery = text("div", "", "dashboard-gallery");
-        tile.append(gallery);
-        for (const [index, photo] of photos.slice(0, 32).entries()) {
-          const frame = text("div", "", "dashboard-photo");
-          gallery.append(frame);
-          try {
-            const blob = await request(
-              "dashboard/photo?" +
-                new URLSearchParams({
-                  activity_id: activity._id,
-                  file_id: photo._id || photo.id,
-                }),
-              true,
-            );
-            if (!live() || revoked.has(activity.user_id)) return;
-            const url = URL.createObjectURL(blob);
-            urls.push(url);
-            const image = document.createElement("img");
-            image.alt = `Progress photo ${index + 1} of ${photos.length} for ${users.get(activity.user_id)?.display_name || "Member"}`;
-            image.src = url;
-            image.addEventListener("error", () => {
-              if (live())
-                frame.replaceChildren(text("p", "Photo could not be decoded."));
-            });
-            frame.append(image);
-          } catch (error) {
-            // A confirmed media denial applies to this member's already
-            // rendered frames too; let the outer handler purge and revoke.
-            if (denied(error)) throw error;
-            if (live()) frame.append(text("p", error.message));
-          }
-        }
-        if (photos.length > 32)
-          gallery.append(
-            text(
-              "p",
-              `Showing 32 of ${photos.length} photos; gallery display limit.`,
-            ),
-          );
       } catch (error) {
         if (live()) {
           if (denied(error)) {
@@ -2904,11 +3191,7 @@ window.CoachDashboard = (() => {
     filterFeed = () => {
       if (!live()) return;
       renderCharts();
-      for (const tile of $("dashboardRoster").querySelectorAll(
-        ".dashboard-tile",
-      ))
-        tile.hidden =
-          !!selectedMember && tile.dataset.memberId !== selectedMember;
+      filterGallery();
     };
     let before,
       loading = false;
@@ -2938,27 +3221,6 @@ window.CoachDashboard = (() => {
           if (activities.size >= 200) break;
           activities.set(activity._id, activity);
           added.push(activity);
-          if (
-            activity.type === "media" &&
-            Array.isArray(activity.data?.files) &&
-            activity.data.files.some(isPhoto) &&
-            ["complete", "completed"].includes(activity.status)
-          ) {
-            const previous = latestPhotos.get(activity.user_id);
-            const stamp = Date.parse(
-              activity.completed_at || activity.created_at,
-            );
-            const prior =
-              previous &&
-              Date.parse(previous.completed_at || previous.created_at);
-            if (
-              Number.isFinite(stamp) &&
-              (!previous ||
-                stamp > prior ||
-                (stamp === prior && activity._id > previous._id))
-            )
-              latestPhotos.set(activity.user_id, activity);
-          }
         }
         for (const activity of added) {
           await renderActivity(activity);
@@ -2985,7 +3247,7 @@ window.CoachDashboard = (() => {
         coverage.replaceChildren(
           text(
             "span",
-            `${users.size} people in loaded feed · ${activities.size} loaded activities (200 activity limit). Not a complete roster. Photos: latest completed check-in per member among loaded data only.`,
+            `${users.size} people in loaded feed · ${activities.size} loaded activities (200 activity limit). Not a complete roster. Gallery loads historical media independently.`,
           ),
         );
         if (activities.size >= 200)
@@ -3006,8 +3268,9 @@ window.CoachDashboard = (() => {
       }
     }
     more.addEventListener("click", () => void page());
-    $("dashboardRoster").after(more);
+    $("dashboardCharts").before(more);
     signal.addEventListener("abort", () => more.remove(), { once: true });
+    startGallery({ request, detailFor, live, signal, users, revoked });
     await page();
   }
   return { clear, load };

@@ -419,22 +419,24 @@ export async function admin(
         const url = new URL(path, origin);
         const params = url.searchParams;
         const allowed =
-          url.pathname === "/api/dashboard"
-            ? ["before"]
-            : url.pathname === "/api/dashboard/members"
-              ? []
-              : url.pathname === "/api/dashboard/map" ||
-                  url.pathname === "/api/dashboard/timeline"
-                ? ["date", "start", "end", "cursor"]
-                : url.pathname === "/api/dashboard/event"
-                  ? ["event_id", "date", "start", "end"]
-                  : url.pathname === "/api/dashboard/activity"
-                    ? ["id"]
-                    : url.pathname === "/api/dashboard/avatar"
+          url.pathname === "/api/dashboard/gallery"
+            ? ["cursor"]
+            : url.pathname === "/api/dashboard"
+              ? ["before"]
+              : url.pathname === "/api/dashboard/members"
+                ? []
+                : url.pathname === "/api/dashboard/map" ||
+                    url.pathname === "/api/dashboard/timeline"
+                  ? ["date", "start", "end", "cursor"]
+                  : url.pathname === "/api/dashboard/event"
+                    ? ["event_id", "date", "start", "end"]
+                    : url.pathname === "/api/dashboard/activity"
                       ? ["id"]
-                      : url.pathname === "/api/dashboard/photo"
-                        ? ["activity_id", "file_id"]
-                        : [];
+                      : url.pathname === "/api/dashboard/avatar"
+                        ? ["id"]
+                        : url.pathname === "/api/dashboard/photo"
+                          ? ["activity_id", "file_id"]
+                          : [];
         if (
           (url.pathname !== "/api/dashboard/members" && !allowed.length) ||
           [...params.keys()].some(
@@ -531,8 +533,23 @@ export async function admin(
                 "&limit=100" +
                 (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
           } else {
+            const gallery = url.pathname === "/api/dashboard/gallery";
+            const cursor = params.get("cursor");
+            if (
+              gallery &&
+              params.has("cursor") &&
+              (!cursor ||
+                cursor.length > 1024 ||
+                !/^[A-Za-z0-9_-]+$/.test(cursor) ||
+                before)
+            )
+              throw new SafeError("ARGUMENTS_REJECTED");
             target =
               "/api/friends/feed/dojo?limit=20" +
+              (gallery
+                ? "&type=media&pagination=cursor"
+                : "&types=meal,media,metric,workout") +
+              (cursor ? "&cursor=" + encodeURIComponent(cursor) : "") +
               (before ? "&beforeDate=" + encodeURIComponent(before) : "");
           }
         }

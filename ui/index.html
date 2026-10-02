@@ -190,9 +190,8 @@
                 ></aside>
               </div>
             </section>
-            <h3>Latest completed check-in photos among loaded data</h3>
-            <div id="dashboardRoster" class="dashboard-roster"></div>
             <div id="dashboardCharts"></div>
+            <section id="dashboardGallery" aria-label="Gallery"></section>
           </section>
           <section id="settingsPanel" hidden>
             <div
@@ -991,22 +990,6 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               ></ul>
             </aside>
           </div>
-          <dialog id="attachmentDialog" aria-labelledby="attachmentDialogTitle">
-            <div class="attachment-dialog-bar">
-              <strong id="attachmentDialogTitle"></strong>
-              <a id="attachmentDialogDownload" class="button secondary"
-                >Download</a
-              ><button
-                id="attachmentDialogClose"
-                type="button"
-                class="secondary"
-              >
-                Close
-              </button>
-            </div>
-            <img id="attachmentDialogImage" alt="" />
-            <p id="attachmentDialogCaption" class="hint"></p>
-          </dialog>
           <p id="operatorStatus" role="status"></p>
           <div id="operatorActions" role="status" aria-live="polite"></div>
           <button id="operatorReconcile" type="button" class="secondary" hidden>
@@ -1015,6 +998,17 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
         </div>
       </section>
     </aside>
+    <dialog id="attachmentDialog" aria-labelledby="attachmentDialogTitle">
+      <div class="attachment-dialog-bar">
+        <strong id="attachmentDialogTitle"></strong>
+        <a id="attachmentDialogDownload" class="button secondary">Download</a
+        ><button id="attachmentDialogClose" type="button" class="secondary">
+          Close
+        </button>
+      </div>
+      <img id="attachmentDialogImage" alt="" />
+      <p id="attachmentDialogCaption" class="hint"></p>
+    </dialog>
     <script src="/terminal.js"></script>
     <script src="/backend-performance.js"></script>
     <script src="/leaflet.js"></script>
