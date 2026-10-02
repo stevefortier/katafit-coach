@@ -669,13 +669,14 @@ export async function startAccountMemoryBackend(
         if (!current) return fail(403, "MEMORY_NOT_AUTHORIZED");
         if (current.revision !== body.expected_revision)
           return fail(409, "MEMORY_CONFLICT");
-        const relatedIds = related(id);
-        const queued = relatedIds.length > (hooks.syncErasureLimit ?? 64);
+        const relatedIds = related(id).sort();
+        const syncLimit = hooks.syncErasureLimit ?? 100;
+        const queued = relatedIds.length > syncLimit;
         // Target and every related descendant are unreadable immediately;
         // queued only means related stored prose is swept later.
         for (const child of relatedIds) {
           items.delete(child);
-          if (queued) pendingErasure.add(child);
+          if (relatedIds.indexOf(child) >= syncLimit) pendingErasure.add(child);
           else history.delete(child);
         }
         const erasure = {
@@ -700,7 +701,7 @@ export async function startAccountMemoryBackend(
             status: "forgotten",
             revision: current.revision + 1,
             memory_epoch: epoch,
-            cascaded: queued ? [] : relatedIds.slice(0, 64),
+            cascaded: relatedIds.slice(0, syncLimit),
             erasure,
           },
           current.revision + 1,

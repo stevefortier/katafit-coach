@@ -133,7 +133,7 @@ test("Forget returns the erasure state from the response and from the exact rece
         : body;
     await assert.rejects(
       client(backend).forget(other.id, other.revision, "ui:forget-bad-erasure"),
-      { code: "MEMORY_RESULT_REJECTED" },
+      { code: "MEMORY_OUTCOME_UNKNOWN" },
     );
   } finally {
     await backend.close();

@@ -578,6 +578,10 @@ export class AccountMemory {
         throw new AccountMemoryFailure("MEMORY_RESULT_REJECTED");
       }
       return value;
+    } catch (error) {
+      if (response.ok && write(method))
+        throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
+      throw error;
     } finally {
       await response.body?.cancel().catch(() => {});
     }
@@ -658,20 +662,30 @@ export class AccountMemory {
     kind: "create" | "update",
     id?: string,
   ) {
-    const result = {
-      item: accountItem(value.item, this.secrets),
-      operation: operation(value.operation),
-      idempotent: value.idempotent === true,
-    };
-    const op = result.operation;
-    if (
-      op.idempotency_key !== key ||
-      op.kind !== kind ||
-      op.memory_id !== result.item.id ||
-      (id !== undefined && result.item.id !== id)
-    )
+    return this.acknowledged(() => {
+      const result = {
+        item: accountItem(value.item, this.secrets),
+        operation: operation(value.operation),
+        idempotent: value.idempotent === true,
+      };
+      const op = result.operation;
+      if (
+        op.idempotency_key !== key ||
+        op.kind !== kind ||
+        op.memory_id !== result.item.id ||
+        (id !== undefined && result.item.id !== id)
+      )
+        throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
+      return result;
+    });
+  }
+  /** Only run after a successful write: invalid ACKs cannot prove no write. */
+  private acknowledged<T>(validate: () => T): T {
+    try {
+      return validate();
+    } catch {
       throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
-    return result;
+    }
   }
   /** Caller fields are picked by allow-list; host-owned fields are refused. */
   private body(input: object, allowed: readonly string[]) {
@@ -740,32 +754,35 @@ export class AccountMemory {
       idempotency_key: this.keyed(key),
       expected_revision: expectedRevision,
     });
-    if (value.id !== id || value.status !== "forgotten") reject();
-    const op = operation(value.operation);
-    if (
-      op.idempotency_key !== key ||
-      op.kind !== "forget" ||
-      op.memory_id !== id
-    )
-      throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
-    const cascaded = Array.isArray(value.cascaded) ? value.cascaded : [];
-    if (
-      cascaded.length > 64 ||
-      cascaded.some(
-        (c: unknown) => typeof c !== "string" || !ID_PATTERN.test(c),
+    return this.acknowledged(() => {
+      if (value.id !== id || value.status !== "forgotten") reject();
+      const op = operation(value.operation);
+      if (
+        op.idempotency_key !== key ||
+        op.kind !== "forget" ||
+        op.memory_id !== id
       )
-    )
-      reject();
-    const erasure = erasureOf(value.erasure) ?? op.erasure;
-    return {
-      id,
-      status: "forgotten" as const,
-      // Only the synchronously erased ids; a queued erasure lists none.
-      cascaded: cascaded as string[],
-      ...(erasure ? { erasure } : {}),
-      operation: op,
-      idempotent: value.idempotent === true,
-    };
+        throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
+      if (!Array.isArray(value.cascaded)) reject();
+      const cascaded = value.cascaded;
+      if (
+        cascaded.length > 100 ||
+        cascaded.some(
+          (c: unknown) => typeof c !== "string" || !ID_PATTERN.test(c),
+        )
+      )
+        reject();
+      const erasure = erasureOf(value.erasure) ?? op.erasure;
+      return {
+        id,
+        status: "forgotten" as const,
+        // Only synchronously erased ids (up to 100), including queued erasure.
+        cascaded: cascaded as string[],
+        ...(erasure ? { erasure } : {}),
+        operation: op,
+        idempotent: value.idempotent === true,
+      };
+    });
   }
   /** Read-only preview of what forgetting `id` would make unavailable. */
   async forgetImpact(id: string): Promise<AccountForgetImpact> {
@@ -866,21 +883,23 @@ export class AccountMemory {
         learning_paused: paused,
       },
     );
-    const op = operation(value.operation);
-    if (
-      op.idempotency_key !== key ||
-      op.kind !== "settings" ||
-      op.memory_id !== null
-    )
-      throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
-    return {
-      settings: settingsOf(value.settings),
-      discarded_captures: Number.isSafeInteger(value.discarded_captures)
-        ? (value.discarded_captures as number)
-        : 0,
-      operation: op,
-      idempotent: value.idempotent === true,
-    };
+    return this.acknowledged(() => {
+      const op = operation(value.operation);
+      if (
+        op.idempotency_key !== key ||
+        op.kind !== "settings" ||
+        op.memory_id !== null
+      )
+        throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
+      return {
+        settings: settingsOf(value.settings),
+        discarded_captures: Number.isSafeInteger(value.discarded_captures)
+          ? (value.discarded_captures as number)
+          : 0,
+        operation: op,
+        idempotent: value.idempotent === true,
+      };
+    });
   }
   /** Bounded new acquisition for one turn: pinned core plus query matches. */
   /**
@@ -943,28 +962,29 @@ export class AccountMemory {
       ) > 65536
     )
       throw new AccountMemoryFailure("MEMORY_LIMIT");
-    return captureOf(
-      await this.request("POST", `${ACCOUNT_MEMORY_ROOT}/interactions`, input),
+    const value = await this.request(
+      "POST",
+      `${ACCOUNT_MEMORY_ROOT}/interactions`,
+      input,
     );
+    return this.acknowledged(() => captureOf(value));
   }
   async commit(
     capture: AccountCapture,
     proposals: MemoryProposal[],
     personaRevision?: string,
   ) {
-    return receiptOf(
-      await this.request(
-        "POST",
-        `${ACCOUNT_MEMORY_ROOT}/interactions/${capture.capture_id}/commit`,
-        {
-          idempotency_key: "extract:" + capture.capture_id,
-          expected_memory_epoch: capture.memory_epoch,
-          ...(personaRevision ? { persona_revision: personaRevision } : {}),
-          proposals,
-        },
-      ),
-      capture.capture_id,
+    const value = await this.request(
+      "POST",
+      `${ACCOUNT_MEMORY_ROOT}/interactions/${capture.capture_id}/commit`,
+      {
+        idempotency_key: "extract:" + capture.capture_id,
+        expected_memory_epoch: capture.memory_epoch,
+        ...(personaRevision ? { persona_revision: personaRevision } : {}),
+        proposals,
+      },
     );
+    return this.acknowledged(() => receiptOf(value, capture.capture_id));
   }
   /** Exact commit state after a lost commit acknowledgement. */
   async commitReceipt(captureId: string) {

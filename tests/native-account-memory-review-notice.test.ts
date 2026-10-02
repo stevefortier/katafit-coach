@@ -110,29 +110,39 @@ for (const [name, bad] of [
   ["duplicate ids", { duplicate: true }],
   ["missing memory_ids", { memory_ids: undefined }],
 ] as const)
-  test(`a protected skip with ${name} is rejected and announces nothing`, async () => {
-    const f = await memoryFixture();
-    try {
-      const morning = f.backend.seed({ kind: "preference", text: MORNING });
-      const tuesday = f.backend.seed({ kind: "fact", text: TUESDAY });
-      f.backend.hooks.after = (request, body) => {
-        if (!/\/commit$/.test(request.path)) return body;
-        const skipped = body.skipped.map((s: any) => {
-          const next: any = { ...s, ...bad };
-          if ("duplicate" in bad) {
-            delete next.duplicate;
-            next.memory_ids = [s.memory_ids[0], s.memory_ids[0]];
-            next.count = 2;
-          }
-          if (next.memory_ids === undefined) delete next.memory_ids;
-          return next;
-        });
-        return { ...body, skipped };
-      };
-      await turn(f, () => replacing([morning.id, tuesday.id]));
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      assert.deepEqual(reviews(f), []);
-    } finally {
-      await f.close();
-    }
-  });
+  for (const corruptReceipt of [false, true])
+    test(`a protected skip with ${name}: ${corruptReceipt ? "invalid receipt stays undisclosed" : "valid exact receipt reconciles"}`, async () => {
+      const f = await memoryFixture();
+      try {
+        const morning = f.backend.seed({ kind: "preference", text: MORNING });
+        const tuesday = f.backend.seed({ kind: "fact", text: TUESDAY });
+        f.backend.hooks.after = (request, body) => {
+          const receipt = /\/receipt$/.test(request.path);
+          if (!/\/commit$/.test(request.path) && !(corruptReceipt && receipt))
+            return body;
+          const target = receipt ? body.receipt : body;
+          const skipped = target.skipped.map((s: any) => {
+            const next: any = { ...s, ...bad };
+            if ("duplicate" in bad) {
+              delete next.duplicate;
+              next.memory_ids = [s.memory_ids[0], s.memory_ids[0]];
+              next.count = 2;
+            }
+            if (next.memory_ids === undefined) delete next.memory_ids;
+            return next;
+          });
+          return receipt
+            ? { ...body, receipt: { ...target, skipped } }
+            : { ...body, skipped };
+        };
+        await turn(f, () => replacing([morning.id, tuesday.id]));
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert.equal(reviews(f).length, corruptReceipt ? 0 : 1);
+        assert.ok(
+          f.backend.requests.some((r) => /\/receipt$/.test(r.path)),
+          "malformed ACK triggers exact receipt read",
+        );
+      } finally {
+        await f.close();
+      }
+    });
