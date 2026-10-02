@@ -66,6 +66,8 @@ export async function startAccountMemoryBackend(
       | "hang"
       | void;
     afterCommit?: (request: Request) => "drop" | void;
+    // Rewrites a successful response body (e.g. a substituted receipt).
+    after?: (request: Request, body: any) => any;
     // Awaited before routing: lets a test hold a response in flight.
     wait?: (request: Request) => Promise<void> | void;
   } = {};
@@ -612,8 +614,12 @@ export async function startAccountMemoryBackend(
       res.end("<pre>Cannot " + request.method + "</pre>");
       return;
     }
+    const body =
+      result.status === 200 && hooks.after
+        ? (hooks.after(request, structuredClone(result.body)) ?? result.body)
+        : result.body;
     res.writeHead(result.status, { "content-type": "application/json" });
-    res.end(JSON.stringify(result.body));
+    res.end(JSON.stringify(body));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${(server.address() as any).port}`;

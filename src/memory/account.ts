@@ -255,6 +255,24 @@ function operation(value: unknown): AccountOperation {
     target_status: v.target_status ?? null,
   };
 }
+const CREATE_FIELDS = [
+  "kind",
+  "text",
+  "confidence",
+  "importance",
+  "goal_relevance",
+  "review_at",
+] as const;
+const UPDATE_FIELDS = [
+  "text",
+  "kind",
+  "confidence",
+  "importance",
+  "goal_relevance",
+  "review_at",
+  "pinned",
+  "status",
+] as const;
 function settingsOf(value: unknown): AccountSettings {
   if (!record(value)) reject();
   const v = value as Record<string, any>;
@@ -534,12 +552,41 @@ export class AccountMemory {
       throw new AccountMemoryFailure("MEMORY_INVALID");
     return key;
   }
-  private mutation(value: any) {
-    return {
+  /**
+   * A write response is committed only when its receipt names this exact
+   * occurrence: our host key, the requested kind and the requested target.
+   * Anything else is an unknown outcome to reconcile, never a success.
+   */
+  private mutation(
+    value: any,
+    key: string,
+    kind: "create" | "update",
+    id?: string,
+  ) {
+    const result = {
       item: accountItem(value.item, this.secrets),
       operation: operation(value.operation),
       idempotent: value.idempotent === true,
     };
+    const op = result.operation;
+    if (
+      op.idempotency_key !== key ||
+      op.kind !== kind ||
+      op.memory_id !== result.item.id ||
+      (id !== undefined && result.item.id !== id)
+    )
+      throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
+    return result;
+  }
+  /** Caller fields are picked by allow-list; host-owned fields are refused. */
+  private body(input: object, allowed: readonly string[]) {
+    const body: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(input)) {
+      if (!allowed.includes(field))
+        throw new AccountMemoryFailure("MEMORY_INVALID");
+      if (value !== undefined) body[field] = value;
+    }
+    return body;
   }
   async create(
     input: {
@@ -552,11 +599,14 @@ export class AccountMemory {
     },
     key: string,
   ) {
+    const body = this.body(input, CREATE_FIELDS);
     return this.mutation(
       await this.request("POST", ACCOUNT_MEMORY_ROOT, {
+        ...body,
         idempotency_key: this.keyed(key),
-        ...input,
       }),
+      key,
+      "create",
     );
   }
   async update(
@@ -574,14 +624,18 @@ export class AccountMemory {
     expectedRevision: number,
     key: string,
   ) {
-    if (!ID_PATTERN.test(id) || Object.hasOwn(patch, "protected"))
+    if (!ID_PATTERN.test(id) || !Number.isSafeInteger(expectedRevision))
       throw new AccountMemoryFailure("MEMORY_INVALID");
+    const body = this.body(patch, UPDATE_FIELDS);
     return this.mutation(
       await this.request("PATCH", `${ACCOUNT_MEMORY_ROOT}/${id}`, {
+        ...body,
         idempotency_key: this.keyed(key),
         expected_revision: expectedRevision,
-        ...patch,
       }),
+      key,
+      "update",
+      id,
     );
   }
   async forget(id: string, expectedRevision: number, key: string) {
@@ -592,6 +646,13 @@ export class AccountMemory {
       expected_revision: expectedRevision,
     });
     if (value.id !== id || value.status !== "forgotten") reject();
+    const op = operation(value.operation);
+    if (
+      op.idempotency_key !== key ||
+      op.kind !== "forget" ||
+      op.memory_id !== id
+    )
+      throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
     const cascaded = Array.isArray(value.cascaded) ? value.cascaded : [];
     if (
       cascaded.length > 64 ||
@@ -604,12 +665,18 @@ export class AccountMemory {
       id,
       status: "forgotten" as const,
       cascaded: cascaded as string[],
-      operation: operation(value.operation),
+      operation: op,
       idempotent: value.idempotent === true,
     };
   }
-  /** Read-only reconciliation of one exact write; null = not committed (yet). */
-  async operation(key: string) {
+  /**
+   * Read-only reconciliation of one exact write; null = not committed (yet).
+   * With `expect`, a receipt for another kind or target is rejected.
+   */
+  async operation(
+    key: string,
+    expect?: { kind: AccountOperation["kind"]; memory_id?: string | null },
+  ) {
     let value;
     try {
       value = await this.request(
@@ -626,6 +693,14 @@ export class AccountMemory {
     }
     const op = operation(value.operation);
     if (op.idempotency_key !== key) reject();
+    if (
+      expect &&
+      (op.kind !== expect.kind ||
+        (expect.memory_id !== undefined && op.memory_id !== expect.memory_id))
+    )
+      reject();
+    if (value.item && accountItem(value.item, this.secrets).id !== op.memory_id)
+      reject();
     return {
       operation: op,
       item:
@@ -649,12 +724,19 @@ export class AccountMemory {
         learning_paused: paused,
       },
     );
+    const op = operation(value.operation);
+    if (
+      op.idempotency_key !== key ||
+      op.kind !== "settings" ||
+      op.memory_id !== null
+    )
+      throw new AccountMemoryFailure("MEMORY_OUTCOME_UNKNOWN");
     return {
       settings: settingsOf(value.settings),
       discarded_captures: Number.isSafeInteger(value.discarded_captures)
         ? (value.discarded_captures as number)
         : 0,
-      operation: operation(value.operation),
+      operation: op,
       idempotent: value.idempotent === true,
     };
   }

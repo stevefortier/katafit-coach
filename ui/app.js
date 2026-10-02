@@ -1516,17 +1516,515 @@ for (const [index, section] of diagnosticsSections.entries()) {
     });
   };
 }
-let memoriesData = { items: [], members: [] },
-  selectedMemoryId = "",
-  selectedMemoryRevision = 0,
+// My memories: the connected account's memories through ordinary account REST.
+// Every write carries a host key created once per intended change; an
+// uncertain outcome keeps that key so "Check status" reads its exact receipt
+// and "Send the same change again" can never become a second, different write.
+// Responses for an older account/configuration, filter or selection are
+// discarded (epochs), and drafts survive conflicts.
+let memoryData = { items: [], has_more: false, next_cursor: null },
+  memorySettings = null,
+  memoryAccountEpoch = 0,
   memoryListEpoch = 0,
-  memoryHistoryEpoch = 0,
-  selectedMemoryReviewAt = null;
-function memoryNumber(id, fallback) {
+  memorySelectEpoch = 0,
+  memorySelected = null,
+  memoryUncertain = null,
+  memoryConflict = null;
+const memoryKindLabels = {
+  fact: "Fact",
+  preference: "Preference",
+  commitment: "Commitment",
+  goal: "Goal",
+  lesson: "Lesson",
+  hypothesis: "Hypothesis",
+};
+const memoryConflicts = [
+  "MEMORY_CONFLICT",
+  "MEMORY_CHANGED",
+  "MEMORY_EPOCH_CHANGED",
+  "MEMORY_IDEMPOTENCY_CONFLICT",
+];
+function memoryKey() {
+  return "ui:" + crypto.randomUUID();
+}
+function memoryDate(value) {
+  return value ? new Date(value).toLocaleDateString() : "";
+}
+function memorySource(entry) {
+  const p = entry.provenance || {};
+  const coach =
+    p.producer === "hosted_coach"
+      ? "hosted Coach"
+      : p.producer === "external_coach"
+        ? "standalone Coach"
+        : "Coach";
+  if (p.created_by === "model_extraction")
+    return "Learned by " + coach + " from a chat";
+  if (p.producer === "account_owner_session") return "Manually saved";
+  return "Saved by " + coach;
+}
+function memoryShowState(error) {
+  const code = error?.code || "";
+  const text =
+    {
+      MEMORY_UNSUPPORTED:
+        "This Kata.fit backend does not offer account memories yet. Nothing was read or changed — this is not an empty list.",
+      MEMORY_AUTH_EXPIRED:
+        "Kata.fit rejected the saved Coach connection (expired or revoked). Reconnect to see your memories; nothing was changed.",
+      MEMORY_NOT_AUTHORIZED:
+        "Kata.fit denied access to memories for the connected account.",
+      MEMORY_UNAVAILABLE:
+        "Kata.fit memory is temporarily unavailable. Nothing was confirmed; try again shortly.",
+    }[code] ||
+    error?.message ||
+    "Memories could not be loaded. Try again.";
+  $("memoryState").hidden = !error;
+  $("memoryState").dataset.code = code;
+  $("memoryStateText").textContent = error ? text : "";
+  $("memoryReconnect").hidden = code !== "MEMORY_AUTH_EXPIRED";
+}
+function memoryShowConflict(error) {
+  memoryConflict = error ? { code: error.code } : null;
+  $("memoryConflict").hidden = !error;
+  $("memoryConflictText").textContent = error
+    ? error.code === "MEMORY_IDEMPOTENCY_CONFLICT"
+      ? "This save was already used for a different change. Your draft is kept; save again to make it a new change."
+      : "This memory changed since you opened it (edited elsewhere, by your Coach, or forgotten). Your draft is kept below — load the current version, then save again."
+    : "";
+}
+function memoryRenderUncertain() {
+  $("memoryUncertain").hidden = !memoryUncertain;
+  $("memoryUncertainText").textContent = memoryUncertain
+    ? `The response for “${memoryUncertain.label}” was lost, so it may or may not have been saved. It is never re-sent on its own. Check status first.`
+    : "";
+}
+function memoryDraft(entry, keepText) {
+  ++memorySelectEpoch;
+  memorySelected = entry
+    ? { id: entry.id, revision: entry.revision, review_at: entry.review_at }
+    : null;
+  memoryShowConflict(null);
+  $("memoryEditorTitle").textContent = entry ? "Edit memory" : "Add a memory";
+  $("memoryEditorMeta").textContent = entry
+    ? `${memorySource(entry)} · updated ${memoryDate(entry.updated_at)}${entry.pinned ? " · pinned" : ""}${entry.status === "archived" ? " · archived" : ""}`
+    : "Tell your Coach something to remember about you.";
+  $("memoryKind").value = entry?.kind || "preference";
+  if (keepText === undefined) $("memoryText").value = entry?.text || "";
+  $("memoryReviewAt").value = entry?.review_at
+    ? entry.review_at.slice(0, 10)
+    : "";
+  $("memoryText").disabled = entry?.availability === "unavailable";
+  $("memorySave").textContent = entry ? "Save correction" : "Save memory";
+  $("memoryHistoryList").replaceChildren();
+}
+async function memorySelect(id, keepText) {
+  const epoch = ++memorySelectEpoch,
+    account = memoryAccountEpoch;
+  const { item, history } = await api("memories/" + id);
+  if (epoch !== memorySelectEpoch || account !== memoryAccountEpoch || !key)
+    return null;
+  memoryDraft(item, keepText);
+  for (const record of history.slice().reverse()) {
+    const row = detailText(
+      "p",
+      `Revision ${record.revision} · ${record.change} · ${formatTimestamp(record.at)}${record.text ? " — " + record.text : ""}`,
+    );
+    row.className = "history-item";
+    $("memoryHistoryList").append(row);
+  }
+  return item;
+}
+async function memoryWrite(op) {
+  const account = memoryAccountEpoch,
+    key0 = op.key || memoryKey();
+  try {
+    const result = await api(op.path, { ...op.body, idempotency_key: key0 });
+    if (account !== memoryAccountEpoch) throw staleAuthentication();
+    if (memoryUncertain?.key === key0) memoryUncertain = null;
+    memoryRenderUncertain();
+    return result;
+  } catch (error) {
+    if (error.stale || account !== memoryAccountEpoch) throw error;
+    // A lost response or a transport failure: the change may have committed.
+    if (error.code === "MEMORY_OUTCOME_UNKNOWN" || !error.status) {
+      memoryUncertain = { ...op, key: key0 };
+      memoryRenderUncertain();
+    } else if (memoryUncertain?.key === key0) {
+      memoryUncertain = null;
+      memoryRenderUncertain();
+    }
+    throw error;
+  }
+}
+async function memoryReconcile() {
+  const op = memoryUncertain;
+  if (!op) return;
+  const account = memoryAccountEpoch;
+  const query = new URLSearchParams({ kind: op.expect.kind });
+  if (op.expect.memory_id) query.set("memory_id", op.expect.memory_id);
+  const receipt = await api(
+    // Host keys are URL-safe by construction (^[A-Za-z0-9._:-]+$).
+    "memories/operations/" + op.key + "?" + query,
+  );
+  if (account !== memoryAccountEpoch || memoryUncertain !== op) return;
+  if (receipt.operation) {
+    memoryUncertain = null;
+    memoryRenderUncertain();
+    notice(`Confirmed: “${op.label}” was saved.`, "success");
+    if (op.expect.kind === "create" || op.selected) memoryDraft();
+    await loadMemories();
+  } else
+    notice(
+      `Not saved as of now: “${op.label}”. You can send the same change again (safe, it cannot apply twice) or dismiss it.`,
+      "warning",
+    );
+}
+function memoryCard(entry) {
+  const card = document.createElement("section");
+  card.className = "memory-card";
+  card.dataset.id = entry.id;
+  if (entry.status !== "active") card.dataset.status = entry.status;
+  const text = detailText(
+    "p",
+    entry.availability === "unavailable"
+      ? "Unavailable — this memory came from something since corrected or forgotten. You can forget it."
+      : entry.text,
+  );
+  text.className = "memory-text";
+  const labels = document.createElement("p");
+  labels.className = "memory-labels";
+  const tags = [
+    memoryKindLabels[entry.kind] || entry.kind,
+    ...(entry.pinned ? ["Pinned"] : []),
+    ...(entry.status === "archived" ? ["Archived"] : []),
+    ...(entry.needs_review
+      ? ["Needs review"]
+      : entry.review_at
+        ? [
+            "Check again " +
+              new Date(entry.review_at).toLocaleDateString(undefined, {
+                timeZone: "UTC",
+              }),
+          ]
+        : []),
+    ...(entry.provenance?.corrected ? ["Corrected"] : []),
+  ];
+  for (const tag of tags) {
+    const span = detailText("span", tag);
+    span.className = "memory-tag";
+    labels.append(span);
+  }
+  const meta = detailText(
+    "p",
+    `${memorySource(entry)} · ${memoryDate(entry.created_at)}${entry.updated_at !== entry.created_at ? " · updated " + memoryDate(entry.updated_at) : ""}`,
+  );
+  meta.className = "hint";
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const button = (label, fn, secondary = true) => {
+    const b = detailText("button", label);
+    b.type = "button";
+    if (secondary) b.className = "secondary";
+    b.onclick = async () => {
+      try {
+        await fn();
+      } catch (error) {
+        memoryActionError(error);
+      }
+    };
+    actions.append(b);
+    return b;
+  };
+  const edit = button("Edit", () => memorySelect(entry.id), false);
+  edit.disabled = entry.availability === "unavailable";
+  const patch = (body, label) =>
+    memoryWrite({
+      path: "memories/" + entry.id,
+      body: { expected_revision: entry.revision, ...body },
+      expect: { kind: "update", memory_id: entry.id },
+      label,
+    }).then(async () => {
+      notice(label + ": done.", "success");
+      await loadMemories();
+    });
+  if (entry.availability === "available") {
+    button(entry.pinned ? "Unpin" : "Pin", () =>
+      patch(
+        { pinned: !entry.pinned },
+        entry.pinned ? "Unpin memory" : "Pin memory",
+      ),
+    );
+    button(entry.status === "archived" ? "Restore" : "Archive", () =>
+      patch(
+        { status: entry.status === "archived" ? "active" : "archived" },
+        entry.status === "archived" ? "Restore memory" : "Archive memory",
+      ),
+    );
+  }
+  button("Forget", async () => {
+    if (
+      !confirm(
+        "Forget this memory? Its text is erased and future chats will not recall it. Text already in an open chat stays there until you start a new chat.",
+      )
+    )
+      return;
+    await memoryWrite({
+      path: "memories/" + entry.id + "/forget",
+      body: { expected_revision: entry.revision },
+      expect: { kind: "forget", memory_id: entry.id },
+      label: "Forget memory",
+      selected: memorySelected?.id === entry.id,
+    });
+    if (memorySelected?.id === entry.id) memoryDraft();
+    notice(
+      "Memory forgotten. Future chats will not recall it; start a new chat to drop it from an open one.",
+      "success",
+    );
+    await loadMemories();
+  });
+  card.append(text, labels, meta, actions);
+  return card;
+}
+function memoryActionError(error) {
+  if (error.stale || !key) return;
+  if (memoryConflicts.includes(error.code)) memoryShowConflict(error);
+  if (
+    [
+      "MEMORY_AUTH_EXPIRED",
+      "MEMORY_UNSUPPORTED",
+      "MEMORY_NOT_AUTHORIZED",
+    ].includes(error.code)
+  )
+    memoryShowState(error);
+  notice(error.message || "Memory change failed.", "error");
+}
+function renderMemories() {
+  $("memoryList").replaceChildren(...memoryData.items.map(memoryCard));
+  $("memoryMore").hidden = !memoryData.has_more;
+  const filtered =
+    $("memorySearch").value ||
+    $("memoryKindFilter").value ||
+    $("memoryPinnedFilter").checked ||
+    $("memoryStatusFilter").value !== "active";
+  $("memoryStatus").textContent = memoryData.loaded
+    ? memoryData.items.length
+      ? memoryData.items.length +
+        (memoryData.items.length === 1 ? " memory" : " memories") +
+        (memoryData.has_more ? " · more available" : "")
+      : memoryData.has_more
+        ? "No matches on this page · more available — load more to keep searching"
+        : filtered
+          ? "No memories match these filters."
+          : "No memories yet. Ask your Coach to remember something, or add one below."
+    : "";
+}
+function renderMemorySettings() {
+  const s = memorySettings;
+  $("memoryLearning").disabled = !s;
+  $("memoryLearning").checked = !!s && !s.learning_paused;
+  $("memoryLearningStatus").textContent = !s
+    ? ""
+    : s.learning_paused
+      ? "Paused: your Coach will not learn from chats. Recall and manual changes still work."
+      : "On: after a chat, your Coach may save lasting preferences, goals and facts you state. You'll see a notice in the Coach pane.";
+}
+async function loadMemorySettings() {
+  const account = memoryAccountEpoch;
+  const { settings } = await api("memories/settings");
+  if (account !== memoryAccountEpoch || !key) return;
+  memorySettings = settings;
+  renderMemorySettings();
+}
+async function loadMemories(more = false) {
+  if (!key) return;
+  const epoch = ++memoryListEpoch,
+    account = memoryAccountEpoch;
+  const params = new URLSearchParams();
+  if ($("memorySearch").value) params.set("query", $("memorySearch").value);
+  if ($("memoryKindFilter").value)
+    params.set("kind", $("memoryKindFilter").value);
+  params.set("status", $("memoryStatusFilter").value);
+  if ($("memoryPinnedFilter").checked) params.set("pinned", "true");
+  if (more && memoryData.next_cursor)
+    params.set("cursor", memoryData.next_cursor);
+  $("memoryMore").disabled = true;
+  try {
+    const result = await api("memories?" + params);
+    if (epoch !== memoryListEpoch || account !== memoryAccountEpoch || !key)
+      return;
+    memoryShowState(null);
+    const items = more
+      ? [
+          ...new Map(
+            [...memoryData.items, ...result.items].map((i) => [i.id, i]),
+          ).values(),
+        ]
+      : result.items;
+    memoryData = {
+      items,
+      has_more: result.has_more,
+      next_cursor: result.next_cursor,
+      loaded: true,
+    };
+    renderMemories();
+    if (!more) void loadMemorySettings().catch(() => {});
+  } catch (error) {
+    if (
+      epoch !== memoryListEpoch ||
+      account !== memoryAccountEpoch ||
+      error.stale
+    )
+      return;
+    memoryData = { items: [], has_more: false, next_cursor: null };
+    renderMemories();
+    memoryShowState(error);
+  } finally {
+    if (epoch === memoryListEpoch) $("memoryMore").disabled = false;
+  }
+}
+function resetMemories() {
+  ++memoryAccountEpoch;
+  ++memoryListEpoch;
+  memoryData = { items: [], has_more: false, next_cursor: null };
+  memorySettings = null;
+  memoryUncertain = null;
+  memoryDraft();
+  memoryShowState(null);
+  memoryRenderUncertain();
+  renderMemories();
+  renderMemorySettings();
+  legacyResetMemories();
+}
+let memorySearchTimer;
+$("memorySearch").oninput = () => {
+  clearTimeout(memorySearchTimer);
+  ++memoryListEpoch;
+  memorySearchTimer = setTimeout(() => void loadMemories(), 250);
+};
+for (const id of [
+  "memoryKindFilter",
+  "memoryStatusFilter",
+  "memoryPinnedFilter",
+])
+  $(id).onchange = () => void loadMemories();
+action("memoryRefresh", () => loadMemories());
+action("memoryRetry", () => loadMemories());
+action("memoryReconnect", async () => selectSettingsSection("katafit"));
+action("memoryMore", () => loadMemories(true));
+action("memoryNew", async () => memoryDraft());
+action("memoryCheck", memoryReconcile);
+action("memoryDismiss", async () => {
+  memoryUncertain = null;
+  memoryRenderUncertain();
+});
+action("memoryResend", async () => {
+  const op = memoryUncertain;
+  if (!op) return;
+  // Same key and same body: the backend applies it at most once.
+  await memoryWrite(op).catch((error) => {
+    memoryActionError(error);
+    throw Object.assign(error, { stale: true });
+  });
+  notice(`“${op.label}” saved.`, "success");
+  if (op.expect.kind === "create" || op.selected) memoryDraft();
+  await loadMemories();
+});
+action("memoryReload", async () => {
+  if (!memorySelected) return memoryShowConflict(null);
+  // The current version replaces the revision; the user's draft text stays.
+  const item = await memorySelect(memorySelected.id, true).catch((error) => {
+    if (error.status === 404 || error.code === "MEMORY_NOT_AUTHORIZED") {
+      memoryDraft(undefined, true);
+      notice(
+        "That memory no longer exists. Your text is kept as a new memory draft.",
+        "warning",
+      );
+      return null;
+    }
+    throw error;
+  });
+  if (item) notice("Loaded the current version; your draft is kept.", "info");
+});
+$("memoryLearning").onchange = async () => {
+  const s = memorySettings;
+  if (!s) return;
+  const paused = !$("memoryLearning").checked;
+  $("memoryLearning").disabled = true;
+  try {
+    const result = await memoryWrite({
+      path: "memories/settings",
+      body: { expected_revision: s.revision, learning_paused: paused },
+      expect: { kind: "settings" },
+      label: paused ? "Pause learning" : "Resume learning",
+    });
+    memorySettings = result.settings;
+    notice(
+      paused
+        ? "Automatic learning paused for your account."
+        : "Automatic learning is on.",
+      "success",
+    );
+  } catch (error) {
+    memoryActionError(error);
+    if (memoryConflicts.includes(error.code))
+      await loadMemorySettings().catch(() => {});
+  } finally {
+    renderMemorySettings();
+  }
+};
+action("memorySave", async () => {
+  const selected = memorySelected;
+  const text = $("memoryText").value.trim();
+  if (!text) throw new Error("Write the memory text first.");
+  const date = $("memoryReviewAt").value;
+  const review_at =
+    date === (selected?.review_at?.slice(0, 10) || "")
+      ? (selected?.review_at ?? null)
+      : date
+        ? date + "T00:00:00.000Z"
+        : null;
+  const body = { kind: $("memoryKind").value, text, review_at };
+  if (!selected && body.review_at === null) delete body.review_at;
+  const op = selected
+    ? {
+        path: "memories/" + selected.id,
+        body: { ...body, expected_revision: selected.revision },
+        expect: { kind: "update", memory_id: selected.id },
+        label: "Save correction",
+        selected: true,
+      }
+    : {
+        path: "memories",
+        body,
+        expect: { kind: "create" },
+        label: "Add memory",
+      };
+  const epoch = memorySelectEpoch;
+  try {
+    const result = await memoryWrite(op);
+    if (epoch !== memorySelectEpoch) return;
+    memoryDraft();
+    notice(selected ? "Correction saved." : "Memory saved.", "success");
+    await loadMemories();
+    return result;
+  } catch (error) {
+    memoryActionError(error);
+    throw Object.assign(error, { stale: true });
+  }
+});
+// Legacy private notes: the retired Studio MCP collection, opt-in only and
+// never mixed with account memories.
+let legacyMemoriesData = { items: [], members: [] },
+  legacySelectedMemoryId = "",
+  legacySelectedMemoryRevision = 0,
+  legacyMemoryListEpoch = 0,
+  legacyMemoryHistoryEpoch = 0,
+  legacySelectedMemoryReviewAt = null;
+function legacyMemoryNumber(id, fallback) {
   const value = Number($(id).value);
   return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback;
 }
-function memoryAudienceLabel(value) {
+function legacyMemoryAudienceLabel(value) {
   return (
     {
       member_private: "Member private",
@@ -1535,13 +2033,13 @@ function memoryAudienceLabel(value) {
     }[value] || value
   );
 }
-function syncMemoryMembers() {
-  for (const id of ["memoryMemberFilter", "memoryMember"]) {
+function legacySyncMemoryMembers() {
+  for (const id of ["legacyMemoryMemberFilter", "legacyMemoryMember"]) {
     const select = $(id);
     const value = select.value;
     select.replaceChildren(
-      new Option(id === "memoryMember" ? "No member subject" : "All", ""),
-      ...memoriesData.members.map(
+      new Option(id === "legacyMemoryMember" ? "No member subject" : "All", ""),
+      ...legacyMemoriesData.members.map(
         (m) => new Option(m.display_name || m.member_ref, m.member_ref),
       ),
     );
@@ -1550,33 +2048,33 @@ function syncMemoryMembers() {
       : "";
   }
 }
-function memoryDraft(entry) {
-  ++memoryHistoryEpoch;
-  selectedMemoryReviewAt = entry?.review_at || null;
-  selectedMemoryId = entry?.id || "";
-  selectedMemoryRevision = entry?.revision || 0;
-  $("memoryEditorTitle").textContent = entry
-    ? "Edit backend memory"
-    : "Add backend memory";
-  $("memoryAudience").value = entry?.audience || "operator_private";
-  $("memoryMember").value = entry?.subject?.member_ref || "";
-  $("memoryKind").value = entry?.kind || "preference";
-  $("memoryText").value = entry?.text || "";
-  $("memoryImportance").value = entry?.importance ?? 0.85;
-  $("memoryRelevance").value = entry?.goal_relevance ?? 0.85;
-  $("memoryReviewAt").value = entry?.review_at
+function legacyMemoryDraft(entry) {
+  ++legacyMemoryHistoryEpoch;
+  legacySelectedMemoryReviewAt = entry?.review_at || null;
+  legacySelectedMemoryId = entry?.id || "";
+  legacySelectedMemoryRevision = entry?.revision || 0;
+  $("legacyMemoryEditorTitle").textContent = entry
+    ? "Edit legacy private note"
+    : "Add legacy private note";
+  $("legacyMemoryAudience").value = entry?.audience || "operator_private";
+  $("legacyMemoryMember").value = entry?.subject?.member_ref || "";
+  $("legacyMemoryKind").value = entry?.kind || "preference";
+  $("legacyMemoryText").value = entry?.text || "";
+  $("legacyMemoryImportance").value = entry?.importance ?? 0.85;
+  $("legacyMemoryRelevance").value = entry?.goal_relevance ?? 0.85;
+  $("legacyMemoryReviewAt").value = entry?.review_at
     ? entry.review_at.slice(0, 10)
     : "";
-  $("memoryPinned").checked = entry ? entry.pinned !== false : true;
-  $("memoryText").disabled = entry?.availability === "unavailable";
-  $("memoryHistoryList").replaceChildren();
+  $("legacyMemoryPinned").checked = entry ? entry.pinned !== false : true;
+  $("legacyMemoryText").disabled = entry?.availability === "unavailable";
+  $("legacyMemoryHistoryList").replaceChildren();
 }
-async function loadMemoryHistory(id) {
-  const epoch = ++memoryHistoryEpoch;
-  const { history, item } = await api("memories/" + id);
-  if (epoch !== memoryHistoryEpoch || !key) return;
-  $("memoryHistoryList").replaceChildren();
-  memoryDraft(item);
+async function legacyLoadMemoryHistory(id) {
+  const epoch = ++legacyMemoryHistoryEpoch;
+  const { history, item } = await api("legacy-memories/" + id);
+  if (epoch !== legacyMemoryHistoryEpoch || !key) return;
+  $("legacyMemoryHistoryList").replaceChildren();
+  legacyMemoryDraft(item);
   for (const record of history.slice().reverse()) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1589,22 +2087,22 @@ async function loadMemoryHistory(id) {
       " · " +
       formatTimestamp(record.at);
     button.onclick = () => {
-      $("memoryHistoryList").replaceChildren(
+      $("legacyMemoryHistoryList").replaceChildren(
         detailText("pre", JSON.stringify(record, null, 2)),
       );
     };
-    $("memoryHistoryList").append(button);
+    $("legacyMemoryHistoryList").append(button);
   }
 }
-function renderMemories() {
-  $("memoryList").replaceChildren();
-  syncMemoryMembers();
-  $("memoryMore").hidden = !memoriesData.next_cursor;
-  $("memoryStatus").textContent =
-    memoriesData.items.length +
+function legacyRenderMemories() {
+  $("legacyMemoryList").replaceChildren();
+  legacySyncMemoryMembers();
+  $("legacyMemoryMore").hidden = !legacyMemoriesData.next_cursor;
+  $("legacyMemoryStatus").textContent =
+    legacyMemoriesData.items.length +
     " memories" +
-    (memoriesData.has_more ? " · more available" : "");
-  for (const entry of memoriesData.items) {
+    (legacyMemoriesData.has_more ? " · more available" : "");
+  for (const entry of legacyMemoriesData.items) {
     const card = document.createElement("section");
     card.className = "memory-card";
     if (entry.status !== "active") card.dataset.status = entry.status;
@@ -1613,7 +2111,7 @@ function renderMemories() {
       : "";
     const title = detailText(
       "h3",
-      `${entry.kind} · ${memoryAudienceLabel(entry.audience)}${subject}`,
+      `${entry.kind} · ${legacyMemoryAudienceLabel(entry.audience)}${subject}`,
     );
     const text = detailText(
       "p",
@@ -1638,7 +2136,7 @@ function renderMemories() {
     edit.type = "button";
     edit.disabled = entry.availability === "unavailable";
     edit.onclick = async () => {
-      await loadMemoryHistory(entry.id).catch(memoryLoadError);
+      await legacyLoadMemoryHistory(entry.id).catch(legacyMemoryLoadError);
     };
     const archive = detailText(
       "button",
@@ -1647,17 +2145,17 @@ function renderMemories() {
     archive.type = "button";
     archive.className = "secondary";
     archive.onclick = async () => {
-      const epoch = invalidateMemory();
+      const epoch = legacyInvalidateMemory();
       try {
-        await api("memories/" + entry.id, {
+        await api("legacy-memories/" + entry.id, {
           expected_revision: entry.revision,
           status: entry.status === "archived" ? "active" : "archived",
         });
-        if (epoch !== memoryHistoryEpoch || !key) return;
-        await loadMemories();
+        if (epoch !== legacyMemoryHistoryEpoch || !key) return;
+        await legacyLoadMemories();
         notice("Memory status updated.", "success");
       } catch (error) {
-        if (epoch === memoryHistoryEpoch) memoryLoadError(error);
+        if (epoch === legacyMemoryHistoryEpoch) legacyMemoryLoadError(error);
       }
     };
     const forget = detailText("button", "Forget");
@@ -1665,66 +2163,69 @@ function renderMemories() {
     forget.className = "secondary";
     forget.onclick = async () => {
       if (!confirm("Forget this memory and fence stale recreation?")) return;
-      const epoch = invalidateMemory();
+      const epoch = legacyInvalidateMemory();
       try {
-        await api("memories/" + entry.id + "/forget", {
+        await api("legacy-memories/" + entry.id + "/forget", {
           expected_revision: entry.revision,
         });
-        if (epoch !== memoryHistoryEpoch || !key) return;
-        await loadMemories();
+        if (epoch !== legacyMemoryHistoryEpoch || !key) return;
+        await legacyLoadMemories();
         notice(
           "Memory forgotten. Matching stale extraction is fenced.",
           "success",
         );
       } catch (error) {
-        if (epoch === memoryHistoryEpoch) memoryLoadError(error);
+        if (epoch === legacyMemoryHistoryEpoch) legacyMemoryLoadError(error);
       }
     };
     actions.append(edit, archive, forget);
     card.append(title, text, meta, sources, actions);
-    $("memoryList").append(card);
+    $("legacyMemoryList").append(card);
   }
 }
-function memoryLoadError(error) {
+function legacyMemoryLoadError(error) {
   if (key) notice(error.message || "Memory could not be loaded.", "error");
 }
-function invalidateMemory() {
-  ++memoryListEpoch;
-  memoryDraft();
-  return memoryHistoryEpoch;
+function legacyInvalidateMemory() {
+  ++legacyMemoryListEpoch;
+  legacyMemoryDraft();
+  return legacyMemoryHistoryEpoch;
 }
-function resetMemories() {
-  invalidateMemory();
-  memoriesData = { items: [], members: [] };
-  renderMemories();
-  $("memoryStatus").textContent = "";
+function legacyResetMemories() {
+  legacyInvalidateMemory();
+  legacyMemoriesData = { items: [], members: [] };
+  legacyRenderMemories();
+  $("legacyMemoryStatus").textContent = "";
 }
-async function loadMemories(more = false) {
+async function legacyLoadMemories(more = false) {
   // action() may pass an event; pagination is explicitly opt-in only.
   more = more === true;
-  const cursor = more ? memoriesData.next_cursor : null;
+  const cursor = more ? legacyMemoriesData.next_cursor : null;
   if (more && !cursor) return;
-  const epoch = ++memoryListEpoch;
+  const epoch = ++legacyMemoryListEpoch;
   const params = new URLSearchParams();
-  if ($("memorySearch").value) params.set("query", $("memorySearch").value);
-  if ($("memoryAudienceFilter").value)
-    params.set("audience", $("memoryAudienceFilter").value);
-  if ($("memoryMemberFilter").value)
-    params.set("member_ref", $("memoryMemberFilter").value);
-  if ($("memoryKindFilter").value)
-    params.set("kind", $("memoryKindFilter").value);
-  if ($("memoryArchivedFilter").checked) params.set("status", "all");
+  if ($("legacyMemorySearch").value)
+    params.set("query", $("legacyMemorySearch").value);
+  if ($("legacyMemoryAudienceFilter").value)
+    params.set("audience", $("legacyMemoryAudienceFilter").value);
+  if ($("legacyMemoryMemberFilter").value)
+    params.set("member_ref", $("legacyMemoryMemberFilter").value);
+  if ($("legacyMemoryKindFilter").value)
+    params.set("kind", $("legacyMemoryKindFilter").value);
+  if ($("legacyMemoryArchivedFilter").checked) params.set("status", "all");
   if (cursor) params.set("cursor", cursor);
-  $("memoryMore").disabled = true;
+  $("legacyMemoryMore").disabled = true;
   try {
-    const result = await api("memories" + (params.size ? "?" + params : ""));
-    if (epoch !== memoryListEpoch || !key) return;
-    memoriesData = {
+    const result = await api(
+      "legacy-memories" + (params.size ? "?" + params : ""),
+    );
+    if (epoch !== legacyMemoryListEpoch || !key) return;
+    legacyMemoriesData = {
       ...result,
       items: more
         ? [
             ...new Map(
-              [...memoriesData.items, ...result.items].map((item) => [
+              [...legacyMemoriesData.items, ...result.items].map((item) => [
                 item.id,
                 item,
               ]),
@@ -1732,59 +2233,65 @@ async function loadMemories(more = false) {
           ]
         : result.items,
     };
-    renderMemories();
+    legacyRenderMemories();
   } catch (error) {
-    if (epoch !== memoryListEpoch || !key) return;
-    memoriesData = { items: [], members: [] };
-    renderMemories();
-    $("memoryStatus").textContent =
+    if (epoch !== legacyMemoryListEpoch || !key) return;
+    legacyMemoriesData = { items: [], members: [] };
+    legacyRenderMemories();
+    $("legacyMemoryStatus").textContent =
       "Memory could not be loaded. Refresh to retry.";
-    memoryLoadError(error);
+    legacyMemoryLoadError(error);
   } finally {
-    if (epoch === memoryListEpoch) $("memoryMore").disabled = false;
+    if (epoch === legacyMemoryListEpoch) $("legacyMemoryMore").disabled = false;
   }
 }
 
 for (const id of [
-  "memorySearch",
-  "memoryAudienceFilter",
-  "memoryMemberFilter",
-  "memoryKindFilter",
-  "memoryArchivedFilter",
+  "legacyMemorySearch",
+  "legacyMemoryAudienceFilter",
+  "legacyMemoryMemberFilter",
+  "legacyMemoryKindFilter",
+  "legacyMemoryArchivedFilter",
 ])
   $(id).addEventListener("input", () => {
-    invalidateMemory();
-    void loadMemories();
+    legacyInvalidateMemory();
+    void legacyLoadMemories();
   });
-action("memoryRefresh", loadMemories);
-action("memoryMore", () => loadMemories(true));
-action("memoryNew", async () => memoryDraft());
-action("memorySave", async () => {
+action("legacyMemoryRefresh", legacyLoadMemories);
+action("legacyMemoryMore", () => legacyLoadMemories(true));
+action("legacyMemoryNew", async () => legacyMemoryDraft());
+action("legacyMemorySave", async () => {
   const body = {
-    audience: $("memoryAudience").value,
-    member_ref: $("memoryMember").value || undefined,
-    kind: $("memoryKind").value,
-    text: $("memoryText").value,
-    importance: memoryNumber("memoryImportance", 0.85),
-    goal_relevance: memoryNumber("memoryRelevance", 0.85),
+    audience: $("legacyMemoryAudience").value,
+    member_ref: $("legacyMemoryMember").value || undefined,
+    kind: $("legacyMemoryKind").value,
+    text: $("legacyMemoryText").value,
+    importance: legacyMemoryNumber("legacyMemoryImportance", 0.85),
+    goal_relevance: legacyMemoryNumber("legacyMemoryRelevance", 0.85),
     review_at:
-      $("memoryReviewAt").value === (selectedMemoryReviewAt?.slice(0, 10) || "")
-        ? selectedMemoryReviewAt
-        : $("memoryReviewAt").value
-          ? $("memoryReviewAt").value + "T00:00:00.000Z"
+      $("legacyMemoryReviewAt").value ===
+      (legacySelectedMemoryReviewAt?.slice(0, 10) || "")
+        ? legacySelectedMemoryReviewAt
+        : $("legacyMemoryReviewAt").value
+          ? $("legacyMemoryReviewAt").value + "T00:00:00.000Z"
           : null,
-    pinned: $("memoryPinned").checked,
-    expected_revision: selectedMemoryRevision || undefined,
+    pinned: $("legacyMemoryPinned").checked,
+    expected_revision: legacySelectedMemoryRevision || undefined,
   };
-  const path = selectedMemoryId ? "memories/" + selectedMemoryId : "memories";
-  const epoch = invalidateMemory();
+  const path = legacySelectedMemoryId
+    ? "legacy-memories/" + legacySelectedMemoryId
+    : "legacy-memories";
+  const epoch = legacyInvalidateMemory();
   const result = await api(path, body);
-  if (epoch !== memoryHistoryEpoch || !key) return;
-  memoryDraft(result.item);
-  await loadMemoryHistory(result.item.id).catch(memoryLoadError);
-  await loadMemories();
-  notice("Memory saved.", "success");
+  if (epoch !== legacyMemoryHistoryEpoch || !key) return;
+  legacyMemoryDraft(result.item);
+  await legacyLoadMemoryHistory(result.item.id).catch(legacyMemoryLoadError);
+  await legacyLoadMemories();
+  notice("Legacy note saved.", "success");
 });
+$("legacyMemories").ontoggle = () => {
+  if ($("legacyMemories").open && key) void legacyLoadMemories();
+};
 function renderCoachName() {
   const name =
     key && typeof config?.persona?.name === "string"
@@ -3038,6 +3545,118 @@ async function loadNativeReceipts() {
   }
 }
 $("operatorReconcile").onclick = () => loadNativeReceipts();
+// Coach pane memory notices: committed receipts for the current session only.
+// Nothing here is stored; a new session starts empty.
+let coachMemoryNotices = [],
+  coachMemoryChatOff = false;
+const coachMemoryVerbs = {
+  remembered: "Remembered",
+  updated: "Updated",
+  forgotten: "Forgotten",
+};
+async function openMemory(id, editing) {
+  selectStudioTab("settings");
+  selectSettingsSection("memories");
+  const item = await memorySelect(id);
+  if (!item) return;
+  $("memoryEditor").scrollIntoView({ block: "nearest" });
+  if (editing) $("memoryText").focus();
+}
+function renderCoachMemory() {
+  const list = $("coachMemoryList");
+  list.replaceChildren();
+  for (const n of coachMemoryNotices) {
+    if (n.action === "learning-off") {
+      list.append(detailText("li", n.note || "Automatic learning is off."));
+      continue;
+    }
+    for (const item of n.items) {
+      const li = document.createElement("li");
+      li.className = "coach-memory-notice";
+      const source =
+        n.source === "automatic" ? " (learned from this chat)" : "";
+      li.append(
+        detailText(
+          "p",
+          `${coachMemoryVerbs[n.action] || n.action}${source}: ${
+            item.status === "forgotten" ? "a memory" : item.text || "a memory"
+          }`,
+        ),
+      );
+      if (item.status !== "forgotten") {
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const add = (label, fn) => {
+          const b = detailText("button", label);
+          b.type = "button";
+          b.className = "secondary";
+          b.onclick = () =>
+            fn().catch((error) => {
+              if (!error.stale) notice(error.message, "error");
+            });
+          actions.append(b);
+        };
+        add("View", () => openMemory(item.id, false));
+        add("Edit", () => openMemory(item.id, true));
+        add("Forget", async () => {
+          if (
+            !confirm(
+              "Forget this memory? Future chats will not recall it; text already in this chat stays until you start a new one.",
+            )
+          )
+            return;
+          await memoryWrite({
+            path: "memories/" + item.id + "/forget",
+            body: { expected_revision: item.revision },
+            expect: { kind: "forget", memory_id: item.id },
+            label: "Forget memory",
+          }).catch((error) => {
+            memoryActionError(error);
+            throw Object.assign(error, { stale: true });
+          });
+          item.status = "forgotten";
+          renderCoachMemory();
+          notice("Memory forgotten.", "success");
+          if (settingsSection === "memories") void loadMemories();
+        });
+        li.append(actions);
+      }
+      list.append(li);
+    }
+  }
+  $("coachDontSave").disabled = coachMemoryChatOff;
+  $("coachMemoryState").textContent = coachMemoryChatOff
+    ? "This chat won't be saved to memory. Start a new chat to turn learning back on."
+    : coachMemoryNotices.length
+      ? ""
+      : "Notices appear here when your Coach saves, updates or forgets a memory in this chat.";
+}
+function coachMemory(message) {
+  if (message.type === "memory-notices") {
+    coachMemoryNotices = Array.isArray(message.notices)
+      ? message.notices.slice(-20)
+      : [];
+    coachMemoryChatOff = message.learning_off === true;
+  } else if (message.notice) {
+    coachMemoryNotices = [...coachMemoryNotices, message.notice].slice(-20);
+    if (
+      message.notice.action === "learning-off" &&
+      message.notice.source === "user"
+    )
+      coachMemoryChatOff = true;
+  }
+  renderCoachMemory();
+}
+$("coachDontSave").onclick = () => {
+  if (native.stopMemoryCapture()) {
+    coachMemoryChatOff = true;
+    renderCoachMemory();
+  } else
+    notice(
+      "Start or reconnect the Coach session first; nothing was changed.",
+      "warning",
+    );
+};
 const native = nativeTerminal({
   api,
   active: () => !!key && !document.hidden && paneStarted,
@@ -3049,6 +3668,7 @@ const native = nativeTerminal({
       $("coachPane").contains(document.activeElement)),
   onStatus: coachStatus,
   onOutput: coachOutput,
+  onMemory: (message) => coachMemory(message),
   // Private attachment bytes; bound to the key of the session that requested.
   fetchAttachment: (path, signal) =>
     fetch(path, {

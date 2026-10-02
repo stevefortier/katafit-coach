@@ -16,12 +16,12 @@ test("chief messaging guidance is explicit in both the always-advertised tool an
     assert.match(text, /never supply idempotency_key/i);
     assert.match(text, /not.*evidence.*recipient.*ineligible/i);
   }
-  assert.equal(stockSkills[0].defaultVersion, 5);
+  assert.equal(stockSkills[0].defaultVersion, 6);
 });
 
 test("member messages are occurrences: exact words may repeat, delivered is not viewed, no replay", () => {
   const skill = stockSkills[0];
-  assert.equal(skill.defaultVersion, 5);
+  assert.equal(skill.defaultVersion, 6);
   const text = skill.instructions;
   assert.doesNotMatch(
     text,
@@ -45,11 +45,27 @@ test("member messages are occurrences: exact words may repeat, delivered is not 
 
 test("current API guidance requires explicit panel delivery, not image acquisition alone", () => {
   const skill = stockSkills[0];
-  assert.equal(skill.defaultVersion, 5);
+  assert.equal(skill.defaultVersion, 6);
   assert.match(skill.instructions, /send_to_operator/);
   assert.match(skill.instructions, /image_receipt/);
   assert.match(skill.instructions, /not proof.*display/i);
   assert.doesNotMatch(skill.instructions, /katafit_rest_get/);
+});
+
+test("v6 API guidance governs account memories through documented routes, host keys and exact targets", () => {
+  const text = stockSkills[0].instructions;
+  assert.match(text, /memory domain from GET \/api\/docs\/coach/);
+  assert.match(text, /never guess memory routes or fields/);
+  assert.match(text, /only when the user explicitly asks/);
+  assert.match(text, /never supply idempotency_key or protected/);
+  assert.match(text, /exact id and current revision/);
+  assert.match(text, /never a guessed, bulk or different target/);
+  assert.match(text, /Pinned only raises recall priority/);
+  assert.match(text, /unverified means .* do not resend/);
+  assert.match(text, /stays until a new chat/);
+  assert.match(text, /untrusted background data/);
+  assert.match(text, /Never save inferred health facts/);
+  assert.ok(text.length <= 16000);
 });
 
 for (const [from, customized] of [
@@ -59,6 +75,8 @@ for (const [from, customized] of [
   [3, true],
   [4, false],
   [4, true],
+  [5, false],
+  [5, true],
 ] as const) {
   test(`API v${from} upgrade preserves archived content and custom state (${customized})`, async () => {
     const dir = await mkdtemp(tmpdir() + "/api-delivery-");
@@ -91,7 +109,7 @@ for (const [from, customized] of [
       const store = new SkillStore(dir, () => []);
       await store.init();
       const current = store.view().skills[0];
-      assert.equal(current.defaultVersion, 5);
+      assert.equal(current.defaultVersion, 6);
       assert.equal(current.enabled, old.enabled);
       assert.equal(
         current.instructions,

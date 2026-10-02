@@ -257,26 +257,29 @@ test("served Memories UI proxies canonical backend CRUD, history, filters and sc
     await page.goto(
       app.origin + "/settings?section=memories#" + store.secrets.admin,
     );
+    await page.locator("#legacyMemories > summary").click();
     await page.locator("#memories").waitFor({ state: "visible" });
     await page.waitForFunction(() =>
       document
-        .querySelector("#memoryStatus")
+        .querySelector("#legacyMemoryStatus")
         ?.textContent?.includes("1 memories"),
     );
     assert.match(
-      await page.locator("#memoryList").innerText(),
+      await page.locator("#legacyMemoryList").innerText(),
       /Unavailable: MEMORY_SOURCE_REVOKED/,
     );
     assert.doesNotMatch(
-      await page.locator("#memoryList").innerText(),
+      await page.locator("#legacyMemoryList").innerText(),
       /detailed tradeoff/i,
     );
 
-    await page.locator("#memoryText").fill("Prefers detailed tradeoff notes.");
-    await page.locator("#memorySave").click();
+    await page
+      .locator("#legacyMemoryText")
+      .fill("Prefers detailed tradeoff notes.");
+    await page.locator("#legacyMemorySave").click();
     await page.waitForFunction(() =>
       document
-        .querySelector("#memoryList")
+        .querySelector("#legacyMemoryList")
         ?.textContent?.includes("detailed tradeoff"),
     );
     const create = backend.calls.find(
@@ -295,34 +298,36 @@ test("served Memories UI proxies canonical backend CRUD, history, filters and sc
     assert.equal(create.args.audience, "operator_private");
 
     await page
-      .locator("#memoryText")
+      .locator("#legacyMemoryText")
       .fill("Prefers concise executive summaries.");
     const editResponse = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        /\/api\/memories\/[a-f0-9]{24}$/.test(new URL(response.url()).pathname),
+        /\/api\/legacy-memories\/[a-f0-9]{24}$/.test(
+          new URL(response.url()).pathname,
+        ),
     );
-    await page.locator("#memorySave").click();
+    await page.locator("#legacyMemorySave").click();
     assert.equal((await editResponse).status(), 200);
     await page.waitForFunction(() =>
       document
-        .querySelector("#memoryList")
+        .querySelector("#legacyMemoryList")
         ?.textContent?.includes("concise executive"),
     );
     const update = backend.calls.findLast(
       (call) => call.name === "studio_memory_update",
     )!;
     assert.equal(update.args.expected_revision, 1);
-    await page.locator("#memoryHistory summary").click();
+    await page.locator("#legacyMemoryHistory summary").click();
     assert.match(
-      await page.locator("#memoryHistoryList").innerText(),
+      await page.locator("#legacyMemoryHistoryList").innerText(),
       /Revision 2/,
     );
 
-    await page.locator("#memoryMemberFilter").selectOption("mem_a");
+    await page.locator("#legacyMemoryMemberFilter").selectOption("mem_a");
     await page.waitForFunction(() =>
       document
-        .querySelector("#memoryStatus")
+        .querySelector("#legacyMemoryStatus")
         ?.textContent?.startsWith("0 memories"),
     );
     assert.equal(
@@ -330,7 +335,7 @@ test("served Memories UI proxies canonical backend CRUD, history, filters and sc
         .member_ref,
       "mem_a",
     );
-    await page.locator("#memoryMemberFilter").selectOption("");
+    await page.locator("#legacyMemoryMemberFilter").selectOption("");
 
     await page.screenshot({
       path: evidence + "/memories-desktop.png",
@@ -351,13 +356,13 @@ test("served Memories UI proxies canonical backend CRUD, history, filters and sc
     await page.getByRole("button", { name: "Archive" }).last().click();
     await page.waitForFunction(() =>
       document
-        .querySelector("#memoryStatus")
+        .querySelector("#legacyMemoryStatus")
         ?.textContent?.includes("1 memories"),
     );
-    await page.locator("#memoryArchivedFilter").check();
+    await page.locator("#legacyMemoryArchivedFilter").check();
     await page.waitForFunction(() =>
       document
-        .querySelector("#memoryList")
+        .querySelector("#legacyMemoryList")
         ?.textContent?.includes("concise executive"),
     );
     page.once("dialog", (dialog) => dialog.accept());
@@ -365,7 +370,7 @@ test("served Memories UI proxies canonical backend CRUD, history, filters and sc
     await page.waitForFunction(
       () =>
         !document
-          .querySelector("#memoryList")
+          .querySelector("#legacyMemoryList")
           ?.textContent?.includes("concise executive"),
     );
     assert.equal(
@@ -422,15 +427,16 @@ for (const scenario of [
       await page.goto(
         app.origin + "/settings?section=memories#" + store.secrets.admin,
       );
+      await page.locator("#legacyMemories > summary").click();
       await page
-        .locator("#memoryList")
+        .locator("#legacyMemoryList")
         .getByText("Prior private prose")
         .waitFor();
       if (scenario.endsWith("failure")) {
         const failures: string[] = [];
         page.on("pageerror", (error) => failures.push(error.message));
         await page.route(
-          (url) => url.pathname.startsWith("/api/memories"),
+          (url) => url.pathname.startsWith("/api/legacy-memories"),
           (route) =>
             route.fulfill({
               status: 409,
@@ -438,7 +444,7 @@ for (const scenario of [
             }),
         );
         if (scenario === "refresh_failure")
-          await page.locator("#memorySearch").fill("new filter");
+          await page.locator("#legacyMemorySearch").fill("new filter");
         else {
           if (scenario === "forget_failure")
             page.once("dialog", (dialog) => dialog.accept());
@@ -456,7 +462,7 @@ for (const scenario of [
         assert.deepEqual(failures, []);
         if (scenario === "refresh_failure")
           assert.doesNotMatch(
-            await page.locator("#memoryList").innerText(),
+            await page.locator("#legacyMemoryList").innerText(),
             /Prior private prose/,
           );
       } else if (scenario === "search_race") {
@@ -467,19 +473,22 @@ for (const scenario of [
         const held = new Promise<void>((r) => {
           release = r;
         });
-        await page.route("**/api/memories?query=older", async (route) => {
-          entered();
-          await held;
-          await route.fulfill({
-            json: { items: [original], members: [], has_more: false },
-          });
-        });
-        await page.locator("#memorySearch").fill("older");
+        await page.route(
+          "**/api/legacy-memories?query=older",
+          async (route) => {
+            entered();
+            await held;
+            await route.fulfill({
+              json: { items: [original], members: [], has_more: false },
+            });
+          },
+        );
+        await page.locator("#legacyMemorySearch").fill("older");
         await seen;
-        await page.locator("#memorySearch").fill("newer");
+        await page.locator("#legacyMemorySearch").fill("newer");
         await page.waitForFunction(() =>
           document
-            .querySelector("#memoryStatus")
+            .querySelector("#legacyMemoryStatus")
             ?.textContent?.startsWith("0 memories"),
         );
         const response = page.waitForResponse((r) =>
@@ -489,7 +498,7 @@ for (const scenario of [
         await response;
         await page.waitForTimeout(80);
         assert.doesNotMatch(
-          await page.locator("#memoryList").innerText(),
+          await page.locator("#legacyMemoryList").innerText(),
           /Prior private prose/,
         );
       } else if (scenario === "forget_history") {
@@ -500,7 +509,7 @@ for (const scenario of [
         const held = new Promise<void>((r) => {
           release = r;
         });
-        await page.route("**/api/memories/" + id, async (route) => {
+        await page.route("**/api/legacy-memories/" + id, async (route) => {
           entered();
           await held;
           await route.fulfill({ json: { item: original, history: [] } });
@@ -518,7 +527,7 @@ for (const scenario of [
         await page.waitForFunction(
           () =>
             !document
-              .querySelector("#memoryList")
+              .querySelector("#legacyMemoryList")
               ?.textContent?.includes("Prior private prose"),
         );
         const response = page.waitForResponse((r) =>
@@ -527,7 +536,7 @@ for (const scenario of [
         release();
         await response;
         await page.waitForTimeout(80);
-        assert.equal(await page.locator("#memoryText").inputValue(), "");
+        assert.equal(await page.locator("#legacyMemoryText").inputValue(), "");
       } else if (scenario === "lock") {
         await page
           .getByRole("button", { name: "Edit", exact: true })
@@ -535,13 +544,13 @@ for (const scenario of [
           .click();
         await page.waitForFunction(
           () =>
-            (document.querySelector("#memoryText") as HTMLInputElement)
+            (document.querySelector("#legacyMemoryText") as HTMLInputElement)
               .value === "Prior private prose",
         );
         await page.locator("#lockStudio").click();
-        assert.equal(await page.locator("#memoryText").inputValue(), "");
+        assert.equal(await page.locator("#legacyMemoryText").inputValue(), "");
       } else if (scenario === "pagination") {
-        await page.route("**/api/memories*", async (route) => {
+        await page.route("**/api/legacy-memories*", async (route) => {
           const cursor = new URL(route.request().url()).searchParams.get(
             "cursor",
           );
@@ -559,10 +568,10 @@ for (const scenario of [
             },
           });
         });
-        await page.locator("#memoryRefresh").click();
+        await page.locator("#legacyMemoryRefresh").click();
         await page.getByText("First page fact", { exact: true }).waitFor();
-        assert.equal(await page.locator("#memoryMore").count(), 1);
-        await page.locator("#memoryMore").click();
+        assert.equal(await page.locator("#legacyMemoryMore").count(), 1);
+        await page.locator("#legacyMemoryMore").click();
         await page.getByText("Second page fact", { exact: true }).waitFor();
       } else {
         if (scenario === "date_preserve") {
@@ -572,17 +581,17 @@ for (const scenario of [
             .click();
           await page.waitForFunction(
             () =>
-              (document.querySelector("#memoryText") as HTMLInputElement)
+              (document.querySelector("#legacyMemoryText") as HTMLInputElement)
                 .value === "Prior private prose",
           );
-        } else await page.locator("#memoryReviewAt").fill("2027-02-03");
-        await page.locator("#memoryText").fill("Updated safe assertion");
+        } else await page.locator("#legacyMemoryReviewAt").fill("2027-02-03");
+        await page.locator("#legacyMemoryText").fill("Updated safe assertion");
         const response = page.waitForResponse(
           (r) =>
             r.request().method() === "POST" &&
-            r.url().includes("/api/memories"),
+            r.url().includes("/api/legacy-memories"),
         );
-        await page.locator("#memorySave").click();
+        await page.locator("#legacyMemorySave").click();
         await response;
         const call = backend.calls.findLast((c) =>
           /studio_memory_(create|update)/.test(c.name),

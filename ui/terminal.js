@@ -12,6 +12,8 @@ function nativeTerminal({
   canFocus = visible,
   onStatus = () => {},
   onOutput = () => {},
+  // Committed memory receipts for this session only (never stored).
+  onMemory = () => {},
   fetchAttachment,
 }) {
   const $ = (id) => document.getElementById(id);
@@ -59,6 +61,7 @@ function nativeTerminal({
   function teardown() {
     resetTerminal();
     attachments.clear();
+    onMemory({ type: "memory-notices", notices: [] });
   }
   function resetTerminal() {
     epoch++;
@@ -258,6 +261,11 @@ function nativeTerminal({
             message.context_expires_in_ms,
           );
         else if (message.type === "attachments-cleared") attachments.clear();
+        else if (
+          message.type === "memory-notice" ||
+          message.type === "memory-notices"
+        )
+          onMemory(message);
         else if (message.type === "error") {
           failed = true;
           status("error", message.message);
@@ -321,6 +329,12 @@ function nativeTerminal({
     suspend: resetTerminal,
     focus: () => terminal?.focus(),
     started: () => !!terminal,
+    // "Don't save this chat": the current session only; true when sent.
+    stopMemoryCapture() {
+      if (socket?.readyState !== WebSocket.OPEN) return false;
+      socket.send(JSON.stringify({ type: "memory-capture", enabled: false }));
+      return true;
+    },
   };
 }
 

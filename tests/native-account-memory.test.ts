@@ -105,6 +105,25 @@ test("a malicious memory stays inert JSON data and cannot close the evidence blo
   }
 });
 
+test("recalled provenance names the producer and never claims the user stated a manual record", async () => {
+  const f = await memoryFixture();
+  try {
+    f.backend.seed({
+      kind: "fact",
+      text: "Trains at the downtown dojo.",
+      pinned: true,
+    });
+    await f.turn([{ role: "user", content: "hello", timestamp: 1 }]);
+    const system = systems(f.provider.bodies.at(-1))[0].content as string;
+    assert.ok(system.includes("Trains at the downtown dojo."));
+    assert.match(system, /"source":"saved by standalone Coach"/);
+    assert.doesNotMatch(system, /stated by the user|corrected by the user/);
+    assert.match(system, /does not prove the user said or asked for it/);
+  } finally {
+    await f.close();
+  }
+});
+
 test("Pi receives no memory credential and no memory tool beyond generic REST", async () => {
   const f = await memoryFixture();
   try {

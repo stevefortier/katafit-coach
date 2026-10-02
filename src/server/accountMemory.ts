@@ -224,7 +224,31 @@ export function accountMemoryRoutes(store: Store, admissible: () => boolean) {
         route,
       );
       if (op) {
-        const receipt = await client()((m) => m.operation(op[1]));
+        // The UI reconciles one exact occurrence: a receipt for another kind
+        // or target is rejected rather than shown as committed.
+        const p = url.searchParams;
+        if ([...p.keys()].some((k) => !["kind", "memory_id"].includes(k)))
+          invalid();
+        const kind = p.get("kind");
+        if (kind && !["create", "update", "forget", "settings"].includes(kind))
+          invalid();
+        const memoryId = p.get("memory_id");
+        if (memoryId && (!kind || !/^[a-f0-9]{24}$/.test(memoryId))) invalid();
+        const receipt = await client()((m) =>
+          m.operation(
+            op[1],
+            kind
+              ? {
+                  kind: kind as any,
+                  ...(memoryId
+                    ? { memory_id: memoryId }
+                    : kind === "settings"
+                      ? { memory_id: null }
+                      : {}),
+                }
+              : undefined,
+          ),
+        );
         return receipt ?? { operation: null, item: null };
       }
       const single = /^\/api\/memories\/([a-f0-9]{24})$/.exec(route);

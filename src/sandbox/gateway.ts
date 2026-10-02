@@ -5,7 +5,11 @@ import { Actions } from "../chat/actions.js";
 import { ToolFailure, type BackendLogger } from "../katafit/client.js";
 import { providerFailure } from "../runtime/errors.js";
 import { complete as providerComplete } from "../runtime/piAdapter.js";
-import { NativeMemory, type NativeMemoryHooks } from "../memory/native.js";
+import {
+  NativeMemory,
+  classifyMemoryWrite,
+  type NativeMemoryHooks,
+} from "../memory/native.js";
 import {
   restRequest,
   restRequestTool,
@@ -820,6 +824,32 @@ export async function openNativeGateway(
       if (request.name === restRequestTool.name && secrets.token) {
         const args = restRequestArgs(request.args);
         assertNoSecrets(request.args, Object.values(secrets));
+        // Memory writes carry their own exact key/receipt contract: bound to
+        // the selected call, host-keyed, reconciled by receipt, never resent.
+        const memoryWrite = classifyMemoryWrite(
+          args.method,
+          args.path,
+          request.args.body,
+        );
+        if (memoryWrite === "reject")
+          throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+        if (memoryWrite) {
+          const occurrence = selections.bind(
+            request.toolCallId,
+            request.name,
+            request.args,
+          );
+          if (!occurrence) throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+          const result = await memory.write(
+            memoryWrite,
+            occurrence,
+            requestSignal
+              ? AbortSignal.any([lifetime, requestSignal])
+              : lifetime,
+          );
+          check();
+          return result;
+        }
         const target = classifyMemberMessageRequest(args.method, args.path);
         if (target.kind === "reject")
           throw new NativeFailure("NATIVE_REQUEST_REJECTED");

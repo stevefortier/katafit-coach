@@ -17,6 +17,7 @@ test("CI runs the real Docker attachment runtime and Pi suites against the exact
   for (const suite of [
     "tests/native-attachments-runtime.test.ts",
     "tests/native-attachments-pi.test.ts",
+    "tests/native-account-memory-docker.test.ts",
   ])
     assert.ok(step.includes(suite), suite + " in the exact-image step");
 });

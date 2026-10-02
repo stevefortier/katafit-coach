@@ -142,17 +142,25 @@ async function lossyProxy(target: string) {
       res.writeHead(503, { "content-type": "application/json" });
       return res.end('{"error":"temporarily unavailable"}');
     }
-    const upstream = await fetch(target + req.url, {
-      method: req.method,
-      headers: {
-        ...(req.headers.authorization
-          ? { authorization: req.headers.authorization }
-          : {}),
-        ...(raw ? { "content-type": "application/json" } : {}),
-      },
-      body: raw || undefined,
-    });
-    const body = Buffer.from(await upstream.arrayBuffer());
+    let upstream: Response;
+    let body: Buffer;
+    try {
+      upstream = await fetch(target + req.url, {
+        method: req.method,
+        headers: {
+          ...(req.headers.authorization
+            ? { authorization: req.headers.authorization }
+            : {}),
+          ...(raw ? { "content-type": "application/json" } : {}),
+        },
+        body: raw || undefined,
+      });
+      body = Buffer.from(await upstream.arrayBuffer());
+    } catch {
+      // Background account-memory reads may outlive a test's backend.
+      res.writeHead(502, { "content-type": "application/json" });
+      return res.end('{"error":"upstream closed"}');
+    }
     if (state.dropPostAck && req.method === "POST") return req.socket.destroy();
     res.writeHead(upstream.status, {
       "content-type": upstream.headers.get("content-type") ?? "text/plain",
@@ -725,10 +733,20 @@ test(
               (await canonical(b, recipientId)).map((m) => m.text),
               ["Synthetic Pi roster message"],
             );
+            const calls = proxy.state.calls.map(
+              (c) => c.method + " " + c.path.split("?")[0],
+            );
+            // Native account-memory recall reads its own domain around each
+            // human turn; it must never write while delivering a message.
             assert.deepEqual(
-              proxy.state.calls.map(
-                (c) => c.method + " " + c.path.split("?")[0],
+              calls.filter(
+                (c) =>
+                  c.includes(" /api/coach/memory") && !c.startsWith("GET "),
               ),
+              [],
+            );
+            assert.deepEqual(
+              calls.filter((c) => !c.startsWith("GET /api/coach/memory")),
               [
                 "GET /api/docs/coach",
                 "GET /api/dojos/my",

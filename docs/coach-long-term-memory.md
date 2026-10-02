@@ -4,7 +4,40 @@ Coach memory is stored in the Kata.fit backend, under the canonical owner and
 explicit audience. The installation keeps no local fallback copy of memory prose.
 A backend without `coach.memory.v1` leaves durable memory unavailable.
 
-## Learning and recall
+## Account memories (default)
+
+Settings → Memories manages the account owner's memories through the ordinary
+account REST domain (`/api/coach/memory`) with the saved Coach connection:
+add, edit with history, pin, archive/restore, Forget, search, type filter,
+pagination and pausing automatic learning. Every write carries a host-generated
+idempotency key and expected revision. A lost acknowledgement is reconciled by
+its exact operation receipt (key, kind and target), never retried with a new
+key. A conflict keeps the draft. Unsupported, expired, denied and unavailable
+backends are shown as such, never as an empty list. Labels name the producer
+("Manually saved", "Saved by standalone Coach", "Saved by hosted Coach",
+"Learned by … from a chat"); a manual save is not proof that the user said it.
+Pinning changes recall priority only. Older Studio notes stay under the separate
+"Legacy private notes" section.
+
+The native Pi gets a fresh, bounded recall (pinned items first, then matches) in
+its single leading system message, as untrusted JSON data. Pi holds no memory
+credential; it uses the documented domain through the generic REST tool, and the
+host adds keys and validates receipts. Learning starts only after the relay
+confirms delivery of a final response to Pi. A separate no-tool extraction call
+proposes candidates from the delivered human/assistant text and redacted tool
+evidence, and host guards drop ungrounded, inferred-sensitive, ephemeral and
+instruction-like proposals before the backend commits them. A compact
+"Remembered" notice appears only for committed receipts. "Don't save this
+conversation" turns automatic learning off for the runtime. The backend pause
+setting survives restarts.
+
+Every memory acquired during a runtime (recall, memory reads through tools and
+Coach writes) stays a capture dependency for the rest of that runtime. After a
+Forget or correction, or after more than 20 tracked memories, automatic learning
+is off, with a visible notice, until a new chat. Acquired text can remain in the
+current chat but cannot be saved again automatically.
+
+## Learning and recall (legacy Studio memory)
 
 The host uses the configured model to propose bounded structured memories from
 original member context, tool evidence, accepted event results, and completed
