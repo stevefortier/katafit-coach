@@ -38,9 +38,15 @@ function renderOperatorActions(actions = []) {
     not_found: "No delivery found after session closed",
   };
   $("operatorActions").replaceChildren();
+  const history = $("operatorDeliveryHistory");
+  const rows = $("operatorDeliveryHistoryRows");
+  rows.replaceChildren();
+  let settled = 0;
   for (const action of actions) {
     if (!Object.hasOwn(labels, action.status)) continue;
-    $("operatorActions").append(
+    const unresolved = ["pending", "unknown"].includes(action.status);
+    if (!unresolved) settled++;
+    (unresolved ? $("operatorActions") : rows).append(
       detailText(
         "p",
         (action.tool_name && action.status === "unknown"
@@ -48,11 +54,17 @@ function renderOperatorActions(actions = []) {
           : labels[action.status]) +
           (action.tool_name ? " · " + action.tool_name : "") +
           (action.member_ref ? " · member " + action.member_ref : "") +
-          (action.action_id ? " · " + action.action_id : ""),
+          (action.action_id ? " · " + action.action_id : "") +
+          (action.recipient_id ? " · recipient " + action.recipient_id : "") +
+          (action.message_id ? " · message " + action.message_id : ""),
       ),
     );
   }
-  if (!actions.length) $("operatorActions").textContent = "";
+  history.hidden = settled === 0;
+  // The mounted disclosure preserves deliberate expansion across snapshots.
+  $("operatorDeliveryHistorySummary").textContent = settled
+    ? "Delivery history · " + settled
+    : "";
   $("operatorReconcile").hidden = !actions.some((action) =>
     ["pending", "unknown"].includes(action.status),
   );
@@ -3013,6 +3025,7 @@ function lockSession(message, severity) {
   resetMemories();
   renderCoachName();
   renderOperatorActions();
+  $("operatorDeliveryHistory").open = false;
 
   $("operatorStatus").textContent = "";
   clearTimeout(updateTimer);
