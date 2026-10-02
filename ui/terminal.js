@@ -1,3 +1,45 @@
+// One acquired-Blob viewer shared by Pi attachments and Dashboard Gallery.
+window.CoachImageViewer = (() => {
+  const $ = (id) => document.getElementById(id);
+  const dialog = $("attachmentDialog");
+  let current;
+  function clean() {
+    const trigger = current?.trigger;
+    current = undefined;
+    $("attachmentDialogImage")?.removeAttribute("src");
+    $("attachmentDialogDownload")?.removeAttribute("href");
+    if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+  }
+  function close(owner) {
+    if (owner && current?.owner !== owner) return;
+    if (dialog?.open) dialog.close();
+    clean();
+  }
+  function open(entry) {
+    if (!dialog || !entry.url) return;
+    current = { ...entry, trigger: entry.trigger || document.activeElement };
+    $("attachmentDialogTitle").textContent = entry.filename;
+    $("attachmentDialogCaption").textContent = entry.caption || "";
+    const image = $("attachmentDialogImage");
+    image.alt = entry.caption || entry.filename;
+    image.src = entry.url;
+    const download = $("attachmentDialogDownload");
+    download.href = entry.url;
+    download.download = entry.filename;
+    if (!dialog.open) dialog.showModal();
+    $("attachmentDialogClose").focus();
+  }
+  if (dialog) {
+    $("attachmentDialogClose").onclick = () => close();
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) close();
+    });
+    dialog.addEventListener("close", () => {
+      if (!dialog.open) clean();
+    });
+  }
+  return { open, close };
+})();
 // One terminal for the page: its session outlives pane layout, collapse and
 // Studio navigation. `active` means the session is wanted; `visible` means the
 // pane is on screen. Only a visible pane reconnects automatically (checked
@@ -704,30 +746,17 @@ function operatorAttachments($, fetchAttachment) {
   function openDialog(entry) {
     if (!entry.url) return;
     dialogEntry = entry;
-    $("attachmentDialogTitle").textContent = entry.item.filename;
-    $("attachmentDialogCaption").textContent = entry.item.caption;
-    const img = $("attachmentDialogImage");
-    img.alt = entry.item.caption || entry.item.filename;
-    img.src = entry.url;
-    const download = $("attachmentDialogDownload");
-    download.href = entry.url;
-    download.download = entry.item.filename;
-    if (!dialog.open) dialog.showModal();
-    $("attachmentDialogClose").focus();
+    window.CoachImageViewer.open({
+      owner: "pi",
+      url: entry.url,
+      filename: entry.item.filename,
+      caption: entry.item.caption,
+    });
   }
   function closeDialog() {
     dialogEntry = undefined;
-    if (dialog.open) dialog.close();
-    $("attachmentDialogImage").removeAttribute("src");
-    $("attachmentDialogDownload").removeAttribute("href");
+    window.CoachImageViewer.close("pi");
   }
-  $("attachmentDialogClose").onclick = closeDialog;
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) closeDialog();
-  });
-  dialog.addEventListener("close", () => {
-    if (dialogEntry) closeDialog();
-  });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) check();
   });

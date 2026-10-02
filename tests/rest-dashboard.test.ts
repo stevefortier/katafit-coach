@@ -39,7 +39,8 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
         }),
       );
     else if (
-      req.url === "/api/friends/feed/dojo?limit=20" ||
+      req.url ===
+        "/api/friends/feed/dojo?limit=20&types=meal,media,metric,workout" ||
       req.url ===
         "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100" ||
       req.url ===
@@ -210,7 +211,7 @@ test("served dashboard uses ordinary feed, social detail and binary media with b
     assert.deepEqual(Buffer.from(await photo.arrayBuffer()), image);
     assert.deepEqual(calls, [
       "/api/users/aaaaaaaaaaaaaaaaaaaaaaaa/avatar/512",
-      "/api/friends/feed/dojo?limit=20",
+      "/api/friends/feed/dojo?limit=20&types=meal,media,metric,workout",
       "/api/friends/dojo/dashboard-members",
       "/api/friends/dojo/positioned-activities?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100",
       "/api/friends/dojo/day-events?start=2026-09-28T04%3A00%3A00.000Z&end=2026-09-29T04%3A00%3A00.000Z&limit=100&cursor=payload.signature",

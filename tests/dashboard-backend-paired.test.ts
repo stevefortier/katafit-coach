@@ -16,7 +16,7 @@ import {
 // Studio HTML/CSP. Only object storage bytes are synthetic: generated 32px JPEGs.
 // No live users, production DB, model inference, or fake HTTP response envelopes.
 test(
-  "paired synthetic dashboard decodes four JPEGs and completed body charts through real routes",
+  "paired historical Gallery decodes full inventories and shared fullscreen through real routes",
   { skip: !memoryBackendEnabled, timeout: 120000 },
   async () => {
     process.env.JWT_SECRET = "synthetic-dashboard-jwt";
@@ -512,27 +512,37 @@ test(
             {},
             { timeout: 10000 },
           );
+          await page.locator("#dashboardGallery").scrollIntoViewIfNeeded();
           await page.waitForFunction(
             () =>
-              document.querySelectorAll("#dashboardRoster img").length === 4 &&
+              document.querySelectorAll("#dashboardGallery .dashboard-photo")
+                .length === 8,
+          );
+          for (const frame of await page
+            .locator("#dashboardGallery .dashboard-photo")
+            .all())
+            await frame.scrollIntoViewIfNeeded();
+          await page.waitForFunction(
+            () =>
+              document.querySelectorAll("#dashboardGallery img").length === 8 &&
               [
                 ...document.querySelectorAll<HTMLImageElement>(
-                  "#dashboardRoster img",
+                  "#dashboardGallery img",
                 ),
               ].every((i) => i.complete && i.naturalWidth === 32),
             {},
             { timeout: 10000 },
           );
           await page
-            .locator("#dashboardRoster img")
+            .locator("#dashboardGallery img")
             .evaluateAll(async (imgs) => {
               await Promise.all(
                 imgs.map((img) => (img as HTMLImageElement).decode()),
               );
             });
           assert.equal(
-            await page.locator("#dashboardRoster article").count(),
-            1,
+            await page.locator("#dashboardGallery article").count(),
+            2,
           );
           assert.equal(await page.locator("#dashboardCharts svg").count(), 3);
           const points = await page
@@ -546,9 +556,9 @@ test(
             `Synthetic Ada: ${day}, 80.5 kg`,
             `Synthetic Ada: ${day}, 177 lb`,
           ]);
-          assert.deepEqual(mediaResponses, [200, 200, 200, 200]);
+          assert.deepEqual(mediaResponses, Array(8).fill(200));
           const pixels = await page
-            .locator("#dashboardRoster img")
+            .locator("#dashboardGallery img")
             .evaluateAll((imgs) =>
               imgs.map((img) => {
                 const canvas = document.createElement("canvas");
@@ -563,15 +573,22 @@ test(
               ...(await sharp(jpeg).raw().toBuffer()).subarray(0, 3),
             ]),
           );
-          assert.deepEqual(pixels, expectedPixels);
+          assert.deepEqual(pixels, [...expectedPixels, ...expectedPixels]);
           assert.deepEqual(
             calls
               .slice(callStart)
-              .filter((path) => path.startsWith("/api/media/")),
-            files.map((file) => `/api/media/${photo._id}/files/${file._id}`),
+              .filter((path) => path.startsWith("/api/media/"))
+              .sort(),
+            [photo, oldPhoto]
+              .flatMap((activity) =>
+                files.map(
+                  (file) => `/api/media/${activity._id}/files/${file._id}`,
+                ),
+              )
+              .sort(),
           );
           assert.ok(calls.includes(`/api/friends/activity/${photo._id}`));
-          // Older completed check-ins contribute chart inference, not gallery bytes.
+          // Historical completed check-ins contribute charts and independent gallery inventories.
           assert.ok(calls.includes(`/api/friends/activity/${oldPhoto._id}`));
           assert.ok(!calls.includes(`/api/friends/activity/${pending._id}`));
           assert.ok(!calls.includes(`/api/friends/activity/${missed._id}`));
@@ -595,8 +612,32 @@ test(
             path: `${evidence}/paired-dashboard-${width}.png`,
             fullPage: true,
           });
+          const image = page.locator("#dashboardGallery img").first();
+          const readsBeforeViewer = storageCalls.length;
+          await image.click();
+          assert.ok(await page.locator("#attachmentDialog").isVisible());
+          assert.equal(
+            await page.locator("#attachmentDialogImage").getAttribute("src"),
+            await image.getAttribute("src"),
+          );
+          await page
+            .locator("#attachmentDialogImage")
+            .evaluate((image: HTMLImageElement) => image.decode());
+          assert.equal(
+            storageCalls.length,
+            readsBeforeViewer,
+            "fullscreen reuses acquired pixels",
+          );
+          await page.screenshot({
+            path: `${evidence}/paired-gallery-fullscreen-${width}.png`,
+          });
+          await page.keyboard.press("Escape");
+          assert.equal(
+            await page.locator("#attachmentDialog").isVisible(),
+            false,
+          );
           const acquired = await page
-            .locator("#dashboardRoster img")
+            .locator("#dashboardGallery img")
             .evaluateAll((imgs) =>
               imgs.map((i) => (i as HTMLImageElement).src),
             );
@@ -639,7 +680,7 @@ test(
           assert.ok([403, 404].includes(denied));
           assert.deepEqual(
             await page
-              .locator("#dashboardRoster img")
+              .locator("#dashboardGallery img")
               .evaluateAll((imgs) =>
                 imgs.map((i) => (i as HTMLImageElement).src),
               ),
@@ -647,14 +688,14 @@ test(
           );
           assert.equal(
             await page
-              .locator("#dashboardRoster img")
+              .locator("#dashboardGallery img")
               .evaluateAll(
                 (imgs) =>
                   imgs.filter(
                     (i) => (i as HTMLImageElement).naturalWidth === 32,
                   ).length,
               ),
-            4,
+            8,
           );
           await page.locator("#settingsTab").click();
           await page.locator("#dashboardTab").click();
@@ -664,7 +705,7 @@ test(
               ?.textContent?.toLowerCase()
               .includes("loaded"),
           );
-          assert.equal(await page.locator("#dashboardRoster img").count(), 0);
+          assert.equal(await page.locator("#dashboardGallery img").count(), 0);
           await page.waitForFunction(
             () =>
               document
@@ -684,7 +725,7 @@ test(
             JSON.stringify({
               synthetic: true,
               width,
-              decodedJPEGs: 4,
+              decodedJPEGs: 8,
               bodyCharts: 3,
               bodyPoints: points,
               deniedNewRead: denied,
@@ -697,7 +738,7 @@ test(
       }
       assert.equal(
         storageCalls.length,
-        12,
+        24,
         "revoked reads never reach synthetic storage",
       );
     } finally {
