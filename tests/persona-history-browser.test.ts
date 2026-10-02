@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
@@ -36,13 +37,13 @@ test("synthetic real Studio history browses read-only and restores without savin
     });
     await page.goto(app.origin + "/settings#" + store.secrets.admin);
     await page.locator("#studio").waitFor({ state: "visible" });
-    await page.locator("#settings-models-tab").click();
+    await settingsTab(page, "Models");
     await page
       .locator('[data-provider="default"] [data-field="model"]')
       .fill("unsaved-model");
-    await page.locator("#settings-katafit-tab").click();
+    await settingsTab(page, "Kata.fit");
     await page.locator("#token").fill("unsaved-token");
-    await page.locator("#settings-persona-tab").click();
+    await settingsTab(page, "Persona");
     await page.locator("#name").fill("unsaved-persona");
     await page.locator("#personaHistory summary").click();
     await page.getByRole("button", { name: /Revision 2 ·/ }).click();

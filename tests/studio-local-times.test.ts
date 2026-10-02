@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -228,7 +229,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
       await page.setViewportSize({ width: 1280, height: 1000 });
       assert.deepEqual(JSON.parse(copied).update.lastOperation, operation);
       await page.locator("#settingsTab").click();
-      await page.getByRole("tab", { name: "Persona", exact: true }).click();
+      await settingsTab(page, "Persona");
       await page.locator("#personaHistory > summary").click();
       await page.locator('#historyList button[data-revision="3"]').waitFor();
       assert.deepEqual(
@@ -245,7 +246,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
         await page.locator("#historyTitle").textContent(),
         `Revision 3 · Current · ${expected[0]} — read-only`,
       );
-      await page.getByRole("tab", { name: "Updates", exact: true }).click();
+      await settingsTab(page, "Updates");
       assert.equal(
         await page.locator("#updateChecked").textContent(),
         `Last check · ${expected[2]}`,

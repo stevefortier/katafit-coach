@@ -2,7 +2,7 @@
 
 ## Studio
 
-**Settings → Kata.fit** holds the Kata.fit origin, private connection token and saved-connection test. **Settings → Models** holds named providers and their models. The remaining Persona, Preview, Diagnostics, Updates and Worker tabs are unchanged. `/settings?section=connection` and `#connection` are aliases for Kata.fit; `/settings?section=models` opens Models.
+**Server Settings → Kata.fit** holds the Kata.fit origin, private connection token and saved-connection test. **Server Settings → Models** holds named providers and their models; **Updates** is its third subtab. **Coach Settings** contains Persona, Preview, Skills, Memories and Worker, in that order. Activity remains a primary sibling. Both settings groups keep their editors mounted and retain the shared Save, which applies Kata.fit, Models and Persona drafts together. Existing section URLs and hashes select the owning group; no new HTTP routes are needed. `/settings?section=connection` and `#connection` are aliases for Kata.fit; `/settings?section=models` opens Models.
 
 Register a provider name, base URL and private API key. Add each supported model's display name, exact provider model ID and optional vision flag. Provider/model IDs used internally are stable across edits. Select **Use after Save**, then use the shared **Save**. It saves Kata.fit, Models and Persona drafts together. Browsing, editing and selecting a draft model makes no provider request. The saved-active badge changes only after a successful Save. Switching to a registered provider reuses its saved endpoint/key; switching back restores its selected model and vision setting.
 

@@ -1,3 +1,4 @@
+import { settingsTab } from "../tests/helpers/settings-navigation.js";
 import { chromium } from "playwright-core";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -56,7 +57,7 @@ try {
   await page.goto(app.origin + "/#" + store.secrets.admin);
   await page.locator("#studio").waitFor({ state: "visible" });
   await page.locator("#settingsTab").click();
-  await page.getByRole("tab", { name: "Updates", exact: true }).click();
+  await settingsTab(page, "Updates");
   const checkText = () => page.locator("#updateCheckStatus").innerText();
   assert.match(await checkText(), /GitHub rate limit/);
   assert.equal(

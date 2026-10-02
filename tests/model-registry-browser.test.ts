@@ -1,3 +1,4 @@
+import { settingsTab } from "./helpers/settings-navigation.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -303,7 +304,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     assert.equal(await page.locator("#origin").isVisible(), true);
     assert.equal(await page.locator("#token").isVisible(), true);
     assert.equal(await page.locator("#connect").isVisible(), true);
-    assert.equal(await page.getByRole("tab").count(), 8);
+    assert.equal(await page.getByRole("tab").count(), 3);
     await page.locator("#token").fill("unsaved-kata-token");
     // Roving keyboard focus reaches Models.
     await page
@@ -352,7 +353,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
                 response.request().method() === "POST",
             )
           : null;
-      await page.getByRole("tab", { name, exact: true }).click();
+      await settingsTab(page, name);
       if (checked) await checked;
     }
     assert.equal(
@@ -363,18 +364,18 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       await field(page, "alpha", "name").inputValue(),
       "Alpha renamed",
     );
-    await page.getByRole("tab", { name: "Kata.fit", exact: true }).click();
+    await settingsTab(page, "Kata.fit");
     assert.equal(
       await page.locator("#token").inputValue(),
       "unsaved-kata-token",
     );
-    await page.getByRole("tab", { name: "Models", exact: true }).click();
+    await settingsTab(page, "Models");
     assert.deepEqual(
       apiCalls
         .slice(before)
         .filter((c) => !/^GET \/api\/(status|update)$/.test(c)),
-      ["POST /api/update/check"],
-      "entering Updates checks once; browsing model drafts makes no other calls",
+      ["POST /api/update/check", "POST /api/update/check"],
+      "explicit Updates entry and remembered Updates group return each check once; model drafts make no other calls",
     );
     assert.deepEqual(providerRequests, []);
     assert.equal(store.modelRegistry().active.provider, "alpha");
@@ -485,9 +486,9 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     assert.equal(store.secrets.apiKey, keyA);
     // Persona restore keeps unsaved Models and Kata.fit drafts.
     await field(page, "bravo", "name").fill("Bravo draft");
-    await page.getByRole("tab", { name: "Kata.fit", exact: true }).click();
+    await settingsTab(page, "Kata.fit");
     await page.locator("#token").fill("restore-token-draft");
-    await page.getByRole("tab", { name: "Persona", exact: true }).click();
+    await settingsTab(page, "Persona");
     await page.locator("#personaHistory summary").click();
     await page.getByRole("button", { name: /Revision 1 ·/ }).click();
     await page.locator("#historyDetail").waitFor({ state: "visible" });
@@ -500,7 +501,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
         "Saved revision " + r,
       restoredRevision,
     );
-    await page.getByRole("tab", { name: "Models", exact: true }).click();
+    await settingsTab(page, "Models");
     assert.equal(
       await field(page, "bravo", "name").inputValue(),
       "Bravo draft",
@@ -537,7 +538,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     });
     await page.setViewportSize({ width: 390, height: 844 });
     for (const name of ["Kata.fit", "Models"]) {
-      await page.getByRole("tab", { name, exact: true }).click();
+      await settingsTab(page, name);
       assert.equal(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,

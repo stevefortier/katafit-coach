@@ -1,3 +1,4 @@
+import { settingsTab } from "../tests/helpers/settings-navigation.js";
 import { chromium, type Browser, type BrowserContext } from "playwright-core";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
@@ -82,8 +83,7 @@ try {
         ),
       pattern.source,
     );
-  const tab = (name: string) =>
-    page.getByRole("tab", { name, exact: true }).click();
+  const tab = (name: string) => settingsTab(page, name);
   const assertNoLifecycle = async () => {
     assert.deepEqual(dialogs, [], "preview never asks to pause Coach");
     assert.equal(await page.locator("#restartCheck").isHidden(), true);
