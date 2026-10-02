@@ -1922,6 +1922,7 @@ html.coach-covered #workspaceScroll {
 }
 #coachPane #operatorStatus,
 #coachPane #operatorActions,
+#coachPane #operatorDeliveryHistory,
 #coachPane #operatorReconcile {
   flex: none;
 }
@@ -1932,9 +1933,23 @@ html.coach-covered #workspaceScroll {
 #coachPane #operatorActions:empty {
   display: none;
 }
-#coachPane #operatorActions {
+#coachPane #operatorActions,
+#coachPane #operatorDeliveryHistoryRows {
   max-height: 20vh;
   overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+#coachPane #operatorDeliveryHistory {
+  min-width: 0;
+  margin-top: 8px;
+}
+#coachPane #operatorDeliveryHistory summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+#coachPane #operatorDeliveryHistory summary:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 @media (max-width: 600px) {
   #coachPane #coachPanel {

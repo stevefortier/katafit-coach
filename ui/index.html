@@ -1026,6 +1026,12 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
           </dialog>
           <p id="operatorStatus" role="status"></p>
           <div id="operatorActions" role="status" aria-live="polite"></div>
+          <details id="operatorDeliveryHistory" hidden>
+            <summary id="operatorDeliveryHistorySummary">
+              Delivery history
+            </summary>
+            <div id="operatorDeliveryHistoryRows"></div>
+          </details>
           <button id="operatorReconcile" type="button" class="secondary" hidden>
             Check delivery status
           </button>
