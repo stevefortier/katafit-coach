@@ -78,11 +78,7 @@
           },
           "date_field": {
             "type": "string",
-            "enum": [
-              "created_at",
-              "completed_at",
-              "due_at"
-            ]
+            "enum": ["created_at", "completed_at", "due_at"]
           }
         },
         "required": [],
@@ -132,9 +128,7 @@
             "maxLength": 120
           }
         },
-        "required": [
-          "activity_id"
-        ],
+        "required": ["activity_id"],
         "additionalProperties": false
       },
       "strict": false
@@ -156,14 +150,10 @@
           "representation": {
             "default": "original",
             "type": "string",
-            "enum": [
-              "original"
-            ]
+            "enum": ["original"]
           }
         },
-        "required": [
-          "media_ref"
-        ],
+        "required": ["media_ref"],
         "additionalProperties": false
       },
       "strict": false
@@ -243,9 +233,7 @@
             "maxLength": 4096
           }
         },
-        "required": [
-          "conversation_ref"
-        ],
+        "required": ["conversation_ref"],
         "additionalProperties": false
       },
       "strict": false
@@ -297,9 +285,7 @@
             ]
           }
         },
-        "required": [
-          "domain"
-        ],
+        "required": ["domain"],
         "additionalProperties": false
       },
       "strict": false
@@ -362,10 +348,7 @@
             ]
           }
         },
-        "required": [
-          "domain",
-          "record_id"
-        ],
+        "required": ["domain", "record_id"],
         "additionalProperties": false
       },
       "strict": false
@@ -413,9 +396,7 @@
             "maxLength": 120
           }
         },
-        "required": [
-          "exercise_catalog_id"
-        ],
+        "required": ["exercise_catalog_id"],
         "additionalProperties": false
       },
       "strict": false
@@ -441,12 +422,7 @@
           },
           "kind": {
             "type": "string",
-            "enum": [
-              "exercise",
-              "food",
-              "recipe",
-              "gym"
-            ]
+            "enum": ["exercise", "food", "recipe", "gym"]
           },
           "record_id": {
             "type": "string",
@@ -459,9 +435,7 @@
             "maxLength": 120
           }
         },
-        "required": [
-          "kind"
-        ],
+        "required": ["kind"],
         "additionalProperties": false
       },
       "strict": false
@@ -503,11 +477,7 @@
             }
           }
         },
-        "required": [
-          "start_date",
-          "end_date",
-          "sections"
-        ],
+        "required": ["start_date", "end_date", "sections"],
         "additionalProperties": false
       },
       "strict": false

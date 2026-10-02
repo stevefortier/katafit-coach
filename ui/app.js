@@ -1679,6 +1679,51 @@ async function memoryReconcile() {
       "warning",
     );
 }
+function memoryRelated(n) {
+  return n === 1 ? "1 related memory" : n + " related memories";
+}
+// Forget is confirmed against the backend's impact snapshot. A failed preview
+// forgets nothing and never shows an invented count.
+const MEMORY_FORGET_COPY =
+  "Forgotten from future memory retrieval. Text already present in this chat or sent to a provider cannot be retracted.";
+async function memoryForgetConfirm(id) {
+  const account = memoryAccountEpoch;
+  let impact;
+  try {
+    impact = (await api("memories/" + id + "/forget-impact")).forget_impact;
+  } catch (error) {
+    if (error.stale || account !== memoryAccountEpoch) throw error;
+    throw Object.assign(
+      new Error(
+        "Couldn't check which memories depend on this one, so nothing was forgotten. Try again.",
+      ),
+      { code: error.code },
+    );
+  }
+  if (account !== memoryAccountEpoch) throw staleAuthentication();
+  const n = impact.related_count;
+  const ok = confirm(
+    "Forget this memory?\n\n" +
+      MEMORY_FORGET_COPY +
+      (n
+        ? `\n\n${memoryRelated(n)} that depended on it will also become unavailable. This count is a snapshot and can change before you confirm; cleanup of their stored text may finish later.`
+        : ""),
+  );
+  return ok ? impact : null;
+}
+function memoryForgotten(result, impact) {
+  const erasure = result?.erasure;
+  const n = erasure?.related_count ?? impact?.related_count ?? 0;
+  if (!n) return "";
+  if (erasure?.status === "complete")
+    return ` ${memoryRelated(n)} that depended on it were forgotten and erased too.`;
+  return (
+    ` ${memoryRelated(n)} ${n === 1 ? "is" : "are"} unavailable now` +
+    (erasure?.status === "queued"
+      ? "; cleanup of their stored text is pending."
+      : ".")
+  );
+}
 function memoryCard(entry) {
   const card = document.createElement("section");
   card.className = "memory-card";
@@ -1762,13 +1807,9 @@ function memoryCard(entry) {
     );
   }
   button("Forget", async () => {
-    if (
-      !confirm(
-        "Forget this memory? Its text is erased and future chats will not recall it. Text already in an open chat stays there until you start a new chat.",
-      )
-    )
-      return;
-    await memoryWrite({
+    const impact = await memoryForgetConfirm(entry.id);
+    if (!impact) return;
+    const result = await memoryWrite({
       path: "memories/" + entry.id + "/forget",
       body: { expected_revision: entry.revision },
       expect: { kind: "forget", memory_id: entry.id },
@@ -1776,10 +1817,7 @@ function memoryCard(entry) {
       selected: memorySelected?.id === entry.id,
     });
     if (memorySelected?.id === entry.id) memoryDraft();
-    notice(
-      "Memory forgotten. Future chats will not recall it; start a new chat to drop it from an open one.",
-      "success",
-    );
+    notice(MEMORY_FORGET_COPY + memoryForgotten(result, impact), "success");
     await loadMemories();
   });
   card.append(text, labels, meta, actions);
@@ -3583,6 +3621,11 @@ function renderCoachMemory() {
           }`,
         ),
       );
+      if (n.action === "forgotten" && n.note) {
+        const note = detailText("p", n.note);
+        note.className = "hint";
+        li.append(note);
+      }
       if (item.status !== "forgotten") {
         const actions = document.createElement("div");
         actions.className = "actions";
@@ -3599,24 +3642,24 @@ function renderCoachMemory() {
         add("View", () => openMemory(item.id, false));
         add("Edit", () => openMemory(item.id, true));
         add("Forget", async () => {
-          if (
-            !confirm(
-              "Forget this memory? Future chats will not recall it; text already in this chat stays until you start a new one.",
-            )
-          )
-            return;
-          await memoryWrite({
+          const fail = (error) => {
+            memoryActionError(error);
+            throw Object.assign(error, { stale: true });
+          };
+          const impact = await memoryForgetConfirm(item.id).catch(fail);
+          if (!impact) return;
+          const result = await memoryWrite({
             path: "memories/" + item.id + "/forget",
             body: { expected_revision: item.revision },
             expect: { kind: "forget", memory_id: item.id },
             label: "Forget memory",
-          }).catch((error) => {
-            memoryActionError(error);
-            throw Object.assign(error, { stale: true });
-          });
+          }).catch(fail);
           item.status = "forgotten";
           renderCoachMemory();
-          notice("Memory forgotten.", "success");
+          notice(
+            MEMORY_FORGET_COPY + memoryForgotten(result, impact),
+            "success",
+          );
           if (settingsSection === "memories") void loadMemories();
         });
         li.append(actions);

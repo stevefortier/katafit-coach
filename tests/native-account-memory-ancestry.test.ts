@@ -62,7 +62,7 @@ async function twoTurnsThenForget(f: Fixture, forget: "ui" | "coach") {
   await until(() => commits(f).length === 1 || undefined);
   const firstCapture = captures(f)[0];
   assert.deepEqual(firstCapture.body.recalled, [
-    { id: seeded.id, revision: 1 },
+    { id: seeded.id, revision: 1, content_revision: 1 },
   ]);
   const history = [...first, assistant("Try a lentil bowl after training.", 2)];
   // Second human turn: its own fresh recall no longer returns the item, but
@@ -76,7 +76,7 @@ async function twoTurnsThenForget(f: Fixture, forget: "ui" | "coach") {
   await until(() => commits(f).length === 2 || undefined);
   assert.deepEqual(
     captures(f)[1].body.recalled,
-    [{ id: seeded.id, revision: 1 }],
+    [{ id: seeded.id, revision: 1, content_revision: 1 }],
     "an item acquired in an earlier turn remains a dependency",
   );
   if (forget === "ui") {
@@ -202,7 +202,7 @@ test("account memory read through generic REST joins the runtime ancestry of lat
     await f.turn([user("Unrelated: how is the weather for a run?", 2)]);
     await until(() => captures(f).length === 1 || undefined);
     assert.deepEqual(captures(f)[0].body.recalled, [
-      { id: seeded.id, revision: 1 },
+      { id: seeded.id, revision: 1, content_revision: 1 },
     ]);
   } finally {
     await f.close();

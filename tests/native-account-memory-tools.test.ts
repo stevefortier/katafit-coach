@@ -130,7 +130,12 @@ test("forget targets one exact revision, is announced from its receipt, and fres
     await select(f, "call_forget", args);
     const result = parse(await call(f, "call_forget", args));
     assert.equal(result.status, "forgotten");
-    assert.match(result.note, /new chat/i);
+    assert.ok(
+      result.note.includes(
+        "Forgotten from future memory retrieval. Text already present in this chat or sent to a provider cannot be retracted.",
+      ),
+    );
+    assert.doesNotMatch(result.note, /new chat/i);
     assert.ok(f.notices.some((n) => n.action === "forgotten"));
     f.provider.reply = () => undefined;
     await f.gateway.handle({

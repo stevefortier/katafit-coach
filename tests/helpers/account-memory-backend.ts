@@ -7,6 +7,8 @@ import { createHash, randomBytes } from "node:crypto";
 export type FakeItem = {
   id: string;
   revision: number;
+  /** Semantic version: only text or kind changes bump it. */
+  content_revision: number;
   kind: string;
   text?: string;
   availability: "available" | "unavailable";
@@ -49,6 +51,9 @@ export async function startAccountMemoryBackend(
   const history = new Map<string, any[]>();
   const operations = new Map<string, any>();
   const captures = new Map<string, any>();
+  // Persisted fragment ancestry: cited (based_on) + superseded rows only.
+  const ancestry = new Map<string, string[]>();
+  const pendingErasure = new Set<string>();
   const settings = {
     learning_paused: false,
     revision: 0,
@@ -70,7 +75,27 @@ export async function startAccountMemoryBackend(
     after?: (request: Request, body: any) => any;
     // Awaited before routing: lets a test hold a response in flight.
     wait?: (request: Request) => Promise<void> | void;
+    // Related descendants erased synchronously on Forget; more are queued.
+    syncErasureLimit?: number;
   } = {};
+  const related = (id: string) => {
+    const found: string[] = [];
+    const queue = [id];
+    while (queue.length) {
+      const parent = queue.shift()!;
+      for (const [child, parents] of ancestry)
+        if (
+          parents.includes(parent) &&
+          !found.includes(child) &&
+          child !== id &&
+          items.has(child)
+        ) {
+          found.push(child);
+          queue.push(child);
+        }
+    }
+    return found;
+  };
   const now = () => new Date().toISOString();
   const item = (
     input: Partial<FakeItem> & { kind: string; text: string },
@@ -81,6 +106,7 @@ export async function startAccountMemoryBackend(
     return {
       id: hex(),
       revision: 1,
+      content_revision: 1,
       kind: input.kind,
       text: input.text,
       availability: "available",
@@ -139,8 +165,10 @@ export async function startAccountMemoryBackend(
     response: any,
     revision: number,
     target_status: string | null,
+    extra: Record<string, unknown> = {},
   ) => {
     const operation = {
+      ...extra,
       idempotency_key: body.idempotency_key,
       kind,
       status: "committed",
@@ -230,7 +258,21 @@ export async function startAccountMemoryBackend(
         return fail(413, "MEMORY_LIMIT");
       for (const recalled of body.recalled ?? []) {
         const current = items.get(recalled.id);
-        if (!current || current.revision !== recalled.revision)
+        // With content_revision the semantic version and active state decide;
+        // without it the raw revision stays strict.
+        if (
+          recalled.content_revision !== undefined &&
+          (!Number.isSafeInteger(recalled.content_revision) ||
+            recalled.content_revision < 1)
+        )
+          return fail(400, "MEMORY_INVALID");
+        if (
+          !current ||
+          (recalled.content_revision === undefined
+            ? current.revision !== recalled.revision
+            : current.content_revision !== recalled.content_revision ||
+              current.status !== "active")
+        )
           return fail(409, "MEMORY_CHANGED");
       }
       const existing = [...captures.values()].find(
@@ -333,6 +375,27 @@ export async function startAccountMemoryBackend(
         if (capture.status !== "open") return fail(409, "MEMORY_CONFLICT");
         if (capture.epoch !== epoch || body.expected_memory_epoch !== epoch)
           return fail(409, "MEMORY_EPOCH_CHANGED");
+        const recalledIds = new Set(
+          capture.recalled.filter(Boolean).map((i: FakeItem) => i.id),
+        );
+        const cited = (list: unknown, max: number) =>
+          list === undefined ||
+          (Array.isArray(list) &&
+            list.length <= max &&
+            new Set(list).size === list.length &&
+            list.every(
+              (id) =>
+                typeof id === "string" &&
+                /^[a-f0-9]{24}$/.test(id) &&
+                recalledIds.has(id),
+            ));
+        if (
+          !Array.isArray(body.proposals) ||
+          body.proposals.some(
+            (p: any) => !cited(p.based_on, 20) || !cited(p.supersedes, 4),
+          )
+        )
+          return fail(400, "MEMORY_INVALID");
         const created: { id: string; revision: number }[] = [];
         const skipped: { index: number; reason: string }[] = [];
         const superseded: { id: string; revision: number }[] = [];
@@ -345,9 +408,10 @@ export async function startAccountMemoryBackend(
             skipped.push({ index, reason: "duplicate" });
             return;
           }
+          const { based_on, supersedes, ...content } = proposal;
           const created_item = item(
             {
-              ...proposal,
+              ...content,
               review_at: proposal.review_after_days
                 ? new Date(
                     Date.now() + proposal.review_after_days * 86400000,
@@ -367,6 +431,10 @@ export async function startAccountMemoryBackend(
             },
           );
           items.set(created_item.id, created_item);
+          ancestry.set(created_item.id, [
+            ...(based_on ?? []),
+            ...(supersedes ?? []),
+          ]);
           history.set(created_item.id, [
             {
               revision: 1,
@@ -467,6 +535,31 @@ export async function startAccountMemoryBackend(
         );
       }
     }
+    const impact = /^\/([a-f0-9]{24})\/forget-impact$/.exec(rest);
+    if (impact && request.method === "GET") {
+      if ([...url.searchParams.keys()].length)
+        return fail(400, "MEMORY_INVALID");
+      const current = items.get(impact[1]);
+      if (!current) return fail(403, "MEMORY_NOT_AUTHORIZED");
+      const ids = related(impact[1]);
+      return {
+        status: 200,
+        body: {
+          protocol: "coach.memory.v1",
+          id: current.id,
+          revision: current.revision,
+          related_count: ids.length,
+          examples: ids.slice(0, 20).map((id) => ({
+            id,
+            kind: items.get(id)!.kind,
+            status: items.get(id)!.status,
+          })),
+          has_more: ids.length > 20,
+          snapshot: true,
+          erasure_may_be_async: true,
+        },
+      };
+    }
     const single = /^\/([a-f0-9]{24})$/.exec(rest);
     if (single) {
       const id = single[1];
@@ -507,6 +600,11 @@ export async function startAccountMemoryBackend(
           changed.protected = true;
           changed.provenance = { ...changed.provenance, corrected: true };
         }
+        if (
+          ("text" in body && body.text !== current.text) ||
+          ("kind" in body && body.kind !== current.kind)
+        )
+          changed.content_revision++;
         changed.revision++;
         changed.updated_at = now();
         changed.needs_review =
@@ -537,6 +635,19 @@ export async function startAccountMemoryBackend(
         if (!current) return fail(403, "MEMORY_NOT_AUTHORIZED");
         if (current.revision !== body.expected_revision)
           return fail(409, "MEMORY_CONFLICT");
+        const relatedIds = related(id);
+        const queued = relatedIds.length > (hooks.syncErasureLimit ?? 64);
+        // Target and every related descendant are unreadable immediately;
+        // queued only means related stored prose is swept later.
+        for (const child of relatedIds) {
+          items.delete(child);
+          if (queued) pendingErasure.add(child);
+          else history.delete(child);
+        }
+        const erasure = {
+          status: queued ? "queued" : "complete",
+          related_count: relatedIds.length,
+        };
         items.delete(id);
         history.delete(id);
         epoch++;
@@ -555,10 +666,12 @@ export async function startAccountMemoryBackend(
             status: "forgotten",
             revision: current.revision + 1,
             memory_epoch: epoch,
-            cascaded: [],
+            cascaded: queued ? [] : relatedIds.slice(0, 64),
+            erasure,
           },
           current.revision + 1,
           "forgotten",
+          { erasure },
         );
       }
     }
@@ -630,6 +743,8 @@ export async function startAccountMemoryBackend(
     items,
     operations,
     captures,
+    ancestry,
+    pendingErasure,
     settings,
     hooks,
     seed(input: Partial<FakeItem> & { kind: string; text: string }) {

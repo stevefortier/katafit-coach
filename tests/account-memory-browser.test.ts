@@ -62,6 +62,13 @@ const statusText = (page: Page, pattern: RegExp) =>
   );
 const writes = (backend: AccountMemoryBackend) =>
   backend.requests.filter((r) => r.method !== "GET");
+// Controller visual review: honest Forget copy, never a new-chat promise.
+const HONEST_FORGET =
+  "Forgotten from future memory retrieval. Text already present in this chat or sent to a provider cannot be retracted.";
+const honest = (text: string) => {
+  assert.ok(text.includes(HONEST_FORGET), text);
+  assert.doesNotMatch(text, /new chat|new one/i);
+};
 const card = (page: Page, text: string) =>
   page.locator("#memoryList .memory-card", { hasText: text });
 
@@ -204,11 +211,17 @@ test("served My memories: empty, add, correct with history, pin, archive/restore
       }),
       [],
     );
+    const top = async () => {
+      await page.evaluate(() => scrollTo(0, 0));
+      assert.equal(await page.evaluate(() => scrollY), 0);
+    };
+    await top();
     await page.screenshot({
       path: evidence + "/my-memories-desktop.png",
       fullPage: true,
     });
     await page.setViewportSize({ width: 390, height: 844 });
+    await top();
     await page.screenshot({
       path: evidence + "/my-memories-mobile.png",
       fullPage: true,
@@ -221,9 +234,23 @@ test("served My memories: empty, add, correct with history, pin, archive/restore
     );
     await page.setViewportSize({ width: 1280, height: 920 });
 
-    page.once("dialog", (dialog) => dialog.accept());
+    let confirmed = "";
+    page.once("dialog", (dialog) => {
+      confirmed = dialog.message();
+      void dialog.accept();
+    });
     await card(page, "10k").getByRole("button", { name: "Forget" }).click();
     await statusText(page, /^1 memory\b/);
+    honest(confirmed);
+    honest(await page.locator("#noticeRegion").innerText());
+    // The static Memories help is held to the same honest copy.
+    const panel = await page.locator("#memories").innerText();
+    assert.match(panel, /Forget removes a memory from future memory retrieval/);
+    assert.match(
+      panel,
+      /text already present in a chat or sent to a provider cannot be retracted/,
+    );
+    assert.doesNotMatch(panel, /new chat|open chat|erases the text/i);
     const forget = writes(backend).at(-1)!;
     assert.equal(forget.method, "DELETE");
     assert.deepEqual(Object.keys(forget.body).sort(), [
@@ -440,6 +467,72 @@ for (const [producer, label] of [
     }
   });
 
+for (const scenario of ["queued", "preview-failed"] as const)
+  test(`Forget previews the related impact before deleting (${scenario})`, async () => {
+    const backend = await startAccountMemoryBackend();
+    backend.hooks.syncErasureLimit = 0;
+    const goal = backend.seed({ kind: "goal", text: "Run a half marathon." });
+    for (const i of [1, 2]) {
+      const child = backend.seed({
+        kind: "preference",
+        text: `Derived running preference ${i}.`,
+      });
+      backend.ancestry.set(child.id, [goal.id]);
+    }
+    backend.seed({ kind: "fact", text: "Allergic to nuts." });
+    if (scenario === "preview-failed")
+      backend.hooks.before = (r) =>
+        r.path.endsWith("/forget-impact")
+          ? { status: 503, body: { code: "MEMORY_UNAVAILABLE", message: "x" } }
+          : undefined;
+    const f = await served(backend, backend.token);
+    try {
+      const { page } = f;
+      await statusText(page, /^4 memories\b/);
+      const dialogs: string[] = [];
+      page.on("dialog", (dialog) => {
+        dialogs.push(dialog.message());
+        void dialog.accept();
+      });
+      await card(page, "half marathon")
+        .getByRole("button", { name: "Forget" })
+        .click();
+      if (scenario === "preview-failed") {
+        await page
+          .locator("#noticeRegion")
+          .getByText(/nothing was forgotten/i)
+          .waitFor();
+        assert.deepEqual(dialogs, []);
+        assert.ok(!backend.requests.some((r) => r.method === "DELETE"));
+      } else {
+        await statusText(page, /^1 memory\b/);
+        assert.equal(dialogs.length, 1);
+        assert.match(dialogs[0], /2 related memories/);
+        assert.match(dialogs[0], /can change/);
+        honest(dialogs[0]);
+        const order = backend.requests
+          .filter(
+            (r) => r.path.endsWith("/forget-impact") || r.method === "DELETE",
+          )
+          .map((r) => r.method);
+        assert.deepEqual(order, ["GET", "DELETE"]);
+        const shown = await page.locator("#noticeRegion").innerText();
+        honest(shown);
+        assert.match(shown, /2 related memories are unavailable/);
+        assert.match(shown, /pending/);
+        assert.doesNotMatch(shown, /erased/i);
+        assert.match(
+          await page.locator("#memoryList").innerText(),
+          /Allergic to nuts/,
+        );
+      }
+      assert.deepEqual(f.errors, []);
+    } finally {
+      await f.close();
+      await backend.close();
+    }
+  });
+
 test("pagination continues after an empty filtered page and stale search responses are discarded", async () => {
   const backend = await startAccountMemoryBackend();
   for (let i = 0; i < 29; i++)
@@ -550,9 +643,15 @@ test("Coach pane memory notices offer View, Edit and Forget for committed receip
         (document.querySelector("#memoryText") as HTMLTextAreaElement).value ===
         "Prefers kettlebell circuits.",
     );
-    page.once("dialog", (dialog) => dialog.accept());
+    let confirmed = "";
+    page.once("dialog", (dialog) => {
+      confirmed = dialog.message();
+      void dialog.accept();
+    });
     await list.getByRole("button", { name: "Forget" }).click();
     await list.getByText(/^Remembered.*: a memory$/).waitFor();
+    honest(confirmed);
+    honest(await page.locator("#noticeRegion").innerText());
     assert.equal(await list.getByRole("button").count(), 0);
     const forget = writes(backend).at(-1)!;
     assert.equal(forget.method, "DELETE");
@@ -570,6 +669,29 @@ test("Coach pane memory notices offer View, Edit and Forget for committed receip
       }),
     );
     assert.equal(await page.locator("#coachDontSave").isDisabled(), true);
+    // A Coach Forget explains its related impact without claiming erasure.
+    await page.evaluate(() =>
+      (window as any).coachMemory({
+        notice: {
+          action: "forgotten",
+          source: "coach_request",
+          at: new Date().toISOString(),
+          note: "Forgotten. 2 related memories that depended on it are unavailable now; cleanup of their stored text is pending.",
+          items: [
+            {
+              id: "c".repeat(24),
+              revision: 1,
+              kind: "fact",
+              status: "forgotten",
+            },
+          ],
+        },
+      }),
+    );
+    assert.match(
+      await list.innerText(),
+      /2 related memories that depended on it are unavailable now; cleanup of their stored text is pending\./,
+    );
     assert.match(
       await page.locator("#coachMemoryState").innerText(),
       /won't be saved/,

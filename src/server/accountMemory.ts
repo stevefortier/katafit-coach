@@ -251,6 +251,15 @@ export function accountMemoryRoutes(store: Store, admissible: () => boolean) {
         );
         return receipt ?? { operation: null, item: null };
       }
+      const impact = /^\/api\/memories\/([a-f0-9]{24})\/forget-impact$/.exec(
+        route,
+      );
+      if (impact) {
+        if (url.search) invalid();
+        return {
+          forget_impact: await client()((m) => m.forgetImpact(impact[1])),
+        };
+      }
       const single = /^\/api\/memories\/([a-f0-9]{24})$/.exec(route);
       if (single) return client()((m) => m.get(single[1]));
       return undefined;

@@ -59,7 +59,8 @@ Keep only reusable guidance in Skills, never member evidence or credentials. Sav
 
 **Settings → Memories** manages backend-owned Coach memories with search,
 pagination, explicit audiences, protected corrections, sources, history, Archive
-and Forget. Worker and native recall require current backend authority. Native
+and Forget (which first shows how many related memories it affects). Worker and
+native recall require current backend authority. Native
 sessions that already saw a corrected or revoked memory are terminated; a fresh
 session can use the current revision. Automatic extraction uses the configured
 model and durable backend recovery, with no local prose fallback. See

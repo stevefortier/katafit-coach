@@ -32,10 +32,28 @@ conversation" turns automatic learning off for the runtime. The backend pause
 setting survives restarts.
 
 Every memory acquired during a runtime (recall, memory reads through tools and
-Coach writes) stays a capture dependency for the rest of that runtime. After a
-Forget or correction, or after more than 20 tracked memories, automatic learning
-is off, with a visible notice, until a new chat. Acquired text can remain in the
-current chat but cannot be saved again automatically.
+Coach writes) stays a capture coherence fence for the rest of that runtime,
+checked by its semantic `content_revision` when the backend supplies one (raw
+revision otherwise). Metadata-only edits (importance, pin, review date) do not
+stop learning. After a Forget or a text/kind correction, or after more than 20
+tracked memories, automatic learning is off, with a visible notice, until a new
+chat. Acquired text can remain in the current chat but cannot be saved again
+automatically. Persisted ancestry is narrower: an extracted proposal cites the
+recalled memories it actually relied on in the optional `based_on` list (plus
+`supersedes`); an independent observation cites none.
+
+Forget is previewed first. Settings, the Coach pane and the native Coach read
+`GET /api/coach/memory/:id/forget-impact` and show how many related memories
+(cited descendants) will also become unavailable, with the caveat that the count
+is a snapshot and cleanup can finish later. If the preview fails or the memory
+changed, nothing is deleted and no count is invented. The native Coach gets
+`preview_required` and deletes only when the user confirms and the call is
+repeated. The DELETE `erasure` receipt is reported truthfully: `complete` means
+related stored text was erased; `queued` means the related memories are already
+unavailable but cleanup of their stored text is pending. Forget copy never promises
+that a new chat removes anything: "Forgotten from future memory retrieval. Text
+already present in this chat or sent to a provider cannot be retracted." Diagnostics carry only
+allowlisted error codes, never error messages.
 
 ## Learning and recall (legacy Studio memory)
 

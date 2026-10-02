@@ -44,9 +44,34 @@ export const PROPOSAL_SCHEMA = {
     },
   },
 } as const;
-const validate = new Ajv({ strict: true, allErrors: false }).compile(
-  PROPOSAL_SCHEMA,
-);
+const MEMORY_ID = { type: "string", pattern: "^[a-f0-9]{24}$" } as const;
+// Account-only: `based_on` cites the recalled memories a proposal actually
+// relied on. Capture fences still cover everything recalled; only cited ids
+// (and supersedes) become persisted ancestry. Legacy origins keep the schema
+// above unchanged.
+export const ACCOUNT_PROPOSAL_SCHEMA = {
+  ...PROPOSAL_SCHEMA,
+  properties: {
+    proposals: {
+      ...PROPOSAL_SCHEMA.properties.proposals,
+      items: {
+        ...PROPOSAL_SCHEMA.properties.proposals.items,
+        properties: {
+          ...PROPOSAL_SCHEMA.properties.proposals.items.properties,
+          based_on: {
+            type: "array",
+            maxItems: 20,
+            uniqueItems: true,
+            items: MEMORY_ID,
+          },
+        },
+      },
+    },
+  },
+} as const;
+const ajv = new Ajv({ strict: true, allErrors: false });
+const validate = ajv.compile(PROPOSAL_SCHEMA);
+const validateAccount = ajv.compile(ACCOUNT_PROPOSAL_SCHEMA);
 export type MemoryOrigin =
   | "request"
   | "task"
@@ -74,8 +99,13 @@ export function extractionSystem(persona: string, origin: MemoryOrigin) {
     "Grounding: treat member statements and original source/tool evidence as observations. A Coach reply or accepted result is model output: do not turn its unsupported claims into facts. Attribute people explicitly; never transfer a peer fact to the requester. A proposal or recommendation does not establish that any action was applied.\n" +
     "Rules: use kinds fact | preference | commitment | goal | lesson | hypothesis. Only state what the evidence supports; put inference in hypothesis with lower confidence. A commitment is a stated intention, not proof of any scheduled or completed action. Do not store transient chit-chat, one-off logistics, secrets, credentials, health diagnoses beyond what was stated, or facts about anyone other than the evidence subject(s). Keep each text a single self-contained sentence under 300 characters.\n" +
     "Consolidate: if a recalled memory is now outdated or refined, propose the updated memory and list the recalled id in supersedes (only ids shown under recalled). Do not repeat an unchanged recalled memory. Importance and goal_relevance are 0..1 judgments shaped by the persona's priorities; confidence is 0..1 certainty.\n" +
+    (origin === "account_turn"
+      ? "Citations: if a proposal was derived from a recalled memory (not just stated by the user in this exchange), list only the recalled ids it actually relied on in based_on. Omit based_on for an independent observation; never cite a recalled memory merely because it was shown. Forgetting a cited memory also makes this one unavailable.\n"
+      : "") +
     'Return ONLY a JSON object {"proposals":[...]} matching the schema, with no prose or code fences. Return {"proposals":[]} when nothing is worth keeping. Schema: ' +
-    JSON.stringify(PROPOSAL_SCHEMA)
+    JSON.stringify(
+      origin === "account_turn" ? ACCOUNT_PROPOSAL_SCHEMA : PROPOSAL_SCHEMA,
+    )
   );
 }
 
@@ -87,7 +117,12 @@ export class ExtractionRejected extends SafeError {
 /** Strict parse: any invalid element discards the whole output (no salvage). */
 export function parseProposals(
   text: unknown,
-  options: { secrets: string[]; recalled: string[]; maxProposals?: number },
+  options: {
+    secrets: string[];
+    recalled: string[];
+    maxProposals?: number;
+    origin?: MemoryOrigin;
+  },
 ): MemoryProposal[] {
   if (typeof text !== "string" || Buffer.byteLength(text) > 16384)
     throw new ExtractionRejected();
@@ -97,7 +132,8 @@ export function parseProposals(
   } catch {
     throw new ExtractionRejected();
   }
-  if (!validate(value)) throw new ExtractionRejected();
+  if (!(options.origin === "account_turn" ? validateAccount : validate)(value))
+    throw new ExtractionRejected();
   try {
     assertNoSecrets(value, options.secrets);
   } catch {
@@ -111,10 +147,18 @@ export function parseProposals(
     if (!p.text.trim() || Buffer.byteLength(p.text) > 2048)
       throw new ExtractionRejected();
     // Ids are host-supplied: the model may only reference recalled memories.
-    if (p.supersedes?.some((id) => !recalled.has(id)))
+    if (
+      p.supersedes?.some((id) => !recalled.has(id)) ||
+      p.based_on?.some((id) => !recalled.has(id))
+    )
       throw new ExtractionRejected();
   }
-  return proposals.map((p) => ({ ...p, text: p.text.trim() }));
+  // An empty citation list is an independent observation: omit the field.
+  return proposals.map(({ based_on, ...p }) => ({
+    ...p,
+    text: p.text.trim(),
+    ...(based_on?.length ? { based_on } : {}),
+  }));
 }
 
 // Backend navigation references are capability-like handles, not coaching facts.
@@ -281,5 +325,6 @@ export async function extractMemories(input: {
     secrets: input.secrets,
     recalled: input.recalled.map((i) => i.id),
     maxProposals: input.maxProposals,
+    origin: input.origin,
   });
 }

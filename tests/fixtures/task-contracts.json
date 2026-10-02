@@ -56,10 +56,7 @@
                 "type": "boolean"
               }
             },
-            "required": [
-              "reaction",
-              "reply_worthwhile"
-            ],
+            "required": ["reaction", "reply_worthwhile"],
             "additionalProperties": false
           },
           "general_advice": {
@@ -87,10 +84,7 @@
             "maxLength": 1000
           }
         },
-        "required": [
-          "activity_feedback",
-          "general_advice"
-        ],
+        "required": ["activity_feedback", "general_advice"],
         "additionalProperties": false
       }
     },
@@ -107,9 +101,7 @@
             "maxLength": 8000
           }
         },
-        "required": [
-          "text"
-        ],
+        "required": ["text"],
         "additionalProperties": false
       }
     },
@@ -218,11 +210,7 @@
                   },
                   "strategy_verdict": {
                     "type": "string",
-                    "enum": [
-                      "on_track",
-                      "needs_attention",
-                      "needs_revision"
-                    ]
+                    "enum": ["on_track", "needs_attention", "needs_revision"]
                   },
                   "strategy_verdict_reason": {
                     "type": "string",
@@ -267,9 +255,7 @@
             "maxLength": 8000
           }
         },
-        "required": [
-          "text"
-        ],
+        "required": ["text"],
         "additionalProperties": false
       }
     },
@@ -286,9 +272,7 @@
             "maxLength": 8000
           }
         },
-        "required": [
-          "text"
-        ],
+        "required": ["text"],
         "additionalProperties": false
       }
     },
@@ -305,9 +289,7 @@
             "maxLength": 8000
           }
         },
-        "required": [
-          "text"
-        ],
+        "required": ["text"],
         "additionalProperties": false
       }
     },
@@ -419,11 +401,7 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "enum": [
-                        "low",
-                        "moderate",
-                        "high"
-                      ]
+                      "enum": ["low", "moderate", "high"]
                     },
                     {
                       "type": "null"
@@ -431,16 +409,12 @@
                   ]
                 }
               },
-              "required": [
-                "summary"
-              ],
+              "required": ["summary"],
               "additionalProperties": false
             }
           }
         },
-        "required": [
-          "recommendations"
-        ],
+        "required": ["recommendations"],
         "additionalProperties": false
       }
     },
@@ -526,10 +500,7 @@
                   ]
                 }
               },
-              "required": [
-                "target_event_key",
-                "reaction"
-              ],
+              "required": ["target_event_key", "reaction"],
               "additionalProperties": false
             }
           },
@@ -574,11 +545,7 @@
                   },
                   "polarity": {
                     "type": "string",
-                    "enum": [
-                      "present",
-                      "absent",
-                      "ambiguous"
-                    ]
+                    "enum": ["present", "absent", "ambiguous"]
                   },
                   "target_event_key": {
                     "type": "string",
@@ -596,10 +563,7 @@
                   },
                   "comparison_role": {
                     "type": "string",
-                    "enum": [
-                      "none",
-                      "subject"
-                    ]
+                    "enum": ["none", "subject"]
                   },
                   "comparison_set_indices": {
                     "maxItems": 40,
@@ -643,11 +607,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "enum": [
-                  "yes_no",
-                  "choice",
-                  "open"
-                ]
+                "enum": ["yes_no", "choice", "open"]
               },
               {
                 "type": "null"
@@ -758,11 +718,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "enum": [
-                  "low",
-                  "moderate",
-                  "high"
-                ]
+                "enum": ["low", "moderate", "high"]
               },
               {
                 "type": "null"
@@ -770,11 +726,7 @@
             ]
           }
         },
-        "required": [
-          "summary",
-          "reply_worthwhile",
-          "reactions"
-        ],
+        "required": ["summary", "reply_worthwhile", "reactions"],
         "additionalProperties": false
       }
     },

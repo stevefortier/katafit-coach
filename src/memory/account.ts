@@ -61,6 +61,8 @@ const MAX_TEXT_BYTES = 2048;
 export interface AccountItem {
   id: string;
   revision: number;
+  /** Semantic version (text/kind); absent from older backends. */
+  content_revision?: number;
   kind: MemoryKind;
   text?: string;
   availability: "available" | "unavailable";
@@ -99,6 +101,26 @@ export interface AccountOperation {
   committed_at: string;
   producer: string;
   target_status: "active" | "archived" | "forgotten" | null;
+  /** Forget only. Absent from older backends: never presume it complete. */
+  erasure?: AccountErasure;
+}
+/**
+ * Queued = the target is forgotten and related memories are unavailable, but
+ * their stored prose is still being cleaned up; only complete means erased.
+ */
+export interface AccountErasure {
+  status: "queued" | "complete";
+  related_count: number;
+}
+/** Authorized snapshot of what forgetting one memory would make unavailable. */
+export interface AccountForgetImpact {
+  id: string;
+  revision: number;
+  related_count: number;
+  examples: { id: string; kind: string; status: string }[];
+  has_more: boolean;
+  snapshot: true;
+  erasure_may_be_async: true;
 }
 export interface AccountSettings {
   learning_paused: boolean;
@@ -138,6 +160,11 @@ export function accountItem(value: unknown, secrets: string[]): AccountItem {
   }
   if (typeof v.id !== "string" || !ID_PATTERN.test(v.id)) reject();
   if (!Number.isSafeInteger(v.revision) || v.revision < 1) reject();
+  if (
+    v.content_revision !== undefined &&
+    (!Number.isSafeInteger(v.content_revision) || v.content_revision < 1)
+  )
+    reject();
   if (!MEMORY_KINDS.includes(v.kind)) reject();
   if (v.audience !== "account_private") reject();
   if (!["active", "archived"].includes(v.status)) reject();
@@ -197,6 +224,9 @@ export function accountItem(value: unknown, secrets: string[]): AccountItem {
   return {
     id: v.id,
     revision: v.revision,
+    ...(v.content_revision !== undefined
+      ? { content_revision: v.content_revision as number }
+      : {}),
     kind: v.kind,
     ...(v.availability === "available"
       ? { text: v.text }
@@ -228,6 +258,18 @@ export function accountItem(value: unknown, secrets: string[]): AccountItem {
     updated_at: iso(v.updated_at),
   };
 }
+function erasureOf(value: unknown): AccountErasure | undefined {
+  if (value === undefined) return undefined;
+  if (!record(value)) reject();
+  const v = value as Record<string, any>;
+  if (
+    !["queued", "complete"].includes(v.status) ||
+    !Number.isSafeInteger(v.related_count) ||
+    v.related_count < 0
+  )
+    reject();
+  return { status: v.status, related_count: v.related_count };
+}
 function operation(value: unknown): AccountOperation {
   if (!record(value)) reject();
   const v = value as Record<string, any>;
@@ -244,6 +286,7 @@ function operation(value: unknown): AccountOperation {
     ![null, "active", "archived", "forgotten"].includes(v.target_status ?? null)
   )
     reject();
+  const erasure = v.kind === "forget" ? erasureOf(v.erasure) : undefined;
   return {
     idempotency_key: v.idempotency_key,
     kind: v.kind,
@@ -253,6 +296,7 @@ function operation(value: unknown): AccountOperation {
     committed_at: iso(v.committed_at),
     producer: v.producer,
     target_status: v.target_status ?? null,
+    ...(erasure ? { erasure } : {}),
   };
 }
 const CREATE_FIELDS = [
@@ -661,12 +705,59 @@ export class AccountMemory {
       )
     )
       reject();
+    const erasure = erasureOf(value.erasure) ?? op.erasure;
     return {
       id,
       status: "forgotten" as const,
+      // Only the synchronously erased ids; a queued erasure lists none.
       cascaded: cascaded as string[],
+      ...(erasure ? { erasure } : {}),
       operation: op,
       idempotent: value.idempotent === true,
+    };
+  }
+  /** Read-only preview of what forgetting `id` would make unavailable. */
+  async forgetImpact(id: string): Promise<AccountForgetImpact> {
+    if (!ID_PATTERN.test(id)) throw new AccountMemoryFailure("MEMORY_INVALID");
+    const value = await this.request(
+      "GET",
+      `${ACCOUNT_MEMORY_ROOT}/${id}/forget-impact`,
+    );
+    if (!record(value)) reject();
+    const examples = value.examples;
+    if (
+      value.id !== id ||
+      !Number.isSafeInteger(value.revision) ||
+      value.revision < 0 ||
+      !Number.isSafeInteger(value.related_count) ||
+      value.related_count < 0 ||
+      !Array.isArray(examples) ||
+      examples.length > 20 ||
+      examples.length > value.related_count ||
+      typeof value.has_more !== "boolean" ||
+      value.snapshot !== true ||
+      value.erasure_may_be_async !== true
+    )
+      reject();
+    return {
+      id,
+      revision: value.revision,
+      related_count: value.related_count,
+      examples: examples.map((e: unknown) => {
+        const x = e as Record<string, any>;
+        if (
+          !record(e) ||
+          typeof x.id !== "string" ||
+          !ID_PATTERN.test(x.id) ||
+          !MEMORY_KINDS.includes(x.kind) ||
+          !["active", "archived"].includes(x.status)
+        )
+          reject();
+        return { id: x.id, kind: x.kind, status: x.status };
+      }),
+      has_more: value.has_more,
+      snapshot: true,
+      erasure_may_be_async: true,
     };
   }
   /**
@@ -771,7 +862,7 @@ export class AccountMemory {
     human_text: string;
     assistant_text: string;
     tool_results: { name: string; result: string }[];
-    recalled: { id: string; revision: number }[];
+    recalled: { id: string; revision: number; content_revision?: number }[];
   }) {
     if (
       input.tool_results.length > 64 ||

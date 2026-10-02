@@ -62,7 +62,10 @@ test("v6 API guidance governs account memories through documented routes, host k
   assert.match(text, /never a guessed, bulk or different target/);
   assert.match(text, /Pinned only raises recall priority/);
   assert.match(text, /unverified means .* do not resend/);
-  assert.match(text, /stays until a new chat/);
+  assert.match(
+    text,
+    /text already present in this chat or sent to a provider cannot be retracted, so never promise that a new chat removes it/,
+  );
   assert.match(text, /untrusted background data/);
   assert.match(text, /Never save inferred health facts/);
   assert.ok(text.length <= 16000);

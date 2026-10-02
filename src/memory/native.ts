@@ -5,11 +5,16 @@ import { type MemoryItem, type MemoryProposal } from "./backend.js";
 import {
   AccountMemory,
   AccountMemoryFailure,
+  ACCOUNT_MEMORY_CODES,
   type AccountItem,
   type AccountCapture,
   type CommitReceipt,
 } from "./account.js";
-import { extractMemories, providerEvidence } from "./extract.js";
+import {
+  ExtractionRejected,
+  extractMemories,
+  providerEvidence,
+} from "./extract.js";
 
 // Native Pi account memory. Recall is a new backend acquisition per human
 // turn, appended as untrusted evidence to the single leading persona system
@@ -306,7 +311,16 @@ const NOT_SAVED: Record<string, string> = {
     "Not saved: the saved Kata.fit connection is expired or revoked. Ask the user to reconnect Coach in Settings.",
   MEMORY_UNSUPPORTED:
     "Not saved: this Kata.fit backend does not offer account memories yet.",
+  MEMORY_UNAVAILABLE:
+    "Not saved: Kata.fit memories could not be reached, so nothing was changed. Tell the user; do not retry automatically.",
 };
+// Honest copy: Forget cannot retract text already in a chat or sent to a
+// provider, and a new chat is not an erasure guarantee.
+const FORGET_COPY =
+  "Forgotten from future memory retrieval. Text already present in this chat or sent to a provider cannot be retracted.";
+const related = (n: number) =>
+  n === 1 ? "1 related memory" : `${n} related memories`;
+const FORGET_IMPACT = /^\/api\/coach\/memory\/([a-f0-9]{24})\/forget-impact$/;
 
 type Turn = {
   key: string;
@@ -328,6 +342,11 @@ export class NativeMemory {
   private readonly work = new Set<AbortController>();
   // Runtime-only outcomes per provider-selected tool call (never persisted).
   private readonly outcomes = new Map<string, unknown>();
+  // Forget-impact snapshots this session has already shown the model.
+  private readonly previewed = new Map<
+    string,
+    { revision: number; related_count: number }
+  >();
   private closed = false;
   /**
    * Every account memory revision whose text entered this runtime's context
@@ -335,7 +354,10 @@ export class NativeMemory {
    * Pi's context, so every later capture depends on all of it; once that
    * ancestry can no longer be proven, learning stays off until a new chat.
    */
-  private readonly acquired = new Map<string, number>();
+  private readonly acquired = new Map<
+    string,
+    { revision: number; content_revision?: number }
+  >();
   private ancestryClosed = false;
   constructor(
     private readonly options: {
@@ -382,10 +404,15 @@ export class NativeMemory {
       ...(metadata ? { metadata } : {}),
       ...(error
         ? {
+            // Only typed, allowlisted codes: an untyped message can carry
+            // private memory prose.
             error: new Error(
-              error instanceof AccountMemoryFailure
+              error instanceof AccountMemoryFailure &&
+              ACCOUNT_MEMORY_CODES.includes(error.code)
                 ? error.code
-                : (error as Error)?.message?.slice(0, 64) || "MEMORY_FAILED",
+                : error instanceof ExtractionRejected
+                  ? "MEMORY_EXTRACTION_REJECTED"
+                  : "MEMORY_FAILED",
             ),
           }
         : {}),
@@ -441,18 +468,37 @@ export class NativeMemory {
         " Automatic learning is off until you start a new chat, so nothing from that text is saved again. Recall, manual changes and saved memories are unaffected.",
     });
   }
-  private acquire(items: { id: unknown; revision: unknown }[]) {
-    for (const { id, revision } of items) {
+  private acquire(
+    items: { id: unknown; revision: unknown; content_revision?: unknown }[],
+  ) {
+    for (const { id, revision, content_revision } of items) {
       if (
         typeof id !== "string" ||
         !/^[a-f0-9]{24}$/.test(id) ||
         !Number.isSafeInteger(revision)
       )
         continue;
+      const semantic =
+        Number.isSafeInteger(content_revision) &&
+        (content_revision as number) > 0
+          ? (content_revision as number)
+          : undefined;
       const known = this.acquired.get(id);
-      if (known !== undefined && known !== revision)
-        return this.closeAncestry("changed");
-      this.acquired.set(id, revision as number);
+      if (known && known.revision !== revision) {
+        // Metadata-only edits keep the same semantic version: the text in
+        // context is unchanged, so learning continues against it.
+        if (
+          known.content_revision === undefined ||
+          known.content_revision !== semantic
+        )
+          return this.closeAncestry("changed");
+      }
+      this.acquired.set(id, {
+        revision: revision as number,
+        ...((known?.content_revision ?? semantic) !== undefined
+          ? { content_revision: known?.content_revision ?? semantic }
+          : {}),
+      });
     }
     if (this.acquired.size > 20) this.closeAncestry("capacity");
   }
@@ -470,7 +516,13 @@ export class NativeMemory {
       Number.isSafeInteger(record.revision) &&
       (typeof record.text === "string" || typeof record.kind === "string")
     )
-      this.acquire([{ id: record.id, revision: record.revision }]);
+      this.acquire([
+        {
+          id: record.id,
+          revision: record.revision,
+          content_revision: record.content_revision,
+        },
+      ]);
     for (const entry of Object.values(record))
       this.acquireFrom(entry, depth + 1);
   }
@@ -613,6 +665,26 @@ export class NativeMemory {
     const path = (args as any)?.path;
     const memoryRead =
       typeof path === "string" && /^\/api\/coach\/memory(?:[/?]|$)/.test(path);
+    const preview =
+      typeof path === "string" &&
+      ((args as any)?.method ?? "GET") === "GET" &&
+      FORGET_IMPACT.exec(path);
+    if (preview) {
+      try {
+        const v = JSON.parse(String((result as any)?.content?.[0]?.text));
+        if (
+          v?.id === preview[1] &&
+          Number.isSafeInteger(v.revision) &&
+          Number.isSafeInteger(v.related_count)
+        )
+          this.previewed.set(v.id, {
+            revision: v.revision,
+            related_count: v.related_count,
+          });
+      } catch {
+        // Not a readable preview: the confirmed Forget will preview again.
+      }
+    }
     if (memoryRead) {
       // Fail closed: memory text whose revision the host cannot read is
       // still in context, so later captures could not declare it.
@@ -736,10 +808,7 @@ export class NativeMemory {
       capture = await memory.capture({
         idempotency_key: `native:${this.runtime}:${++this.sequence}`,
         ...evidence,
-        recalled: [...this.acquired].map(([id, revision]) => ({
-          id,
-          revision,
-        })),
+        recalled: [...this.acquired].map(([id, known]) => ({ id, ...known })),
       });
     } catch (error) {
       if (
@@ -937,8 +1006,45 @@ export class NativeMemory {
       });
     }
     if (op.kind === "forget") {
-      if (!receipt) await memory.forget(op.id, op.expected_revision, key);
+      let impact:
+        | Awaited<ReturnType<AccountMemory["forgetImpact"]>>
+        | undefined;
+      let erasure = receipt?.operation.erasure;
+      if (!receipt) {
+        // The user confirms the impact before anything is deleted; a failed
+        // or stale preview deletes nothing and never invents a count.
+        impact = await memory.forgetImpact(op.id);
+        if (impact.revision !== op.expected_revision)
+          throw new AccountMemoryFailure("MEMORY_CONFLICT");
+        const seen = this.previewed.get(op.id);
+        this.previewed.set(op.id, {
+          revision: impact.revision,
+          related_count: impact.related_count,
+        });
+        if (
+          impact.related_count > 0 &&
+          (seen?.revision !== impact.revision ||
+            seen.related_count !== impact.related_count)
+        )
+          return this.text({
+            status: "preview_required",
+            id: op.id,
+            forget_impact: impact,
+            note: `Not forgotten yet: forgetting this memory also makes ${related(impact.related_count)} that depended on it unavailable${impact.has_more ? " (only some examples shown)" : ""}. Tell the user and ask them to confirm; only after they confirm, send the same DELETE again. The count is a snapshot and can change; cleanup of related stored text may finish later.`,
+          });
+        erasure = (await memory.forget(op.id, op.expected_revision, key))
+          .erasure;
+        this.previewed.delete(op.id);
+      }
       if (this.acquired.has(op.id)) this.closeAncestry("changed");
+      const count = erasure?.related_count ?? impact?.related_count ?? 0;
+      const consequence = !count
+        ? ""
+        : erasure?.status === "complete"
+          ? ` ${related(count)} that depended on it were forgotten and erased too.`
+          : erasure?.status === "queued"
+            ? ` ${related(count)} that depended on it are unavailable now; cleanup of their stored text is pending.`
+            : ` ${related(count)} that depended on it are unavailable now.`;
       this.notice({
         action: "forgotten",
         source: "coach_request",
@@ -950,12 +1056,15 @@ export class NativeMemory {
             status: "forgotten",
           },
         ],
+        note: FORGET_COPY + consequence,
       });
       return this.text({
         status: "forgotten",
         ...flag,
         id: op.id,
-        note: "Forgotten (committed receipt): future recall and new chats will not include it. Text already in this conversation stays in this chat's context until the user starts a new chat.",
+        ...(impact ? { forget_impact: impact } : {}),
+        ...(erasure ? { erasure } : {}),
+        note: FORGET_COPY + consequence + " (Committed receipt.)",
       });
     }
     const item = receipt
@@ -976,8 +1085,9 @@ export class NativeMemory {
       const pinOnly =
         op.kind === "update" &&
         Object.keys(op.patch).every((k) => k === "pinned");
-      if (pinOnly && this.acquired.has(item.id) && item.status === "active")
-        this.acquired.set(item.id, item.revision);
+      const known = this.acquired.get(item.id);
+      if (pinOnly && known && item.status === "active")
+        this.acquired.set(item.id, { ...known, revision: item.revision });
       else this.acquire([item]);
     }
     if (shown)

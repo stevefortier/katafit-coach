@@ -242,9 +242,21 @@ test(
               .pinned,
             true,
           );
-          page.once("dialog", (dialog) => dialog.accept());
+          let confirmed = "";
+          page.once("dialog", (dialog) => {
+            confirmed = dialog.message();
+            void dialog.accept();
+          });
           await card.getByRole("button", { name: "Forget" }).click();
           await card.waitFor({ state: "detached" });
+          // The real preview was read before DELETE; honest, no new-chat promise.
+          assert.ok(
+            confirmed.includes(
+              "Forgotten from future memory retrieval. Text already present in this chat or sent to a provider cannot be retracted.",
+            ),
+            confirmed,
+          );
+          assert.doesNotMatch(confirmed, /new chat/i);
           assert.equal(
             (await rowText(b, "Paired UI: run a sub-50 10k this spring."))
               .length,
@@ -253,6 +265,10 @@ test(
           const evidence = process.env.ACCOUNT_MEMORY_EVIDENCE;
           if (evidence) {
             await mkdir(evidence, { recursive: true });
+            // Full-page captures start at the top so the sticky header is not
+            // painted mid-image.
+            await page.evaluate(() => scrollTo(0, 0));
+            assert.equal(await page.evaluate(() => scrollY), 0);
             await page.screenshot({
               path: evidence + "/my-memories-paired.png",
               fullPage: true,
