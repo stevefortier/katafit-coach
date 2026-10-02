@@ -1,4 +1,5 @@
 import { assertNoSecrets } from "../config/store.js";
+import { SafeError } from "../runtime/errors.js";
 import { prepareModelImage } from "./providerImage.js";
 
 export const restGetTool = {
@@ -188,6 +189,7 @@ export async function restRequest(
   if (url.origin !== base.origin || !url.pathname.startsWith("/api/"))
     throw new Error("REST_REQUEST_REJECTED");
   const deadline = AbortSignal.timeout(8000);
+  const wireSignal = AbortSignal.any([signal, deadline]);
   let response: Response | undefined;
   try {
     response = await fetch(url, {
@@ -200,7 +202,7 @@ export async function restRequest(
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         Accept: "application/json, image/jpeg, image/png, image/webp",
       },
-      signal: AbortSignal.any([signal, deadline]),
+      signal: wireSignal,
     });
     if (response.status >= 300 && response.status < 400)
       throw new Error("REST_REDIRECT_REJECTED");
@@ -252,6 +254,13 @@ export async function restRequest(
     return { content: [{ type: "text", text }] };
   } catch (error) {
     if (method !== "GET") throw new Error("REST_MUTATION_UNKNOWN");
+    if (wireSignal.aborted)
+      throw new SafeError(
+        wireSignal.reason?.name === "TimeoutError"
+          ? "BACKEND_TIMEOUT"
+          : "CANCELLED",
+      );
+    if (error instanceof TypeError) throw new SafeError("CONNECTIVITY_ERROR");
     throw error;
   } finally {
     await response?.body?.cancel().catch(() => {});
