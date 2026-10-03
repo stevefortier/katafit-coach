@@ -8,7 +8,7 @@ import { AutonomyBackend, AutonomyFailure, type Effect } from "./backend.js";
 import { HeadlessCycleRuntime, type HeadlessRun } from "./headless.js";
 import { ledgerDigest, WriteLedger, type SyncDirectory } from "./ledger.js";
 import { autonomyOwner } from "./owner.js";
-import { prove, RESOLVED, type Proof } from "./reconcile.js";
+import { RESOLVED, settle, type Attribution, type Proof } from "./reconcile.js";
 import { autonomyRunner } from "./runner.js";
 import {
   AutonomyScheduler,
@@ -176,6 +176,8 @@ export interface AutonomyHostOptions {
   mandateCheckMs?: number;
   /** Directory fsync seam (tests inject faults and observe ordering). */
   syncDirectory?: SyncDirectory;
+  /** Minimum interval between background proofs (default 30 s). */
+  proofThrottleMs?: number;
 }
 export type AutonomyHostState = SchedulerState | "starting";
 const PROOF_TIMEOUT_MS = 30000;
@@ -202,6 +204,14 @@ export class AutonomyHost {
   private reconciling?: Promise<boolean>;
   private lastProof = 0;
   private readonly reasons = new Map<string, Proof>();
+  /** Recent exact settlements (newest first), with honest attribution. */
+  private settled: {
+    op: string;
+    work_id: string;
+    proof: Proof;
+    attribution: Attribution | null;
+    at: string;
+  }[] = [];
   private last: {
     outcome?: string;
     workId?: string;
@@ -257,6 +267,7 @@ export class AutonomyHost {
         reason: this.reasons.get(e.id) ?? null,
         created_at: e.created_at,
       })),
+      settled: this.settled,
       safeToReplace: this.safeToReplace,
       lastOutcome: this.last.outcome ?? null,
       lastWorkId: this.last.workId ?? null,
@@ -311,7 +322,8 @@ export class AutonomyHost {
   nudge() {
     if (
       (!this.ledger?.unresolved.length && !this.cleanup?.pending) ||
-      Date.now() - this.lastProof < PROOF_THROTTLE_MS
+      Date.now() - this.lastProof <
+        (this.options.proofThrottleMs ?? PROOF_THROTTLE_MS)
     )
       return;
     void this.reconcile().catch(() => {});
@@ -344,18 +356,27 @@ export class AutonomyHost {
       AbortSignal.timeout(PROOF_TIMEOUT_MS),
       Object.values(store.secrets),
     );
-    let mandate;
-    try {
-      mandate = await backend.mandate();
-    } catch {
-      return keep("unavailable");
-    }
+    // Completions are proven by their exact receipt alone; other writes
+    // need the current mandate (an unreadable one keeps them).
+    let mandate = null;
+    if (settled.some((e) => e.op !== "complete"))
+      mandate = await backend.mandate().catch(() => null);
     for (const entry of settled) {
-      const proof = await prove(entry, { backend, mandate });
+      const { proof, attribution } = await settle(entry, { backend, mandate });
       if (RESOLVED.includes(proof)) {
         try {
           await ledger.resolve(entry.id);
           this.reasons.delete(entry.id);
+          this.settled = [
+            {
+              op: entry.op,
+              work_id: entry.work_id,
+              proof,
+              attribution,
+              at: new Date().toISOString(),
+            },
+            ...this.settled,
+          ].slice(0, 10);
           this.diagnostic("autonomy-outcome-settled");
         } catch {
           this.reasons.set(entry.id, "unavailable");
@@ -403,10 +424,7 @@ export class AutonomyHost {
         backend,
         admission: this.options.admission,
         onDiagnostic: this.options.onDiagnostic,
-        // No claim while an owned container teardown is unconfirmed.
-        ready: async () =>
-          !!this.cleanup?.healthy &&
-          (this.cleanup.pending === 0 || (await this.cleanup.drain()) === 0),
+        ready: () => this.admissible(),
         run: (cycle) => this.run(runner, cycle),
       });
       this.lifetime = lifetime;
@@ -427,6 +445,27 @@ export class AutonomyHost {
     } finally {
       this.starting = undefined;
     }
+  }
+
+  /**
+   * C5 R4 shared admission guard, checked before every claim: no new cycle
+   * (claim, start, runner or effect) while any durable unknown write remains
+   * or owned container teardown is unconfirmed (`autonomy-ledger-1`).
+   * Reconciliation runs on its own (read-only, single-flight); only exact
+   * settlement re-admits claims.
+   */
+  private async admissible() {
+    const ledger = this.ledger;
+    if (!ledger?.healthy) return false;
+    if (ledger.unresolved.length) {
+      this.nudge();
+      return false;
+    }
+    // No claim while an owned container teardown is unconfirmed.
+    return (
+      !!this.cleanup?.healthy &&
+      (this.cleanup.pending === 0 || (await this.cleanup.drain()) === 0)
+    );
   }
 
   private async run(runner: ReturnType<typeof autonomyRunner>, cycle: Cycle) {

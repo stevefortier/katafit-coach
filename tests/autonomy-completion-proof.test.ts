@@ -17,9 +17,10 @@ import type { AutonomyBackend } from "../src/autonomy/backend.js";
 
 // C5 R1/R2 (client-718-f1f2-independent-review.md): a report projection is
 // not exact completion proof, and a current-mandate listing is not an
-// exhaustive read of an operation recorded under an older mandate. Without
-// an exact completion receipt (backend contract pending) an unknown
-// completion stays unresolved: fail closed, never replayed.
+// exhaustive read of an operation recorded under an older mandate. An
+// unknown completion is settled only by its own generation's exact receipt
+// (backend 44273475); it is never replayed. See also
+// autonomy-exact-receipt.test.ts.
 
 after(closeLeaked);
 
@@ -40,7 +41,7 @@ const deferred = (next_due_at: string) =>
 const lostAck = { status: 200, body: { unexpected: true } };
 
 async function proxied(planners: ScriptedRuntime[]) {
-  const env = await autonomyAdmin({ planners });
+  const env = await autonomyAdmin({ planners, proofThrottleMs: 0 });
   const proxy = await holdingProxy(env.fake.origin);
   await env.store.save({ ...env.store.publicConfig(), origin: proxy.origin });
   return {
@@ -90,9 +91,10 @@ test("R1: an earlier attempt's equal report projection never proves a later unkn
     const q = await t.quiesce();
     assert.equal(q.status, 409, "the older report proves nothing");
     const s = await env.status();
+    // Generation 2's lease expired but was never reclaimed: exactly pending.
     assert.deepEqual(
       s.local.unresolved.map((u: any) => [u.op, u.work_id, u.reason]),
-      [["complete", id, "receipt_required"]],
+      [["complete", id, "pending"]],
     );
     assert.equal(s.local.safeToReplace, false);
     const sent = env.fake.calls.filter((c) => /\/complete$/.test(c.path));
@@ -102,10 +104,11 @@ test("R1: an earlier attempt's equal report projection never proves a later unkn
   }
 });
 
-test("R1: a committed completion whose answer was lost stays unresolved without an exact receipt", async () => {
+test("R1: a committed completion whose answer was lost stays unresolved while its exact receipt is unreadable", async () => {
   const t = await proxied([new ScriptedRuntime([async () => outcome()])]);
   const { env, proxy } = t;
   try {
+    env.fake.state.completionFault = { status: 503 };
     proxy.state.rewrite = (method, url) =>
       method === "POST" && /\/complete$/.test(url)
         ? { unexpected: true }
@@ -119,18 +122,22 @@ test("R1: a committed completion whose answer was lost stays unresolved without 
     await env.call("POST", "/api/autonomy/participate", { participate: false });
     proxy.state.rewrite = undefined;
     env.fake.advance(LEASE_MS);
+    // Its report is readable, which proves nothing.
+    assert.equal(env.fake.state.reports.length, 1);
     assert.equal((await t.quiesce()).status, 409);
     const s = await env.status();
     assert.deepEqual(
       s.local.unresolved.map((u: any) => [u.op, u.reason]),
-      [["complete", "receipt_required"]],
+      [["complete", "unavailable"]],
     );
+    env.fake.state.completionFault = undefined;
+    assert.equal((await t.quiesce()).status, 200, "exact receipt settles it");
   } finally {
     await t.close();
   }
 });
 
-test("R1: a fenced completion with no report for its work at all is proven unpublished", async () => {
+test("R1: a completion that never arrived is pending while its generation may still commit, and unpublished once superseded", async () => {
   const t = await proxied([new ScriptedRuntime([async () => outcome()])]);
   const { env, proxy } = t;
   try {
@@ -144,7 +151,15 @@ test("R1: a fenced completion with no report for its work at all is proven unpub
     );
     await env.call("POST", "/api/autonomy/participate", { participate: false });
     proxy.state.intercept = undefined;
+    // An expired lease is not absence: the generation is still pending.
     env.fake.advance(LEASE_MS);
+    assert.equal((await t.quiesce()).status, 409);
+    assert.deepEqual(
+      (await env.status()).local.unresolved.map((u: any) => u.reason),
+      ["pending"],
+    );
+    // Another installation reclaims: that generation can never commit.
+    assert.ok(await env.fake.client("installation-b").claim());
     const q = await t.quiesce();
     assert.equal(q.status, 200, JSON.stringify(q.body));
     assert.equal((await env.status()).local.unresolvedWrites, 0);
@@ -153,7 +168,7 @@ test("R1: a fenced completion with no report for its work at all is proven unpub
   }
 });
 
-test("R2: a replacement mandate (same chief/dojo) never proves an old-mandate completion unpublished", async () => {
+test("R2: after a same-account mandate replacement, an old-mandate completion is proven by its exact receipt, never by new-mandate absence", async () => {
   const t = await proxied([new ScriptedRuntime([async () => outcome()])]);
   const { env, proxy } = t;
   try {
@@ -173,18 +188,18 @@ test("R2: a replacement mandate (same chief/dojo) never proves an old-mandate co
     // the old mandate's work or reports.
     env.fake.state.mandate.mandate_id = "64b7f0c2a1b2c3d4e5f6aaaa";
     env.fake.advance(LEASE_MS);
-    assert.equal((await t.quiesce()).status, 409);
+    assert.equal((await t.quiesce()).status, 200);
     const s = await env.status();
     assert.deepEqual(
-      s.local.unresolved.map((u: any) => [u.op, u.work_id, u.reason]),
-      [["complete", id, "mandate_changed"]],
+      s.local.settled.map((u: any) => [u.op, u.work_id, u.proof]),
+      [["complete", id, "committed"]],
     );
   } finally {
     await t.close();
   }
 });
 
-test("R2: every op recorded under another mandate stays unresolved with no read", async () => {
+test("R2: every non-completion op recorded under another mandate stays unresolved with no read; a completion reads only its exact receipt", async () => {
   const base: LedgerEntry = {
     id: "e1",
     op: "act",
@@ -226,12 +241,18 @@ test("R2: every op recorded under another mandate stays unresolved with no read"
     "composition",
     "follow_up",
     "follow_up_patch",
-    "complete",
   ] as const) {
     const proof: Proof = await prove({ ...base, op }, { backend, mandate });
     assert.equal(proof, "mandate_changed", op);
   }
   assert.deepEqual(reads, []);
+  // A completion's proof does not depend on the mandate: one exact read.
+  const proof = await prove(
+    { ...base, op: "complete", slot: null },
+    { backend, mandate },
+  );
+  assert.equal(proof, "unavailable");
+  assert.deepEqual(reads, ["completionReceipt"]);
 });
 
 test("R2: a mandate replaced during the proof reads (TOCTOU) never yields a resolving proof", async () => {
@@ -239,7 +260,7 @@ test("R2: a mandate replaced during the proof reads (TOCTOU) never yields a reso
   const B = "64b7f0c2a1b2c3d4e5f6bbbb";
   const entry = {
     id: "e1",
-    op: "complete",
+    op: "follow_up",
     origin: "https://coach.example",
     chief_id: "64b7f0c2a1b2c3d4e5f60802",
     dojo_id: "64b7f0c2a1b2c3d4e5f60801",
@@ -247,7 +268,7 @@ test("R2: a mandate replaced during the proof reads (TOCTOU) never yields a reso
     installation: "0".repeat(32),
     work_id: "64b7f0c2a1b2c3d4e5f60b0b",
     lease_generation: 1,
-    slot: null,
+    slot: "f1",
     follow_up_id: null,
     digest: "0".repeat(64),
     expect: {},
@@ -266,7 +287,7 @@ test("R2: a mandate replaced during the proof reads (TOCTOU) never yields a reso
       serverTime: Date.now(),
       listWork: async () => empty,
       // Listings answer for whatever mandate is current when they run.
-      reports: async () => empty,
+      listFollowUps: async () => empty,
       mandate: async () => view(afterReads),
     }) as unknown as AutonomyBackend;
   assert.equal(

@@ -204,6 +204,31 @@ const list = (items: unknown, maxItems: number) => ({
 const count = int(0, Number.MAX_SAFE_INTEGER);
 const digest = { type: "string", pattern: "^[a-f0-9]{64}$" };
 
+/** Backend 44273475 exact completion receipt (per lease generation). */
+export const COMPLETION_DIGEST = "sha256-rfc8785";
+export const COMPLETION_STATES = [
+  "committed",
+  "pending",
+  "not_committed",
+  "unrecorded",
+] as const;
+const generation = int(1, 999_999_999);
+const completionReceipt = object({
+  work_id: id,
+  mandate_id: id,
+  dojo_id: id,
+  chief_id: id,
+  mandate_revision: count,
+  lease_generation: generation,
+  credential_match: { enum: [true, false, null] },
+  digest_algorithm: { const: COMPLETION_DIGEST },
+  request_sha256: digest,
+  result: { enum: ["completed", "deferred", "blocked", "failed"] },
+  status_after: { enum: ["completed", "blocked", "deferred", "queued"] },
+  report_id: id,
+  committed_at: iso,
+});
+
 const actionReceipt = object(
   {
     slot,
@@ -483,6 +508,13 @@ export const schemas = {
     idempotent: { type: "boolean" },
   }),
   receiptResult: envelope({ receipt: actionReceipt }),
+  completionReceiptResult: envelope({
+    work_id: id,
+    lease_generation: generation,
+    current_lease_generation: count,
+    state: { enum: COMPLETION_STATES },
+    receipt: nullable(completionReceipt),
+  }),
   claimResult: envelope({ work: nullable(workItem) }),
   completeResult: object(
     {
@@ -691,6 +723,29 @@ export interface ActionReceipt {
   subject_user_id?: string;
   text_sha256: string;
   committed_at: string;
+}
+export interface CompletionReceipt {
+  work_id: string;
+  mandate_id: string;
+  dojo_id: string;
+  chief_id: string;
+  mandate_revision: number;
+  lease_generation: number;
+  /** true: the reading bearer committed it; false: another bearer of the account; null: unattributed. */
+  credential_match: boolean | null;
+  digest_algorithm: typeof COMPLETION_DIGEST;
+  request_sha256: string;
+  result: "completed" | "deferred" | "blocked" | "failed";
+  status_after: "completed" | "blocked" | "deferred" | "queued";
+  report_id: string;
+  committed_at: string;
+}
+export interface CompletionReceiptResult {
+  work_id: string;
+  lease_generation: number;
+  current_lease_generation: number;
+  state: (typeof COMPLETION_STATES)[number];
+  receipt: CompletionReceipt | null;
 }
 export interface WorkIntent {
   slot: string;
@@ -931,6 +986,9 @@ export const validate = {
     schemas.actResult,
   ),
   receiptResult: ajv.compile<{ receipt: ActionReceipt }>(schemas.receiptResult),
+  completionReceiptResult: ajv.compile<CompletionReceiptResult>(
+    schemas.completionReceiptResult,
+  ),
   claimResult: ajv.compile<{ work: WorkItem | null }>(schemas.claimResult),
   completeResult: ajv.compile<{
     work: WorkItem;

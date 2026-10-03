@@ -227,9 +227,10 @@ test("F1/F2: a wrong-digest 2xx with denied readback completes blocked/uncertain
   }
 });
 
-// C5 R1: a report projection is not exact completion proof, so a committed
-// completion with a lost answer stays unresolved (fail closed) until the
-// backend exposes an exact completion receipt.
+// C5 R1: a report projection is not exact completion proof. A committed
+// completion with a lost answer stays unknown while its exact generation
+// receipt is unreadable (readable listings prove nothing), and settles only
+// from that receipt (backend 44273475); it is never replayed.
 for (const [name, rewrite] of [
   ["wrong schema", () => ({ unexpected: true })],
   [
@@ -240,7 +241,7 @@ for (const [name, rewrite] of [
     }),
   ],
 ] as const)
-  test(`F2/R1: a lost completion ACK (${name}) stays unknown; readable reports never prove it`, async () => {
+  test(`F2/R1: a lost completion ACK (${name}) stays unknown while its receipt is unreadable; only its exact receipt settles it`, async () => {
     const t = await proxied([new ScriptedRuntime([async () => outcome()])]);
     const { env, proxy } = t;
     try {
@@ -248,11 +249,9 @@ for (const [name, rewrite] of [
         method === "POST" && /\/complete$/.test(url)
           ? rewrite(body)
           : undefined;
-      // Proof is unavailable at first: work and report listings fail.
+      // The exact receipt is unreadable at first; listings stay readable.
       proxy.state.intercept = (method, url) =>
-        method === "GET" &&
-        /\/(work|reports)(\?|$)/.test(url) &&
-        !url.includes("status=due")
+        method === "GET" && /\/completions\//.test(url)
           ? unavailable
           : undefined;
       await env.call("POST", "/api/autonomy/participate", {
@@ -266,19 +265,21 @@ for (const [name, rewrite] of [
       await env.call("POST", "/api/autonomy/participate", {
         participate: false,
       });
-      const s = await env.status();
-      assert.deepEqual(
-        s.local.unresolved.map((u: any) => [u.op, u.work_id]),
-        [["complete", id]],
-      );
-      assert.equal((await t.quiesce()).status, 409);
-      proxy.state.intercept = undefined;
-      proxy.state.rewrite = undefined;
       env.fake.advance(LEASE_MS);
       assert.equal((await t.quiesce()).status, 409);
+      const s = await env.status();
       assert.deepEqual(
-        (await env.status()).local.unresolved.map((u: any) => u.reason),
-        ["receipt_required"],
+        s.local.unresolved.map((u: any) => [u.op, u.work_id, u.reason]),
+        [["complete", id, "unavailable"]],
+      );
+      proxy.state.intercept = undefined;
+      proxy.state.rewrite = undefined;
+      const q = await t.quiesce();
+      assert.equal(q.status, 200, JSON.stringify(q.body));
+      const settled = (await env.status()).local.settled;
+      assert.deepEqual(
+        settled.map((x: any) => [x.op, x.work_id, x.proof, x.attribution]),
+        [["complete", id, "committed", "this_credential"]],
       );
       const completes = env.fake.calls.filter((c) =>
         /\/complete$/.test(c.path),

@@ -62,6 +62,7 @@ export const blockingRuntime = (entered?: () => void) => ({
  */
 export async function holdingProxy(target: string) {
   const state = {
+    requests: [] as { method: string; path: string; body: string }[],
     hold: false,
     /** Which requests `hold` captures (default: action PUTs). */
     holds: (method: string, url: string) =>
@@ -80,6 +81,7 @@ export async function holdingProxy(target: string) {
   const server: Server = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
+    state.requests.push({ method: req.method!, path: req.url!, body: raw });
     const intercepted = () => {
       const answer = state.intercept?.(req.method!, req.url!);
       if (!answer) return false;
@@ -157,6 +159,8 @@ export async function autonomyAdmin(
     mandateCheckMs?: number;
     /** Directory fsync seam (fault injection / ordering). */
     syncDirectory?: (path: string) => Promise<void>;
+    /** Background proof throttle (host option). */
+    proofThrottleMs?: number;
     /** Replaces the scripted pairs (e.g. production wiring on a fake daemon). */
     runtimes?: AutonomyHostOptions["runtimes"];
     cleanupEngine?: AutonomyHostOptions["cleanupEngine"];
@@ -190,6 +194,9 @@ export async function autonomyAdmin(
       scheduler: { wait: fastWait, random: () => 0.5 },
       ...(o.mandateCheckMs ? { mandateCheckMs: o.mandateCheckMs } : {}),
       ...(o.syncDirectory ? { syncDirectory: o.syncDirectory } : {}),
+      ...(o.proofThrottleMs !== undefined
+        ? { proofThrottleMs: o.proofThrottleMs }
+        : {}),
     },
   };
   const open = () =>
@@ -233,9 +240,13 @@ export async function autonomyAdmin(
     call,
     status,
     headers,
-    /** Close and reopen admin on the same installation (process restart). */
-    async restart() {
+    /**
+     * Close and reopen admin on the same installation (process restart);
+     * `down` runs while no process is up.
+     */
+    async restart(down?: () => unknown) {
       await app.close();
+      await down?.();
       app = await open();
     },
     close,

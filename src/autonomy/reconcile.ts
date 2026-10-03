@@ -1,4 +1,5 @@
 import { AutonomyFailure } from "./backend.js";
+import { COMPLETION_DIGEST } from "./types.js";
 import type { AutonomyBackend } from "./backend.js";
 import type { LedgerEntry } from "./ledger.js";
 import type { MandateView, Page, WorkItem } from "./types.js";
@@ -14,27 +15,51 @@ import type { MandateView, Page, WorkItem } from "./types.js";
  * - anything else keeps the entry.
  *
  * C5 R1/R2: listings are scoped to the CURRENT mandate, so an entry recorded
- * under another mandate is never proven from them (`mandate_changed`). A
- * report projection omits operation-defining fields (generation, authority,
- * full body), so it never proves a completion: any report for the work keeps
- * the entry (`receipt_required`) until an exact completion receipt exists
- * (client-completion-receipt-contract.md).
+ * under another mandate is never proven from them (`mandate_changed`).
+ * A completion is proven only by the exact receipt of its own lease
+ * generation (backend 44273475, read by the original account, independent of
+ * the current mandate): committed with our recorded body digest (committed),
+ * committed with another body (superseded: at most one completion commits per
+ * generation), or exactly not committed (not_published). Report projections
+ * and listings never prove a completion.
  */
 export type Proof =
   | "committed"
   | "conflict"
+  | "superseded"
   | "not_published"
   | "binding_unavailable"
   | "mandate_changed"
-  | "receipt_required"
   | "not_fenced"
   | "unavailable"
-  | "bounded";
+  | "bounded"
+  // Completion receipt outcomes that keep the entry.
+  | "pending"
+  | "unrecorded"
+  | "receipt_mismatch"
+  | "legacy_no_digest"
+  | "denied"
+  | "not_found"
+  | "receipt_unsupported"
+  | "malformed";
 export const RESOLVED: readonly Proof[] = [
   "committed",
   "conflict",
+  "superseded",
   "not_published",
 ];
+/**
+ * Who committed a completion receipt's body, as the backend attributes it to
+ * the reading bearer: never claimed as this credential unless it says so.
+ */
+export type Attribution =
+  | "this_credential"
+  | "account_other_credential"
+  | "unattributed";
+export interface Settlement {
+  proof: Proof;
+  attribution: Attribution | null;
+}
 
 /**
  * Allowance past lease expiry, on the backend's own clock (the HTTP Date of
@@ -66,7 +91,8 @@ async function scan<T>(
 
 export interface ProofContext {
   backend: AutonomyBackend;
-  mandate: MandateView;
+  /** The current mandate; null when unreadable (completions need none). */
+  mandate: MandateView | null;
 }
 
 /**
@@ -102,6 +128,96 @@ export async function prove(
   entry: LedgerEntry,
   ctx: ProofContext,
 ): Promise<Proof> {
+  return (await settle(entry, ctx)).proof;
+}
+
+export async function settle(
+  entry: LedgerEntry,
+  ctx: ProofContext,
+): Promise<Settlement> {
+  if (entry.op === "complete") return completion(entry, ctx.backend);
+  if (!ctx.mandate) return { proof: "unavailable", attribution: null };
+  return {
+    proof: await mandated(entry, { ...ctx, mandate: ctx.mandate }),
+    attribution: null,
+  };
+}
+
+const failure = (error: unknown): Proof => {
+  switch (code(error)) {
+    case "AUTONOMY_AUTH_EXPIRED":
+    case "AUTONOMY_NOT_AUTHORIZED":
+      return "denied";
+    case "AUTONOMY_NOT_FOUND":
+      return "not_found";
+    // A framework 404: a backend without exact completion receipts.
+    case "AUTONOMY_UNSUPPORTED":
+      return "receipt_unsupported";
+    case "AUTONOMY_RESULT_REJECTED":
+      return "malformed";
+    default:
+      return "unavailable";
+  }
+};
+
+/**
+ * One generation-exact receipt read. A 200 answer comes only from the
+ * original account; a committed receipt must also name the entry's exact
+ * work, generation, mandate, Dojo and chief.
+ */
+async function completion(
+  entry: LedgerEntry,
+  backend: AutonomyBackend,
+): Promise<Settlement> {
+  const keep = (proof: Proof): Settlement => ({ proof, attribution: null });
+  if (backend.origin !== entry.origin) return keep("binding_unavailable");
+  let answer;
+  try {
+    answer = await backend.completionReceipt(
+      entry.work_id,
+      entry.lease_generation,
+    );
+  } catch (error) {
+    return keep(failure(error));
+  }
+  if (answer.state === "not_committed") return keep("not_published");
+  if (answer.state !== "committed" || !answer.receipt)
+    return keep(answer.state === "committed" ? "malformed" : answer.state);
+  const r = answer.receipt;
+  const x = entry.expect;
+  if (
+    r.work_id !== entry.work_id ||
+    r.lease_generation !== entry.lease_generation ||
+    r.mandate_id !== entry.mandate_id ||
+    r.dojo_id !== entry.dojo_id ||
+    r.chief_id !== entry.chief_id
+  )
+    return keep("receipt_mismatch");
+  const attribution: Attribution =
+    r.credential_match === true
+      ? "this_credential"
+      : r.credential_match === false
+        ? "account_other_credential"
+        : "unattributed";
+  // An entry recorded before exact digests (projection only) can never be
+  // matched to a body: no digest is synthesized for it.
+  if (
+    x.digest_algorithm !== COMPLETION_DIGEST ||
+    typeof x.request_sha256 !== "string"
+  )
+    return { proof: "legacy_no_digest", attribution };
+  if (r.request_sha256 !== x.request_sha256)
+    return { proof: "superseded", attribution };
+  // Equal digests cover mandate_revision; a disagreement is not proof.
+  if (r.mandate_revision !== x.mandate_revision)
+    return keep("receipt_mismatch");
+  return { proof: "committed", attribution };
+}
+
+async function mandated(
+  entry: LedgerEntry,
+  ctx: ProofContext & { mandate: MandateView },
+): Promise<Proof> {
   const proof = await read(entry, ctx);
   if (!RESOLVED.includes(proof)) return proof;
   // The reads resolved the CURRENT mandate at request time: a replacement
@@ -122,7 +238,10 @@ export async function prove(
   return proof;
 }
 
-async function read(entry: LedgerEntry, ctx: ProofContext): Promise<Proof> {
+async function read(
+  entry: LedgerEntry,
+  ctx: ProofContext & { mandate: MandateView },
+): Promise<Proof> {
   const { backend, mandate } = ctx;
   // Absence reads are account-scoped: only the original authority may prove.
   if (
@@ -209,19 +328,9 @@ async function read(entry: LedgerEntry, ctx: ProofContext): Promise<Proof> {
           ? "committed"
           : "conflict";
       }
-      case "complete": {
-        // Reports are inserted in the completion transaction: once fenced,
-        // the complete (all pages) absence of ANY report for this work
-        // proves the completion never landed. A report that exists may be
-        // another attempt's; without an exact receipt it proves nothing.
-        if (f !== true) return absent();
-        const report = await scan(
-          (cursor) => backend.reports({ limit: LIMIT, cursor }),
-          (r) => r.work_id === entry.work_id,
-        );
-        if (report === "bounded") return "bounded";
-        return report ? "receipt_required" : "not_published";
-      }
+      case "complete":
+        // Settled only by its exact generation receipt (`completion`).
+        return "unavailable";
     }
   } catch {
     return "unavailable";

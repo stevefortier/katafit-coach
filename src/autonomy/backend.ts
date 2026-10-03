@@ -11,6 +11,7 @@ import {
   AUTONOMY_ROOT,
   BACKEND_CODES,
   CHECKPOINT_LIMIT,
+  COMPLETION_DIGEST,
   FOLLOW_UP_STATUSES,
   ID,
   LIMITS,
@@ -28,6 +29,7 @@ import {
   type ActionReceipt,
   type AutonomyCode,
   type AutonomyStatus,
+  type CompletionReceiptResult,
   type CompositionInput,
   type CycleOutcome,
   type FollowUp,
@@ -190,6 +192,36 @@ const canonical = (value: unknown): string =>
           .map((k) => `${JSON.stringify(k)}:${canonical((value as any)[k])}`)
           .join(",")}}`
       : JSON.stringify(value ?? null);
+
+/**
+ * `sha256-rfc8785` of a completion body (backend 44273475): the RFC 8785
+ * (JCS) form of exactly the JSON sent. Its values are integers, strings,
+ * booleans and null, for which `canonical` (keys by UTF-16 code units, no
+ * whitespace, ECMAScript string escaping) is JCS.
+ */
+export const completionDigest = (body: unknown) => {
+  const serialized: unknown = JSON.parse(JSON.stringify(body));
+  // RFC 8785 rejects lone surrogates instead of hashing their escaped JSON.
+  // Check keys as well as values, preserving every valid code unit verbatim.
+  const unicode = (value: unknown): void => {
+    if (typeof value === "string") {
+      for (let i = 0; i < value.length; i++) {
+        const unit = value.charCodeAt(i);
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+          const next = value.charCodeAt(++i);
+          if (!(next >= 0xdc00 && next <= 0xdfff)) fail("AUTONOMY_INVALID");
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) fail("AUTONOMY_INVALID");
+      }
+    } else if (Array.isArray(value)) value.forEach(unicode);
+    else if (value && typeof value === "object")
+      for (const [key, item] of Object.entries(value)) {
+        unicode(key);
+        unicode(item);
+      }
+  };
+  unicode(serialized);
+  return sha256(canonical(serialized));
+};
 
 /**
  * The report-visible projection of one completion. Diagnostic only: it omits
@@ -562,6 +594,11 @@ export class AutonomyBackend {
         slot: null,
         follow_up_id: null,
         expect: {
+          // Exact proof: the digest of the body sent, matched against the
+          // generation's committed receipt. The projection is diagnostic.
+          digest_algorithm: COMPLETION_DIGEST,
+          request_sha256: completionDigest(input),
+          mandate_revision,
           report_sha256: reportDigest({
             work_id: id,
             result: outcome.result,
@@ -817,6 +854,40 @@ export class AutonomyBackend {
       value,
       (v) => validate.receiptResult(v) && v.receipt.slot === slot,
     ).receipt;
+  }
+
+  /**
+   * Exact completion receipt of one lease generation (read-only; the
+   * original account only, independent of the current mandate).
+   */
+  async completionReceipt(
+    id: string,
+    generation: number,
+  ): Promise<CompletionReceiptResult> {
+    if (
+      !isId(id) ||
+      !Number.isSafeInteger(generation) ||
+      generation < 1 ||
+      generation > 999_999_999
+    )
+      fail("AUTONOMY_INVALID");
+    const value = await this.request(
+      "GET",
+      `${AUTONOMY_ROOT}/work/${id}/completions/${generation}`,
+    );
+    return this.accept<CompletionReceiptResult>(
+      "GET",
+      value,
+      (v) =>
+        validate.completionReceiptResult(v) &&
+        v.work_id === id &&
+        v.lease_generation === generation &&
+        v.current_lease_generation >= generation &&
+        (v.state === "committed") === (v.receipt !== null) &&
+        (v.receipt === null ||
+          (v.receipt.work_id === id &&
+            v.receipt.lease_generation === generation)),
+    );
   }
 
   /** Create a follow-up under the lease; idempotent per (work, slot). */

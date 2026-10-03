@@ -47,6 +47,25 @@ export const BLOCKED_REASONS_710D = [
   "composition_rejected",
 ];
 
+/**
+ * Independent RFC 8785 (JCS) reference for the fake's receipts: keys sorted
+ * by UTF-16 code units, no whitespace, ECMAScript string/number forms.
+ */
+function jcs(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(jcs).join(",") + "]";
+  if (value !== null && typeof value === "object")
+    return (
+      "{" +
+      Object.keys(value)
+        .filter((k) => (value as any)[k] !== undefined)
+        .sort()
+        .map((k) => JSON.stringify(k) + ":" + jcs((value as any)[k]))
+        .join(",") +
+      "}"
+    );
+  return JSON.stringify(value);
+}
+
 export async function autonomyFake(
   start = Date.parse("2026-10-03T07:00:00.000Z"),
 ) {
@@ -134,6 +153,18 @@ export async function autonomyFake(
     claims: [] as any[],
     receiptReadsFail: false,
     reportsFail: false,
+    /**
+     * Backend 44273475 exact per-generation completion receipts, append-only
+     * per work and NOT scoped to the current mandate.
+     */
+    completions: new Map<string, any[]>(),
+    /** Work that predates receipts (`unrecorded`). */
+    unrecorded: new Set<string>(),
+    /** Fault for completion receipt reads: an HTTP error or a malformed body. */
+    completionFault: undefined as
+      | undefined
+      | { status: number; code?: string }
+      | ((value: any) => any),
     /** Mutates a negotiated claim response (malformed-capability tests). */
     capabilityPatch: undefined as undefined | ((value: any) => void),
     /** Non-autonomy REST routes served to the installation's token. */
@@ -162,6 +193,10 @@ export async function autonomyFake(
   const expire = () => {
     for (const w of state.work.values())
       if (["claimed", "running"].includes(w.status) && !leaseLive(w)) {
+        // The real backend keeps an expired lease leased until reclaim: its
+        // generation can still be `pending` (never absence) until then.
+        // Kept beside the work item (never in its validated view).
+        expiredGeneration.set(w.id, w.lease_generation);
         w.status = "queued";
         w.lease_expires_at = null;
         state.claimedBy.delete(w.id);
@@ -188,6 +223,7 @@ export async function autonomyFake(
       throw new Fail(409, "AUTONOMY_MANDATE_CHANGED");
   };
   const view = (w: any) => structuredClone(w);
+  const expiredGeneration = new Map<string, number>();
   // Real backend (a80256df core/coachAutonomy.js): work and report listings
   // resolve the CURRENT mandate and filter by its id.
   const reportMandate = new Map<string, string>();
@@ -344,6 +380,7 @@ export async function autonomyFake(
       if (!w) return { work: null };
       w.status = "claimed";
       w.lease_generation += 1;
+      expiredGeneration.delete(w.id);
       w.mandate_revision = state.mandate.revision;
       w.lease_expires_at = iso(now + (body.lease_seconds ?? 60) * 1000);
       w.updated_at = iso(now);
@@ -782,7 +819,73 @@ export async function autonomyFake(
       };
       reportMandate.set(report.id, w.mandate_id);
       state.reports.unshift(report);
+      const receipts = state.completions.get(w.id) ?? [];
+      receipts.push({
+        work_id: w.id,
+        mandate_id: w.mandate_id,
+        dojo_id: state.mandate.dojo_id,
+        chief_id: state.mandate.chief_id,
+        mandate_revision: body.mandate_revision,
+        lease_generation: body.lease_generation,
+        credential,
+        digest_algorithm: "sha256-rfc8785",
+        request_sha256: sha256(jcs(body)),
+        result: o.result,
+        status_after: w.status,
+        report_id: report.id,
+        committed_at: iso(now),
+      });
+      state.completions.set(w.id, receipts);
       return { work: view(w), report_id: report.id };
+    }
+    if (
+      method === "GET" &&
+      (m = p.match(/^\/work\/([^/]+)\/completions\/([^/]+)$/))
+    ) {
+      // Exact read of one generation; never the current-mandate listings.
+      if (
+        url.search ||
+        !/^[a-fA-F0-9]{24}$/.test(m[1]) ||
+        !/^[1-9]\d{0,8}$/.test(m[2])
+      )
+        throw new Fail(400, "AUTONOMY_INVALID");
+      const fault = state.completionFault;
+      if (fault && typeof fault === "object")
+        throw new Fail(fault.status, fault.code ?? "AUTONOMY_UNAVAILABLE");
+      const w = state.work.get(m[1].toLowerCase());
+      const generation = Number(m[2]);
+      if (!w || generation > w.lease_generation)
+        throw new Fail(404, "AUTONOMY_NOT_FOUND");
+      const found = (state.completions.get(w.id) ?? []).find(
+        (r) => r.lease_generation === generation,
+      );
+      const leased =
+        generation === w.lease_generation &&
+        (["claimed", "running"].includes(w.status) ||
+          expiredGeneration.get(w.id) === generation);
+      const state_ = found
+        ? "committed"
+        : state.unrecorded.has(w.id)
+          ? "unrecorded"
+          : leased
+            ? "pending"
+            : "not_committed";
+      let value: any = {
+        work_id: w.id,
+        lease_generation: generation,
+        current_lease_generation: w.lease_generation,
+        state: state_,
+        receipt:
+          state_ === "committed"
+            ? (({ credential: by, ...r }) => ({
+                ...r,
+                credential_match:
+                  credential === null ? null : by === credential,
+              }))(found)
+            : null,
+      };
+      if (typeof fault === "function") value = fault(value);
+      return value;
     }
     if (method === "GET" && p === "/reports")
       return page(
