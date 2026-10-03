@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { assertNoSecrets } from "../config/store.js";
 import {
+  AUTONOMY_CAPABILITY_PROTOCOL,
+  autonomyCapability,
+  type AutonomyCapability,
+} from "../capability/autonomy.js";
+import {
   ACTION_TEXT_LIMIT,
   AUTONOMY_PROTOCOL,
   AUTONOMY_ROOT,
@@ -113,6 +118,50 @@ const RESPONSE_LIMIT = 512 * 1024;
  * explicit decision. A write whose outcome cannot be proven is
  * AUTONOMY_OUTCOME_UNKNOWN, never a guessed success or failure.
  */
+function claimInput(input: { lease_seconds?: number; kinds?: WorkKind[] }) {
+  const { lease_seconds, kinds, ...rest } = input;
+  if (
+    Object.keys(rest).length ||
+    (lease_seconds !== undefined &&
+      (!Number.isInteger(lease_seconds) ||
+        lease_seconds < 15 ||
+        lease_seconds > 300)) ||
+    (kinds !== undefined &&
+      (!Array.isArray(kinds) ||
+        !kinds.length ||
+        new Set(kinds).size !== kinds.length ||
+        kinds.some((k) => !WORK_KINDS.includes(k))))
+  )
+    fail("AUTONOMY_INVALID");
+}
+
+/** A claimed lease we cannot verify is never run; it simply expires. */
+function negotiatedClaim(
+  value: any,
+): { work: WorkItem; capability: AutonomyCapability | null } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    fail("AUTONOMY_RESULT_REJECTED");
+  const { capability, allowed_tools, capability_guidance, ...envelope } = value;
+  const negotiated = Object.hasOwn(value, "capability");
+  if (
+    !validate.claimResult(envelope) ||
+    (negotiated
+      ? !envelope.work ||
+        !Object.hasOwn(value, "allowed_tools") ||
+        !Object.hasOwn(value, "capability_guidance")
+      : allowed_tools !== undefined || capability_guidance !== undefined)
+  )
+    fail("AUTONOMY_RESULT_REJECTED");
+  const work = (envelope as { work: WorkItem | null }).work;
+  if (!work) return null;
+  if (!negotiated) return { work, capability: null };
+  try {
+    return { work, capability: autonomyCapability(value, work) };
+  } catch {
+    return fail("AUTONOMY_RESULT_REJECTED");
+  }
+}
+
 export class AutonomyBackend {
   constructor(
     readonly origin: string,
@@ -338,20 +387,7 @@ export class AutonomyBackend {
   async claim(
     input: { lease_seconds?: number; kinds?: WorkKind[] } = {},
   ): Promise<WorkItem | null> {
-    const { lease_seconds, kinds, ...rest } = input;
-    if (
-      Object.keys(rest).length ||
-      (lease_seconds !== undefined &&
-        (!Number.isInteger(lease_seconds) ||
-          lease_seconds < 15 ||
-          lease_seconds > 300)) ||
-      (kinds !== undefined &&
-        (!Array.isArray(kinds) ||
-          !kinds.length ||
-          new Set(kinds).size !== kinds.length ||
-          kinds.some((k) => !WORK_KINDS.includes(k))))
-    )
-      fail("AUTONOMY_INVALID");
+    claimInput(input);
     const value = await this.request(
       "POST",
       `${AUTONOMY_ROOT}/work/claim`,
@@ -360,6 +396,41 @@ export class AutonomyBackend {
     return this.accept<{ work: WorkItem | null }>("POST", value, (v) =>
       validate.claimResult(v),
     ).work;
+  }
+
+  private negotiation: "unknown" | "supported" | "unsupported" = "unknown";
+  /**
+   * Claim with coach.capability.v1 negotiation. The claim body is strictly
+   * validated before any state change, so an older backend's AUTONOMY_INVALID
+   * is a safe signal to claim once more without negotiating (cached).
+   */
+  async claimCycle(
+    input: { lease_seconds?: number; kinds?: WorkKind[] } = {},
+  ): Promise<{ work: WorkItem; capability: AutonomyCapability | null } | null> {
+    claimInput(input);
+    if (this.negotiation !== "unsupported") {
+      let value: any;
+      try {
+        value = await this.request("POST", `${AUTONOMY_ROOT}/work/claim`, {
+          ...input,
+          capability_protocols: [AUTONOMY_CAPABILITY_PROTOCOL],
+        });
+      } catch (error) {
+        if (
+          this.negotiation === "unknown" &&
+          error instanceof AutonomyFailure &&
+          error.code === "AUTONOMY_INVALID"
+        )
+          this.negotiation = "unsupported";
+        else throw error;
+      }
+      if (this.negotiation !== "unsupported") {
+        this.negotiation = "supported";
+        return negotiatedClaim(value);
+      }
+    }
+    const work = await this.claim(input);
+    return work ? { work, capability: null } : null;
   }
 
   async start(id: string, lease_generation: number): Promise<WorkItem> {

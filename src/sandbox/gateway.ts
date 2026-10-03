@@ -32,6 +32,8 @@ import {
   openMemberMessages,
 } from "../katafit/memberMessages.js";
 import { NativeSelections } from "./selections.js";
+import { classifySecretRequest } from "../capability/invocation.js";
+import type { ActionType } from "../autonomy/types.js";
 import {
   PROVIDER_TEXT_LIMIT,
   canonicalImages,
@@ -1099,6 +1101,20 @@ export interface ProfileGatewayOptions {
   prompt: string;
   /** Planner host callbacks; a composer never has any host tool. */
   autonomy?: PlannerCallbacks;
+  /**
+   * Planner: the admitted slot actions (mode ∩ delegation ∩ backend support).
+   * Each tool is offered only when its action is admitted; omitted = all.
+   */
+  actions?: readonly ActionType[];
+  /** Planner: REST reads (discovery, domain reads, memory search) granted. */
+  rest?: boolean;
+  /** Planner: offer the installation's enabled skills (autonomy scope). */
+  skills?: boolean;
+  /** Planner: each REST read's outcome, for honest coverage. */
+  onRead?: (read: {
+    path: string;
+    outcome: "ok" | "denied" | "failed";
+  }) => void;
   budgets?: ProfileBudgets;
   onExhausted?: (reason: "tool_calls" | "provider_tokens") => void;
   /** Exact provider wire bytes, for audience-separation probes. */
@@ -1183,9 +1199,40 @@ export async function openProfileGateway(
     }
     throw new NativeFailure("NATIVE_REQUEST_REJECTED");
   };
-  const tools = planner
-    ? plannerTools.filter((t) => t.name !== restGetTool.name || secrets.token)
-    : [];
+  const admitted = new Set<string>(
+    options.actions ?? [
+      "member_message",
+      "manager_report",
+      "follow_up",
+      "public_praise",
+    ],
+  );
+  const offered = (name: string) =>
+    name === restGetTool.name
+      ? !!secrets.token && options.rest !== false
+      : name === INTEND_TOOL
+        ? admitted.has("member_message") || admitted.has("public_praise")
+        : name === REPORT_TOOL
+          ? admitted.has("manager_report")
+          : admitted.has("follow_up");
+  const tools = planner ? plannerTools.filter((t) => offered(t.name)) : [];
+  const skills =
+    planner && options.skills
+      ? store.skills
+          .runtime()
+          .skills.map(({ id, name, purpose, triggers, instructions }) => ({
+            id,
+            name,
+            description: (purpose + " Triggers: " + triggers).slice(0, 1000),
+            body: `# ${name}\n\nPurpose: ${purpose}\n\nTriggers: ${triggers}\n\n${instructions}\n\nThis headless Pi session is autonomy planner scope (manager-private). Read only through katafit_rest_get and act only through the offered coach_autonomy_* tools; never write trainee- or public-visible text yourself.`,
+          }))
+      : [];
+  const readResult = (path: string, outcome: "ok" | "denied" | "failed") => {
+    options.onRead?.({ path, outcome });
+  };
+  const visible = (value: unknown) => ({
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
+  });
 
   async function tool(request: any, requestSignal: AbortSignal) {
     if (!planner || !tools.some((t) => t.name === request.name))
@@ -1207,24 +1254,54 @@ export async function openProfileGateway(
         throw new NativeFailure("NATIVE_REQUEST_REJECTED");
       }
       used.tool_calls++;
+      if (classifySecretRequest("GET", path))
+        return visible({
+          error: "SECRET_ENDPOINT_DENIED",
+          note: "Credential and account-security endpoints are interactive-only and never available to autonomy.",
+        });
+      let result: any;
       try {
-        const result = await restRequest(
+        result = await restRequest(
           config.origin,
           secrets.token!,
           { method: "GET", path },
           requestSignal,
           secretValues,
         );
-        check();
-        return result;
       } catch (error) {
         if (error instanceof NativeFailure) throw error;
-        if ((error as Error).message === "REST_REQUEST_REJECTED")
+        const code = (error as Error).message;
+        if (code === "REST_REQUEST_REJECTED")
           throw new NativeFailure("NATIVE_REQUEST_REJECTED");
-        throw error;
+        if (requestSignal.aborted) throw error;
+        check();
+        readResult(path, "failed");
+        return visible({
+          error: /^[A-Z_]{3,64}$/.test(code) ? code : "REST_READ_UNAVAILABLE",
+          note: "This read did not complete. Report the fact as unavailable; do not invent it.",
+        });
       }
+      check();
+      if (result.restReadError) {
+        const status = result.restReadError.status;
+        const denied = status === 401 || status === 403;
+        readResult(path, denied ? "denied" : "failed");
+        return visible({
+          error: denied
+            ? "REST_READ_DENIED"
+            : status === 404
+              ? "REST_READ_MISSING"
+              : "REST_READ_UNAVAILABLE",
+          status,
+          note: "This fact is unavailable to this cycle. Record it as partial coverage; do not invent it.",
+        });
+      }
+      readResult(path, "ok");
+      return result;
     }
     if (!plannerArgs(request.name, request.args))
+      throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+    if (request.name === INTEND_TOOL && !admitted.has(request.args.intent.type))
       throw new NativeFailure("NATIVE_REQUEST_REJECTED");
     used.tool_calls++;
     const autonomy = options.autonomy!;
@@ -1368,7 +1445,7 @@ export async function openProfileGateway(
           model: config.provider.model,
           vision: config.provider.vision === true,
           prompt: options.prompt,
-          skills: [],
+          skills,
           tools,
         };
         assertNoSecrets(catalog, secretValues);

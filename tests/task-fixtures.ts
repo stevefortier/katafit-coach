@@ -27,20 +27,27 @@ const limits = {
 };
 // Mirrors backend core/coachCapability.js descriptor().
 export function descriptor(o: {
-  plane: "task" | "request";
+  plane: "task" | "request" | "autonomy";
   kind: string;
   rest: boolean;
   ownerType: string;
   subject: string;
   actions: string[];
+  principal?: string;
 }) {
-  const principal = o.ownerType === "dojo" ? "c".repeat(24) : o.subject;
+  const principal =
+    o.principal ?? (o.ownerType === "dojo" ? "c".repeat(24) : o.subject);
   return {
     protocol: "coach.capability.v1",
     plane: o.plane,
     kind: o.kind,
     tools_during_generation: true,
-    final_result: o.plane === "task" ? "structured_result" : "reply",
+    final_result:
+      o.plane === "task"
+        ? "structured_result"
+        : o.plane === "autonomy"
+          ? "cycle_outcome"
+          : "reply",
     structured_result_correction: {
       tools_retained: true,
       replay_actions: false,
@@ -77,11 +84,13 @@ export function descriptor(o: {
       occurrence_journal:
         o.plane === "task"
           ? "coach.tasks.v1/occurrences"
-          : "worker_durable_action_journal",
+          : o.plane === "autonomy"
+            ? "coach.autonomy.v1/actions"
+            : "worker_durable_action_journal",
       secret_producing_interactive_only: "denied",
     },
     audience: {
-      visible_to: "requester",
+      visible_to: o.plane === "autonomy" ? "per_action_audience" : "requester",
       owner_type: o.ownerType,
       private_principal_data_in_subject_text: false,
     },

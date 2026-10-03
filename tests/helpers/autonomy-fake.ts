@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import { AutonomyBackend } from "../../src/autonomy/backend.js";
+import { descriptor } from "../task-fixtures.js";
 
 // In-memory fake of the coach.autonomy.v1 contract (work-packages.md §2) for
 // fixture tests of the scheduler, runner and actions. It models claims,
@@ -91,6 +92,18 @@ export async function autonomyFake(
     followUps: new Map<string, any>(),
     reports: [] as any[],
     members: new Set([MEMBER, OTHER_MEMBER, CHIEF]),
+    /** Backend `SUPPORTED_ACTION_TYPES` (advertised in mandate capabilities). */
+    supported: ["member_message", "manager_report", "follow_up"] as string[],
+    /** coach.capability.v1 claim negotiation (backend 2f1e6e7f and later). */
+    negotiates: true,
+    restAccess: true,
+    claims: [] as any[],
+    /** Mutates a negotiated claim response (malformed-capability tests). */
+    capabilityPatch: undefined as undefined | ((value: any) => void),
+    /** Non-autonomy REST routes served to the installation's token. */
+    rest: undefined as
+      | undefined
+      | ((method: string, url: URL) => { status: number; body: unknown }),
   };
   const messages: {
     recipient_id: string;
@@ -158,7 +171,7 @@ export async function autonomyFake(
       return {
         ...state.mandate,
         capabilities: {
-          action_types: ["member_message", "manager_report", "follow_up"],
+          action_types: [...state.supported],
           scopes: ["dojo"],
           max_lease_seconds: 300,
         },
@@ -238,6 +251,19 @@ export async function autonomyFake(
     }
     if (method === "POST" && p === "/work/claim") {
       if (!credential) throw new Fail(403, "AUTONOMY_NOT_AUTHORIZED");
+      state.claims.push(structuredClone(body ?? {}));
+      // Strict body, validated before any state change (backend zod .strict()).
+      const keys = ["lease_seconds", "kinds"];
+      if (state.negotiates) keys.push("capability_protocols");
+      if (
+        Object.keys(body ?? {}).some((k) => !keys.includes(k)) ||
+        (body?.capability_protocols !== undefined &&
+          (!Array.isArray(body.capability_protocols) ||
+            !body.capability_protocols.every(
+              (p: unknown) => p === "coach.capability.v1",
+            )))
+      )
+        throw new Fail(400, "AUTONOMY_INVALID");
       if (
         state.mandate.mode === "off" ||
         state.mandate.paused ||
@@ -269,7 +295,46 @@ export async function autonomyFake(
       w.lease_expires_at = iso(now + (body.lease_seconds ?? 60) * 1000);
       w.updated_at = iso(now);
       state.claimedBy.set(w.id, credential);
-      return { work: view(w) };
+      if (!body?.capability_protocols?.includes("coach.capability.v1"))
+        return { work: view(w) };
+      const modeActions: Record<string, string[]> = {
+        observe: ["manager_report", "follow_up"],
+        message: [
+          "member_message",
+          "manager_report",
+          "follow_up",
+          "public_praise",
+        ],
+      };
+      const actions = (modeActions[state.mandate.mode] ?? []).filter(
+        (t) =>
+          state.mandate.delegated_actions.includes(t) &&
+          state.supported.includes(t),
+      );
+      const capability = descriptor({
+        plane: "autonomy",
+        kind: w.kind,
+        rest: state.restAccess,
+        ownerType: "dojo",
+        principal: CHIEF,
+        subject: CHIEF,
+        actions,
+      });
+      const negotiated = {
+        work: view(w),
+        capability,
+        allowed_tools: [
+          ...(state.restAccess
+            ? ["api_discovery", "rest_read", "memory_search"]
+            : []),
+          "integrations",
+          "skills",
+          ...(capability.actions.supported.length ? ["actions"] : []),
+        ],
+        capability_guidance: `Synthetic autonomy guidance. Supported now: ${capability.actions.supported.join(", ") || "none"}.`,
+      };
+      state.capabilityPatch?.(negotiated);
+      return negotiated;
     }
     if (
       (m = p.match(/^\/work\/([a-f0-9]{24})\/(start|checkpoint)$/)) &&
@@ -468,6 +533,20 @@ export async function autonomyFake(
     const bearer = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
     const identity = tokens.get(bearer);
     const url = new URL(req.url!, "http://fake");
+    if (
+      identity &&
+      !url.pathname.startsWith("/api/coach/autonomy/") &&
+      state.rest
+    ) {
+      calls.push({
+        method: req.method!,
+        path: req.url!,
+        credential: identity.credential,
+      });
+      const out = state.rest(req.method!, url);
+      res.writeHead(out.status, { "content-type": "application/json" });
+      return res.end(JSON.stringify(out.body));
+    }
     calls.push({
       method: req.method!,
       path: req.url!,

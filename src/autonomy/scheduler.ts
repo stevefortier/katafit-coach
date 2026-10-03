@@ -1,4 +1,5 @@
 import type { Admission } from "../runtime/admission.js";
+import type { AutonomyCapability } from "../capability/autonomy.js";
 import type { LogInput } from "../diagnostics/log.js";
 import { AutonomyFailure, type AutonomyBackend } from "./backend.js";
 import type { MandateView, WorkItem } from "./types.js";
@@ -26,12 +27,14 @@ export interface Cycle {
   mandate: MandateView;
   backend: AutonomyBackend;
   signal: AbortSignal;
+  /** Negotiated coach.capability.v1 admission; null on an older backend. */
+  capability: AutonomyCapability | null;
 }
 export interface SchedulerOptions {
   backend: AutonomyBackend;
   admission: Admission;
   /** Executes one started work item; owns checkpoint and completion. */
-  run: (cycle: Cycle) => Promise<void>;
+  run: (cycle: Cycle) => Promise<unknown>;
   leaseSeconds?: number;
   minBackoffMs?: number;
   maxBackoffMs?: number;
@@ -163,20 +166,27 @@ export class AutonomyScheduler {
     try {
       return await admission.run("autonomy", signal, async () => {
         this.set("claiming");
-        const claimed = await backend.claim({
+        const claim = await backend.claimCycle({
           lease_seconds: this.options.leaseSeconds ?? 120,
         });
-        if (!claimed) {
+        if (!claim) {
           this.set("idle");
           return { outcome: "contended" as const, delayMs: tickMs };
         }
         signal.throwIfAborted();
+        const claimed = claim.work;
         const work = await backend.start(claimed.id, claimed.lease_generation);
         this.set("running");
         this.diagnostic("autonomy-cycle", "info", {
           attempt: work.attempts,
         });
-        await this.options.run({ work, mandate, backend, signal });
+        await this.options.run({
+          work,
+          mandate,
+          backend,
+          signal,
+          capability: claim.capability,
+        });
         this.failures = 0;
         this.set("idle");
         return { outcome: "ran" as const, delayMs: 0 };

@@ -429,3 +429,24 @@ test("admission: capacity one, cancellation removes a waiter, errors release the
   assert.deepEqual(ran, ["after-error"]);
   assert.equal(admission.busy, false);
 });
+
+test("FC2: the claim negotiates coach.capability.v1 and the runner receives the admitted capability", async () => {
+  const fake = await setup();
+  let seen: any;
+  const s = scheduler(fake, "installation-a", async (cycle: any) => {
+    seen = cycle;
+  });
+  try {
+    fake.enqueue({ kind: "event", subject_ids: [MEMBER] });
+    assert.equal((await s.tick()).outcome, "ran");
+    assert.deepEqual(fake.state.claims.at(-1).capability_protocols, [
+      "coach.capability.v1",
+    ]);
+    assert.equal(seen.capability.descriptor.plane, "autonomy");
+    assert.deepEqual(seen.capability.actions, ["manager_report", "follow_up"]);
+    assert.equal(seen.work.kind, "event");
+  } finally {
+    await s.stop();
+    await fake.close();
+  }
+});
