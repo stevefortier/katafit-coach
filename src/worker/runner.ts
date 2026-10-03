@@ -1,7 +1,8 @@
 import type { Admission } from "../runtime/admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  discoverTasks,
+  discoverTaskPlane,
+  taskAdmission,
   validateTask,
   TASK_PROTOCOL,
   taskContext,
@@ -43,6 +44,13 @@ import {
   type MemoryItem,
 } from "../memory/backend.js";
 import { extractMemories, type MemoryOrigin } from "../memory/extract.js";
+import {
+  CAPABILITY_GUIDANCE,
+  CAPABILITY_PROTOCOL,
+  InvocationCapability,
+  PRINCIPAL_REST_NOTE,
+  type ActionLedger,
+} from "../capability/invocation.js";
 import { ToolFailure } from "../katafit/client.js";
 export async function bounded<T>(
   action: () => Promise<T>,
@@ -86,6 +94,11 @@ export interface WorkerOptions {
   skills?: SkillRuntime;
   /** Provenance only (never authority): the persona revision guiding extraction. */
   personaRevision?: string;
+  /**
+   * Host-durable action fence (Actions over the installation store) for
+   * worker chat-request writes. Absent: chat-request writes are unsupported.
+   */
+  actionLedger?: ActionLedger;
   archiveTaskInvalidation?: (record: {
     protocol: typeof TASK_PROTOCOL;
     attempted_result_sha256: string;
@@ -640,7 +653,8 @@ export class Worker {
     try {
       await c.connect();
       await this.recoverMemory(c, ref);
-      const taskKinds = await discoverTasks(c);
+      const taskPlane = await discoverTaskPlane(c);
+      const taskKinds = taskPlane.kinds;
       const due = this.isolated.find(
         (incident) => incident.nextCheck <= Date.now(),
       );
@@ -669,7 +683,12 @@ export class Worker {
         }
         if (this.isolated.length >= MAX_INCIDENTS) return false;
         taskAttempt = true;
-        const handled = await this.pollTask(c, taskKinds, ref);
+        const handled = await this.pollTask(
+          c,
+          taskKinds,
+          ref,
+          taskPlane.capability,
+        );
         if (!handled) taskAttempt = false;
         return handled;
       };
@@ -788,6 +807,31 @@ export class Worker {
         enabledSkills: selectedSkills.length,
       });
       inferenceStarted = true;
+      const requestDeadline = deadline;
+      // Chat requests share the invocation capability. Writes need the host
+      // ledger and the requester's own account (personal scope): a Dojo
+      // member's request never writes as the chief.
+      const capability = new InvocationCapability({
+        plane: "request",
+        origin: this.options.origin,
+        token: this.options.token,
+        secrets: this.options.secrets ?? [],
+        vision: this.options.vision === true,
+        current: () =>
+          !inferenceSignal.aborted &&
+          !this.controller.signal.aborted &&
+          Date.now() < requestDeadline,
+        actions:
+          current.scope === "personal" && this.options.actionLedger
+            ? ["rest_mutation"]
+            : [],
+        ...(this.options.actionLedger
+          ? {
+              ledger: this.options.actionLedger,
+              ledgerSession: `worker-request:${current.id}:${current.lease_generation}`,
+            }
+          : {}),
+      });
       const text = await bounded(
         () =>
           this.options.complete(
@@ -805,13 +849,16 @@ export class Worker {
               formatRecall(memory?.recalled ?? [], "worker") +
               (memory?.partial
                 ? "\nMemory recall covered a bounded page. Use coach_memory_search and its continuation for deeper recall.\n"
-                : ""),
-            memory
-              ? [
-                  ...reads.tools,
-                  this.memorySearchTool(c, memory, budget, terminal),
-                ]
-              : reads.tools,
+                : "") +
+              CAPABILITY_GUIDANCE +
+              (current.scope === "personal" ? "" : PRINCIPAL_REST_NOTE),
+            [
+              ...reads.tools,
+              ...(memory
+                ? [this.memorySearchTool(c, memory, budget, terminal)]
+                : []),
+              ...capability.tools(),
+            ],
             ref,
             { deadlineAt, readBudget: reads.readBudget },
           ),
@@ -1007,11 +1054,17 @@ export class Worker {
       this.update("task-result-unverified");
     }
   }
-  private async pollTask(c: Client, kinds: string[], ref: string) {
+  private async pollTask(
+    c: Client,
+    kinds: string[],
+    ref: string,
+    negotiate = false,
+  ) {
     const { task } = await c.call("coach_claim_task", {
       protocol: TASK_PROTOCOL,
       kinds,
       lease_seconds: 60,
+      ...(negotiate ? { capability_protocols: [CAPABILITY_PROTOCOL] } : {}),
     });
     if (!task) return false;
     validateTask(task, kinds);
@@ -1042,12 +1095,53 @@ export class Worker {
         deadline - Date.now() - 10000,
       );
       if (ms <= 0) throw new Error("LEASE_EXPIRED");
+      const terminal = new AbortController();
       const signal = AbortSignal.any([
         this.controller.signal,
         AbortSignal.timeout(ms),
+        terminal.signal,
       ]);
       taskModelSignal = signal;
       const deadlineAt = Date.now() + ms;
+      const admission = taskAdmission(task, context);
+      // One capability (and action record) for every attempt of this lease:
+      // a structured-output correction keeps tools and never replays.
+      const capability = new InvocationCapability({
+        plane: "task",
+        origin: this.options.origin,
+        token: this.options.token,
+        secrets: this.options.secrets ?? [],
+        vision: this.options.vision === true,
+        current: () =>
+          !signal.aborted &&
+          !this.controller.signal.aborted &&
+          Date.now() < deadline,
+        actions: admission.actions,
+        occurrences: admission.occurrences,
+        ...(admission.recipient ? { recipient: admission.recipient } : {}),
+        ...(admission.negotiated
+          ? {
+              journal: {
+                open: async (input) =>
+                  (
+                    await c.call(
+                      "coach_open_task_action",
+                      { ...fence, ...input },
+                      budget(),
+                    )
+                  )?.occurrence,
+                settle: async (slot, status) =>
+                  (
+                    await c.call(
+                      "coach_settle_task_action",
+                      { ...fence, slot, status },
+                      budget(),
+                    )
+                  )?.occurrence,
+              },
+            }
+          : {}),
+      });
       phase = "provider";
       const selectedSkills = this.options.skills
         ? skillForTask(this.options.skills, task.kind)
@@ -1077,19 +1171,25 @@ export class Worker {
         (memory?.partial
           ? "\nMemory recall covered a bounded page. Use coach_memory_search and its continuation for deeper recall.\n"
           : "") +
+        CAPABILITY_GUIDANCE +
+        (admission.subjectIsPrincipal ? "" : PRINCIPAL_REST_NOTE) +
         "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON as an object, with no prose or Markdown code fences, matching this local result schema: " +
         JSON.stringify(taskSchema(task.kind)) +
         (task.kind === "activity_reaction"
           ? "\nSemantic constraint: activity_feedback.reply_worthwhile must equal Boolean(general_advice). If you write nonempty general_advice, set reply_worthwhile to true; if reply_worthwhile is false, general_advice must be empty. This is an individual activity reaction, not a day closeout. Omit day_closeout_meal_assessment; return feedback only for the triggering activity."
           : "") +
         (task.kind === "day_closure"
-          ? "\nDay closeout fixed constraints (these override conflicting editable or disabled skill guidance): Set activity_feedback.reply_worthwhile to true. Write one coherent closeout using 3 to 6 concise, substantive, persona-aware sentences total across general_advice and day_closeout_meal_assessment; do not repeat the same assessment in both fields. Acknowledge that all scheduled meals are complete. Say the full day or all activities are complete only when the supplied evidence explicitly says the remaining activity count is zero; otherwise state remaining work accurately. Treat the evidence as a snapshot only at its supplied as-of timestamp and do not claim later state. Provide a nonempty day_closeout_meal_assessment supported by supplied meal and nutrition facts; do not infer nutrition adequacy or target alignment when those facts or separately authorized targets are absent. Identify an evidenced win and give at most one next-day or recovery priority across the output. Do not invent achievements, targets, nutrition quality, actions, proposals, plan changes, or prescriptions."
+          ? "\nDay closeout fixed constraints (these override conflicting editable or disabled skill guidance): Set activity_feedback.reply_worthwhile to true. Write one coherent closeout using 3 to 6 concise, substantive, persona-aware sentences total across general_advice and day_closeout_meal_assessment; do not repeat the same assessment in both fields. Acknowledge that all scheduled meals are complete. Say the full day or all activities are complete only when the supplied evidence explicitly says the remaining activity count is zero; otherwise state remaining work accurately. Treat the evidence as a snapshot only at its supplied as-of timestamp and do not claim later state. Provide a nonempty day_closeout_meal_assessment supported by supplied or fetched meal and nutrition facts; do not infer nutrition adequacy or target alignment unless you actually fetched the targets. Identify an evidenced win and give at most one next-day or recovery priority across the output. Do not invent achievements, targets, nutrition quality, actions, proposals, plan changes, or prescriptions; claim only actions whose tool result confirmed them."
           : "") +
         (task.kind === "workout_suggestions"
           ? '\nWorkout output: recommendations is an object keyed by the exact exercise IDs from the workout context, not an array or a single summary. Cover each exercise in that workout using its exact key (1 to 40 entries); never use the workout ID as an exercise key. Do not invent IDs, history, or evidence. Shape template only: {"recommendations":{"<exact exercise ID from context>":{"summary":"","target_weight":null}}}. Replace the placeholder with a context exercise ID; do not output the placeholder. Each entry requires summary (string, at most 1000 characters). Optional numeric targets must be JSON numbers within the schema bounds, or null when unknown; sets/reps/duration must be integers. Intensity is low, moderate, high, or null. Omit unsupported optional fields; no extra fields. Use evidence-grounded advice, not example claims or invented loads. Return the actual complete JSON object, at most 24000 UTF-8 bytes, not a description of it.'
           : "");
       let repairHint = "";
       let result: any;
+      const tools = [
+        ...capability.tools(),
+        ...(memory ? [this.memorySearchTool(c, memory, budget, terminal)] : []),
+      ];
       for (let attempt = 0; attempt < 2; attempt++) {
         const text = await bounded(
           () =>
@@ -1098,11 +1198,12 @@ export class Worker {
               signal,
               system +
                 (attempt === 1
-                  ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose, tools or Markdown code fences. The rejected result is not available. Structural correction: " +
+                  ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose or Markdown code fences. Your tools remain available and earlier tool results still apply; never repeat an action that already ran. The rejected result is not available. Structural correction: " +
                     repairHint
                   : ""),
-              [],
+              tools,
               ref,
+              { deadlineAt },
             ),
           signal,
         );

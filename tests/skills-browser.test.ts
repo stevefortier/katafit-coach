@@ -348,9 +348,10 @@ test("served Settings Skills editor saves, restarts, restores, fences late auth,
         system,
         /<coach_skill id="(?:review-activity|change-plan)"/,
       );
-      assert.ok(
-        !request.tools?.length,
-        "generation remains tool-free after the UI edit",
+      assert.deepEqual(
+        (request.tools ?? []).map((t: any) => t.function?.name ?? t.name),
+        ["katafit_rest_request"],
+        "generation keeps only the shared REST tool after the UI edit",
       );
       assert.ok(
         !JSON.stringify(runtimeStore.skills.history(1)).includes(marker),

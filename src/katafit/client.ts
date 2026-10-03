@@ -35,6 +35,12 @@ const toolCodes = [
   "MEMORY_PUBLICATION_REQUIRED",
   "MEMORY_INVALID",
   "LEASE_LOST",
+  // coach.capability.v1 task action journal
+  "ACTION_UNSUPPORTED",
+  "ACTION_NOT_FOUND",
+  "ACTION_RECEIPT_MISSING",
+  "TASK_IDEMPOTENCY_CONFLICT",
+  "TASK_CAPABILITY_REQUIRED",
 ];
 export function toolFailure(r: any) {
   let code: string | undefined;

@@ -213,6 +213,15 @@ export async function admin(
         onDiagnostic: (event) => logs.record(event),
         archiveTaskInvalidation: (record) =>
           archiveTaskInvalidation(store.dir, record),
+        // The installation's one durable action ledger: an uncertain write
+        // from any surface fences worker writes too.
+        actionLedger: (() => {
+          const actions = new Actions(store, (event) => logs.record(event));
+          return {
+            unresolved: () => actions.unresolved(),
+            save: (action) => actions.save(action),
+          };
+        })(),
         complete: (context, signal, system, tools, ref, budget) =>
           infer(
             {

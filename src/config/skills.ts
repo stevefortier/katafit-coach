@@ -663,17 +663,10 @@ export class SkillStore {
   }
 }
 
-const taskSkills: Record<string, string[]> = {
-  activity_reaction: ["review-activity"],
-  activity_followup: ["review-activity"],
-  media_chat: ["review-activity"],
-  daily_insight: ["understand-progress"],
-  day_closure: ["understand-progress"],
-  exercise_suggestions: ["understand-progress"],
-  workout_suggestions: ["change-plan"],
-};
-export function skillForTask(runtime: SkillRuntime, kind: string) {
-  const ids = new Set(taskSkills[kind] ? ["katafit-api"] : []);
+// Every task kind can acquire facts during generation, so every kind gets the
+// API skill (including kinds with no domain-specific skill).
+export function skillForTask(runtime: SkillRuntime, _kind: string) {
+  const ids = new Set(["katafit-api"]);
   return runtime.skills.filter((skill) => ids.has(skill.id));
 }
 export function skillsForRequest(runtime: SkillRuntime, text: unknown) {

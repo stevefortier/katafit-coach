@@ -7,6 +7,10 @@ import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { photoReviewGuidance } from "../src/worker/photoReviewGuidance.js";
+import {
+  CAPABILITY_GUIDANCE,
+  PRINCIPAL_REST_NOTE,
+} from "../src/capability/invocation.js";
 
 test("photo requests guide native media reads at the original request anchor", () => {
   const asOf = "2026-09-23T21:05:00.000Z";
@@ -104,7 +108,12 @@ test("preview and running worker receive byte-identical saved effective instruct
         t.unref();
       }),
     ]);
-    assert.deepEqual(systems, [preview.prompt, preview.prompt]);
+    // The worker appends only per-invocation runtime capability guidance
+    // (this fixture request is Dojo-scoped, so REST is the principal's).
+    assert.deepEqual(systems, [
+      preview.prompt,
+      preview.prompt + CAPABILITY_GUIDANCE + PRINCIPAL_REST_NOTE,
+    ]);
   } finally {
     await app.close();
     await f.close();
@@ -736,7 +745,7 @@ test("worker offers negotiated media only inside claimed request budget", async 
     await w.pollOnce();
     assert.deepEqual(
       exposed.map((t: any) => t.name),
-      ["coach_read_media"],
+      ["coach_read_media", "katafit_rest_request"],
     );
     assert.equal(f.publications, 1);
     const callCount = f.calls.length;
