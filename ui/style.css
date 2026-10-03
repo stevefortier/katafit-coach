@@ -1133,7 +1133,7 @@ header {
 }
 .dashboard-date-selects {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) 44px;
+  grid-template-columns: 66px minmax(0, 1fr) 44px;
   gap: 4px;
   min-width: 0;
   width: 100%;
@@ -1162,7 +1162,9 @@ header {
   grid-template-columns: 28px minmax(0, 1fr) 28px;
   align-items: end;
   gap: 4px;
-  width: 300px;
+  /* Leave room for full month names with wider Linux system-ui metrics,
+     without compressing the native year/day controls or flanking arrows. */
+  width: 320px;
   max-width: 100%;
   min-width: 0;
 }
@@ -1174,7 +1176,7 @@ header {
 @media (max-width: 480px) {
   .dashboard-day-navigation {
     /* Reclaim the panel gutter without clipping long native month labels. */
-    width: min(300px, calc(100vw - 40px));
+    width: min(320px, calc(100vw - 24px));
     max-width: none;
   }
 }

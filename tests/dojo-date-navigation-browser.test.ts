@@ -347,92 +347,126 @@ test("served Dojo year/month/day selectors retain and clamp civil day", async ()
     }
     await setDay(page, "2026-09-01");
     await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
-    for (const width of [1280, 390, 320]) {
-      await page.setViewportSize({ width, height: 1000 });
-      const bounds = await page.evaluate(() => {
-        const strip = document
-          .querySelector(".dashboard-map-date")!
-          .getBoundingClientRect();
-        const controls = document
-          .querySelector(".dashboard-date-selects")!
-          .getBoundingClientRect();
-        return {
-          stripCenter: (strip.left + strip.right) / 2,
-          center: (controls.left + controls.right) / 2,
-          overflow: document.documentElement.scrollWidth > innerWidth,
-        };
-      });
-      const fields = await page
-        .locator(".dashboard-date-selects select")
-        .evaluateAll((nodes) => nodes.map((node) => node.id));
-      assert.deepEqual(fields, [
-        "dashboardMapYear",
-        "dashboardMapMonth",
-        "dashboardMapDay",
-      ]);
-      assert.equal(await page.locator('input[type="range"]').count(), 0);
-      assert.equal(
-        await page.locator("#dashboardSelectedDate").innerText(),
-        "Tuesday",
-      );
-      const boxes = await page
-        .locator(
-          ".dashboard-day-navigation button, .dashboard-date-selects select",
-        )
-        .evaluateAll((nodes) =>
-          nodes.map((node) => node.getBoundingClientRect().toJSON()),
+    // DejaVu Sans models the wider Linux hosted system-ui fallback; local
+    // Chrome can otherwise pass with narrower Noto Sans metrics.
+    for (const font of [null, '"DejaVu Sans", sans-serif']) {
+      await page.locator(".dashboard-date-selects").evaluate((node, font) => {
+        (node as HTMLElement).style.fontFamily = font || "";
+      }, font);
+      for (const width of [1280, 390, 320]) {
+        await page.setViewportSize({ width, height: 1000 });
+        const bounds = await page.evaluate(() => {
+          const strip = document
+            .querySelector(".dashboard-map-date")!
+            .getBoundingClientRect();
+          const controls = document
+            .querySelector(".dashboard-date-selects")!
+            .getBoundingClientRect();
+          return {
+            stripCenter: (strip.left + strip.right) / 2,
+            center: (controls.left + controls.right) / 2,
+            overflow: document.documentElement.scrollWidth > innerWidth,
+          };
+        });
+        const fields = await page
+          .locator(".dashboard-date-selects select")
+          .evaluateAll((nodes) => nodes.map((node) => node.id));
+        assert.deepEqual(fields, [
+          "dashboardMapYear",
+          "dashboardMapMonth",
+          "dashboardMapDay",
+        ]);
+        assert.equal(await page.locator('input[type="range"]').count(), 0);
+        assert.equal(
+          await page.locator("#dashboardSelectedDate").innerText(),
+          "Tuesday",
         );
-      assert.ok(
-        boxes.every((box, i) => !i || box.left >= boxes[i - 1].right),
-        JSON.stringify(boxes),
-      );
-      assert.ok(
-        Math.abs(bounds.center - bounds.stripCenter) < 2,
-        JSON.stringify({ width, ...bounds }),
-      );
-      assert.equal(bounds.overflow, false);
-      assert.equal(
-        await page.locator("#dashboardMapMonth").evaluate((node) => {
-          const select = node as HTMLSelectElement;
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d")!;
-          const style = getComputedStyle(select);
-          context.font = `${style.fontSize} ${style.fontFamily}`;
-          return (
-            context.measureText(select.selectedOptions[0].textContent!).width +
-              30 <=
-            select.clientWidth
+        const boxes = await page
+          .locator(
+            ".dashboard-day-navigation button, .dashboard-date-selects select",
+          )
+          .evaluateAll((nodes) =>
+            nodes.map((node) => node.getBoundingClientRect().toJSON()),
           );
-        }),
-        true,
-        "long selected month label fits beside native arrow",
-      );
-      if (process.env.DATE_NAV_SCREENSHOT_DIR) {
-        await mkdir(process.env.DATE_NAV_SCREENSHOT_DIR, { recursive: true });
-        await page.evaluate(() => window.scrollTo(0, 0));
-        await page.screenshot({
-          path: `${process.env.DATE_NAV_SCREENSHOT_DIR}/synthetic-dashboard-${width}.png`,
-        });
-        const strip = (await page
-          .locator(".dashboard-map-date")
-          .boundingBox())!;
-        const navigation = (await page
-          .locator(".dashboard-day-navigation")
-          .boundingBox())!;
-        const left = Math.min(strip.x, navigation.x);
-        const right = Math.max(
-          strip.x + strip.width,
-          navigation.x + navigation.width,
+        assert.ok(
+          boxes.every((box, i) => !i || box.left >= boxes[i - 1].right),
+          JSON.stringify(boxes),
         );
-        await page.screenshot({
-          clip: {
-            x: left,
-            y: strip.y,
-            width: right - left,
-            height: strip.height,
-          },
-          path: `${process.env.DATE_NAV_SCREENSHOT_DIR}/synthetic-date-strip-${width}.png`,
-        });
+        assert.ok(
+          Math.abs(bounds.center - bounds.stripCenter) < 2,
+          JSON.stringify({ width, ...bounds }),
+        );
+        assert.equal(bounds.overflow, false);
+        const labelFits = await page
+          .locator(".dashboard-date-selects select")
+          .evaluateAll((nodes) =>
+            nodes.map((node) => {
+              const select = node as HTMLSelectElement;
+              const style = getComputedStyle(select);
+              const context = document
+                .createElement("canvas")
+                .getContext("2d")!;
+              context.font = `${style.fontSize} ${style.fontFamily}`;
+              return {
+                id: select.id,
+                fits:
+                  context.measureText(select.selectedOptions[0].textContent!)
+                    .width +
+                    parseFloat(style.paddingLeft) +
+                    parseFloat(style.paddingRight) +
+                    20 <=
+                  select.clientWidth,
+              };
+            }),
+          );
+        assert.ok(
+          labelFits.every((field) => field.fits),
+          JSON.stringify({ width, font, labelFits }),
+        );
+        assert.equal(
+          await page.locator("#dashboardMapMonth").evaluate((node) => {
+            const select = node as HTMLSelectElement;
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d")!;
+            const style = getComputedStyle(select);
+            context.font = `${style.fontSize} ${style.fontFamily}`;
+            return (
+              context.measureText(select.selectedOptions[0].textContent!)
+                .width +
+                30 <=
+              select.clientWidth
+            );
+          }),
+          true,
+          "long selected month label fits beside native arrow",
+        );
+        if (process.env.DATE_NAV_SCREENSHOT_DIR) {
+          await mkdir(process.env.DATE_NAV_SCREENSHOT_DIR, { recursive: true });
+          await page.evaluate(() => window.scrollTo(0, 0));
+          await page.screenshot({
+            path: `${process.env.DATE_NAV_SCREENSHOT_DIR}/synthetic-dashboard-${width}.png`,
+          });
+          const strip = (await page
+            .locator(".dashboard-map-date")
+            .boundingBox())!;
+          const navigation = (await page
+            .locator(".dashboard-day-navigation")
+            .boundingBox())!;
+          const left = Math.min(strip.x, navigation.x);
+          const right = Math.max(
+            strip.x + strip.width,
+            navigation.x + navigation.width,
+          );
+          await page.screenshot({
+            clip: {
+              x: left,
+              y: strip.y,
+              width: right - left,
+              height: strip.height,
+            },
+            path: `${process.env.DATE_NAV_SCREENSHOT_DIR}/synthetic-date-strip-${font ? "linux-" : ""}${width}.png`,
+          });
+        }
       }
     }
   });
