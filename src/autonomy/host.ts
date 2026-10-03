@@ -203,6 +203,10 @@ class TrackedBackend extends AutonomyBackend {
       if (definite(error) && !entry.existing)
         await this.ledger.resolve(entry.id).catch(() => {});
       else {
+        // The response is already ambiguous: classify it as protected NOW.
+        // unknown persistence can queue behind another durable begin; leaving
+        // it in dispatched during that await would admit a new network write.
+        this.dispatched.delete(entry.id);
         await this.ledger.unknown(entry.id).catch(() => {});
         this.onUnknown();
       }

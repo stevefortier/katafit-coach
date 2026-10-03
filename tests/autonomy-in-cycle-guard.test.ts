@@ -2,6 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { WriteLedger } from "../src/autonomy/ledger.js";
 import { AutonomyBackend } from "../src/autonomy/backend.js";
 import {
   REPORT_TOOL,
@@ -24,6 +25,142 @@ after(closeLeaked);
 
 const unavailable = { status: 503, body: { code: "AUTONOMY_UNAVAILABLE" } };
 const parse = (r: any) => JSON.parse(r.content[0].text);
+
+test("R4-A: observed ambiguity fences a new dispatch before unknown persistence finishes", async () => {
+  let tracked: AutonomyBackend | undefined;
+  let r1id = "";
+  let beginHeld = false;
+  let unknownHeld = false;
+  let releaseBegin!: () => void;
+  let releaseUnknown!: () => void;
+  const beginGate = new Promise<void>((r) => (releaseBegin = r));
+  const unknownGate = new Promise<void>((r) => (releaseUnknown = r));
+  const begin = WriteLedger.prototype.begin;
+  const unknown = WriteLedger.prototype.unknown;
+  const act = AutonomyBackend.prototype.act;
+  WriteLedger.prototype.begin = async function (record) {
+    const result = await begin.call(this, record);
+    if (record.slot === "r1") r1id = result.id;
+    if (record.slot === "r2") {
+      // Real durable begin finished; hold its return before host recheck.
+      beginHeld = true;
+      await beginGate;
+    }
+    return result;
+  };
+  WriteLedger.prototype.unknown = async function (id) {
+    if (id === r1id) {
+      // Catch has observed the ambiguous response; persistence is not done.
+      unknownHeld = true;
+      await unknownGate;
+    }
+    return unknown.call(this, id);
+  };
+  AutonomyBackend.prototype.act = function (...args) {
+    tracked = this;
+    return act.apply(this, args);
+  };
+  let first = "";
+  const planner = new ScriptedRuntime([
+    async ({ call }) => {
+      const original = call(REPORT_TOOL, { slot: "r1", text: "Lost ACK." });
+      await until(
+        () => proxy.state.entered.length === 1,
+        "r1 dispatched and held",
+      );
+      assert.ok(tracked);
+      const work = env.fake.state.work.get(first);
+      let secondResult: any;
+      let secondSettled = false;
+      const second = tracked
+        .act(first, "r2", {
+          lease_generation: work.lease_generation,
+          mandate_revision: work.mandate_revision,
+          type: "manager_report",
+          text: "Must not dispatch after observed ambiguity.",
+        })
+        .then(
+          (value) => {
+            secondResult = value;
+            secondSettled = true;
+          },
+          (error) => {
+            secondResult = error;
+            secondSettled = true;
+          },
+        );
+      await until(
+        () => beginHeld,
+        "r2 real durable begin held before host recheck",
+      );
+      proxy.release();
+      await until(
+        () => unknownHeld,
+        "r1 response failed before unknown persistence",
+      );
+      releaseBegin();
+      await until(
+        () => secondSettled,
+        "r2 admission settled while r1 persistence held",
+      );
+      releaseUnknown();
+      await second;
+      assert.equal(
+        env.fake.calls.filter(
+          (c) => c.method === "PUT" && c.path.endsWith("/actions/r2"),
+        ).length,
+        0,
+      );
+      assert.equal(secondResult.code, "AUTONOMY_OUTCOME_UNKNOWN");
+      assert.equal(parse(await original).error, "AUTONOMY_OUTCOME_UNKNOWN");
+      return outcome();
+    },
+  ]);
+  const env = await autonomyAdmin({ planners: [planner], proofThrottleMs: 0 });
+  const proxy = await holdingProxy(env.fake.origin);
+  try {
+    await env.store.save({ ...env.store.publicConfig(), origin: proxy.origin });
+    proxy.state.hold = true;
+    proxy.state.holds = (method, path) =>
+      method === "PUT" && path.endsWith("/actions/r1");
+    proxy.state.rewrite = (method, path) =>
+      method === "PUT" && path.endsWith("/actions/r1")
+        ? { unexpected: true }
+        : undefined;
+    proxy.state.intercept = (method, path) =>
+      method === "GET" && path.split("?")[0].endsWith("/actions/r1")
+        ? unavailable
+        : undefined;
+    first = env.fake.enqueue({ kind: "reconcile", subject_ids: [MEMBER] });
+    await env.call("POST", "/api/autonomy/participate", { participate: true });
+    await until(
+      async () =>
+        planner.errors.length > 0 ||
+        (env.fake.state.work.get(first).status === "blocked" &&
+          !(await env.status()).local.busy),
+      "cycle finished",
+    );
+    assert.deepEqual(planner.errors, []);
+    assert.equal(
+      env.fake.state.work.get(first).blocked_reason,
+      "uncertain_write",
+    );
+    assert.equal((await env.status()).local.unresolvedWrites, 1);
+    const records = JSON.parse(
+      await readFile(join(env.store.dir, "autonomy", "writes.json"), "utf8"),
+    );
+    assert.equal(JSON.stringify(records).includes('"slot":"r2"'), false);
+  } finally {
+    releaseBegin();
+    releaseUnknown();
+    proxy.release();
+    WriteLedger.prototype.begin = begin;
+    WriteLedger.prototype.unknown = unknown;
+    AutonomyBackend.prototype.act = act;
+    await env.close();
+    await proxy.close();
+  }
+});
 
 const intent = {
   type: "member_message" as const,
