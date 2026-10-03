@@ -203,8 +203,19 @@ test("manual update stable owner resumes after replacement and rollback without 
       202,
       await pendingAccepted.clone().text(),
     );
-    for (let i = 0; i < 100 && owner.updates.applying; i++)
+    // Queued 202 precedes durable acceptance. Join this exact operation's
+    // recovery, not the previous operation's applying=false snapshot.
+    for (let i = 0; i < 100; i++) {
+      if (
+        owner.updates.lastOperation?.sha === latest &&
+        !owner.updates.applying &&
+        owner.updates.recovering
+      )
+        break;
       await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(owner.updates.lastOperation?.sha, latest);
+    assert.equal(owner.updates.installed, latest);
     assert.equal(owner.updates.recovering, true);
     assert.equal(
       JSON.parse(await readFile(join(home, "update-resume.json"), "utf8"))

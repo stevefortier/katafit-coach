@@ -170,6 +170,18 @@ export class Worker {
     this.updateQuiesced = true;
     return true;
   }
+  /** Reserve synchronously, including an already-dispatched poll/claim. Do not
+   * abort that claim: its accepted execution and receipt must finish normally. */
+  reserveForManualUpdate(): boolean {
+    if (this.stopping || this.updateQuiesced || this.reconciling) return false;
+    this.updateQuiesced = true;
+    return true;
+  }
+  async drainForUpdate() {
+    if (!this.updateQuiesced) throw new SafeError("CANCELLED");
+    // A failed poll is settled work too; publication ledgers remain authoritative.
+    await this.active?.catch(() => {});
+  }
   releaseUpdateQuiesce() {
     this.updateQuiesced = false;
   }
@@ -186,7 +198,8 @@ export class Worker {
   reconcilePublications(idle = false): Promise<void> {
     if (this.reconciling) return this.reconciling;
     if (
-      (this.state !== "stopped" && !(idle && this.state === "idle")) ||
+      (this.state !== "stopped" &&
+        !(idle && (this.state === "idle" || this.updateQuiesced))) ||
       this.active ||
       (this.state !== "stopped" && this.stopping)
     )
@@ -641,7 +654,8 @@ export class Worker {
       }
       let triedTasks = false;
       const tryTasks = async () => {
-        if (triedTasks || !taskKinds.length) return false;
+        if (this.updateQuiesced || triedTasks || !taskKinds.length)
+          return false;
         triedTasks = true;
         // Flip before work so provider/task errors cannot starve main chat.
         this.preferTask = false;
@@ -678,7 +692,7 @@ export class Worker {
       const instructions = await fetchInstructions(c);
       // Never reclaim/replay an ambiguously published request, even under a new lease.
       // Typed tasks can still progress; main publication resumes after reconciliation.
-      if (this.unresolvedRequests.size) return;
+      if (this.updateQuiesced || this.unresolvedRequests.size) return;
       const { request } = await c.call("coach_claim_request", {
         lease_seconds: 120,
       });
@@ -995,6 +1009,7 @@ export class Worker {
     }
   }
   private async pollTask(c: Client, kinds: string[], ref: string) {
+    if (this.updateQuiesced) return false;
     const { task } = await c.call("coach_claim_task", {
       protocol: TASK_PROTOCOL,
       kinds,

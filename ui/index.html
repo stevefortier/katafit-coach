@@ -982,11 +982,15 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               </div>
               <p class="hint">
                 Confirming an upgrade stops Coach safely and restarts it if it
-                was running. A stopped Coach stays stopped. Finish or cancel
-                previews and native Pi first if you need their drafts. Native
-                sessions close during the upgrade; in-progress turns and unsent
-                drafts may be lost. Actions are never replayed.
+                was running. A stopped Coach stays stopped. Accepted worker work
+                finishes before installation; new claims wait. Native sessions
+                must finish and close before installation; upgrades never abort
+                an in-progress Pi turn. Actions are never replayed.
               </p>
+              <p id="updateQueueStatus" role="status" hidden></p>
+              <button id="updateQueueCancel" class="secondary" hidden>
+                Cancel queued upgrade
+              </button>
               <div id="updateConfirm" class="update-confirm" hidden>
                 <h3>Install this source revision?</h3>
                 <code id="updateTarget"></code>
@@ -994,13 +998,17 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
                   This downloads and builds code from the official repository,
                   then briefly restarts Studio. Coach is stopped safely and
                   restarted only if it was running; a stopped Coach stays
-                  stopped. Native sessions close; an in-progress Pi turn or
-                  unsent draft may be lost. Actions are never replayed. Only
-                  continue if you trust this source. The launcher completes the
-                  operation even if this tab closes. A disconnect is not proof
-                  of success.
+                  stopped. Accepted work drains first. Finish and close native
+                  Pi to let installation proceed; no turn is interrupted. You
+                  can cancel while waiting, before safe worker Stop begins.
+                  Waiting intent survives tab closure but not service restart;
+                  it is process-local until the launcher durably accepts the
+                  installation. Actions are never replayed. Only continue if you
+                  trust this source. A disconnect is not proof of success.
                 </p>
-                <button id="updateConfirmApply">Install and restart</button>
+                <button id="updateConfirmApply">
+                  Queue install and restart
+                </button>
                 <button id="updateCancel" class="secondary">Not now</button>
               </div>
             </section>

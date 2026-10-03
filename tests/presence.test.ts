@@ -1087,8 +1087,17 @@ test("manual preparation preserves source and presence safety on refused stop", 
       headers,
       body: JSON.stringify({ sha: "e".repeat(40), confirm: true }),
     });
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).error, "WORKER_STOP_UNCONFIRMED");
+    assert.equal(response.status, 202);
+    let queue;
+    for (let i = 0; i < 200; i++) {
+      queue = (
+        await (await fetch(owner.origin + "/api/update", { headers })).json()
+      ).manualQueue;
+      if (queue.phase === "failed") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(queue.phase, "failed");
+    assert.equal(queue.reason, "WORKER_STOP_UNCONFIRMED");
     assert.equal(owner.updates.installed, "b".repeat(40));
     assert.equal(owner.updates.applying, false);
     assert.equal(prepares, 1);

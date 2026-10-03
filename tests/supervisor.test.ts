@@ -565,7 +565,17 @@ test("manual cancellation and acceptance failures release their prepared reserva
       headers,
       body: JSON.stringify({ sha: latest, confirm: true }),
     });
-    assert.equal(response.status, 503);
+    assert.equal(response.status, 202);
+    let queue;
+    for (let i = 0; i < 200; i++) {
+      queue = (
+        await (await fetch(owner.origin + "/api/update", { headers })).json()
+      ).manualQueue;
+      if (queue.phase === "failed") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(queue.phase, "failed");
+    assert.equal(queue.reason, "UPDATE_NOT_ACCEPTED");
     await assert.rejects(access(join(home, "versions", acceptanceFailure)), {
       code: "ENOENT",
     });

@@ -10,7 +10,7 @@ import { Updates } from "../src/update/updates.js";
 import { NativeTerminal } from "../src/server/terminal.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
-test("manual update excludes an in-flight claim and fences late claims and native admission", async () => {
+test("manual update queues an in-flight claim and fences late claims and native admission", async () => {
   let holdClaim = false;
   let entered!: () => void, release!: () => void;
   const claimEntered = new Promise<void>((r) => (entered = r));
@@ -65,7 +65,6 @@ test("manual update excludes an in-flight claim and fences late claims and nativ
   let releaseStop!: () => void, enterStop!: () => void;
   const stopEntered = new Promise<void>((r) => (enterStop = r)),
     stopGate = new Promise<void>((r) => (releaseStop = r));
-  let applying: Promise<Response> | undefined;
   try {
     await post("/api/run");
     for (let i = 0; i < 100 && owned.state !== "idle"; i++) await sleep(10);
@@ -80,31 +79,28 @@ test("manual update excludes an in-flight claim and fences late claims and nativ
     assert.equal(
       (await post("/api/update/apply", { confirm: true, sha: updates.latest }))
         .status,
-      409,
+      202,
     );
     assert.equal(owned.state, "idle");
-    release();
-    await polling;
     NativeTerminal.prototype.stop = async function () {
       enterStop();
       await stopGate;
       return stopNative.call(this);
     };
-    applying = post("/api/update/apply", {
-      confirm: true,
-      sha: updates.latest,
-    });
+    release();
+    await polling;
     await stopEntered;
     const calls = f.calls.length;
     await assert.rejects(owned.pollOnce(), /CANCELLED/);
     assert.equal((await post("/api/terminal/ticket")).status, 409);
     assert.equal(f.calls.length, calls);
     releaseStop();
-    assert.equal((await applying).status, 202);
+    for (let i = 0; i < 100 && updates.installed !== updates.latest; i++)
+      await sleep(10);
+    assert.equal(updates.installed, updates.latest);
   } finally {
     release();
     releaseStop();
-    await applying;
     Worker.prototype.start = start;
     NativeTerminal.prototype.stop = stopNative;
     await app.close();
@@ -113,7 +109,7 @@ test("manual update excludes an in-flight claim and fences late claims and nativ
   }
 });
 
-test("actual admin rejects idle-unsafe manual apply before stop and supports receipt-only stopped recovery", async () => {
+test("actual admin queues idle-unsafe manual apply without stopping and supports receipt-only stopped recovery", async () => {
   const options = {
     dropCompleteBeforeAcceptance: true,
     reconcileDenial: "TASK_SOURCE_CHANGED",
@@ -182,7 +178,15 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
       confirm: true,
       sha: updates.latest,
     });
-    assert.equal(response.status, 409);
+    assert.equal(response.status, 202);
+    const queue = await response.json();
+    for (let i = 0; i < 100; i++) {
+      const data = await (
+        await fetch(app.origin + "/api/update", { headers })
+      ).json();
+      if (data.manualQueue.phase === "waiting-publication") break;
+      await sleep(10);
+    }
     assert.equal(
       owned?.state,
       "idle",
@@ -194,6 +198,10 @@ test("actual admin rejects idle-unsafe manual apply before stop and supports rec
       409,
     );
     assert.equal(owned?.state, "idle");
+    assert.equal(
+      (await post("/api/update/cancel", { id: queue.id })).status,
+      200,
+    );
     await post("/api/stop");
     assert.equal(owned?.state, "stopped");
     const before = f.calls.length;
@@ -790,6 +798,86 @@ test("stopped task reconciliation retains denied identities and resolves without
       2,
     );
   } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+
+test("manual reservation reconciles drained publication identity without rewriting diagnostic history", async () => {
+  const options: any = { main: true, dropRespond: true, mainReceipts: [] };
+  const f = await taskFixture(options);
+  const w = new Worker({
+    origin: f.origin,
+    token: "synthetic-secret",
+    system: "Coach",
+    complete: async () => "Accepted reply",
+  });
+  try {
+    await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    const original = w.lastError;
+    assert.equal(w.safeToReplace, false);
+    assert.equal(w.reserveForManualUpdate(), true);
+    await w.drainForUpdate();
+    await w.reconcilePublications(true);
+    assert.equal(w.safeToReplace, false);
+    options.mainReceipts = [
+      { id: "main", status: "completed", lease_generation: 1 },
+    ];
+    await w.reconcilePublications(true);
+    assert.equal(w.safeToReplace, true);
+    assert.equal(w.lastError, original);
+    assert.equal(f.calls.filter((c) => c.name === "coach_respond").length, 1);
+    await assert.rejects(w.pollOnce(), /CANCELLED/);
+  } finally {
+    w.releaseUpdateQuiesce();
+    await w.stop();
+    await f.close();
+  }
+});
+
+test("manual reservation drains an already-dispatched typed claim exactly once", async () => {
+  let hold = false,
+    entered!: () => void,
+    release!: () => void;
+  const reached = new Promise<void>((r) => (entered = r));
+  const gate = new Promise<void>((r) => (release = r));
+  const f = await taskFixture({
+    onClaimTask: async () => {
+      if (hold) {
+        entered();
+        await gate;
+      }
+    },
+  });
+  const w = new Worker({
+    origin: f.origin,
+    token: "synthetic-secret",
+    system: "Coach",
+    complete: async () => '{"text":"One typed result"}',
+  });
+  try {
+    await w.pollOnce();
+    assert.equal(w.state, "idle");
+    f.enqueue();
+    hold = true;
+    const polling = w.pollOnce();
+    await reached;
+    assert.equal(w.reserveForManualUpdate(), true);
+    const drain = w.drainForUpdate();
+    await assert.rejects(w.pollOnce(), /CANCELLED/);
+    release();
+    await drain;
+    await polling;
+    assert.equal(f.saved.length, 1);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      1,
+    );
+    assert.equal(w.safeToReplace, true);
+    await assert.rejects(w.pollOnce(), /CANCELLED/);
+  } finally {
+    release();
+    w.releaseUpdateQuiesce();
     await w.stop();
     await f.close();
   }
