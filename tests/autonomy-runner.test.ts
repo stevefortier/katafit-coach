@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { HeadlessFailure } from "../src/autonomy/headless.js";
 import { WORK_KINDS } from "../src/autonomy/types.js";
-import { CHIEF, MEMBER } from "./helpers/autonomy-fake.js";
+import {
+  BLOCKED_REASONS_710D,
+  CHIEF,
+  MEMBER,
+} from "./helpers/autonomy-fake.js";
 import {
   closeLeaked,
   cycle,
@@ -306,6 +310,26 @@ test("C3: a malformed outcome fails the work without certifying any action", asy
     );
     assert.equal(work(env.fake, env.workId).status, "failed");
     assert.deepEqual(env.fake.state.reports[0].action_slots, []);
+  } finally {
+    await env.close();
+  }
+});
+
+test("C11: composition_rejected is host-owned; a planner that claims it is malformed", async () => {
+  const env = await setup();
+  env.fake.state.blockedReasons = [...BLOCKED_REASONS_710D];
+  try {
+    const claim = async () =>
+      outcome({
+        result: "blocked",
+        blocked_reason: "composition_rejected",
+      } as any);
+    const { result } = await cycle(env, [claim, claim]);
+    assert.equal(result.outcome.result, "failed");
+    assert.ok(
+      result.outcome.uncertainty.some((u) => /planner_outcome_invalid/.test(u)),
+    );
+    assert.equal(work(env.fake, env.workId).status, "failed");
   } finally {
     await env.close();
   }

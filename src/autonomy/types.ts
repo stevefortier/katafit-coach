@@ -97,6 +97,14 @@ export const BLOCKED_REASONS = [
   "budget_exhausted",
   "attempts_exhausted",
 ] as const;
+/**
+ * Host-owned outcome reasons. The planner never chooses these; the host sends
+ * one only when the backend advertises it in mandate capabilities (710d4513).
+ */
+export const HOST_BLOCKED_REASONS = [
+  ...BLOCKED_REASONS,
+  "composition_rejected",
+] as const;
 export const UNOBSERVED = ["member_chat", "images", "pages_truncated"] as const;
 export const DECISIONS = [
   "no_action",
@@ -605,16 +613,25 @@ export const schemas = {
   }),
   mandateView: object({
     ...mandateProperties,
-    capabilities: object({
-      action_types: {
-        type: "array",
-        maxItems: ACTION_TYPES.length,
-        uniqueItems: true,
-        items: { enum: ACTION_TYPES },
+    capabilities: object(
+      {
+        action_types: {
+          type: "array",
+          maxItems: ACTION_TYPES.length,
+          uniqueItems: true,
+          items: { enum: ACTION_TYPES },
+        },
+        scopes: { type: "array", maxItems: 4, items: { const: "dojo" } },
+        max_lease_seconds: int(15, 300),
+        blocked_reasons: {
+          type: "array",
+          maxItems: 32,
+          uniqueItems: true,
+          items: { type: "string", pattern: "^[a-z_]{1,64}$" },
+        },
       },
-      scopes: { type: "array", maxItems: 4, items: { const: "dojo" } },
-      max_lease_seconds: int(15, 300),
-    }),
+      ["blocked_reasons"],
+    ),
   }),
 };
 
@@ -766,7 +783,7 @@ export interface Page<T> {
 export interface CycleOutcome {
   result: "completed" | "deferred" | "blocked" | "failed";
   next_due_at?: string;
-  blocked_reason?: (typeof BLOCKED_REASONS)[number];
+  blocked_reason?: (typeof HOST_BLOCKED_REASONS)[number];
   coverage: {
     members_considered: number;
     members_read: number;
@@ -891,6 +908,7 @@ export interface MandateView extends Mandate {
     action_types: ActionType[];
     scopes: "dojo"[];
     max_lease_seconds: number;
+    blocked_reasons?: string[];
   };
 }
 
@@ -931,6 +949,13 @@ export const validate = {
   }>(schemas.compositionResult),
   intentState: ajv.compile<IntentState>(schemas.intentState),
   cycleOutcome: ajv.compile<CycleOutcome>(schemas.cycleOutcome),
+  hostOutcome: ajv.compile<CycleOutcome>({
+    ...schemas.cycleOutcome,
+    properties: {
+      ...schemas.cycleOutcome.properties,
+      blocked_reason: { enum: HOST_BLOCKED_REASONS },
+    },
+  }),
   followUpInput: ajv.compile<FollowUpInput>(schemas.followUpInput),
   followUpPatch: ajv.compile<FollowUpPatch>(schemas.followUpPatch),
   followUpResult: ajv.compile<{ follow_up: FollowUp; idempotent: boolean }>(

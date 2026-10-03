@@ -35,6 +35,18 @@ class Fail extends Error {
   }
 }
 
+const LEGACY_BLOCKED_REASONS = [
+  "uncertain_write",
+  "insufficient_authority",
+  "manager_decision_needed",
+  "budget_exhausted",
+  "attempts_exhausted",
+];
+export const BLOCKED_REASONS_710D = [
+  ...LEGACY_BLOCKED_REASONS,
+  "composition_rejected",
+];
+
 export async function autonomyFake(
   start = Date.parse("2026-10-03T07:00:00.000Z"),
 ) {
@@ -111,6 +123,11 @@ export async function autonomyFake(
     members: new Set([MEMBER, OTHER_MEMBER, CHIEF]),
     /** Backend `SUPPORTED_ACTION_TYPES` (advertised in mandate capabilities). */
     supported: ["member_message", "manager_report", "follow_up"] as string[],
+    /**
+     * Backend 710d4513+ advertises accepted outcome reasons in mandate
+     * capabilities; older backends omit the key and reject unknown reasons.
+     */
+    blockedReasons: undefined as string[] | undefined,
     /** coach.capability.v1 claim negotiation (backend 2f1e6e7f and later). */
     negotiates: true,
     restAccess: true,
@@ -198,6 +215,9 @@ export async function autonomyFake(
           action_types: [...state.supported],
           scopes: ["dojo"],
           max_lease_seconds: 300,
+          ...(state.blockedReasons
+            ? { blocked_reasons: [...state.blockedReasons] }
+            : {}),
         },
       };
     if (method === "PUT" && p === "/mandate") {
@@ -706,6 +726,13 @@ export async function autonomyFake(
       const w = held(m[1], body.lease_generation, credential);
       fenceMandate(w, body.mandate_revision);
       const o = body.outcome;
+      if (
+        o.blocked_reason !== undefined &&
+        !(state.blockedReasons ?? LEGACY_BLOCKED_REASONS).includes(
+          o.blocked_reason,
+        )
+      )
+        throw new Fail(400, "AUTONOMY_INVALID");
       const slots = new Set(w.actions.map((r: any) => r.slot));
       const followUps = new Set(w.follow_ups);
       if (

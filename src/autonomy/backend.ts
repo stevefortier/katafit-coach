@@ -478,7 +478,7 @@ export class AutonomyBackend {
       Object.keys(rest).length ||
       !isCount(lease_generation) ||
       !isCount(mandate_revision) ||
-      !validate.cycleOutcome(outcome) ||
+      !validate.hostOutcome(outcome) ||
       !outcomeCoherent(outcome)
     )
       fail("AUTONOMY_INVALID");

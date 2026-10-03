@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { compileComposer } from "../src/config/store.js";
 import { INTEND_TOOL, REPORT_TOOL } from "../src/autonomy/tools.js";
-import { MEMBER, OTHER_MEMBER } from "./helpers/autonomy-fake.js";
+import {
+  BLOCKED_REASONS_710D,
+  MEMBER,
+  OTHER_MEMBER,
+} from "./helpers/autonomy-fake.js";
 import {
   closeLeaked,
   composerScript,
@@ -407,13 +411,14 @@ test("C11 fu: projection is basis, due_at, status and the member's own quote; ne
 });
 
 test("C11 composition_rejected: private literals or invalid output are never stored or sent; the work is blocked for the manager", async () => {
-  for (const leak of [
-    `Keep going! ${SECRET_INSTRUCTION}`,
-    "Heard Mika plans to leave the Falcons team after all.",
-    "x".repeat(8001),
-    "   ",
-  ]) {
+  for (const [leak, advertised] of [
+    [`Keep going! ${SECRET_INSTRUCTION}`, false],
+    ["Heard Mika plans to leave the Falcons team after all.", false],
+    ["x".repeat(8001), true],
+    ["   ", true],
+  ] as const) {
     const env = await composeEnv({ kind: "conversation" });
+    if (advertised) env.fake.state.blockedReasons = [...BLOCKED_REASONS_710D];
     const composer = new ScriptedRuntime([composerScript(leak)], "composer-");
     try {
       const { result } = await cycle(
@@ -438,9 +443,13 @@ test("C11 composition_rejected: private literals or invalid output are never sto
       assert.deepEqual(writes(env, /\/actions\//), []);
       assert.equal(env.fake.messages.length, 0);
       assert.equal(result.outcome.result, "blocked");
-      // contracts §21.4 asks for composition_rejected, which coach.autonomy.v1
-      // cannot carry yet (backend seam); the manager still sees the reason.
-      assert.equal(result.outcome.blocked_reason, "manager_decision_needed");
+      // contracts §21.4 composition_rejected once the backend advertises it
+      // (710d4513); an older backend cannot carry it, so the manager decides.
+      assert.equal(
+        result.outcome.blocked_reason,
+        advertised ? "composition_rejected" : "manager_decision_needed",
+      );
+      assert.equal(env.fake.state.work.get(env.workId).status, "blocked");
       assert.ok(
         result.outcome.uncertainty.some((u) =>
           /composition_rejected:m1/.test(u),

@@ -587,5 +587,70 @@ test(
         assert.equal(row.composition.text, undefined);
       },
     );
+
+    await t.test(
+      "a rejected composition blocks the work as composition_rejected; the real backend blocks the uncomposed intent and nothing is sent",
+      async () => {
+        const mandate = await b.saveMandate({
+          mode: "message",
+          timezone: "UTC",
+          quiet_hours: AWAY(),
+          delegated_actions: ALL,
+          contact_limits: LIMITS,
+        });
+        await question("Synthetic question: can I train twice tomorrow?");
+        await conversationWork(mandate.mandate_id);
+        const token = await b.bearer();
+        const { backend, claimed, work } = await claim(token);
+        const view = await backend.mandate();
+        assert.ok(
+          view.capabilities.blocked_reasons?.includes("composition_rejected"),
+          "backend advertises composition_rejected",
+        );
+        const before = (await memberChat()).length;
+        const runtime = new ScriptedRuntime([
+          async (io) => {
+            const ref = await readRef(io);
+            const r = parse(
+              await io.call(INTEND_TOOL, {
+                slot: "m1",
+                intent: memberIntent(ref),
+              }),
+            );
+            assert.equal(r.error, "COMPOSITION_REJECTED");
+            return outcome();
+          },
+        ]);
+        const result = await autonomyRunner({
+          store: await storeFor(token),
+          runtime,
+          compose: {
+            runtime: new ScriptedRuntime([composerScript("   ")], "composer-"),
+          },
+        })({
+          work,
+          mandate: view,
+          backend,
+          signal: new AbortController().signal,
+          capability: claimed.capability,
+        });
+        if (runtime.errors.length) throw runtime.errors[0];
+        assert.equal(result.outcome.result, "blocked");
+        assert.equal(result.outcome.blocked_reason, "composition_rejected");
+        const done = await b.db
+          .collection("coach_autonomy_work")
+          .findOne({ _id: new b.ObjectId(work.id) });
+        assert.equal(done.status, "blocked");
+        assert.equal(done.blocked_reason, "composition_rejected");
+        const row = await intentRow(work.id, "m1");
+        assert.equal(row.status, "blocked");
+        assert.equal(row.composition ?? null, null);
+        assert.equal((await memberChat()).length, before);
+        const status = (await backend.status()).blocked.find(
+          (w) => w.work_id === work.id,
+        );
+        assert.equal(status?.reason, "composition_rejected");
+      },
+    );
   },
 );

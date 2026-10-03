@@ -529,12 +529,14 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         "budget_exhausted",
       );
     else if (rejected.length)
-      // contracts §21.4 composition_rejected; coach.autonomy.v1 has no such
-      // blocked_reason yet (backend seam), so the manager decides.
+      // contracts §21.4 composition_rejected where the backend advertises it
+      // (it then blocks the uncomposed intents); otherwise the manager decides.
       final = fallback(
         "blocked",
         `composition_rejected:${rejected.join(",")}`,
-        "manager_decision_needed",
+        mandate.capabilities.blocked_reasons?.includes("composition_rejected")
+          ? "composition_rejected"
+          : "manager_decision_needed",
       );
     else if (failure) final = fallback("failed", `planner_failed:${failure}`);
     else if (invalid || !outcome)
