@@ -1097,11 +1097,21 @@ export async function admin(
         );
       }
       if (req.method === "PUT" && path === "/api/autonomy/mandate") {
+        const refused = (): [number, string] | undefined =>
+          closing
+            ? [503, "SERVICE_CLOSING"]
+            : updateQuiesced
+              ? [409, "UPDATE_QUIESCED"]
+              : updates.applying
+                ? [409, "UPDATE_IN_PROGRESS"]
+                : busy
+                  ? [409, "OPERATION_IN_PROGRESS"]
+                  : undefined;
         if (closing) return send(503, { error: "SERVICE_CLOSING" });
         if (!req.headers["content-type"]?.startsWith("application/json"))
           return send(415, { error: "JSON_REQUIRED" });
-        if (updateQuiesced) return send(409, { error: "UPDATE_QUIESCED" });
-        if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+        const early = refused();
+        if (early) return send(early[0], { error: early[1] });
         let raw = "";
         for await (const c of req) {
           raw += c;
@@ -1114,7 +1124,24 @@ export async function admin(
         } catch {
           return send(400, { error: "ARGUMENTS_REJECTED" });
         }
-        return send(200, await autonomyCall((b) => b.putMandate(input)));
+        // An update barrier or transition may have landed during the body.
+        const late = refused();
+        if (late) return send(late[0], { error: late[1] });
+        const halting =
+          input?.mandate?.paused === true || input?.mandate?.mode === "off";
+        let result;
+        try {
+          result = await autonomyCall((b) => b.putMandate(input));
+        } catch (error) {
+          // An unknown outcome may still have paused: drain anyway.
+          if (halting) await autonomy.interrupt("AUTONOMY_PAUSED");
+          throw error;
+        }
+        const m = result.mandate;
+        // The acknowledgement means this installation has stopped acting.
+        if (m.paused || m.mode === "off" || m.status !== "active")
+          await autonomy.interrupt("AUTONOMY_PAUSED");
+        return send(200, result);
       }
       if (req.method === "GET" && path === "/api/status")
         return send(200, {

@@ -149,6 +149,9 @@ export async function holdingProxy(target: string) {
 export async function autonomyAdmin(
   o: Parameters<typeof setup>[0] & {
     planners?: (ScriptedRuntime | ReturnType<typeof blockingRuntime>)[];
+    composers?: (ScriptedRuntime | ReturnType<typeof blockingRuntime>)[];
+    /** In-cycle mandate observation cadence (host option). */
+    mandateCheckMs?: number;
     keepWork?: boolean;
     origin?: string;
     supported?: boolean;
@@ -159,6 +162,7 @@ export async function autonomyAdmin(
   if (o.origin)
     await env.store.save({ ...env.store.publicConfig(), origin: o.origin });
   const planners = o.planners ?? [];
+  const composers = o.composers ?? [];
   const pairs: AutonomyRuntimes[] = [];
   const options = {
     autonomy: {
@@ -167,12 +171,13 @@ export async function autonomyAdmin(
           planners.shift() ?? new ScriptedRuntime([], "unscripted-");
         const pair = {
           planner,
-          composer: new ScriptedRuntime([], "composer-"),
+          composer: composers.shift() ?? new ScriptedRuntime([], "composer-"),
         };
         pairs.push(pair);
         return pair;
       },
       scheduler: { wait: fastWait, random: () => 0.5 },
+      ...(o.mandateCheckMs ? { mandateCheckMs: o.mandateCheckMs } : {}),
     },
   };
   const open = () =>

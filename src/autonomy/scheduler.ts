@@ -20,6 +20,7 @@ export type TickOutcome =
   | "contended"
   | "backoff"
   | "paused"
+  | "interrupted"
   | "stopped"
   | "credential_rejected";
 export interface Cycle {
@@ -88,6 +89,7 @@ export class AutonomyScheduler {
   private paused = false;
   private rejected = false;
   private stopped = false;
+  private interrupts = 0;
 
   constructor(private readonly options: SchedulerOptions) {}
 
@@ -136,6 +138,7 @@ export class AutonomyScheduler {
     if (this.stopped) return { outcome: "stopped", delayMs: 0 };
     if (this.rejected) return { outcome: "credential_rejected", delayMs: 0 };
     if (this.paused) return { outcome: "paused", delayMs: 0 };
+    const epoch = this.interrupts;
     const { backend, admission } = this.options;
     let mandate: MandateView;
     let tickMs = DEFAULT_TICK_MS;
@@ -165,6 +168,11 @@ export class AutonomyScheduler {
     if (this.paused) {
       this.set("paused");
       return { outcome: "paused", delayMs: 0 };
+    }
+    // An interrupt during the reads admits no claim on what they saw.
+    if (this.interrupts !== epoch) {
+      this.set("idle");
+      return { outcome: "interrupted", delayMs: 0 };
     }
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, this.lifetime.signal]);
@@ -200,8 +208,12 @@ export class AutonomyScheduler {
       });
     } catch (error) {
       if (signal.aborted) {
-        const outcome = this.stopped ? "stopped" : "paused";
-        this.set(outcome);
+        const outcome = this.stopped
+          ? "stopped"
+          : this.paused
+            ? "paused"
+            : "interrupted";
+        this.set(outcome === "interrupted" ? "idle" : outcome);
         return { outcome, delayMs: 0 };
       }
       return this.failed(error, tickMs);
@@ -257,6 +269,16 @@ export class AutonomyScheduler {
     this.cycle?.abort(new Error("AUTONOMY_PAUSED"));
     await this.inflight?.catch(() => {});
     this.set("paused");
+  }
+
+  /**
+   * Abort the active cycle (no local release) and wait until it has drained,
+   * without pausing the loop: the next tick re-reads the mandate.
+   */
+  async interrupt(reason = "AUTONOMY_INTERRUPTED") {
+    this.interrupts++;
+    this.cycle?.abort(new Error(reason));
+    await this.inflight?.catch(() => {});
   }
 
   resume() {

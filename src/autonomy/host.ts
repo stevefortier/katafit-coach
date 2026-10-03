@@ -142,9 +142,16 @@ export interface AutonomyHostOptions {
     SchedulerOptions,
     "wait" | "random" | "minBackoffMs" | "maxBackoffMs" | "leaseSeconds"
   >;
+  /**
+   * In-cycle mandate observation cadence: another installation's pause, off,
+   * suspension or mandate replacement interrupts the running cycle within
+   * this bound plus one request timeout. Default 15 s, at most lease / 3.
+   */
+  mandateCheckMs?: number;
 }
 export type AutonomyHostState = SchedulerState | "starting";
 const PROOF_TIMEOUT_MS = 30000;
+const MANDATE_CHECK_MS = 15000;
 const PROOF_THROTTLE_MS = 30000;
 
 /**
@@ -388,6 +395,31 @@ export class AutonomyHost {
       };
       backend.cycle = cycle.signal;
     }
+    const lease = (this.options.scheduler?.leaseSeconds ?? 120) * 1000;
+    const every = Math.min(
+      this.options.mandateCheckMs ?? MANDATE_CHECK_MS,
+      lease / 3,
+    );
+    let checking = false;
+    const watcher = setInterval(() => {
+      if (checking || !backend || cycle.signal.aborted) return;
+      checking = true;
+      backend
+        .mandate()
+        .then(
+          (m) => {
+            if (
+              m.paused ||
+              m.mode === "off" ||
+              m.status !== "active" ||
+              m.mandate_id !== cycle.mandate.mandate_id
+            )
+              void this.scheduler?.interrupt("AUTONOMY_MANDATE_CHANGED");
+          },
+          () => {},
+        )
+        .finally(() => (checking = false));
+    }, every);
     try {
       // A completion settles nothing by itself: only exact proof does.
       const result = await runner(cycle);
@@ -398,12 +430,23 @@ export class AutonomyHost {
       };
       return result;
     } finally {
+      clearInterval(watcher);
       if (backend) {
         backend.binding = undefined;
         backend.cycle = undefined;
       }
       if (this.ledger?.unresolved.length) void this.reconcile().catch(() => {});
     }
+  }
+
+  /**
+   * Abort the active cycle and wait until it has drained (an effectful write
+   * caught mid-flight stays unknown in the ledger); the loop keeps running and
+   * its next tick re-reads the mandate.
+   */
+  async interrupt(reason = "AUTONOMY_PAUSED") {
+    await this.starting?.catch(() => {});
+    await this.scheduler?.interrupt(reason);
   }
 
   async stop() {
