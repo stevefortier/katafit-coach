@@ -29,12 +29,55 @@ export type HeadlessCode =
   | "HEADLESS_EXITED"
   | "HEADLESS_PROMPT_REJECTED"
   | "HEADLESS_NO_OUTPUT"
+  | "HEADLESS_MODEL_FAILED"
   | "HEADLESS_OUTPUT_TOO_LARGE"
   | "HEADLESS_CLEANUP_PENDING";
 export class HeadlessFailure extends Error {
   constructor(readonly code: HeadlessCode) {
     super(code);
   }
+}
+
+/** Pi 0.86.1 agent_end includes failed assistant turns. Text-query RPC
+ * success is not generation success; attest only this ending invocation. */
+function terminalText(event: any): string {
+  if (!Array.isArray(event.messages) || !event.messages.length)
+    throw new HeadlessFailure("HEADLESS_MODEL_FAILED");
+  const pending = new Set<string>();
+  for (const message of event.messages) {
+    if (message?.role === "assistant") {
+      if (!Array.isArray(message.content))
+        throw new HeadlessFailure("HEADLESS_MODEL_FAILED");
+      for (const part of message.content) {
+        if (part?.type !== "toolCall") continue;
+        if (typeof part.id !== "string" || !part.id || pending.has(part.id))
+          throw new HeadlessFailure("HEADLESS_MODEL_FAILED");
+        pending.add(part.id);
+      }
+    } else if (message?.role === "toolResult") {
+      if (!pending.delete(message.toolCallId))
+        throw new HeadlessFailure("HEADLESS_MODEL_FAILED");
+    }
+  }
+  const last = event.messages.at(-1);
+  if (
+    last?.role !== "assistant" ||
+    !["stop", "length"].includes(last.stopReason) ||
+    pending.size ||
+    last.content.some((part: any) => part?.type === "toolCall")
+  )
+    throw new HeadlessFailure("HEADLESS_MODEL_FAILED");
+  const text = last.content
+    .filter((part: any) => part?.type === "text")
+    .map((part: any) => {
+      if (typeof part.text !== "string")
+        throw new HeadlessFailure("HEADLESS_MODEL_FAILED");
+      return part.text;
+    })
+    .join("")
+    .trim();
+  if (!text) throw new HeadlessFailure("HEADLESS_NO_OUTPUT");
+  return text;
 }
 
 type Engine = ConstructorParameters<typeof NativeRuntime>[1] & {};
@@ -125,8 +168,8 @@ export class HeadlessCycleRuntime {
       fail(failure);
     };
     const responses = new Map<string, (response: any) => void>();
-    let agentEnd!: () => void;
-    const ended = new Promise<void>((resolve) => (agentEnd = resolve));
+    let agentEnd!: (text: string) => void;
+    const ended = new Promise<string>((resolve) => (agentEnd = resolve));
     let pending = "";
     runtime.onOutput = (chunk) => {
       pending += chunk;
@@ -134,6 +177,10 @@ export class HeadlessCycleRuntime {
       while ((index = pending.indexOf("\n")) >= 0) {
         const line = pending.slice(0, index);
         pending = pending.slice(index + 1);
+        if (Buffer.byteLength(line) > HEADLESS_LINE_LIMIT) {
+          end("HEADLESS_OUTPUT_TOO_LARGE");
+          continue;
+        }
         let event: any;
         try {
           event = JSON.parse(line);
@@ -142,7 +189,17 @@ export class HeadlessCycleRuntime {
         }
         if (event?.type === "response" && typeof event.id === "string")
           responses.get(event.id)?.(event);
-        else if (event?.type === "agent_end") agentEnd();
+        else if (event?.type === "agent_end") {
+          try {
+            agentEnd(terminalText(event));
+          } catch (error) {
+            end(
+              error instanceof HeadlessFailure
+                ? error.code
+                : "HEADLESS_MODEL_FAILED",
+            );
+          }
+        }
       }
       if (Buffer.byteLength(pending) > HEADLESS_LINE_LIMIT) {
         pending = "";
@@ -175,7 +232,7 @@ export class HeadlessCycleRuntime {
       const reply = await Promise.race([accepted, failed]);
       if (reply.success !== true)
         throw new HeadlessFailure("HEADLESS_PROMPT_REJECTED");
-      await Promise.race([ended, failed]);
+      const attestedText = await Promise.race([ended, failed]);
       const textId = randomUUID();
       const last = response(textId);
       await Promise.race([
@@ -186,6 +243,8 @@ export class HeadlessCycleRuntime {
       const text = final.success === true ? final.data?.text : undefined;
       if (typeof text !== "string" || !text.trim())
         throw new HeadlessFailure("HEADLESS_NO_OUTPUT");
+      if (text !== attestedText)
+        throw new HeadlessFailure("HEADLESS_MODEL_FAILED");
       return { text, container: name };
     } catch (error) {
       const code = failure?.code;

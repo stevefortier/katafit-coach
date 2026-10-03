@@ -202,6 +202,7 @@ export async function startTaskBackend() {
       calls,
       tasks,
       daily,
+      backendModule: (name: string) => require(name),
       withTargets,
       lunch,
       checkIn,
@@ -216,13 +217,11 @@ export async function startTaskBackend() {
         await db
           .collection("users")
           .insertOne({ _id: member, name: "Synthetic concurrent member" });
-        await db
-          .collection("dojos")
-          .insertOne({
-            _id: dojo,
-            chief_id: user,
-            external_coach_agent: { enabled: true },
-          });
+        await db.collection("dojos").insertOne({
+          _id: dojo,
+          chief_id: user,
+          external_coach_agent: { enabled: true },
+        });
         await db.collection("dojo_members").insertMany([
           {
             dojo_id: dojo,

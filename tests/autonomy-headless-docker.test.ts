@@ -55,13 +55,15 @@ async function fixture(
 }
 const toolNames = (body: any) =>
   (body.tools ?? []).map((t: any) => t.function?.name ?? t.name);
-const autonomyContainers = async () =>
+const autonomyContainers = async (owner: string) =>
   (
     await run("docker", [
       "ps",
       "--all",
       "--filter",
       `label=${HEADLESS_ROLE_LABEL}=autonomy`,
+      "--filter",
+      `label=fit.kata.native.owner=${owner}`,
       "--format",
       "{{.Names}}",
     ])
@@ -73,12 +75,10 @@ test(
   async () => {
     const home = await mkdtemp(tmpdir() + "/autonomy-headless-owner-");
     after(() => rm(home, { recursive: true, force: true }));
+    const owner = randomBytes(16).toString("hex");
     const headless = new HeadlessCycleRuntime({
       image: process.env.NATIVE_TEST_IMAGE!,
-      cleanup: await CleanupRegistry.open(
-        home,
-        randomBytes(16).toString("hex"),
-      ),
+      cleanup: await CleanupRegistry.open(home, owner),
     });
     await headless.sweep();
     const reports: any[] = [];
@@ -151,7 +151,7 @@ test(
     } finally {
       await composer.close();
     }
-    assert.equal(await autonomyContainers(), "");
+    assert.equal(await autonomyContainers(owner), "");
     assert.equal(headless.active, false);
   },
 );

@@ -435,6 +435,81 @@ test("headless: Pi exiting before agent_end fails the cycle and removes the cont
   }
 });
 
+for (const messages of [
+  [],
+  [{ role: "user", content: "not an assistant" }],
+  ...["error", "aborted", "toolUse", undefined].map((stopReason) => [
+    {
+      role: "assistant",
+      stopReason,
+      content: [{ type: "text", text: "plausible result" }],
+    },
+  ]),
+  [
+    {
+      role: "assistant",
+      stopReason: "stop",
+      content: [
+        { type: "text", text: "plausible result" },
+        { type: "toolCall", id: "pending", name: "read", arguments: {} },
+      ],
+    },
+  ],
+  [
+    {
+      role: "assistant",
+      stopReason: "toolUse",
+      content: [
+        { type: "toolCall", id: "pending", name: "read", arguments: {} },
+      ],
+    },
+    {
+      role: "assistant",
+      stopReason: "stop",
+      content: [{ type: "text", text: "plausible result" }],
+    },
+  ],
+])
+  test(
+    "headless: invalid terminal attestation cannot use text-query success " +
+      JSON.stringify(messages),
+    async () => {
+      const fake = await fakeEngine((command, pi) => {
+        if (command.type === "prompt") {
+          pi.send({
+            id: command.id,
+            type: "response",
+            command: "prompt",
+            success: true,
+          });
+          pi.send({ type: "agent_end", messages });
+        } else obedient("plausible result")(command, pi);
+      });
+      const runtime = new HeadlessCycleRuntime({
+        image: IMAGE,
+        engine: fake.engine,
+      });
+      try {
+        await assert.rejects(
+          runtime.run({
+            profile: "worker",
+            gateway: stubGateway(),
+            message: "work",
+            cycleMs: 5000,
+          }),
+          /HEADLESS_MODEL_FAILED/,
+        );
+        assert.deepEqual(
+          fake.commands.map((c) => c.type),
+          ["prompt"],
+        );
+        assert.equal(fake.removes().length, 1);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
 test("headless: a rejected prompt and an empty final text are classified, never retried", async () => {
   const rejected = await fakeEngine((command, pi) => {
     if (command.type === "prompt")

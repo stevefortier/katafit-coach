@@ -41,7 +41,16 @@ export const obedient =
       pi.stderr("pi diagnostics are discarded\n");
       pi.send({ type: "agent_start" });
       pi.send({ type: "turn_start" });
-      pi.send({ type: "agent_end", messages: [] });
+      pi.send({
+        type: "agent_end",
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text }],
+          },
+        ],
+      });
     }
     if (command.type === "get_last_assistant_text")
       pi.send({
