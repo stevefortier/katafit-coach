@@ -1554,7 +1554,13 @@ function renderAutonomyMandate(m) {
   $("autonomyDigestSuppress").checked = m.digest.suppress_empty;
   $("autonomyInstructions").value = m.instructions;
   $("autonomyBudgets").textContent =
-    "Per cycle: up to " +
+    "Checks every " +
+    m.cadence.client_tick_seconds +
+    " s · reconciliation every " +
+    m.cadence.reconcile_minutes +
+    " min · event debounce " +
+    m.cadence.event_debounce_minutes +
+    " min. Per cycle: up to " +
     m.budgets.cycle_seconds +
     " s, " +
     m.budgets.tool_calls +
@@ -1670,7 +1676,21 @@ function renderAutonomyReports(page) {
               r.coverage.members_read +
               "/" +
               r.coverage.members_considered +
-              " members read",
+              " members read" +
+              (r.coverage.partial ? " · partial coverage" : "") +
+              (r.coverage.unobserved.length
+                ? " · not observed: " +
+                  r.coverage.unobserved
+                    .map(
+                      (kind) =>
+                        ({
+                          member_chat: "member chat",
+                          images: "images",
+                          pages_truncated: "truncated pages",
+                        })[kind],
+                    )
+                    .join(", ")
+                : ""),
           ),
         )
       : [autonomyItem("No cycles yet.")]),

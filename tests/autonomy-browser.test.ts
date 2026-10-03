@@ -58,9 +58,9 @@ test("C5 UI: Autonomy shows participation, mandate, monitoring apart from presen
       result: "completed",
       coverage: {
         members_considered: 3,
-        members_read: 3,
-        partial: false,
-        unobserved: [],
+        members_read: 1,
+        partial: true,
+        unobserved: ["images", "pages_truncated"],
       },
       counts: { acted: 1, no_action: 2, deferred: 0, escalated: 0 },
       action_slots: ["r1"],
@@ -104,15 +104,30 @@ test("C5 UI: Autonomy shows participation, mandate, monitoring apart from presen
     assert.equal(await text(page, "#autonomyPresence"), "unconfirmed");
     assert.doesNotMatch(await text(page, "#autonomyMonitoring"), /presence/i);
     assert.match(await text(page, "#autonomyMonitoring"), /1 blocked/);
+    assert.match(await text(page, "#autonomyBudgets"), /Checks every 60 s/);
+    assert.match(
+      await text(page, "#autonomyBudgets"),
+      /reconciliation every 360 min/,
+    );
+    assert.match(await text(page, "#autonomyBudgets"), /event debounce 10 min/);
     assert.match(await text(page, "#autonomyBlocked"), /uncertain_write/);
     assert.match(await text(page, "#autonomyBlocked"), new RegExp(blockedId));
     const reports = await text(page, "#autonomyReports");
     assert.match(reports, /completed/);
     assert.match(reports, /1 acted/);
     assert.match(reports, /1 receipt/);
+    assert.match(reports, /1\/3 members read/);
+    assert.match(reports, /partial coverage/);
+    assert.match(reports, /not observed: images, truncated pages/);
     assert.equal(await noOverflow(page), true);
     await page.screenshot({
       path: evidence + "/autonomy-390.png",
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    assert.equal(await noOverflow(page), true);
+    await page.screenshot({
+      path: evidence + "/autonomy-1440.png",
       fullPage: true,
     });
 
