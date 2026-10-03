@@ -227,6 +227,9 @@ test("F1/F2: a wrong-digest 2xx with denied readback completes blocked/uncertain
   }
 });
 
+// C5 R1: a report projection is not exact completion proof, so a committed
+// completion with a lost answer stays unresolved (fail closed) until the
+// backend exposes an exact completion receipt.
 for (const [name, rewrite] of [
   ["wrong schema", () => ({ unexpected: true })],
   [
@@ -237,7 +240,7 @@ for (const [name, rewrite] of [
     }),
   ],
 ] as const)
-  test(`F2: a lost completion ACK (${name}) is unknown until an exact work/report read proves it`, async () => {
+  test(`F2/R1: a lost completion ACK (${name}) stays unknown; readable reports never prove it`, async () => {
     const t = await proxied([new ScriptedRuntime([async () => outcome()])]);
     const { env, proxy } = t;
     try {
@@ -271,8 +274,12 @@ for (const [name, rewrite] of [
       assert.equal((await t.quiesce()).status, 409);
       proxy.state.intercept = undefined;
       proxy.state.rewrite = undefined;
-      const quiesced = await t.quiesce();
-      assert.equal(quiesced.status, 200, JSON.stringify(quiesced.body));
+      env.fake.advance(LEASE_MS);
+      assert.equal((await t.quiesce()).status, 409);
+      assert.deepEqual(
+        (await env.status()).local.unresolved.map((u: any) => u.reason),
+        ["receipt_required"],
+      );
       const completes = env.fake.calls.filter((c) =>
         /\/complete$/.test(c.path),
       );

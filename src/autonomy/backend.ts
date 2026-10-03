@@ -191,7 +191,10 @@ const canonical = (value: unknown): string =>
           .join(",")}}`
       : JSON.stringify(value ?? null);
 
-/** The report-visible projection of one completion, hashed for exact proof. */
+/**
+ * The report-visible projection of one completion. Diagnostic only: it omits
+ * generation, authority and the full body, so it is never completion proof.
+ */
 export const reportDigest = (report: {
   work_id: string;
   result: string;

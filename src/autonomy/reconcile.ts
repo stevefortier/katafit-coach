@@ -1,4 +1,4 @@
-import { AutonomyFailure, reportDigest } from "./backend.js";
+import { AutonomyFailure } from "./backend.js";
 import type { AutonomyBackend } from "./backend.js";
 import type { LedgerEntry } from "./ledger.js";
 import type { MandateView, Page, WorkItem } from "./types.js";
@@ -12,12 +12,21 @@ import type { MandateView, Page, WorkItem } from "./types.js";
  * - not_published: the write's lease was fenced BEFORE an exact read that
  *   completed (all pages) without finding it;
  * - anything else keeps the entry.
+ *
+ * C5 R1/R2: listings are scoped to the CURRENT mandate, so an entry recorded
+ * under another mandate is never proven from them (`mandate_changed`). A
+ * report projection omits operation-defining fields (generation, authority,
+ * full body), so it never proves a completion: any report for the work keeps
+ * the entry (`receipt_required`) until an exact completion receipt exists
+ * (client-completion-receipt-contract.md).
  */
 export type Proof =
   | "committed"
   | "conflict"
   | "not_published"
   | "binding_unavailable"
+  | "mandate_changed"
+  | "receipt_required"
   | "not_fenced"
   | "unavailable"
   | "bounded";
@@ -93,6 +102,27 @@ export async function prove(
   entry: LedgerEntry,
   ctx: ProofContext,
 ): Promise<Proof> {
+  const proof = await read(entry, ctx);
+  if (!RESOLVED.includes(proof)) return proof;
+  // The reads resolved the CURRENT mandate at request time: a replacement
+  // during them makes their answer (notably absence) about another mandate.
+  // Mandate ids are never reused, so an unchanged id after the reads proves
+  // every read was scoped to the entry's mandate.
+  try {
+    const after = await ctx.backend.mandate();
+    if (
+      after.mandate_id !== entry.mandate_id ||
+      after.chief_id !== entry.chief_id ||
+      after.dojo_id !== entry.dojo_id
+    )
+      return "mandate_changed";
+  } catch {
+    return "unavailable";
+  }
+  return proof;
+}
+
+async function read(entry: LedgerEntry, ctx: ProofContext): Promise<Proof> {
   const { backend, mandate } = ctx;
   // Absence reads are account-scoped: only the original authority may prove.
   if (
@@ -101,6 +131,8 @@ export async function prove(
     mandate.dojo_id !== entry.dojo_id
   )
     return "binding_unavailable";
+  // Mandate-scoped reads say nothing about another mandate's operations.
+  if (mandate.mandate_id !== entry.mandate_id) return "mandate_changed";
   const x = entry.expect;
   try {
     // Fence first: an absent read taken after the fence proves the write
@@ -178,16 +210,17 @@ export async function prove(
           : "conflict";
       }
       case "complete": {
-        // Only the exact report proves a completion; once fenced, its
-        // complete (all pages) absence proves the completion never landed.
+        // Reports are inserted in the completion transaction: once fenced,
+        // the complete (all pages) absence of ANY report for this work
+        // proves the completion never landed. A report that exists may be
+        // another attempt's; without an exact receipt it proves nothing.
         if (f !== true) return absent();
         const report = await scan(
           (cursor) => backend.reports({ limit: LIMIT, cursor }),
-          (r) =>
-            r.work_id === entry.work_id && reportDigest(r) === x.report_sha256,
+          (r) => r.work_id === entry.work_id,
         );
         if (report === "bounded") return "bounded";
-        return report ? "committed" : "not_published";
+        return report ? "receipt_required" : "not_published";
       }
     }
   } catch {

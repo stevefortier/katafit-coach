@@ -188,6 +188,13 @@ export async function autonomyFake(
       throw new Fail(409, "AUTONOMY_MANDATE_CHANGED");
   };
   const view = (w: any) => structuredClone(w);
+  // Real backend (a80256df core/coachAutonomy.js): work and report listings
+  // resolve the CURRENT mandate and filter by its id.
+  const reportMandate = new Map<string, string>();
+  const current = (mandateId: string | undefined) =>
+    state.mandate.mandate_id === null ||
+    mandateId === undefined ||
+    mandateId === state.mandate.mandate_id;
   const page = (items: any[], url: URL) => {
     const limit = Number(url.searchParams.get("limit") ?? 20);
     const offset = Number(url.searchParams.get("cursor") ?? 0);
@@ -285,11 +292,13 @@ export async function autonomyFake(
       expire();
       const status = url.searchParams.get("status");
       const items = [...state.work.values()].filter((w) =>
-        status === "due"
-          ? w.status === "queued" && Date.parse(w.due_at) <= now
-          : status === "running"
-            ? ["claimed", "running"].includes(w.status)
-            : !status || status === "recent" || w.status === status,
+        !current(w.mandate_id)
+          ? false
+          : status === "due"
+            ? w.status === "queued" && Date.parse(w.due_at) <= now
+            : status === "running"
+              ? ["claimed", "running"].includes(w.status)
+              : !status || status === "recent" || w.status === status,
       );
       return page(items.map(view), url);
     }
@@ -771,10 +780,15 @@ export async function autonomyFake(
         action_slots: o.decisions.flatMap((d: any) => d.action_slots),
         created_at: iso(now),
       };
+      reportMandate.set(report.id, w.mandate_id);
       state.reports.unshift(report);
       return { work: view(w), report_id: report.id };
     }
-    if (method === "GET" && p === "/reports") return page(state.reports, url);
+    if (method === "GET" && p === "/reports")
+      return page(
+        state.reports.filter((r: any) => current(reportMandate.get(r.id))),
+        url,
+      );
     throw new Fail(404, "AUTONOMY_NOT_FOUND");
   }
 
