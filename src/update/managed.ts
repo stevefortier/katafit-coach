@@ -151,7 +151,21 @@ export async function metadata(root: string) {
     (data.protocol === 2 && !/^[a-f0-9]{64}$/.test(data.fingerprint))
   )
     throw new Error("INCOMPATIBLE_BUILD");
-  return data as { revision: string; protocol: 1 | 2; fingerprint?: string };
+  if (
+    data.capabilities !== undefined &&
+    (!Array.isArray(data.capabilities) ||
+      data.capabilities.length > 16 ||
+      !data.capabilities.every(
+        (c: unknown) => typeof c === "string" && /^[a-z0-9-]{1,64}$/.test(c),
+      ))
+  )
+    throw new Error("INCOMPATIBLE_BUILD");
+  return data as {
+    revision: string;
+    protocol: 1 | 2;
+    fingerprint?: string;
+    capabilities?: string[];
+  };
 }
 export async function stage(
   home: string,

@@ -120,6 +120,36 @@ const key = (e: LedgerDraft) =>
     e.digest,
   ].join(":");
 
+function parseLedger(raw: Buffer): LedgerEntry[] {
+  const value = JSON.parse(raw.toString("utf8"));
+  if (
+    !isRecord(value) ||
+    value.v !== 1 ||
+    !Array.isArray(value.entries) ||
+    value.entries.length > LEDGER_MAX_ENTRIES ||
+    !value.entries.every(valid)
+  )
+    throw new Error("LEDGER_INVALID");
+  return value.entries;
+}
+
+/**
+ * C5 R4 read-only readback for the stable owner: never creates, repairs or
+ * clears anything. Unreadable counts as obligations (fail closed).
+ */
+export async function ledgerObligations(
+  home: string,
+): Promise<"none" | "unresolved" | "unreadable"> {
+  try {
+    const entries = parseLedger(
+      await managedFile(join(home, LEDGER_DIR, FILE), LIMIT_BYTES),
+    );
+    return entries.length ? "unresolved" : "none";
+  } catch (error: any) {
+    return error?.code === "ENOENT" ? "none" : "unreadable";
+  }
+}
+
 function valid(e: unknown): e is LedgerEntry {
   if (!isRecord(e)) return false;
   const keys = Object.keys(e).sort().join(",");
@@ -183,18 +213,11 @@ export class WriteLedger {
       return;
     }
     try {
-      const raw = await managedFile(join(this.folder, FILE), LIMIT_BYTES);
-      const value = JSON.parse(raw.toString("utf8"));
-      if (
-        !isRecord(value) ||
-        value.v !== 1 ||
-        !Array.isArray(value.entries) ||
-        value.entries.length > LEDGER_MAX_ENTRIES ||
-        !value.entries.every(valid)
-      )
-        throw new Error("LEDGER_INVALID");
+      const entries = parseLedger(
+        await managedFile(join(this.folder, FILE), LIMIT_BYTES),
+      );
       // A write found pending at load was interrupted mid-dispatch.
-      this.entries = value.entries.map((e: LedgerEntry) => ({
+      this.entries = entries.map((e: LedgerEntry) => ({
         ...e,
         state: "unknown" as const,
       }));

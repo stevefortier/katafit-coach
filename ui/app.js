@@ -3403,6 +3403,8 @@ const updateFailureHelp = {
     "An unsafe managed path was rejected. Check protected home ownership and symlinks without deleting live files.",
   ACTIVATION_ROLLED_BACK:
     "Candidate activation failed and rollback was attempted. Verify the installed revision and worker status before retrying.",
+  AUTONOMY_LEDGER_UNSUPPORTED:
+    "Unresolved autonomy writes remain and the application to start cannot honour them. Nothing was launched or cleared; install a ledger-capable stable owner before retrying.",
   STARTUP_FAILED:
     "Candidate startup failed. Verify launcher compatibility and the installed revision.",
   STARTUP_TIMEOUT:
