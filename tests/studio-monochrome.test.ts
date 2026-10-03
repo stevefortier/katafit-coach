@@ -445,7 +445,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           ".dashboard-map-date",
         )!;
         const dayTrack = document.querySelector<HTMLElement>(
-          ".dashboard-day-track",
+          ".dashboard-date-selects",
         )!;
         const selects = document.querySelector<HTMLElement>(
           ".dashboard-date-selects",

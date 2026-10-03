@@ -13,6 +13,7 @@ const dateEventId = (date: string) =>
 
 async function fixture(
   run: (page: Page, calls: string[], key: string) => Promise<void>,
+  setup?: (page: Page) => Promise<void>,
 ) {
   const home = await mkdtemp(tmpdir() + "/coach-date-nav-");
   const calls: string[] = [];
@@ -70,10 +71,14 @@ async function fixture(
       viewport: { width: 1280, height: 1000 },
     });
     page.setDefaultTimeout(5000);
+    page.on("pageerror", (error) =>
+      console.log("browser-error", error.message),
+    );
     await page.route("https://tile.openstreetmap.org/**", (route) =>
       route.abort(),
     );
     await page.goto(app.origin + "/dashboard");
+    await setup?.(page);
     await page.evaluate(async (key) => {
       document.getElementById("studio")!.hidden = false;
       document.getElementById("login")!.hidden = true;
@@ -87,6 +92,19 @@ async function fixture(
     await rm(home, { recursive: true, force: true });
   }
 }
+// Fresh images exercise img-src blob: under the real served CSP; fetch(blob:)
+// is blocked by connect-src even while the URL is still live.
+async function canDecodeAvatar(page: Page, url: string) {
+  return page.evaluate(async (src) => {
+    const image = new Image();
+    image.src = src;
+    return image.decode().then(
+      () => image.naturalWidth > 0 && image.naturalHeight > 0,
+      () => false,
+    );
+  }, url);
+}
+
 async function setDay(page: Page, day: string) {
   await page.locator("#dashboardMapDate").fill(day);
   await page.locator("#dashboardMapDate").dispatchEvent("change");
@@ -143,7 +161,14 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
     const pin = page.locator(
       `.dashboard-event-dot[data-event-id="${event.id}"]`,
     );
-    await pin.waitFor();
+    await pin.waitFor().catch(async (error) => {
+      console.log(
+        "map-debug",
+        await page.locator("#dashboardMapStatus").textContent(),
+        await page.locator("#dashboardTimeline").textContent(),
+      );
+      throw error;
+    });
     const geometry = () =>
       page.evaluate(() => {
         return Object.fromEntries(
@@ -166,7 +191,7 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
     const failures: string[] = [];
     for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.getByRole("button", { name: "Next day", exact: true }).focus();
+      await page.getByRole("button", { name: "Today", exact: true }).focus();
       await pin.scrollIntoViewIfNeeded();
       // Both date entry and the smaller exact event dot fit the viewport;
       // avoid measuring native focus auto-scroll as a layout displacement.
@@ -280,7 +305,7 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
   });
 });
 
-test("served Dojo centered month/year retain and clamp civil day with every daily tick", async () => {
+test("served Dojo year/month/day selectors retain and clamp civil day", async () => {
   await fixture(async (page) => {
     await setDay(page, "2024-01-31");
     await page.getByLabel("Month", { exact: true }).selectOption("2");
@@ -316,14 +341,11 @@ test("served Dojo centered month/year retain and clamp civil day with every dail
         .getByLabel("Month", { exact: true })
         .selectOption(String(month));
       assert.equal(
-        await page
-          .getByLabel("Day of month", { exact: true })
-          .getAttribute("max"),
-        String(length),
+        await page.locator("#dashboardMapDay option").count(),
+        length,
       );
-      assert.equal(await page.locator(".dashboard-day-tick").count(), length);
     }
-    await setDay(page, "2026-10-01");
+    await setDay(page, "2026-09-01");
     await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
     for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
@@ -340,82 +362,75 @@ test("served Dojo centered month/year retain and clamp civil day with every dail
           overflow: document.documentElement.scrollWidth > innerWidth,
         };
       });
-      const paint = await page
-        .locator(".dashboard-day-tick")
-        .first()
-        .evaluate((node) => getComputedStyle(node).backgroundColor);
-      assert.notEqual(paint, "rgba(0, 0, 0, 0)", "daily tick paint is visible");
-      // Chromium does not expose native slider pseudo-element computed paint;
-      // verify real raster pixels instead of treating the host's transparent background as thumb paint.
-      const slider = page.getByLabel("Day of month", { exact: true });
-      const rgb = (
-        await slider.evaluate((node) => getComputedStyle(node).color)
-      )
-        .match(/\d+/g)!
-        .slice(0, 3)
-        .map(Number);
-      const raster = await sharp(await slider.screenshot())
-        .removeAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      const painted = (y: number) =>
-        Array.from({ length: raster.info.width }, (_, x) => x).filter((x) =>
-          rgb.every(
-            (value, channel) =>
-              Math.abs(
-                raster.data[(y * raster.info.width + x) * 3 + channel] - value,
-              ) < 10,
-          ),
-        ).length;
-      assert.ok(
-        painted(15) > raster.info.width * 0.8,
-        "slider track has contrasting raster paint",
+      const fields = await page
+        .locator(".dashboard-date-selects select")
+        .evaluateAll((nodes) => nodes.map((node) => node.id));
+      assert.deepEqual(fields, [
+        "dashboardMapYear",
+        "dashboardMapMonth",
+        "dashboardMapDay",
+      ]);
+      assert.equal(await page.locator('input[type="range"]').count(), 0);
+      assert.equal(
+        await page.locator("#dashboardSelectedDate").innerText(),
+        "Tuesday",
       );
-      assert.ok(
-        painted(10) >= 12,
-        "square slider thumb has contrasting raster paint",
-      );
-      const labelGeometry = await page
-        .locator(".dashboard-day-tick span")
+      const boxes = await page
+        .locator(
+          ".dashboard-day-navigation button, .dashboard-date-selects select",
+        )
         .evaluateAll((nodes) =>
-          nodes
-            .filter((node) => getComputedStyle(node).display !== "none")
-            .map((node) => {
-              const box = node.getBoundingClientRect();
-              const style = getComputedStyle(node);
-              return {
-                text: node.textContent,
-                height: box.height,
-                lineHeight: parseFloat(style.lineHeight),
-                top: box.top,
-                bottom: box.bottom,
-                left: box.left,
-                right: box.right,
-              };
-            }),
+          nodes.map((node) => node.getBoundingClientRect().toJSON()),
         );
       assert.ok(
-        labelGeometry.every((label) => label.height <= label.lineHeight + 1),
-        JSON.stringify(labelGeometry),
+        boxes.every((box, i) => !i || box.left >= boxes[i - 1].right),
+        JSON.stringify(boxes),
       );
       assert.ok(
-        labelGeometry.every(
-          (label, i) => i === 0 || label.left >= labelGeometry[i - 1].right,
-        ),
-        "visible day labels do not collide",
+        Math.abs(bounds.center - bounds.stripCenter) < 2,
+        JSON.stringify({ width, ...bounds }),
       );
-      const mapTop = await page
-        .locator("#dashboardMap")
-        .evaluate((node) => node.getBoundingClientRect().top);
-      assert.ok(
-        labelGeometry.every((label) => label.bottom < mapTop),
-        "labels stay above map",
-      );
-      assert.ok(Math.abs(bounds.center - bounds.stripCenter) < 2);
       assert.equal(bounds.overflow, false);
+      assert.equal(
+        await page.locator("#dashboardMapMonth").evaluate((node) => {
+          const select = node as HTMLSelectElement;
+          const canvas = document.createElement("canvas");
+          const context = canvas.getContext("2d")!;
+          const style = getComputedStyle(select);
+          context.font = `${style.fontSize} ${style.fontFamily}`;
+          return (
+            context.measureText(select.selectedOptions[0].textContent!).width +
+              30 <=
+            select.clientWidth
+          );
+        }),
+        true,
+        "long selected month label fits beside native arrow",
+      );
       if (process.env.DATE_NAV_SCREENSHOT_DIR) {
         await mkdir(process.env.DATE_NAV_SCREENSHOT_DIR, { recursive: true });
-        await page.locator(".dashboard-map-date").screenshot({
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({
+          path: `${process.env.DATE_NAV_SCREENSHOT_DIR}/synthetic-dashboard-${width}.png`,
+        });
+        const strip = (await page
+          .locator(".dashboard-map-date")
+          .boundingBox())!;
+        const navigation = (await page
+          .locator(".dashboard-day-navigation")
+          .boundingBox())!;
+        const left = Math.min(strip.x, navigation.x);
+        const right = Math.max(
+          strip.x + strip.width,
+          navigation.x + navigation.width,
+        );
+        await page.screenshot({
+          clip: {
+            x: left,
+            y: strip.y,
+            width: right - left,
+            height: strip.height,
+          },
           path: `${process.env.DATE_NAV_SCREENSHOT_DIR}/synthetic-date-strip-${width}.png`,
         });
       }
@@ -423,7 +438,7 @@ test("served Dojo centered month/year retain and clamp civil day with every dail
   });
 });
 
-test("native arrows, range preview/release and Today share civil-date reads without storms", async () => {
+test("native arrows, day select and Today share civil-date reads without storms", async () => {
   await fixture(async (page) => {
     const reads: string[] = [];
     page.on("request", (request) => {
@@ -456,44 +471,24 @@ test("native arrows, range preview/release and Today share civil-date reads with
       await page.locator("#dashboardMapDate").inputValue(),
       "2026-03-08",
     );
-    const range = page.getByLabel("Day of month", { exact: true });
-    await range.focus();
-    await range.press("End");
+    const day = page.getByLabel("Day of month", { exact: true });
+    await day.selectOption("31");
     assert.equal(
       await page.locator("#dashboardMapDate").inputValue(),
       "2026-03-31",
     );
-    await range.press("Home");
-    assert.equal(
-      await page.locator("#dashboardMapDate").inputValue(),
-      "2026-03-01",
-    );
-    await range.press("ArrowRight");
-    assert.equal(
-      await page.locator("#dashboardMapDate").inputValue(),
-      "2026-03-02",
-    );
+    await day.focus();
+    await day.press("Home");
+    await day.press("Enter");
+    assert.equal(await day.inputValue(), "1");
     await page.waitForTimeout(100);
     const before = reads.length;
-    await range.evaluate((node) => {
-      for (const day of [7, 11, 19]) {
-        (node as HTMLInputElement).value = String(day);
-        node.dispatchEvent(new Event("input", { bubbles: true }));
-      }
-    });
+    await day.selectOption("19");
     assert.equal(
       await page.locator("#dashboardMapDate").inputValue(),
       "2026-03-19",
     );
-    assert.match(
-      await page.getByLabel("Selected date", { exact: true }).innerText(),
-      /19/,
-    );
-    assert.equal(await page.locator(".dashboard-timeline-mark").count(), 0);
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
-    await page.waitForTimeout(100);
-    assert.equal(reads.length, before);
-    await range.dispatchEvent("change");
     await page.waitForTimeout(100);
     assert.equal(reads.length - before, 1);
     await page.clock.install({ time: new Date("2026-03-10T03:59:00Z") });
@@ -511,7 +506,7 @@ test("native arrows, range preview/release and Today share civil-date reads with
   });
 });
 
-test("native pointer preview fences held dates, retains member and removes old-key handlers on clear/reload", async () => {
+test("day select fences held dates, retains member and removes old-key handlers on clear/reload", async () => {
   await fixture(async (page, _calls, key) => {
     await setDay(page, "2026-03-10");
     await page
@@ -553,28 +548,16 @@ test("native pointer preview fences held dates, retains member and removes old-k
         1,
         "the shared map/timeline old-date stream is really held",
       );
-      const range = page.getByLabel("Day of month", { exact: true });
-      const box = (await range.boundingBox())!;
-      await page.mouse.move(
-        box.x + 8 + ((box.width - 16) * 10) / 30,
-        box.y + box.height / 2,
+      const beforeRelease = reads.length;
+      await page.getByLabel("Day of month", { exact: true }).selectOption("22");
+      assert.equal(
+        await page.locator("#dashboardMapDate").inputValue(),
+        "2026-03-22",
       );
-      await page.mouse.down();
-      await page.mouse.move(
-        box.x + 8 + ((box.width - 16) * 21) / 30,
-        box.y + box.height / 2,
-        { steps: 8 },
-      );
-      const preview = await page.locator("#dashboardMapDate").inputValue();
-      assert.equal(preview, "2026-03-22");
-      assert.equal(await page.locator(".dashboard-timeline-mark").count(), 0);
       assert.equal(
         await page.locator("#dashboardMapSelection").innerText(),
         "",
       );
-      const beforeRelease = reads.length;
-      assert.equal(beforeRelease, 1, "pointer movements dispatch no reads");
-      await page.mouse.up();
       await page
         .locator(`[data-event-id="${dateEventId("2026-03-22")}"]`)
         .waitFor();
@@ -589,7 +572,7 @@ test("native pointer preview fences held dates, retains member and removes old-k
       assert.equal(
         reads.length - beforeRelease,
         1,
-        "native release commits each date-scoped path once",
+        "day selection commits the date stream once",
       );
       assert.equal(
         await page
@@ -648,9 +631,7 @@ test("civil navigation preserves leap-century and DST day boundaries in actual m
     ]) {
       await setDay(page, date);
       assert.equal(
-        await page
-          .getByLabel("Day of month", { exact: true })
-          .getAttribute("max"),
+        String(await page.locator("#dashboardMapDay option").count()),
         length,
       );
     }
@@ -687,57 +668,491 @@ test("civil navigation preserves leap-century and DST day boundaries in actual m
 });
 
 test("late activity privacy denial survives new date navigation and cannot resurrect member inventory", async () => {
-  await fixture(async (page) => {
-    // Synthetic transport boundaries; retain the real served renderer and auth/date lifecycle.
-    await page.route(/\/api\/dashboard\/(timeline|event)\?/, async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
-      for (const event of data.events) {
-        event.event_type = "workout.completed";
-        event.subject = { type: "workout", id: "bbbbbbbbbbbbbbbbbbbbbbbb" };
+  const image = await sharp({
+    create: { width: 16, height: 24, channels: 3, background: "#654321" },
+  })
+    .png()
+    .toBuffer();
+  await fixture(
+    async (page) => {
+      await page.waitForFunction(
+        () =>
+          (
+            document.querySelector(
+              ".dashboard-roster-image",
+            ) as HTMLImageElement
+          )?.naturalHeight === 24,
+      );
+      const acquiredUrl = await page
+        .locator(".dashboard-roster-image")
+        .getAttribute("src");
+      assert.ok(acquiredUrl);
+      assert.equal(
+        await canDecodeAvatar(page, acquiredUrl),
+        true,
+        "positive control: acquired avatar decodes before denial",
+      );
+      // Synthetic transport boundaries; retain the real served renderer and auth/date lifecycle.
+      await page.route(
+        /\/api\/dashboard\/(timeline|event)\?/,
+        async (route) => {
+          const response = await route.fetch();
+          const data = await response.json();
+          for (const event of data.events) {
+            event.event_type = "workout.completed";
+            event.subject = { type: "workout", id: "bbbbbbbbbbbbbbbbbbbbbbbb" };
+          }
+          await route.fulfill({ response, json: data });
+        },
+      );
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await page.route(/\/api\/dashboard\/activity\?/, async (route) => {
+        await gate;
+        await route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: "{}",
+        });
+      });
+      try {
+        await setDay(page, "2026-03-10");
+        const detailRequest = page.waitForRequest(
+          /\/api\/dashboard\/activity\?/,
+        );
+        await page
+          .locator(`[data-event-id="${dateEventId("2026-03-10")}"]`)
+          .click();
+        await detailRequest;
+        await page
+          .getByRole("button", { name: "Next day", exact: true })
+          .click();
+        await page
+          .locator(`[data-event-id="${dateEventId("2026-03-11")}"]`)
+          .waitFor();
+        release();
+        await page.waitForFunction(
+          () => !document.querySelector(".dashboard-timeline-mark"),
+        );
+        assert.equal(
+          await page.locator("#dashboardMapSelection").innerText(),
+          "",
+        );
+        assert.equal(await page.locator(".dashboard-member-card").count(), 0);
+        assert.equal(
+          await canDecodeAvatar(page, acquiredUrl),
+          false,
+          "member denial releases owned avatar URL",
+        );
+        await page
+          .getByRole("button", { name: "Next day", exact: true })
+          .click();
+        await page.waitForTimeout(100);
+        assert.equal(
+          await page.locator(".dashboard-timeline-mark").count(),
+          0,
+          "date refresh cannot undo confirmed member denial",
+        );
+      } finally {
+        release();
       }
-      await route.fulfill({ response, json: data });
-    });
+    },
+    async (page) => {
+      await page.route(/\/api\/dashboard\/avatar\?/, (route) =>
+        route.fulfill({ contentType: "image/png", body: image }),
+      );
+    },
+  );
+});
+
+for (const status of [401, 403]) {
+  test(`feed detail ${status} releases acquired roster avatar without reacquisition`, async () => {
+    const image = await sharp({
+      create: { width: 16, height: 24, channels: 3, background: "#654321" },
+    })
+      .png()
+      .toBuffer();
+    let acquiredUrl = "";
+    let rosterReads = 0,
+      avatarReads = 0,
+      detailReads = 0;
+    await fixture(
+      async (page) => {
+        assert.equal(await page.locator(".dashboard-member-card").count(), 0);
+        assert.equal(
+          await canDecodeAvatar(page, acquiredUrl),
+          false,
+          "feed detail denial must revoke acquired member avatar URL",
+        );
+        assert.match(
+          await page.locator("#dashboardStatus").innerText(),
+          /Partial dashboard/,
+        );
+        await page
+          .getByRole("button", { name: "Next day", exact: true })
+          .click();
+        await page.waitForTimeout(100);
+        assert.equal(await page.locator(".dashboard-member-card").count(), 0);
+        assert.equal(await page.locator(".dashboard-timeline-mark").count(), 0);
+        assert.deepEqual(
+          { rosterReads, avatarReads, detailReads },
+          { rosterReads: 1, avatarReads: 1, detailReads: 1 },
+        );
+      },
+      async (page) => {
+        await page.route(/\/api\/dashboard\/members(?:\?|$)/, (route) => {
+          rosterReads++;
+          return route.fulfill({
+            json: {
+              members: [
+                {
+                  _id: "aaaaaaaaaaaaaaaaaaaaaaaa",
+                  display_name: "Synthetic Ada",
+                },
+              ],
+            },
+          });
+        });
+        await page.route(/\/api\/dashboard\/avatar\?/, (route) => {
+          avatarReads++;
+          return route.fulfill({ contentType: "image/png", body: image });
+        });
+        await page.route(/\/api\/dashboard(?:\?|$)/, (route) =>
+          route.fulfill({
+            json: {
+              users: [
+                {
+                  _id: "aaaaaaaaaaaaaaaaaaaaaaaa",
+                  display_name: "Synthetic Ada",
+                },
+              ],
+              activities: [
+                {
+                  _id: "bbbbbbbbbbbbbbbbbbbbbbbb",
+                  user_id: "aaaaaaaaaaaaaaaaaaaaaaaa",
+                  type: "metric",
+                  status: "complete",
+                  created_at: "2026-03-10T12:00:00Z",
+                  data: {
+                    measurements: [
+                      { type_id: "weight", value: 68, unit: "kg" },
+                    ],
+                  },
+                },
+              ],
+              hasMore: false,
+            },
+          }),
+        );
+        await page.route(/\/api\/dashboard\/activity\?/, async (route) => {
+          detailReads++;
+          await page.waitForFunction(
+            () =>
+              (
+                document.querySelector(
+                  ".dashboard-roster-image",
+                ) as HTMLImageElement
+              )?.naturalHeight === 24,
+          );
+          acquiredUrl = (await page
+            .locator(".dashboard-roster-image")
+            .getAttribute("src"))!;
+          assert.match(acquiredUrl, /^blob:/);
+          assert.equal(
+            await canDecodeAvatar(page, acquiredUrl),
+            true,
+            "positive control: acquired avatar decodes before feed denial",
+          );
+          await route.fulfill({ status, json: {} });
+        });
+      },
+    );
+  });
+}
+
+for (const heldPath of ["members", "avatar"]) {
+  test(`date changes reuse scope roster and avatars including held initial ${heldPath}`, async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await page.route(/\/api\/dashboard\/activity\?/, async (route) => {
-      await gate;
-      await route.fulfill({
-        status: 403,
-        contentType: "application/json",
-        body: "{}",
-      });
-    });
+    let rosterReads = 0,
+      avatarReads = 0,
+      held = false;
+    let denyRoster = false;
+    const image = await sharp({
+      create: { width: 48, height: 64, channels: 3, background: "#765432" },
+    })
+      .png()
+      .toBuffer();
     try {
-      await setDay(page, "2026-03-10");
-      const detailRequest = page.waitForRequest(/\/api\/dashboard\/activity\?/);
-      await page
-        .locator(`[data-event-id="${dateEventId("2026-03-10")}"]`)
-        .click();
-      await detailRequest;
-      await page.getByRole("button", { name: "Next day", exact: true }).click();
-      await page
-        .locator(`[data-event-id="${dateEventId("2026-03-11")}"]`)
-        .waitFor();
-      release();
-      await page.waitForFunction(
-        () => !document.querySelector(".dashboard-timeline-mark"),
-      );
-      assert.equal(
-        await page.locator("#dashboardMapSelection").innerText(),
-        "",
-      );
-      await page.getByRole("button", { name: "Next day", exact: true }).click();
-      await page.waitForTimeout(100);
-      assert.equal(
-        await page.locator(".dashboard-timeline-mark").count(),
-        0,
-        "date refresh cannot undo confirmed member denial",
+      await fixture(
+        async (page, _calls, key) => {
+          await page.waitForFunction(
+            () => !!document.querySelector(".dashboard-timeline-mark"),
+          );
+          for (let i = 0; i < 100 && !held; i++) await page.waitForTimeout(10);
+          assert.equal(held, true);
+          await page
+            .getByRole("button", { name: "Next day", exact: true })
+            .click();
+          await page
+            .getByRole("button", { name: "Next day", exact: true })
+            .click();
+          release();
+          await page.waitForFunction(
+            () =>
+              (
+                document.querySelector(
+                  ".dashboard-roster-image",
+                ) as HTMLImageElement
+              )?.naturalHeight === 64,
+          );
+          assert.equal(rosterReads, 1);
+          assert.equal(avatarReads, 1);
+          await page.locator(".dashboard-member-card").click();
+          await page.evaluate(() => {
+            (window as any).savedCard = document.querySelector(
+              ".dashboard-member-card",
+            );
+            (window as any).savedImage = document.querySelector(
+              ".dashboard-roster-image",
+            );
+            (window as any).savedUrl = (window as any).savedImage.src;
+          });
+          for (const action of ["Next day", "Previous day"]) {
+            const response = page.waitForResponse(
+              /\/api\/dashboard\/timeline\?/,
+            );
+            await page
+              .getByRole("button", { name: action, exact: true })
+              .click();
+            await response;
+            await page.waitForTimeout(50);
+            assert.equal(
+              await page.evaluate(() => {
+                const w = window as any;
+                return (
+                  w.savedCard ===
+                    document.querySelector(".dashboard-member-card") &&
+                  w.savedImage ===
+                    document.querySelector(".dashboard-roster-image") &&
+                  w.savedImage.src === w.savedUrl &&
+                  w.savedImage.naturalHeight === 64 &&
+                  w.savedCard.getAttribute("aria-pressed") === "true"
+                );
+              }),
+              true,
+              "date refresh preserves selected card, image DOM, decoded pixels and Blob URL",
+            );
+          }
+          assert.equal(rosterReads, 1);
+          assert.equal(avatarReads, 1);
+          assert.match(
+            await page.locator(".dashboard-member-card").innerText(),
+            /68 kg/,
+          );
+          const priorUrl = await page
+            .locator(".dashboard-roster-image")
+            .getAttribute("src");
+          assert.ok(priorUrl);
+          assert.equal(
+            await canDecodeAvatar(page, priorUrl),
+            true,
+            "positive control: prior scope URL decodes before reload",
+          );
+          await page.evaluate(
+            async (key) => (window as any).CoachDashboard.load(null, key),
+            key,
+          );
+          await page.waitForFunction(
+            () =>
+              (
+                document.querySelector(
+                  ".dashboard-roster-image",
+                ) as HTMLImageElement
+              )?.naturalHeight === 64,
+          );
+          assert.equal(rosterReads, 2);
+          assert.equal(avatarReads, 2);
+          assert.equal(
+            await canDecodeAvatar(page, priorUrl),
+            false,
+            "explicit reload revokes prior scope URL",
+          );
+          denyRoster = true;
+          await page.evaluate(
+            async (key) => (window as any).CoachDashboard.load(null, key),
+            key,
+          );
+          await page.waitForTimeout(100);
+          assert.equal(await page.locator(".dashboard-member-card").count(), 0);
+          assert.equal(
+            await page.locator(".dashboard-roster-image").count(),
+            0,
+          );
+          assert.equal(rosterReads, 3);
+          assert.equal(avatarReads, 2);
+          await page.evaluate(() => (window as any).CoachDashboard.clear());
+          assert.equal(
+            await page.locator("#dashboardMemberCards").innerText(),
+            "",
+          );
+        },
+        async (page) => {
+          await page.route(
+            /\/api\/dashboard\/(members|avatar)(?:\?|$)/,
+            async (route) => {
+              const path = new URL(route.request().url()).pathname
+                .split("/")
+                .pop();
+              if (path === "members") rosterReads++;
+              else avatarReads++;
+              if (path === heldPath && !held) {
+                held = true;
+                await gate;
+              }
+              if (path === "members")
+                await route.fulfill({
+                  status: denyRoster ? 403 : 200,
+                  json: {
+                    members: denyRoster
+                      ? []
+                      : [
+                          {
+                            _id: "aaaaaaaaaaaaaaaaaaaaaaaa",
+                            display_name: "Synthetic Ada",
+                            stats: { weight: { value: 68, unit: "kg" } },
+                          },
+                        ],
+                  },
+                });
+              else
+                await route.fulfill({ contentType: "image/png", body: image });
+            },
+          );
+          // No fallback feed identity can obscure roster-denial cleanup.
+          await page.route(/\/api\/dashboard(?:\?|$)/, (route) =>
+            route.fulfill({
+              json: { users: [], activities: [], hasMore: false },
+            }),
+          );
+        },
       );
     } finally {
       release();
     }
   });
-});
+}
+
+for (const heldPath of ["members", "avatar"]) {
+  for (const transition of ["lock", "reload"]) {
+    test(`held ${heldPath} cannot paint after scope ${transition}`, async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let held = false,
+        reads = 0;
+      const image = await sharp({
+        create: { width: 16, height: 24, channels: 3, background: "#654321" },
+      })
+        .png()
+        .toBuffer();
+      try {
+        await fixture(
+          async (page, _calls, key) => {
+            for (let i = 0; i < 100 && !held; i++)
+              await page.waitForTimeout(10);
+            assert.equal(held, true);
+            if (transition === "lock")
+              await page.evaluate(() =>
+                document.getElementById("lockStudio")!.click(),
+              );
+            else
+              await page.evaluate(
+                async (key) => (window as any).CoachDashboard.load(null, key),
+                key,
+              );
+            release();
+            if (transition === "lock") {
+              await page.waitForTimeout(100);
+              assert.equal(
+                await page.locator("#dashboardMemberCards").innerText(),
+                "",
+              );
+              assert.equal(
+                await page.locator(".dashboard-roster-image").count(),
+                0,
+              );
+            } else {
+              await page.waitForFunction(() =>
+                document
+                  .querySelector(".dashboard-member-card")
+                  ?.textContent?.includes("New scope"),
+              );
+              await page.waitForTimeout(100);
+              assert.doesNotMatch(
+                await page.locator("#dashboardMemberCards").innerText(),
+                /Old scope/,
+              );
+              assert.equal(
+                await page.locator(".dashboard-roster-image").count(),
+                0,
+                "late old avatar cannot paint new member card",
+              );
+            }
+            console.log("scope-held-receipt", { heldPath, transition, reads });
+          },
+          async (page) => {
+            await page.route(
+              /\/api\/dashboard\/(members|avatar)(?:\?|$)/,
+              async (route) => {
+                const path = new URL(route.request().url()).pathname
+                  .split("/")
+                  .pop();
+                const old = !held;
+                if (path === heldPath) {
+                  reads++;
+                  if (!held) {
+                    held = true;
+                    await gate;
+                  }
+                }
+                if (path === "members")
+                  await route.fulfill({
+                    json: {
+                      members: [
+                        {
+                          _id: old
+                            ? "aaaaaaaaaaaaaaaaaaaaaaaa"
+                            : "bbbbbbbbbbbbbbbbbbbbbbbb",
+                          display_name: old ? "Old scope" : "New scope",
+                          stats: {},
+                        },
+                      ],
+                    },
+                  });
+                else
+                  await route.fulfill({
+                    status: old ? 200 : 404,
+                    contentType: "image/png",
+                    body: old ? image : Buffer.alloc(0),
+                  });
+              },
+            );
+            await page.route(/\/api\/dashboard(?:\?|$)/, (route) =>
+              route.fulfill({
+                json: { users: [], activities: [], hasMore: false },
+              }),
+            );
+          },
+        );
+      } finally {
+        release();
+      }
+    });
+  }
+}
