@@ -20,6 +20,7 @@ import {
   assertNoSecrets,
 } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
+import { isolatedWorkerCompletion } from "../runtime/isolatedInvocation.js";
 import { Worker } from "../worker/runner.js";
 import { Client, ToolFailure } from "../katafit/client.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
@@ -280,20 +281,25 @@ export async function admin(
             save: (action) => actions.save(action),
           };
         })(),
-        complete: (context, signal, system, tools, ref, budget) =>
-          infer(
-            {
-              ...c.provider,
-              onDiagnostic: (event) => logs.record({ ...event, ref }),
-              apiKey,
-              secrets: Object.values(store.secrets),
-            },
-            system,
-            context,
-            signal,
-            tools,
-            budget,
-          ),
+        // An explicitly supplied infer is a synthetic test seam only. The
+        // installed CLI/server default never runs Agent on the host.
+        complete:
+          infer === complete
+            ? isolatedWorkerCompletion(store, () => autonomy.runtimeContext())
+            : (context, signal, system, tools, ref, budget) =>
+                infer(
+                  {
+                    ...c.provider,
+                    onDiagnostic: (event) => logs.record({ ...event, ref }),
+                    apiKey,
+                    secrets: Object.values(store.secrets),
+                  },
+                  system,
+                  context,
+                  signal,
+                  tools,
+                  budget,
+                ),
       });
       try {
         await worker.start();

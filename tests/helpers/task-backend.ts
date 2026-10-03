@@ -209,6 +209,69 @@ export async function startTaskBackend() {
       published,
       task,
       occurrences,
+      /** Real live autonomy work for installed native concurrency acceptance. */
+      async autonomyEvent() {
+        const dojo = new ObjectId(),
+          member = new ObjectId();
+        await db
+          .collection("users")
+          .insertOne({ _id: member, name: "Synthetic concurrent member" });
+        await db.collection("dojos").insertOne({ _id: dojo, chief_id: user });
+        await db.collection("dojo_members").insertMany([
+          { dojo_id: dojo, user_id: user, role: "chief" },
+          { dojo_id: dojo, user_id: member, role: "member" },
+        ]);
+        const jwt = require("jsonwebtoken");
+        const human = jwt.sign(
+          { user_id: String(user) },
+          process.env.JWT_SECRET,
+        );
+        const mandate = async (method: string, body?: unknown) => {
+          const response = await fetch(origin + "/api/coach/autonomy/mandate", {
+            method,
+            headers: {
+              authorization: "Bearer " + human,
+              "content-type": "application/json",
+            },
+            body: body === undefined ? undefined : JSON.stringify(body),
+          });
+          const value: any = await response.json();
+          if (!response.ok) throw new Error(JSON.stringify(value));
+          return value;
+        };
+        const {
+          protocol,
+          mandate_id,
+          dojo_id,
+          chief_id,
+          revision,
+          status,
+          suspended_reason,
+          updated_at,
+          updated_by,
+          capabilities,
+          ...policy
+        } = await mandate("GET");
+        const saved = await mandate("PUT", {
+          expected_revision: revision,
+          idempotency_key: "native-concurrent-" + new ObjectId(),
+          mandate: {
+            ...policy,
+            mode: "observe",
+            delegated_actions: ["manager_report", "follow_up"],
+            digest: { ...policy.digest, enabled: false },
+          },
+        });
+        const work = await require("./core/coachAutonomy").enqueueWork({
+          mandate_id: saved.mandate.mandate_id,
+          kind: "event",
+          dedupe_key: "native-concurrent-" + new ObjectId(),
+          subject_ids: [String(member)],
+          source: {},
+          due_at: new Date(Date.now() - 1000),
+        });
+        return { mandate: saved.mandate, work };
+      },
       /** Drops every task, publication, action and seeded fact. */
       async reset() {
         calls.length = 0;

@@ -214,7 +214,11 @@ test(
         .find((b) => systemOf(b).includes("generation task"));
       assert.ok(taskBody, "task inference reached the provider");
       assert.match(systemOf(taskBody), /Prefers training before 7am/);
-      assert.equal(taskBody.tools, undefined, "typed tasks stay tool-free");
+      assert.deepEqual(
+        taskBody.tools.map((tool: any) => tool.function.name).sort(),
+        ["coach_memory_search", "katafit_rest_request"],
+        "structured final schema retains only the backend-offered request tool inventory, never Operator tools",
+      );
       const task = await db
         .collection("external_coach_tasks")
         .findOne({ kind: "activity_reaction" });

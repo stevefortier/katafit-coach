@@ -371,6 +371,12 @@ export class AutonomyHost {
     return this.initializing;
   }
 
+  /** Same installation cleanup owner for every background Pi audience. */
+  async runtimeContext(): Promise<RuntimeContext> {
+    await this.init();
+    return { owner: this.owner!, cleanup: this.cleanup! };
+  }
+
   /**
    * Exact read-only proof for every settled unknown write (never a replay).
    * Single-flight; returns whether replacement is now safe.

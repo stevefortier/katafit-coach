@@ -194,7 +194,7 @@ function validFrame(frame: any): boolean {
   );
 }
 
-export const NATIVE_PROFILES = ["planner", "composer"] as const;
+export const NATIVE_PROFILES = ["planner", "composer", "worker"] as const;
 export type NativeProfile = (typeof NATIVE_PROFILES)[number];
 export type RpcCommand =
   | { type: "prompt"; message: string; id?: string }

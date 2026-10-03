@@ -279,12 +279,14 @@ export class Worker {
       !this.pendingTask &&
       this.isolated.length === 0 &&
       this.unresolvedRequests.size === 0 &&
+      this.invocations.size === 0 &&
       !this.reconciling
     );
   }
   get stopConfirmed() {
     return (
       this.state === "stopped" &&
+      this.invocations.size === 0 &&
       (!this.presenceAttempted || this.presence === "reported")
     );
   }
@@ -331,6 +333,9 @@ export class Worker {
   private loop?: Promise<void>;
   private startup?: Promise<"reported" | "unsupported">;
   private stopping?: Promise<void>;
+  // Poll's cancellation race may settle before native finally/cleanup. Keep
+  // the real invocation owned until it settles, including queued admission.
+  private readonly invocations = new Set<Promise<string>>();
   private presenceTimer?: ReturnType<typeof setInterval>;
   private presenceCall?: Promise<void>;
   private readonly instanceId = randomUUID();
@@ -346,14 +351,19 @@ export class Worker {
   }
   constructor(private options: WorkerOptions) {
     const { admission, complete } = options;
-    if (admission)
-      this.options = {
-        ...options,
-        complete: (context, signal, ...rest) =>
-          admission.run("request", signal, () =>
-            complete(context, signal, ...rest),
-          ),
-      };
+    this.options = {
+      ...options,
+      complete: (context, signal, ...rest) => {
+        const call = () => complete(context, signal, ...rest);
+        const invocation = admission
+          ? admission.run("request", signal, call)
+          : Promise.resolve().then(call);
+        this.invocations.add(invocation);
+        const settled = () => this.invocations.delete(invocation);
+        void invocation.then(settled, settled);
+        return invocation;
+      },
+    };
   }
   private update(s: string) {
     if (this.state === s) return;
@@ -1514,6 +1524,20 @@ export class Worker {
         this.active,
         this.loop,
       ]);
+      // Native cancellation includes container removal and gateway drainage.
+      // A defective completion cannot hang Stop forever or be called safe:
+      // after the bound the retained invocation still fences replacement.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...this.invocations]),
+          new Promise<void>((r) => {
+            timer = setTimeout(r, 30000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
       if (this.presenceAttempted) {
         try {
           await this.report("stopped");

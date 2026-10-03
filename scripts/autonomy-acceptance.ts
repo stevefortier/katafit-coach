@@ -135,7 +135,7 @@ export async function runAcceptance(): Promise<AcceptanceReceipt> {
       "Final package/browser/update/full-suite and independent review remain parent-owned gates.",
       "Planner catalog on this source offers finite autonomy + REST GET; dynamic memory, configured integration and generic supported-action parity for heartbeat/event are not implemented by this harness or certified.",
       "OS-crash, lost ACK, upgrade, credential rotation, stale producers and full A1-A13 matrices remain covered only by separate focused suites, not this integrated run.",
-      "Typed Worker/native Docker pairing is not present in the production source; typed supplemental Pi adapter proof is not container isolation.",
+      "Typed daily_insight is exercised through installed default native Worker; other typed kinds are not enumerated native execution proofs in this harness.",
     ],
     cleanup: { complete: false, containers: [] },
   };
@@ -679,7 +679,8 @@ export async function runAcceptance(): Promise<AcceptanceReceipt> {
     host = undefined;
     await b.close();
     b = undefined;
-    const typed = await typedAcceptance(admission);
+    assert.ok(image);
+    const typed = await typedAcceptance(image);
     await writeFile(
       evidence + "/typed-provider-payloads.json",
       JSON.stringify(typed.providerPayloads, null, 2),
