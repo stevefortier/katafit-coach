@@ -23,11 +23,13 @@ const base = {
 };
 let fixture: any = { ...base };
 let heldCheck: Promise<void> | undefined;
+let sourceChecks = 0;
 class FixtureUpdates extends Updates {
   snapshot() {
     return fixture;
   }
   async check() {
+    sourceChecks++;
     await heldCheck;
     return this.snapshot();
   }
@@ -49,6 +51,11 @@ try {
   const page = await browser.newPage();
   page.setDefaultTimeout(10000);
   const errors: string[] = [];
+  let applyRequests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/update/apply")
+      applyRequests++;
+  });
   page.on("pageerror", (error) => errors.push(error.message));
   const evidence =
     process.env.COACH_EVIDENCE_DIR ??
@@ -66,12 +73,23 @@ try {
       .count(),
     0,
   );
+  // Route entry now reads the queue before its automatic source check. Join
+  // that complete workflow before installing the gate for the next manual check.
+  await page.waitForFunction(
+    () => !document.querySelector<HTMLButtonElement>("#updateCheck")?.disabled,
+  );
+  assert.equal(sourceChecks, 1, "Updates entry must finish its source check");
+  assert.equal(
+    await page.locator("#updateInstalled").getAttribute("title"),
+    sha,
+  );
   let releaseCheck!: () => void;
   heldCheck = new Promise((resolve) => {
     releaseCheck = resolve;
   });
-  await page.locator("#updateCheck").click();
   try {
+    await page.locator("#updateCheck").click();
+    assert.equal(await page.locator("#updateCheck").isDisabled(), true);
     assert.match(await checkText(), /Source check requested/);
     assert.match(await checkText(), /Previous check:.*rate limit/);
   } finally {
@@ -133,6 +151,12 @@ try {
       "Installed source is current.",
   );
   assert.doesNotMatch(await checkText(), /rate limit|unavailable/);
+  assert.equal(sourceChecks, 5, "entry plus four explicit source checks");
+  assert.equal(applyRequests, 0, "source status checks never submit apply");
+  assert.equal(
+    await page.locator("#updateInstalled").getAttribute("title"),
+    sha,
+  );
   assert.deepEqual(errors, []);
   console.log(
     "Manual update status fixtures passed: rate limit, checking, network, success; 320/360/1280 no overflow.",
