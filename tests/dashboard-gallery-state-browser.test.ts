@@ -259,6 +259,7 @@ test("Gallery scopes held reads, explicit retries, empty/repeated cursors and ac
       document.getElementById("studio")!.hidden = false;
       document.getElementById("login")!.hidden = true;
     });
+    await page.getByRole("tab", { name: "Gallery", exact: true }).click();
     const load = async () => {
       await page.evaluate(
         (key) => (window as any).CoachDashboard.load(null, key),
@@ -459,6 +460,7 @@ test("Gallery scopes held reads, explicit retries, empty/repeated cursors and ac
           .querySelector("#dashboardGallery [role=status]")
           ?.textContent?.includes("Gallery paused:"),
       );
+      await page.getByRole("tab", { name: "Gallery", exact: true }).click();
       const gallery = page.locator("#dashboardGallery");
       const bob = gallery.locator(
         '.dashboard-gallery-entry[data-activity-id="bob"] img',
@@ -753,6 +755,7 @@ for (const failure of ["detail", "frame", "paging", "page"] as const) {
         (key) => (window as any).CoachDashboard.load(null, key),
         store.secrets.admin,
       );
+      await page.getByRole("tab", { name: "Gallery", exact: true }).click();
       const gallery = page.locator("#dashboardGallery");
       await gallery
         .locator('.dashboard-gallery-entry[data-activity-id="ada"]')

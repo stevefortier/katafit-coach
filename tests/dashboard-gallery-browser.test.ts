@@ -114,6 +114,10 @@ test("served Gallery independently pages historical inventories, lazily decodes 
       (key) => (window as any).CoachDashboard.load(null, key),
       store.secrets.admin,
     );
+    const tabs = page.getByRole("tablist", { name: "Dojo sections" });
+    assert.equal(await tabs.getByRole("tab").count(), 3);
+    assert.equal(await page.locator("#dashboardGallery").isVisible(), false);
+    await tabs.getByRole("tab", { name: "Gallery", exact: true }).click();
     assert.equal(
       await page.locator("#dashboardGallery h3").innerText(),
       "Gallery",

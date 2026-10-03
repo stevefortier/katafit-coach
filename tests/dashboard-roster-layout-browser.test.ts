@@ -306,11 +306,11 @@ test("roster covers full-height slots with decoded larger avatars and cached sel
       await page.evaluate(() => window.scrollTo(0, 500));
       await page.waitForTimeout(100);
       assert.equal(
-        Math.round(
-          (await page.locator("#dashboardMemberCards").boundingBox())!.y,
-        ),
-        60,
-        "sticky roster clears measured header and notice",
+        await page
+          .locator("#dashboardMemberCards")
+          .evaluate((el) => getComputedStyle(el).position),
+        "static",
+        "shared roster remains in normal flow instead of covering pane rows",
       );
       const evidence = process.env.COACH_ROSTER_EVIDENCE;
       if (evidence) {

@@ -111,7 +111,50 @@
               role="group"
               aria-label="Member filters"
             ></div>
+            <nav
+              id="dashboardSubtabs"
+              class="dashboard-subtabs"
+              role="tablist"
+              aria-label="Dojo sections"
+            >
+              <button
+                id="dashboard-map-tab"
+                type="button"
+                role="tab"
+                aria-controls="dashboardMapPane"
+                aria-selected="true"
+                tabindex="0"
+              >
+                Map &amp; events
+              </button>
+              <button
+                id="dashboard-trends-tab"
+                type="button"
+                role="tab"
+                aria-controls="dashboardCharts"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Activity trends
+              </button>
+              <button
+                id="dashboard-gallery-tab"
+                type="button"
+                role="tab"
+                aria-controls="dashboardGallery"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Gallery
+              </button>
+            </nav>
             <section
+              id="dashboardMapPane"
+              role="tabpanel"
+              aria-labelledby="dashboard-map-tab"
+              tabindex="0"
               class="dashboard-map-section"
               aria-label="Shared activity map"
             >
@@ -193,8 +236,20 @@
                 ></aside>
               </div>
             </section>
-            <div id="dashboardCharts"></div>
-            <section id="dashboardGallery" aria-label="Gallery"></section>
+            <div
+              id="dashboardCharts"
+              role="tabpanel"
+              aria-labelledby="dashboard-trends-tab"
+              tabindex="0"
+              hidden
+            ></div>
+            <section
+              id="dashboardGallery"
+              role="tabpanel"
+              aria-labelledby="dashboard-gallery-tab"
+              tabindex="0"
+              hidden
+            ></section>
           </section>
           <section id="settingsPanel" hidden>
             <div

@@ -124,7 +124,7 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
           "#dashboardMemberCards .dashboard-member-card, #dashboardMemberCards .dashboard-member-all",
         ).length === 3,
     );
-    await page.locator("#dashboardCharts h3").waitFor();
+    await page.locator("#dashboardCharts h3").waitFor({ state: "attached" });
     await page.waitForFunction(
       () =>
         (
@@ -230,7 +230,7 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
       top.memberRect.bottom - top.memberBottomBorder,
     );
     assert.ok(top.rootMax >= 650, JSON.stringify(top));
-    assert.equal(top.rosterPosition, "sticky");
+    assert.equal(top.rosterPosition, "static");
     if (evidence) {
       await page.screenshot({ path: evidence + "/desktop-top-synthetic.png" });
     }
@@ -238,8 +238,10 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     let g = await geometry("desktop-scrolled", 650);
     assert.ok(Math.abs(g.rootScroll - 650) < 2, JSON.stringify(g));
     assert.ok(g.cardsBottom <= g.panelBottom);
-    assert.ok(Math.abs(g.cardsTop - g.stickyTop) < 2);
-    assert.ok(g.cardsTop >= g.headerBottom - 1);
+    assert.ok(
+      g.cardsBottom <= g.mapTop,
+      "flow roster never overlays map content",
+    );
     assert.equal(g.overflow, false);
     await page
       .locator("#dashboardMemberCards")
@@ -255,9 +257,11 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
       "true",
     );
     g = await geometry("desktop-selected", 650);
-    assert.ok(Math.abs(g.rootScroll - 650) < 2, JSON.stringify(g));
-    assert.ok(Math.abs(g.cardsTop - g.stickyTop) < 2);
-    assert.ok(g.cardsTop >= g.headerBottom - 1);
+    assert.ok(g.rootScroll <= 650, JSON.stringify(g));
+    assert.ok(
+      g.cardsBottom <= g.mapTop,
+      "flow roster never overlays map content",
+    );
     assert.ok(g.cardsBottom <= g.panelBottom);
     await page.evaluate(() =>
       (document.querySelector("#coachLauncher") as HTMLElement).click(),
@@ -276,8 +280,10 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     assert.ok(Math.abs(g.workspaceScroll - 950) < 2, JSON.stringify(g));
     assert.ok(g.cardsBottom <= g.panelBottom);
     assert.equal(g.rootScroll, 0);
-    assert.ok(Math.abs(g.cardsTop - g.stickyTop) < 2);
-    assert.ok(g.cardsTop >= g.headerBottom - 1);
+    assert.ok(
+      g.cardsBottom <= g.mapTop,
+      "flow roster never overlays map content",
+    );
     await page
       .locator("#dashboardMemberCards")
       .locator(".dashboard-member-card")
@@ -292,7 +298,7 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
       "true",
     );
     g = await geometry("docked-selected", 950);
-    assert.ok(Math.abs(g.workspaceScroll - 950) < 2, JSON.stringify(g));
+    assert.ok(g.workspaceScroll <= 950, JSON.stringify(g));
     if (evidence)
       await page.screenshot({
         path: evidence + "/desktop-docked-sticky-synthetic.png",
@@ -300,26 +306,12 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     await page.locator("#coachPaneCollapse").click();
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 800 });
-      // setViewportSize resolves before the header ResizeObserver publishes its
-      // new sticky offset. Do not scroll/click against the old desktop geometry.
-      await page.waitForFunction(() => {
-        const cards = document.querySelector("#dashboardMemberCards")!;
-        const header = document.querySelector("header")!;
-        return (
-          parseFloat(getComputedStyle(cards).top) >=
-          header.getBoundingClientRect().bottom - 1
-        );
-      });
       const before = await geometry(`mobile-${width}-ready`, 650);
       assert.ok(before.rootMax >= 650, JSON.stringify({ width, before }));
-      assert.ok(
-        before.stickyTop >= before.headerBottom - 1,
-        JSON.stringify({ width, before }),
-      );
+      assert.equal(before.rosterPosition, "static");
       await page.evaluate(() => scrollTo(0, 650));
       g = await geometry(`mobile-${width}-scrolled`, 650);
       assert.ok(Math.abs(g.rootScroll - 650) < 2, JSON.stringify({ width, g }));
-      assert.ok(g.cardsTop >= g.headerBottom - 1);
       assert.ok(g.cardsBottom <= g.panelBottom);
       assert.equal(g.overflow, false);
       assert.ok(g.rosterHeight < 200, JSON.stringify({ width, g }));
@@ -330,7 +322,10 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
         g.portraitRect.bottom,
         g.memberRect.bottom - g.memberBottomBorder,
       );
-      assert.ok(Math.abs(g.cardsTop - g.stickyTop) < 2);
+      assert.ok(
+        g.cardsBottom <= g.mapTop,
+        "flow roster never overlays map content",
+      );
       await page
         .locator("#dashboardMemberCards")
         .locator(".dashboard-member-card")
@@ -345,11 +340,13 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
         "true",
       );
       const after = await geometry(`mobile-${width}-selected`, 650);
-      assert.ok(Math.abs(after.cardsTop - after.stickyTop) < 2);
-      assert.ok(after.cardsTop >= after.headerBottom - 1);
+      assert.ok(
+        after.cardsBottom <= after.mapTop,
+        "flow roster never overlays map content",
+      );
       assert.ok(after.cardsBottom <= after.panelBottom);
       assert.ok(
-        Math.abs(after.rootScroll - 650) < 2,
+        after.rootScroll <= 650,
         JSON.stringify({ width, before, scrolled: g, after }),
       );
       await page
