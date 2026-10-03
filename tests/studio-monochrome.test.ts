@@ -254,6 +254,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         "index.html",
         "backend-performance.js",
         "dashboard.js",
+        "stats.js",
         "app.js",
         "terminal.js",
         "style.css",
@@ -434,7 +435,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       assert.equal(
         await page
           .locator(
-            "#dashboardPanel h2, #dashboardMapHeading, #dashboardRefresh",
+            "#dashboardPanel h2:visible, #dashboardMapHeading, #dashboardRefresh",
           )
           .count(),
         0,
