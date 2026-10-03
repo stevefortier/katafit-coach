@@ -60,9 +60,8 @@ test("served Dojo subtabs preserve scope, keyboard selection and map return geom
                     workout_progress: { completed_sets: 4 + index * 2 },
                   })),
                 ],
-          hasMore:
-            url.searchParams.get("type") === "media" &&
-            !url.searchParams.has("cursor"),
+          oldestDate: "2026-09-26T12:00:00Z",
+          hasMore: !url.searchParams.has("cursor"),
           nextCursor: url.searchParams.has("cursor") ? null : "opaque_cursor",
         }),
       );
@@ -203,6 +202,20 @@ test("served Dojo subtabs preserve scope, keyboard selection and map return geom
         ?.textContent?.includes("Event access rechecked"),
     );
     const detail = await page.locator("#dashboardMapSelection").textContent();
+    const olderActivities = page.getByRole("button", {
+      name: "Load older activities",
+      exact: true,
+    });
+    await page.waitForFunction(() =>
+      document
+        .getElementById("dashboardStatus")
+        ?.textContent?.includes("More activities available"),
+    );
+    assert.equal(
+      await olderActivities.isVisible(),
+      false,
+      "trend paging is hidden on Map & events",
+    );
     await page.waitForTimeout(200);
     assert.equal(
       calls.filter((x) => x.includes("type=media")).length,
@@ -212,10 +225,19 @@ test("served Dojo subtabs preserve scope, keyboard selection and map return geom
     await tabs.getByRole("tab", { name: "Map & events" }).focus();
     await page.keyboard.press("ArrowRight");
     assert.ok(await trends.isVisible());
+    assert.ok(
+      await olderActivities.isVisible(),
+      "trend paging belongs to Activity trends",
+    );
     assert.equal(await map.isVisible(), false);
     assert.equal(await page.locator("#dashboardMapYear").isVisible(), false);
     await page.keyboard.press("End");
     assert.ok(await gallery.isVisible());
+    assert.equal(
+      await olderActivities.isVisible(),
+      false,
+      "ordinary feed paging is hidden on Gallery",
+    );
     await gallery.scrollIntoViewIfNeeded();
     const image = gallery.locator("img").first();
     await image.waitFor();

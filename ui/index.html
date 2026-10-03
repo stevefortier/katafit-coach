@@ -131,7 +131,7 @@
                 id="dashboard-trends-tab"
                 type="button"
                 role="tab"
-                aria-controls="dashboardCharts"
+                aria-controls="dashboardTrendsPane"
                 aria-selected="false"
                 tabindex="-1"
                 class="secondary"
@@ -237,12 +237,14 @@
               </div>
             </section>
             <div
-              id="dashboardCharts"
+              id="dashboardTrendsPane"
               role="tabpanel"
               aria-labelledby="dashboard-trends-tab"
               tabindex="0"
               hidden
-            ></div>
+            >
+              <div id="dashboardCharts"></div>
+            </div>
             <section
               id="dashboardGallery"
               role="tabpanel"
