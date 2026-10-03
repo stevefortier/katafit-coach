@@ -553,6 +553,10 @@ export async function autonomyFake(
       });
       return id;
     },
+    /** Every issued bearer is rejected from now on (credential rotation). */
+    revokeAll() {
+      tokens.clear();
+    },
     advance(ms: number) {
       now += ms;
     },

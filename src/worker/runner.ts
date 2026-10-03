@@ -1,3 +1,4 @@
+import type { Admission } from "../runtime/admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   discoverTasks,
@@ -75,6 +76,8 @@ export interface WorkerOptions {
   ) => Promise<string>;
   onState?: (state: string) => void;
   onDiagnostic?: (event: LogInput) => void;
+  /** Inference slot shared with the continuous Coach; requests go first. */
+  admission?: Admission;
   pollMs?: number;
   presenceMs?: number;
   modelMs?: number;
@@ -322,7 +325,17 @@ export class Worker {
       this.options.onDiagnostic?.(event);
     } catch {}
   }
-  constructor(private options: WorkerOptions) {}
+  constructor(private options: WorkerOptions) {
+    const { admission, complete } = options;
+    if (admission)
+      this.options = {
+        ...options,
+        complete: (context, signal, ...rest) =>
+          admission.run("request", signal, () =>
+            complete(context, signal, ...rest),
+          ),
+      };
+  }
   private update(s: string) {
     if (this.state === s) return;
     if (

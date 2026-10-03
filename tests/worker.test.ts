@@ -981,3 +981,40 @@ for (const code of [
         await f.close();
       }
     });
+
+test("worker inference waits for the shared admission slot held by autonomy", async () => {
+  const { Admission } = await import("../src/runtime/admission.js");
+  const f = await fixture();
+  const admission = new Admission();
+  let calls = 0;
+  try {
+    let release!: () => void;
+    const held = admission.run(
+      "autonomy",
+      undefined,
+      () => new Promise<void>((r) => (release = r)),
+    );
+    const worker = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      admission,
+      complete: async () => {
+        calls++;
+        return "Synthetic admission reply.";
+      },
+    });
+    f.enqueue("How was my meal?");
+    const poll = worker.pollOnce();
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(calls, 0, "no inference while autonomy holds the slot");
+    release();
+    await held;
+    await poll;
+    assert.equal(calls, 1);
+    assert.equal(f.publications, 1);
+    assert.equal(admission.busy, false);
+  } finally {
+    await f.close();
+  }
+});
