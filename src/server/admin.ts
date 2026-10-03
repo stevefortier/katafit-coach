@@ -383,6 +383,10 @@ export async function admin(
     };
   };
   const memberReads = new Set<AbortController>();
+  // Stats GETs publish a backend credential fence too. One installation-wide
+  // admission slot covers both running and stopped/replaced Workers; reject
+  // another tab/member rather than racing readers or queueing beyond 8s.
+  let statsReadActive = false;
   const server = createServer(async (req, res) => {
     const ref = randomUUID();
     const started = Date.now();
@@ -632,26 +636,64 @@ export async function admin(
         const token = store.secrets.token;
         if (!token) throw new SafeError("TOKEN_REQUIRED");
         const c = store.publicConfig();
+        const stats = url.pathname === "/api/dashboard/stats";
+        if (stats && statsReadActive)
+          return send(429, { error: "OPERATION_IN_PROGRESS" });
+        const readWorker = worker;
+        const readLifecycle = lifecycleDone;
         const controller = new AbortController();
+        // Drainage consumes the SAME eight-second read budget; it must never
+        // wait on accepted work and then grant a fresh eight seconds upstream.
+        const readSignal = stats
+          ? AbortSignal.any([controller.signal, AbortSignal.timeout(8000)])
+          : controller.signal;
+        const current = () => {
+          readSignal.throwIfAborted();
+          if (
+            store.publicConfig().revision !== c.revision ||
+            store.secrets.token !== token ||
+            updates.applying ||
+            (stats &&
+              (worker !== readWorker ||
+                lifecycleDone !== readLifecycle ||
+                busy ||
+                updateQuiesced ||
+                closing))
+          )
+            throw new SafeError("CANCELLED");
+        };
         memberReads.add(controller);
         const cancel = () => controller.abort();
         res.once("close", cancel);
         try {
-          const result = await restGet(
-            c.origin,
-            token,
-            { path: target },
-            controller.signal,
-            Object.values(store.secrets),
-            url.pathname === "/api/dashboard/stats" ? 2097152 : 262144,
-          );
-          controller.signal.throwIfAborted();
-          if (
-            store.publicConfig().revision !== c.revision ||
-            store.secrets.token !== token ||
-            updates.applying
-          )
-            throw new SafeError("CANCELLED");
+          if (stats) statsReadActive = true;
+          const read = async () => {
+            current();
+            return restGet(
+              c.origin,
+              token,
+              { path: target },
+              readSignal,
+              Object.values(store.secrets),
+              stats ? 2097152 : 262144,
+            );
+          };
+          let result;
+          try {
+            result =
+              stats && readWorker
+                ? await readWorker.withIdlePollingPaused(readSignal, read)
+                : await read();
+            current();
+          } catch (error) {
+            if (readSignal.aborted)
+              throw new SafeError(
+                readSignal.reason?.name === "TimeoutError"
+                  ? "BACKEND_TIMEOUT"
+                  : "CANCELLED",
+              );
+            throw error;
+          }
           if (result.restReadError)
             return send(result.restReadError.status, {
               error: "REST_READ_DENIED",
@@ -674,6 +716,7 @@ export async function admin(
         } finally {
           res.removeListener("close", cancel);
           memberReads.delete(controller);
+          if (stats) statsReadActive = false;
         }
         return;
       }

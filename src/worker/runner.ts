@@ -157,6 +157,42 @@ export class Worker {
   private controller = new AbortController();
   private active?: Promise<void>;
   private updateQuiesced = false;
+  private statsPollPauses = 0;
+  /** Process-local read admission, independent of update/Stop ownership. Reserve
+   * before awaiting the displayed-idle poll: it can still be touching credential
+   * authority or returning an accepted claim. Never abort/replay that execution.
+   * Heartbeats and accepted work keep their existing lease/presence contracts. */
+  async withIdlePollingPaused<T>(signal: AbortSignal, read: () => Promise<T>) {
+    signal.throwIfAborted();
+    const stopped = this.stopping;
+    const invalid = () =>
+      this.updateQuiesced ||
+      this.reconciling ||
+      this.stopping !== stopped ||
+      (stopped && !this.stopConfirmed);
+    if (invalid()) throw new SafeError("CANCELLED");
+    this.statsPollPauses++;
+    const running = this.state !== "stopped";
+    const scope = running
+      ? AbortSignal.any([signal, this.controller.signal])
+      : signal;
+    try {
+      await bounded(async () => {
+        await this.startup;
+        await stopped;
+        await this.active?.catch(() => {});
+      }, scope);
+      scope.throwIfAborted();
+      if (invalid()) throw new SafeError("CANCELLED");
+      const result = await read();
+      scope.throwIfAborted();
+      if (invalid()) throw new SafeError("CANCELLED");
+      return result;
+    } finally {
+      this.statsPollPauses--;
+    }
+  }
+
   quiesceForUpdate(): boolean {
     if (
       this.state !== "idle" ||
@@ -357,6 +393,8 @@ export class Worker {
   }
   pollOnce() {
     if (this.updateQuiesced) return Promise.reject(new Error("CANCELLED"));
+    // Skip a scheduler tick, not queue/replay a claim on read completion.
+    if (this.statsPollPauses) return Promise.resolve();
     if (!this.active)
       this.active = this.poll().finally(() => {
         this.active = undefined;
@@ -654,7 +692,12 @@ export class Worker {
       }
       let triedTasks = false;
       const tryTasks = async () => {
-        if (this.updateQuiesced || triedTasks || !taskKinds.length)
+        if (
+          this.updateQuiesced ||
+          this.statsPollPauses ||
+          triedTasks ||
+          !taskKinds.length
+        )
           return false;
         triedTasks = true;
         // Flip before work so provider/task errors cannot starve main chat.
@@ -692,7 +735,12 @@ export class Worker {
       const instructions = await fetchInstructions(c);
       // Never reclaim/replay an ambiguously published request, even under a new lease.
       // Typed tasks can still progress; main publication resumes after reconciliation.
-      if (this.updateQuiesced || this.unresolvedRequests.size) return;
+      if (
+        this.updateQuiesced ||
+        this.statsPollPauses ||
+        this.unresolvedRequests.size
+      )
+        return;
       const { request } = await c.call("coach_claim_request", {
         lease_seconds: 120,
       });
@@ -1009,7 +1057,7 @@ export class Worker {
     }
   }
   private async pollTask(c: Client, kinds: string[], ref: string) {
-    if (this.updateQuiesced) return false;
+    if (this.updateQuiesced || this.statsPollPauses) return false;
     const { task } = await c.call("coach_claim_task", {
       protocol: TASK_PROTOCOL,
       kinds,

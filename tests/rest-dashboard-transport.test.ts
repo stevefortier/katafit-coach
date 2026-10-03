@@ -9,6 +9,52 @@ import { restRequest } from "../src/katafit/restGet.js";
 const timeline =
   "/api/dashboard/timeline?date=2026-10-02&start=2026-10-02T04%3A00%3A00.000Z&end=2026-10-03T04%3A00%3A00.000Z";
 
+test("Stats admission is exclusive across members even without a running Worker", async (t) => {
+  await dashboard(t, async ({ request, upstream }) => {
+    let entered!: () => void, release!: () => void;
+    const admitted = new Promise<void>((r) => (entered = r));
+    const body = new Promise<void>((r) => (release = r));
+    let reads = 0;
+    upstream(async () => {
+      reads++;
+      return new Response(
+        new ReadableStream({
+          async start(controller) {
+            entered();
+            await body;
+            controller.enqueue(new TextEncoder().encode("{}"));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    });
+    const first = request("/api/dashboard/stats?user_id=" + "a".repeat(24));
+    try {
+      await admitted;
+      for (const id of ["a", "b"]) {
+        const response = await request(
+          "/api/dashboard/stats?user_id=" + id.repeat(24),
+        );
+        assert.equal(response.status, 429);
+        assert.equal((await response.json()).error, "OPERATION_IN_PROGRESS");
+      }
+      assert.equal(reads, 1);
+      release();
+      assert.equal((await first).status, 200);
+      assert.equal(
+        (await request("/api/dashboard/stats?user_id=" + "b".repeat(24)))
+          .status,
+        200,
+      );
+      assert.equal(reads, 2);
+    } finally {
+      release();
+      await first;
+    }
+  });
+});
+
 // Real authenticated admin HTTP + REST transport. Only upstream fetch and the
 // deadline clock are controlled; no eight-second sleep or live backend.
 async function dashboard(
