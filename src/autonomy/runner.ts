@@ -1,4 +1,5 @@
 import type { AutonomyCapability } from "../capability/autonomy.js";
+import { InvocationCapability } from "../capability/invocation.js";
 import { compileAutonomy, type Store } from "../config/store.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
 import { AutonomyFailure, type AutonomyBackend } from "./backend.js";
@@ -379,12 +380,36 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     const prompt =
       compileAutonomy(config, mandate, secrets) +
       plannerGuidance({ capability, rest, actions });
+    // Dynamic reads reuse Worker transport across every automatic trigger.
+    // Generic mutations need a backend authority/occurrence contract; finite
+    // audience actions retain their existing AC1/lease-fenced path.
+    const acquisition = new InvocationCapability({
+      plane: "autonomy",
+      origin: backend.origin,
+      token: options.store.secrets.token!,
+      secrets: Object.values(options.store.secrets).filter(
+        (v): v is string => !!v,
+      ),
+      vision: config.provider.vision === true,
+      maxImages: mandate.budgets.images_per_cycle,
+      maxReads: mandate.budgets.tool_calls,
+      current: () => !signal.aborted,
+      actions: [],
+      onExhausted: (budget) => exhausted.add(budget),
+      onRead: (path, acquired) => {
+        ledger.read(path, acquired);
+        if (acquired.ok) reads.ok++;
+        else if (acquired.denied) reads.denied++;
+        else reads.failed++;
+      },
+    });
     const gateway = await openProfileGateway(options.store, signal, {
       profile: "planner",
       prompt,
       autonomy: callbacks,
       actions,
       rest,
+      tools: rest ? acquisition.tools() : [],
       skills: true,
       budgets: {
         tool_calls: mandate.budgets.tool_calls,

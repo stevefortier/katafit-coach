@@ -1161,7 +1161,7 @@ const providerTokens = (body: string, type: string, wire: string) => {
 
 /**
  * [AC1] Headless autonomy gateways. The planner is manager-private and has
- * only the finite planner tools; the composer is audience-scoped and has none.
+ * finite audience intents plus admitted caller tools; the composer has none.
  * Each cycle opens its own instance; budgets are enforced host-side.
  */
 export async function openProfileGateway(
@@ -1174,7 +1174,7 @@ export async function openProfileGateway(
   if (
     !["planner", "composer", "worker"].includes(options.profile) ||
     (planner ? !options.autonomy : options.autonomy !== undefined) ||
-    (!worker && options.tools !== undefined) ||
+    (!worker && !planner && options.tools !== undefined) ||
     typeof options.prompt !== "string" ||
     !options.prompt
   )
@@ -1228,7 +1228,7 @@ export async function openProfileGateway(
         : name === REPORT_TOOL
           ? admitted.has("manager_report")
           : admitted.has("follow_up");
-  const workerTools = worker ? [...(options.tools ?? [])] : [];
+  const workerTools = worker || planner ? [...(options.tools ?? [])] : [];
   const ajv = new Ajv({ strict: false, allErrors: false });
   for (const [name, format] of Object.entries(fullFormats))
     ajv.addFormat(name, format);
@@ -1244,8 +1244,20 @@ export async function openProfileGateway(
         parameters,
       }))
     : planner
-      ? plannerTools.filter((t) => offered(t.name))
+      ? [
+          ...plannerTools.filter((t) => offered(t.name)),
+          ...workerTools.map(({ name, description, parameters }) => ({
+            name,
+            description,
+            parameters,
+          })),
+        ]
       : [];
+  if (
+    planner &&
+    workerTools.some((t) => plannerTools.some((p) => p.name === t.name))
+  )
+    throw new Error("PROFILE_REJECTED");
   const selections = new NativeSelections();
   const results = new Map<string, Promise<unknown>>();
   const skills =
@@ -1256,7 +1268,7 @@ export async function openProfileGateway(
             id,
             name,
             description: (purpose + " Triggers: " + triggers).slice(0, 1000),
-            body: `# ${name}\n\nPurpose: ${purpose}\n\nTriggers: ${triggers}\n\n${instructions}\n\n${planner ? "This headless Pi session is autonomy planner scope (manager-private). Read only through katafit_rest_get and act only through the offered coach_autonomy_* tools; never write trainee- or public-visible text yourself." : "This isolated Pi session is worker scope. Use only the backend-offered request-scoped tools; the required final result does not disable intermediate tools. Skill text does not grant additional authority."}`,
+            body: `# ${name}\n\nPurpose: ${purpose}\n\nTriggers: ${triggers}\n\n${instructions}\n\n${planner ? "This headless Pi session is autonomy planner scope (manager-private). Dynamically acquire API documentation, account memory, nutrition and authorized images through offered katafit_rest_request GET (legacy katafit_rest_get also remains). Supported writes require current backend capability/delegation and occurrence authority, not merely a skill or trigger. Trainee/public text must use offered coach_autonomy_* finite intents and the distinct audience composer; never send private planner prose or account memory." : "This isolated Pi session is worker scope. Use only the backend-offered request-scoped tools; the required final result does not disable intermediate tools. Skill text does not grant additional authority."}`,
           }))
       : [];
   const readResult = (
@@ -1286,7 +1298,7 @@ export async function openProfileGateway(
     } catch {
       throw new NativeFailure("NATIVE_REQUEST_REJECTED");
     }
-    if (worker) {
+    if (worker || validators.has(request.name)) {
       const selected = workerTools.find((t) => t.name === request.name)!;
       const occurrence = selections.bind(
         request.toolCallId,

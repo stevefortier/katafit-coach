@@ -14,7 +14,7 @@ import type {
 
 const HEX = /^[0-9a-f]{24}$/;
 const CONVERSATION = /^\/api\/coach\/member-conversations\/([0-9a-f]{24})$/;
-const MEMORY = /^\/api\/coach\/memory(\/|$)/;
+const MEMORY = /^\/api\/coach\/memory([/?]|$)/;
 const ACTIVITY_SUMMARY = [
   "duration",
   "duration_seconds",

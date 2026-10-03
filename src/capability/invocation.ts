@@ -67,11 +67,20 @@ export interface ActionLedger {
   }): void;
 }
 export interface InvocationOptions {
-  plane: "task" | "request";
+  plane: "task" | "request" | "autonomy";
   origin: string;
   token: string;
   secrets: string[];
   vision: boolean;
+  /** Optional per-invocation quotas; cached acquired data costs no extra. */
+  maxImages?: number;
+  maxReads?: number;
+  onExhausted?: (budget: "images" | "rest_reads") => void;
+  /** Observe acquisition once; never re-fetch to reauthorize retained data. */
+  onRead?: (
+    path: string,
+    result: { ok: boolean; denied: boolean; body?: unknown },
+  ) => void;
   /** Lease/cancellation fence checked before every mutation. */
   current: () => boolean;
   /** Supported action types under the current admission. */
@@ -258,6 +267,8 @@ export class InvocationCapability {
     string,
     { result: any; failed?: { error: string; status?: number } }
   >();
+  private images = 0;
+  private reads = 0;
   constructor(private readonly o: InvocationOptions) {
     this.known = [...(o.occurrences ?? [])];
   }
@@ -301,6 +312,8 @@ export class InvocationCapability {
         "HOST_ONLY_ROUTE",
         "This route is host-only (continuous Coach control plane or memory writes). Do not retry.",
       );
+    if (args.method !== "GET" && !this.o.actions.length)
+      return this.unsupported();
     const target = classifyMemberMessageRequest(args.method, args.path);
     if (target.kind === "reject")
       return refusal("ARGUMENTS_REJECTED", "Malformed member-message path.");
@@ -321,6 +334,11 @@ export class InvocationCapability {
       });
     if (prior) return prior.result;
     try {
+      if (this.o.maxReads !== undefined && this.reads >= this.o.maxReads) {
+        this.o.onExhausted?.("rest_reads");
+        throw new Error("REST_READ_BUDGET_EXHAUSTED");
+      }
+      this.reads++;
       const result: any = await restRequest(
         this.o.origin,
         this.o.token,
@@ -340,17 +358,35 @@ export class InvocationCapability {
           status,
         };
         this.acquired.set(path, { result: undefined, failed });
+        this.o.onRead?.(path, {
+          ok: false,
+          denied: status === 401 || status === 403,
+        });
         return text({
           ...failed,
           note: "This fact is unavailable to this invocation. State that plainly; do not invent it.",
         });
       }
       const image = result.content?.find((p: any) => p.type === "image");
-      if (image && !this.o.vision)
-        return text({
-          error: "IMAGE_UNSUPPORTED",
-          note: "The configured provider cannot view images; do not describe it.",
-        });
+      if (image && !this.o.vision) throw new Error("IMAGE_UNSUPPORTED");
+      const images = result.content.filter(
+        (p: any) => p.type === "image",
+      ).length;
+      if (
+        this.o.maxImages !== undefined &&
+        this.images + images > this.o.maxImages
+      ) {
+        this.o.onExhausted?.("images");
+        throw new Error("IMAGE_BUDGET_EXHAUSTED");
+      }
+      this.images += images;
+      let body: unknown;
+      try {
+        body = JSON.parse(
+          result.content.find((p: any) => p.type === "text")?.text,
+        );
+      } catch {}
+      this.o.onRead?.(path, { ok: true, denied: false, body });
       const acquired = { content: result.content, details: {} };
       this.acquired.set(path, { result: acquired });
       return acquired;
@@ -361,6 +397,7 @@ export class InvocationCapability {
         error: /^[A-Z_]{3,64}$/.test(code) ? code : "REST_READ_UNAVAILABLE",
       };
       this.acquired.set(path, { result: undefined, failed });
+      this.o.onRead?.(path, { ok: false, denied: false });
       return text({
         ...failed,
         note: "This read did not complete. Report the fact as unavailable; do not invent it.",

@@ -195,6 +195,7 @@ export async function startTaskBackend() {
     const occurrences = () =>
       db.collection("external_coach_task_actions").find({}).toArray();
     return {
+      app,
       db,
       ObjectId,
       origin,

@@ -20,7 +20,8 @@ export async function prepareModelImage(
       (metadata.pages ?? 1) !== 1
     )
       throw new Error("MEDIA_REJECTED");
-    if (data.length <= 512 * 1024) {
+    const pixels = metadata.width * metadata.height;
+    if (data.length <= 512 * 1024 && pixels <= 1_000_000) {
       // Metadata alone can succeed for a truncated pixel stream.
       await sharp(data, {
         limitInputPixels: 40_000_000,
@@ -28,6 +29,10 @@ export async function prepareModelImage(
       }).stats();
       return { data, mimeType };
     }
+    const rotated = (metadata.orientation ?? 1) >= 5;
+    const orientedWidth = rotated ? metadata.height : metadata.width;
+    const orientedHeight = rotated ? metadata.width : metadata.height;
+    const scale = Math.min(1, Math.sqrt(1_000_000 / pixels));
     for (const [width, quality] of [
       [1280, 80],
       [1024, 72],
@@ -41,8 +46,14 @@ export async function prepareModelImage(
       })
         .rotate()
         .resize({
-          width,
-          height: width,
+          width: Math.max(
+            1,
+            Math.min(width, Math.floor(orientedWidth * scale)),
+          ),
+          height: Math.max(
+            1,
+            Math.min(width, Math.floor(orientedHeight * scale)),
+          ),
           fit: "inside",
           withoutEnlargement: true,
         })

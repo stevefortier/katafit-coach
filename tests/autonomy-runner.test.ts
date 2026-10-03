@@ -124,6 +124,7 @@ test("FC2 inventory: every autonomy work kind runs the planner with shared REST,
         "katafit_rest_get",
         "coach_autonomy_report",
         "coach_autonomy_follow_up",
+        "katafit_rest_request",
       ]);
       assert.ok(
         run.catalog.skills.some((s: any) => s.id === "katafit-api"),
@@ -174,6 +175,7 @@ test("FC2 observe/delegation: only admitted actions become tools; no intent tool
     assert.deepEqual(toolNames(run.catalog), [
       "katafit_rest_get",
       "coach_autonomy_report",
+      "katafit_rest_request",
     ]);
     assert.equal(run.calls[0].ok, false, "undelegated follow_up refused");
     assert.equal(env.fake.state.followUps.size, 0);
@@ -207,6 +209,7 @@ test("FC2 legacy backend: planner keeps reads, memory search and skills; actions
       "katafit_rest_get",
       "coach_autonomy_report",
       "coach_autonomy_follow_up",
+      "katafit_rest_request",
     ]);
     assert.match(run.catalog.prompt, /GET \/api\/coach\/memory\?query=/);
     assert.equal(result.outcome.result, "completed");
@@ -270,6 +273,7 @@ test("C3: a report action is executed once, certified, and never replayed by the
       "katafit_rest_get",
       "coach_autonomy_report",
       "coach_autonomy_follow_up",
+      "katafit_rest_request",
     ]);
     assert.equal(result.outcome.result, "completed");
     const acts = env.fake.calls.filter(
