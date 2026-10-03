@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { open, rename, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { directory, managedFile } from "../update/managed.js";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { managedFile } from "../update/managed.js";
 
 /**
  * C5 durable unknown-write ledger (client-c5-lifecycle-design.md §2).
@@ -44,6 +44,57 @@ export interface LedgerEntry {
 export type LedgerDraft = Omit<LedgerEntry, "id" | "state" | "created_at">;
 
 export const LEDGER_DIR = "autonomy";
+
+/** fsync one directory (its entries); never follows a symlink. */
+export type SyncDirectory = (path: string) => Promise<void>;
+export const syncDirectory: SyncDirectory = async (path) => {
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+};
+
+/**
+ * C5 R3: ensure `folder` exists as a private real directory (no symlinks)
+ * whose own entry is durable: the parent of every directory created here is
+ * fsynced, and with `anchor` the folder's parent and the folder are fsynced
+ * even when it already existed (a prior process may have crashed between
+ * mkdir and the parent sync). Throws on any failure: nothing may proceed.
+ */
+export async function durableDirectory(
+  folder: string,
+  sync: SyncDirectory = syncDirectory,
+  anchor = false,
+) {
+  const full = resolve(folder);
+  const chain: string[] = [];
+  for (let p = full; ; p = dirname(p)) {
+    chain.unshift(p);
+    if (dirname(p) === p) break;
+  }
+  const created: string[] = [];
+  for (const p of chain) {
+    try {
+      const info = await lstat(p);
+      if (!info.isDirectory() || info.isSymbolicLink())
+        throw new Error("UNSAFE_PATH");
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+      await mkdir(p, { mode: 0o700 });
+      created.push(p);
+    }
+  }
+  for (const p of created) await sync(dirname(p));
+  if (anchor) {
+    await sync(dirname(full));
+    await sync(full);
+  }
+}
 const FILE = "writes.json";
 const LIMIT_BYTES = 65536;
 export const LEDGER_MAX_ENTRIES = 32;
@@ -108,17 +159,30 @@ export class WriteLedger {
   private chain: Promise<unknown> = Promise.resolve();
   /** False when the stored ledger is unreadable: fail closed (unsafe). */
   healthy = true;
-  private constructor(private readonly folder: string) {}
+  private constructor(
+    private readonly folder: string,
+    private readonly sync: SyncDirectory,
+  ) {}
 
-  static async open(home: string): Promise<WriteLedger> {
-    const ledger = new WriteLedger(join(home, LEDGER_DIR));
+  static async open(
+    home: string,
+    sync: SyncDirectory = syncDirectory,
+  ): Promise<WriteLedger> {
+    const ledger = new WriteLedger(join(home, LEDGER_DIR), sync);
     await ledger.load();
     return ledger;
   }
 
   private async load() {
     try {
-      await directory(this.folder, true);
+      // The ledger directory's own entry is durable before any record.
+      await durableDirectory(this.folder, this.sync, true);
+    } catch {
+      this.entries = [];
+      this.healthy = false;
+      return;
+    }
+    try {
       const raw = await managedFile(join(this.folder, FILE), LIMIT_BYTES);
       const value = JSON.parse(raw.toString("utf8"));
       if (
@@ -161,7 +225,7 @@ export class WriteLedger {
     const body = JSON.stringify({ v: 1, entries }) + "\n";
     if (Buffer.byteLength(body) > LIMIT_BYTES)
       throw new Error("AUTONOMY_LEDGER_FULL");
-    await directory(this.folder, true);
+    await durableDirectory(this.folder, this.sync);
     const target = join(this.folder, FILE);
     const temporary = join(
       this.folder,
@@ -176,15 +240,7 @@ export class WriteLedger {
         await handle.close();
       }
       await rename(temporary, target);
-      const parent = await open(
-        this.folder,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-      );
-      try {
-        await parent.sync();
-      } finally {
-        await parent.close();
-      }
+      await this.sync(this.folder);
     } finally {
       await rm(temporary, { force: true });
     }

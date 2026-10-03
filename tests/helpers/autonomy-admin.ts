@@ -152,6 +152,8 @@ export async function autonomyAdmin(
     composers?: (ScriptedRuntime | ReturnType<typeof blockingRuntime>)[];
     /** In-cycle mandate observation cadence (host option). */
     mandateCheckMs?: number;
+    /** Directory fsync seam (fault injection / ordering). */
+    syncDirectory?: (path: string) => Promise<void>;
     keepWork?: boolean;
     origin?: string;
     supported?: boolean;
@@ -178,6 +180,7 @@ export async function autonomyAdmin(
       },
       scheduler: { wait: fastWait, random: () => 0.5 },
       ...(o.mandateCheckMs ? { mandateCheckMs: o.mandateCheckMs } : {}),
+      ...(o.syncDirectory ? { syncDirectory: o.syncDirectory } : {}),
     },
   };
   const open = () =>

@@ -4,7 +4,7 @@ import type { Admission } from "../runtime/admission.js";
 import { nativeImage } from "../sandbox/artifact.js";
 import { AutonomyBackend, AutonomyFailure, type Effect } from "./backend.js";
 import { HeadlessCycleRuntime, type HeadlessRun } from "./headless.js";
-import { ledgerDigest, WriteLedger } from "./ledger.js";
+import { ledgerDigest, WriteLedger, type SyncDirectory } from "./ledger.js";
 import { autonomyOwner } from "./owner.js";
 import { prove, RESOLVED, type Proof } from "./reconcile.js";
 import { autonomyRunner } from "./runner.js";
@@ -148,6 +148,8 @@ export interface AutonomyHostOptions {
    * this bound plus one request timeout. Default 15 s, at most lease / 3.
    */
   mandateCheckMs?: number;
+  /** Directory fsync seam (tests inject faults and observe ordering). */
+  syncDirectory?: SyncDirectory;
 }
 export type AutonomyHostState = SchedulerState | "starting";
 const PROOF_TIMEOUT_MS = 30000;
@@ -249,8 +251,9 @@ export class AutonomyHost {
   init(): Promise<void> {
     this.initializing ??= (async () => {
       const dir = this.options.store.dir;
-      this.ledger = await WriteLedger.open(dir);
-      this.owner = await autonomyOwner(dir);
+      const sync = this.options.syncDirectory;
+      this.ledger = await WriteLedger.open(dir, sync);
+      this.owner = await autonomyOwner(dir, sync);
     })().catch((error) => {
       this.initializing = undefined;
       throw error;

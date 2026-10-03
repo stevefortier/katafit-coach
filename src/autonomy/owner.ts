@@ -2,8 +2,13 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { link, open, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { directory, managedFile } from "../update/managed.js";
-import { LEDGER_DIR } from "./ledger.js";
+import { managedFile } from "../update/managed.js";
+import {
+  durableDirectory,
+  LEDGER_DIR,
+  syncDirectory,
+  type SyncDirectory,
+} from "./ledger.js";
 
 const FILE = "owner.json";
 const OWNER = /^[a-f0-9]{32}$/;
@@ -12,9 +17,12 @@ const OWNER = /^[a-f0-9]{32}$/;
  * This installation's durable autonomy owner token: binds ledger entries and
  * labels every headless container so cleanup never crosses installations.
  */
-export async function autonomyOwner(home: string): Promise<string> {
+export async function autonomyOwner(
+  home: string,
+  sync: SyncDirectory = syncDirectory,
+): Promise<string> {
   const folder = join(home, LEDGER_DIR);
-  await directory(folder, true);
+  await durableDirectory(folder, sync, true);
   const path = join(folder, FILE);
   try {
     const value = JSON.parse((await managedFile(path, 256)).toString("utf8"));
@@ -46,18 +54,10 @@ export async function autonomyOwner(home: string): Promise<string> {
     try {
       await link(temporary, path);
     } catch (error: any) {
-      if (error?.code === "EEXIST") return autonomyOwner(home);
+      if (error?.code === "EEXIST") return autonomyOwner(home, sync);
       throw error;
     }
-    const parent = await open(
-      folder,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
-    }
+    await sync(folder);
     return owner;
   } finally {
     await rm(temporary, { force: true });
