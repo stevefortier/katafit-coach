@@ -2,6 +2,8 @@ import type { Store } from "../config/store.js";
 import type { LogInput } from "../diagnostics/log.js";
 import type { Admission } from "../runtime/admission.js";
 import { nativeImage } from "../sandbox/artifact.js";
+import type { NativeProbeEngine } from "../sandbox/runtime.js";
+import { CleanupRegistry } from "./cleanup.js";
 import { AutonomyBackend, AutonomyFailure, type Effect } from "./backend.js";
 import { HeadlessCycleRuntime, type HeadlessRun } from "./headless.js";
 import { ledgerDigest, WriteLedger, type SyncDirectory } from "./ledger.js";
@@ -25,18 +27,37 @@ export interface AutonomyRuntimes {
 }
 type Engine = ConstructorParameters<typeof HeadlessCycleRuntime>[0]["engine"];
 
+/** Installation identity every production headless container is owned by. */
+export interface RuntimeContext {
+  owner: string;
+  cleanup: CleanupRegistry;
+}
 /**
  * Production wiring: the planner and the composer each get their own bounded
- * headless runtime on the installation's verified native image. Leftover
- * autonomy containers from a crashed process are swept first.
+ * headless runtime on the installation's verified native image, sharing the
+ * installation-owned cleanup registry. This installation's leftover
+ * containers from a crashed process are swept first (never another owner's).
  */
 export async function productionRuntimes(
   home: string,
-  o: { image?: (home: string) => Promise<string>; engine?: Engine } = {},
+  o: Partial<RuntimeContext> & {
+    image?: (home: string) => Promise<string>;
+    engine?: Engine;
+  } = {},
 ): Promise<AutonomyRuntimes> {
   const image = await (o.image ?? nativeImage)(home);
-  const planner = new HeadlessCycleRuntime({ image, engine: o.engine });
-  const composer = new HeadlessCycleRuntime({ image, engine: o.engine });
+  if (!o.owner || !o.cleanup || o.cleanup.owner !== o.owner)
+    throw new Error("HEADLESS_OWNER_REQUIRED");
+  const planner = new HeadlessCycleRuntime({
+    image,
+    engine: o.engine,
+    cleanup: o.cleanup,
+  });
+  const composer = new HeadlessCycleRuntime({
+    image,
+    engine: o.engine,
+    cleanup: o.cleanup,
+  });
   await planner.sweep();
   return { planner, composer };
 }
@@ -137,7 +158,12 @@ export interface AutonomyHostOptions {
   store: Store;
   admission: Admission;
   onDiagnostic?: (event: LogInput) => void;
-  runtimes?: (home: string) => Promise<AutonomyRuntimes>;
+  runtimes?: (
+    home: string,
+    context: RuntimeContext,
+  ) => Promise<AutonomyRuntimes>;
+  /** Docker inspect/remove used for owned cleanup retry (tests: fake daemon). */
+  cleanupEngine?: NativeProbeEngine;
   scheduler?: Pick<
     SchedulerOptions,
     "wait" | "random" | "minBackoffMs" | "maxBackoffMs" | "leaseSeconds"
@@ -171,6 +197,7 @@ export class AutonomyHost {
   private backend?: TrackedBackend;
   private ledger?: WriteLedger;
   private owner?: string;
+  private cleanup?: CleanupRegistry;
   private initializing?: Promise<void>;
   private reconciling?: Promise<boolean>;
   private lastProof = 0;
@@ -206,7 +233,9 @@ export class AutonomyHost {
     return (
       !this.busy &&
       !!this.ledger?.healthy &&
-      this.ledger.unresolved.length === 0
+      this.ledger.unresolved.length === 0 &&
+      !!this.cleanup?.healthy &&
+      this.cleanup.pending === 0
     );
   }
 
@@ -218,6 +247,8 @@ export class AutonomyHost {
       unknownOutcome: unresolved.length > 0,
       unresolvedWrites: unresolved.length,
       ledgerHealthy: this.ledger?.healthy ?? false,
+      cleanupPending: this.cleanup?.pending ?? 0,
+      cleanupHealthy: this.cleanup?.healthy ?? false,
       unresolved: unresolved.slice(0, 10).map((e) => ({
         op: e.op,
         work_id: e.work_id,
@@ -254,6 +285,10 @@ export class AutonomyHost {
       const sync = this.options.syncDirectory;
       this.ledger = await WriteLedger.open(dir, sync);
       this.owner = await autonomyOwner(dir, sync);
+      this.cleanup = await CleanupRegistry.open(dir, this.owner, {
+        sync,
+        probe: this.options.cleanupEngine,
+      });
     })().catch((error) => {
       this.initializing = undefined;
       throw error;
@@ -275,7 +310,7 @@ export class AutonomyHost {
   /** Throttled background proof for status polling. */
   nudge() {
     if (
-      !this.ledger?.unresolved.length ||
+      (!this.ledger?.unresolved.length && !this.cleanup?.pending) ||
       Date.now() - this.lastProof < PROOF_THROTTLE_MS
     )
       return;
@@ -290,6 +325,8 @@ export class AutonomyHost {
     }
     const ledger = this.ledger!;
     this.lastProof = Date.now();
+    // Owned container teardown retry: exact, scoped, never a broad prune.
+    if (this.cleanup?.pending) await this.cleanup.drain();
     const settled = ledger.unresolved.filter(
       (e) => !this.backend?.dispatched.has(e.id),
     );
@@ -336,12 +373,13 @@ export class AutonomyHost {
       const token = store.secrets.token;
       if (!token || !store.secrets.apiKey)
         throw new Error("CONNECTION_AND_PROVIDER_REQUIRED");
+      await this.init();
       const runtimes = await (this.options.runtimes ?? productionRuntimes)(
         store.dir,
+        { owner: this.owner!, cleanup: this.cleanup! },
       );
       if (runtimes.planner === runtimes.composer)
         throw new Error("COMPOSER_RUNTIME_SHARED");
-      await this.init();
       if (!this.ledger!.healthy) throw new Error("AUTONOMY_LEDGER_UNAVAILABLE");
       const lifetime = new AbortController();
       const backend = new TrackedBackend(
@@ -365,6 +403,10 @@ export class AutonomyHost {
         backend,
         admission: this.options.admission,
         onDiagnostic: this.options.onDiagnostic,
+        // No claim while an owned container teardown is unconfirmed.
+        ready: async () =>
+          !!this.cleanup?.healthy &&
+          (this.cleanup.pending === 0 || (await this.cleanup.drain()) === 0),
         run: (cycle) => this.run(runner, cycle),
       });
       this.lifetime = lifetime;

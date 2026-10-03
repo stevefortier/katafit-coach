@@ -1,185 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
-import { createServer, type Server } from "node:http";
+import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import type { Socket } from "node:net";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
+import { CleanupRegistry } from "../src/autonomy/cleanup.js";
 import { openProfileGateway } from "../src/sandbox/gateway.js";
 import { Store } from "../src/config/store.js";
 import {
   HeadlessCycleRuntime,
+  HEADLESS_OWNER_LABEL,
   HEADLESS_ROLE_LABEL,
 } from "../src/autonomy/headless.js";
 import { PLANNER_TOOL_NAMES } from "../src/autonomy/tools.js";
+import {
+  fakeEngine,
+  frame,
+  finalOutcome,
+  IMAGE,
+  leaked,
+  obedient,
+  stubGateway,
+  until,
+} from "./helpers/headless-engine.js";
 
-// ---------------------------------------------------------------------------
-// Fake Docker engine: a unix-socket API server whose attach upgrade speaks
-// Docker's non-TTY multiplexed stream and a scripted Pi RPC peer.
-// ---------------------------------------------------------------------------
-// Fixtures are closed even when the code under test throws before a try.
-const leaked = new Set<() => Promise<void>>();
 test.afterEach(async () => {
   for (const close of [...leaked]) await close();
 });
-const frame = (stream: number, data: string | Buffer) => {
-  const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
-  const header = Buffer.alloc(8);
-  header[0] = stream;
-  header.writeUInt32BE(body.length, 4);
-  return Buffer.concat([header, body]);
-};
-interface FakePi {
-  send(event: unknown): void;
-  stderr(text: string): void;
-  raw(bytes: Buffer): void;
-  close(): void;
-}
-type Script = (command: any, pi: FakePi) => void;
 
-const finalOutcome = JSON.stringify({ result: "completed" });
-/** Well-behaved Pi: prompt → events → agent_end; returns `text`. */
-const obedient =
-  (text = finalOutcome): Script =>
-  (command, pi) => {
-    if (command.type === "prompt") {
-      pi.send({
-        id: command.id,
-        type: "response",
-        command: "prompt",
-        success: true,
-      });
-      pi.stderr("pi diagnostics are discarded\n");
-      pi.send({ type: "agent_start" });
-      pi.send({ type: "turn_start" });
-      pi.send({ type: "agent_end", messages: [] });
-    }
-    if (command.type === "get_last_assistant_text")
-      pi.send({
-        id: command.id,
-        type: "response",
-        command: "get_last_assistant_text",
-        success: true,
-        data: { text },
-      });
-  };
-
-async function fakeEngine(script: Script, ps = "") {
-  const dir = await mkdtemp(tmpdir() + "/autonomy-headless-");
-  const socketPath = dir + "/docker.sock";
-  const paths: string[] = [];
-  const commands: any[] = [];
-  const execs: string[][] = [];
-  const sockets = new Set<Socket>();
-  const server: Server = createServer((req, res) => {
-    paths.push(req.url!);
-    res.writeHead(204);
-    res.end();
-  });
-  server.on("upgrade", (req, socket: Socket) => {
-    sockets.add(socket);
-    paths.push(req.url!);
-    socket.write(
-      "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
-    );
-    // Writes stay ordered (a real daemon never interleaves frames) while
-    // each stdout frame is split across writes to prove header reassembly.
-    let chain = Promise.resolve();
-    const write = (...parts: Buffer[]) =>
-      void (chain = chain.then(async () => {
-        for (const part of parts) {
-          if (socket.destroyed) return;
-          socket.write(part);
-          await new Promise((r) => setImmediate(r));
-        }
-      }));
-    const pi: FakePi = {
-      send(event) {
-        const bytes = frame(1, JSON.stringify(event) + "\n");
-        write(bytes.subarray(0, 3), bytes.subarray(3));
-      },
-      stderr(text) {
-        write(frame(2, text));
-      },
-      raw(bytes) {
-        write(bytes);
-      },
-      close() {
-        chain = chain.then(() => void socket.end());
-      },
-    };
-    let buffer = "";
-    socket.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
-      let index;
-      while ((index = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, index);
-        buffer = buffer.slice(index + 1);
-        const command = JSON.parse(line);
-        commands.push(command);
-        setImmediate(() => script(command, pi));
-      }
-    });
-    socket.on("error", () => {});
-  });
-  await new Promise<void>((r) => server.listen(socketPath, r));
-  const relays: any[] = [];
-  const engine = {
-    socketPath,
-    exec: async (_file: string, args: string[]) => {
-      execs.push(args);
-      if (args.includes("version")) return { stdout: "1.52\n" };
-      if (args.includes("create")) return { stdout: "a".repeat(64) + "\n" };
-      if (args.includes("ps")) return { stdout: ps };
-      return { stdout: "" };
-    },
-    spawn: (_file: string, args: string[]) => {
-      const child: any = new EventEmitter();
-      child.args = args;
-      child.stdin = new PassThrough();
-      child.stdout = new PassThrough();
-      child.stderr = new PassThrough();
-      child.kill = () => {
-        child.killed = true;
-        setImmediate(() => child.emit("exit", 0));
-        return true;
-      };
-      relays.push(child);
-      return child;
-    },
-  };
-  let closing: Promise<void> | undefined;
-  const close = () =>
-    (closing ??= (async () => {
-      leaked.delete(close);
-      for (const s of sockets) s.destroy();
-      await new Promise<void>((r) => server.close(() => r()));
-      await rm(dir, { recursive: true, force: true });
-    })());
-  leaked.add(close);
-  return {
-    engine,
-    paths,
-    commands,
-    execs,
-    relays,
-    creates: () => execs.filter((a) => a.includes("create")),
-    removes: () => execs.filter((a) => a.includes("rm")),
-    close,
-  };
-}
-async function until(condition: () => boolean, ms = 3000) {
-  const deadline = Date.now() + ms;
-  while (!condition()) {
-    if (Date.now() > deadline) throw new Error("WAIT_TIMEOUT");
-    await new Promise((r) => setTimeout(r, 5));
-  }
-}
-const stubGateway = () => ({ handle: async () => ({}), close: async () => {} });
-const IMAGE = "sha256:" + "c".repeat(64);
 const FORBIDDEN = [
   "bash",
   "abort_bash",
@@ -677,8 +526,10 @@ test("headless: an oversized stdout line ends the cycle (bounded framing)", asyn
   }
 });
 
-test("headless: startup sweep removes only role=autonomy containers by exact name", async () => {
+test("headless: startup sweep requires an owner and removes only this owner's role=autonomy containers by exact name", async () => {
   const orphan = "katafit-pi-auto-33333333-3333-4333-8333-333333333333";
+  const owner = "a".repeat(32);
+  const home = await mkdtemp(tmpdir() + "/headless-sweep-");
   const fake = await fakeEngine(
     obedient(),
     [
@@ -687,21 +538,31 @@ test("headless: startup sweep removes only role=autonomy containers by exact nam
       "unrelated; rm -rf /",
     ].join("\n") + "\n",
   );
-  const headless = new HeadlessCycleRuntime({
-    image: IMAGE,
-    engine: fake.engine,
-  });
   try {
+    await assert.rejects(
+      new HeadlessCycleRuntime({ image: IMAGE, engine: fake.engine }).sweep(),
+      /HEADLESS_OWNER_REQUIRED/,
+    );
+    assert.equal(fake.execs.length, 0);
+    const headless = new HeadlessCycleRuntime({
+      image: IMAGE,
+      engine: fake.engine,
+      cleanup: await CleanupRegistry.open(home, owner, {
+        sync: async () => {},
+      }),
+    });
     assert.equal(await headless.sweep(), 1);
     const [ps] = fake.execs.filter((a) => a.includes("ps"));
     assert.ok(ps.includes("--all"));
     assert.ok(ps.includes(`label=${HEADLESS_ROLE_LABEL}=autonomy`));
+    assert.ok(ps.includes(`label=${HEADLESS_OWNER_LABEL}=${owner}`));
     assert.deepEqual(
       fake.removes().map((a) => a.slice(-3)),
       [["rm", "--force", orphan]],
     );
   } finally {
     await fake.close();
+    await rm(home, { recursive: true, force: true });
   }
 });
 

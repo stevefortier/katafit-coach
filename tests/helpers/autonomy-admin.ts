@@ -2,7 +2,10 @@ import { createServer, type Server } from "node:http";
 import { admin } from "../../src/server/admin.js";
 import { Updates } from "../../src/update/updates.js";
 import { HeadlessFailure } from "../../src/autonomy/headless.js";
-import type { AutonomyRuntimes } from "../../src/autonomy/host.js";
+import type {
+  AutonomyHostOptions,
+  AutonomyRuntimes,
+} from "../../src/autonomy/host.js";
 import {
   leaked,
   ScriptedRuntime,
@@ -154,6 +157,9 @@ export async function autonomyAdmin(
     mandateCheckMs?: number;
     /** Directory fsync seam (fault injection / ordering). */
     syncDirectory?: (path: string) => Promise<void>;
+    /** Replaces the scripted pairs (e.g. production wiring on a fake daemon). */
+    runtimes?: AutonomyHostOptions["runtimes"];
+    cleanupEngine?: AutonomyHostOptions["cleanupEngine"];
     keepWork?: boolean;
     origin?: string;
     supported?: boolean;
@@ -168,16 +174,19 @@ export async function autonomyAdmin(
   const pairs: AutonomyRuntimes[] = [];
   const options = {
     autonomy: {
-      runtimes: async () => {
-        const planner =
-          planners.shift() ?? new ScriptedRuntime([], "unscripted-");
-        const pair = {
-          planner,
-          composer: composers.shift() ?? new ScriptedRuntime([], "composer-"),
-        };
-        pairs.push(pair);
-        return pair;
-      },
+      runtimes:
+        o.runtimes ??
+        (async () => {
+          const planner =
+            planners.shift() ?? new ScriptedRuntime([], "unscripted-");
+          const pair = {
+            planner,
+            composer: composers.shift() ?? new ScriptedRuntime([], "composer-"),
+          };
+          pairs.push(pair);
+          return pair;
+        }),
+      ...(o.cleanupEngine ? { cleanupEngine: o.cleanupEngine } : {}),
       scheduler: { wait: fastWait, random: () => 0.5 },
       ...(o.mandateCheckMs ? { mandateCheckMs: o.mandateCheckMs } : {}),
       ...(o.syncDirectory ? { syncDirectory: o.syncDirectory } : {}),

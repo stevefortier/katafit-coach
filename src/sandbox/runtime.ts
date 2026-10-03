@@ -33,12 +33,17 @@ export interface NativeProbeOwnership {
   labels: Record<string, string>;
   containerId: string | null;
 }
+/** The exact identity `cleanupNativeProbe` matches (probe or headless). */
+export type NativeOwnership = Pick<
+  NativeProbeOwnership,
+  "name" | "image" | "labels" | "containerId"
+>;
 export interface NativeProbeEngine {
   inspect(reference: string): Promise<any | undefined>;
   remove(id: string): Promise<void>;
 }
 
-function dockerProbeEngine(
+export function dockerProbeEngine(
   run: (
     file: string,
     args: string[],
@@ -115,7 +120,7 @@ function dockerProbeEngine(
 
 /** Remove only a container that exactly matches a durable probe receipt. */
 export async function cleanupNativeProbe(
-  ownership: NativeProbeOwnership,
+  ownership: NativeOwnership,
   engine: NativeProbeEngine = dockerProbeEngine(exec, "/var/run/docker.sock"),
 ) {
   let found: any;
@@ -252,6 +257,8 @@ export class NativeRuntime {
   private created = false;
   onOutput: (chunk: string) => void = () => {};
   onExit: () => void = () => {};
+  /** The attached stream closed (process gone), before removal is known. */
+  onDetached: () => void = () => {};
   private version = "";
   private stopping?: Promise<void>;
   private closing = false;
@@ -274,7 +281,7 @@ export class NativeRuntime {
   ) => ChildProcessWithoutNullStreams;
   private readonly labels: Record<string, string>;
   private mode: "interactive" | "rpc" = "interactive";
-  private readonly ownership?: NativeProbeOwnership;
+  private readonly ownership?: NativeOwnership;
   private readonly probeEngine?: NativeProbeEngine;
   constructor(
     readonly image: string,
@@ -285,7 +292,7 @@ export class NativeRuntime {
         args: string[],
         options: any,
       ) => Promise<{ stdout: string }>;
-      ownership?: NativeProbeOwnership;
+      ownership?: NativeOwnership;
       probeEngine?: NativeProbeEngine;
       /** Container name; ownership probes keep their own. */
       name?: string;
@@ -406,6 +413,7 @@ export class NativeRuntime {
         if (head.length) emit(head);
         socket.on("data", emit);
         socket.once("close", () => {
+          this.onDetached();
           void this.stop().catch(() => {});
         });
         resolve(undefined);

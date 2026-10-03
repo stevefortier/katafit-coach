@@ -2,14 +2,19 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import type { NativeGateway } from "../sandbox/gateway.js";
+import type { CleanupRegistry } from "./cleanup.js";
 import {
+  dockerProbeEngine,
   NATIVE_PROFILES,
   NativeRuntime,
+  type NativeOwnership,
+  type NativeProbeEngine,
   type NativeProfile,
 } from "../sandbox/runtime.js";
 
 export const HEADLESS_ROLE_LABEL = "fit.kata.native.role";
 export const HEADLESS_ROLE = "autonomy";
+export const HEADLESS_OWNER_LABEL = "fit.kata.native.owner";
 export const HEADLESS_NAME =
   /^katafit-pi-auto-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** One RPC stdout line; larger output ends the cycle. */
@@ -24,7 +29,8 @@ export type HeadlessCode =
   | "HEADLESS_EXITED"
   | "HEADLESS_PROMPT_REJECTED"
   | "HEADLESS_NO_OUTPUT"
-  | "HEADLESS_OUTPUT_TOO_LARGE";
+  | "HEADLESS_OUTPUT_TOO_LARGE"
+  | "HEADLESS_CLEANUP_PENDING";
 export class HeadlessFailure extends Error {
   constructor(readonly code: HeadlessCode) {
     super(code);
@@ -43,14 +49,30 @@ export interface HeadlessRun {
 /**
  * Bounded headless native Pi: one network-none container per cycle, driven
  * over Pi's JSONL RPC, always removed. At most one container at a time.
+ * With a `cleanup` registry (production) every container is labelled with
+ * the installation owner and durably recorded before create; a teardown
+ * that cannot be confirmed stays recorded and refuses further cycles until
+ * a scoped retry proves absence (C5 F4/F5).
  */
 export class HeadlessCycleRuntime {
   private running = false;
   private readonly image: string;
   private readonly engine: Engine;
-  constructor(options: { image: string; engine?: Engine }) {
+  private readonly cleanup?: CleanupRegistry;
+  private readonly probe: NativeProbeEngine;
+  constructor(options: {
+    image: string;
+    engine?: Engine;
+    cleanup?: CleanupRegistry;
+  }) {
     this.image = options.image;
     this.engine = options.engine ?? {};
+    this.cleanup = options.cleanup;
+    this.probe = dockerProbeEngine(
+      this.engine.exec ??
+        (promisify(execFile) as unknown as NonNullable<Engine["exec"]>),
+      this.engine.socketPath ?? "/var/run/docker.sock",
+    );
   }
   get active() {
     return this.running;
@@ -63,10 +85,33 @@ export class HeadlessCycleRuntime {
     if (this.running) throw new HeadlessFailure("HEADLESS_BUSY");
     this.running = true;
     const name = "katafit-pi-auto-" + randomUUID();
+    let ownership: NativeOwnership | undefined;
+    if (this.cleanup) {
+      const cleanup = this.cleanup;
+      try {
+        if (
+          !cleanup.healthy ||
+          (cleanup.pending > 0 && (await cleanup.drain(this.probe)) > 0)
+        )
+          throw new Error("HEADLESS_CLEANUP_PENDING");
+        ownership = await cleanup.begin({
+          name,
+          image: this.image,
+          labels: {
+            [HEADLESS_ROLE_LABEL]: HEADLESS_ROLE,
+            [HEADLESS_OWNER_LABEL]: cleanup.owner,
+          },
+        });
+      } catch {
+        this.running = false;
+        throw new HeadlessFailure("HEADLESS_CLEANUP_PENDING");
+      }
+    }
     const runtime = new NativeRuntime(this.image, {
       ...this.engine,
-      name,
-      labels: { [HEADLESS_ROLE_LABEL]: HEADLESS_ROLE },
+      ...(ownership
+        ? { ownership, probeEngine: this.probe }
+        : { name, labels: { [HEADLESS_ROLE_LABEL]: HEADLESS_ROLE } }),
     });
     let fail!: (failure: HeadlessFailure) => void;
     const failed = new Promise<never>((_, reject) => {
@@ -105,6 +150,9 @@ export class HeadlessCycleRuntime {
       }
     };
     runtime.onExit = () => end("HEADLESS_EXITED");
+    // Removal may be unconfirmed; the cycle still ends now and `finally`
+    // retains the owned record instead of holding the cycle budget.
+    runtime.onDetached = () => end("HEADLESS_EXITED");
     const response = (id: string) =>
       new Promise<any>((resolve) => responses.set(id, resolve));
     const timer = setTimeout(() => end("HEADLESS_TIMEOUT"), run.cycleMs);
@@ -151,10 +199,29 @@ export class HeadlessCycleRuntime {
       clearTimeout(timer);
       run.signal?.removeEventListener("abort", onAbort);
       runtime.onOutput = () => {};
-      try {
-        await runtime.stop();
-      } finally {
-        this.running = false;
+      runtime.onDetached = () => {};
+      if (!ownership) {
+        try {
+          await runtime.stop();
+        } finally {
+          this.running = false;
+        }
+      } else {
+        let absent = false;
+        try {
+          await runtime.stop();
+          absent = true;
+        } catch {
+          // Retained: the durable record keeps the host unsafe.
+        }
+        try {
+          await this.cleanup!.end(name, absent);
+        } catch {
+          absent = false;
+        } finally {
+          this.running = false;
+        }
+        if (!absent) throw new HeadlessFailure("HEADLESS_CLEANUP_PENDING");
       }
     }
   }
@@ -179,8 +246,16 @@ export class HeadlessCycleRuntime {
     }
   }
 
-  /** Startup sweep: removes only this role's exactly named containers. */
+  /**
+   * Startup sweep, installation-scoped: retries retained records exactly,
+   * then removes only exactly named containers labelled with this role AND
+   * this owner that no cycle here owns. Another installation's live
+   * containers, legacy role-only and unrelated containers are never touched.
+   */
   async sweep(): Promise<number> {
+    const cleanup = this.cleanup;
+    if (!cleanup) throw new Error("HEADLESS_OWNER_REQUIRED");
+    await cleanup.drain(this.probe);
     const run =
       this.engine.exec ??
       (promisify(execFile) as unknown as NonNullable<Engine["exec"]>);
@@ -194,6 +269,8 @@ export class HeadlessCycleRuntime {
         "--all",
         "--filter",
         `label=${HEADLESS_ROLE_LABEL}=${HEADLESS_ROLE}`,
+        "--filter",
+        `label=${HEADLESS_OWNER_LABEL}=${cleanup.owner}`,
         "--format",
         "{{.Names}}",
       ],
@@ -203,7 +280,7 @@ export class HeadlessCycleRuntime {
     for (const name of String(stdout)
       .split("\n")
       .map((n) => n.trim())) {
-      if (!HEADLESS_NAME.test(name)) continue;
+      if (!HEADLESS_NAME.test(name) || cleanup.isOwnedActive(name)) continue;
       await run("docker", [host, "rm", "--force", name], {
         timeout: 15000,
         maxBuffer: 65536,

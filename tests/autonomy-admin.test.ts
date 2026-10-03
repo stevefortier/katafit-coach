@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { Store } from "../src/config/store.js";
 import { HeadlessCycleRuntime } from "../src/autonomy/headless.js";
 import { productionRuntimes } from "../src/autonomy/host.js";
+import { CleanupRegistry } from "../src/autonomy/cleanup.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { INTEND_TOOL } from "../src/autonomy/tools.js";
 import {
   closeLeaked,
@@ -216,21 +219,45 @@ test("C5: message mode wires the composer as its own runtime, so intents are off
   }
 });
 
-test("C5: production runtimes are two distinct headless runtimes on the verified image", async () => {
+test("C5: production runtimes are two distinct owner-scoped headless runtimes on the verified image", async () => {
   const resolved: string[] = [];
-  const pair = await productionRuntimes("/nonexistent-home", {
-    image: async (home) => {
-      resolved.push(home);
+  const home = await mkdtemp(tmpdir() + "/autonomy-runtimes-");
+  after(() => rm(home, { recursive: true, force: true }));
+  const owner = "b".repeat(32);
+  const cleanup = await CleanupRegistry.open(home, owner, {
+    sync: async () => {},
+  });
+  const execs: string[][] = [];
+  const pair = await productionRuntimes(home, {
+    owner,
+    cleanup,
+    image: async (h) => {
+      resolved.push(h);
       return "sha256:" + "a".repeat(64);
     },
-    engine: { exec: (async () => ({ stdout: "" })) as any },
+    engine: {
+      exec: (async (_file: string, args: string[]) => (
+        execs.push(args),
+        { stdout: "" }
+      )) as any,
+    },
   });
-  assert.deepEqual(resolved, ["/nonexistent-home"]);
+  assert.deepEqual(resolved, [home]);
   assert.ok(pair.planner instanceof HeadlessCycleRuntime);
   assert.ok(pair.composer instanceof HeadlessCycleRuntime);
   assert.notEqual(pair.planner, pair.composer);
+  assert.ok(
+    execs.some((a) => a.includes(`label=fit.kata.native.owner=${owner}`)),
+    "startup sweep is owner-scoped",
+  );
   await assert.rejects(
-    productionRuntimes("/nonexistent-home", {
+    productionRuntimes(home, { image: async () => "sha256:" + "a".repeat(64) }),
+    /HEADLESS_OWNER_REQUIRED/,
+  );
+  await assert.rejects(
+    productionRuntimes(home, {
+      owner,
+      cleanup,
       image: async () => {
         throw new Error("NATIVE_IMAGE_UNVERIFIED");
       },

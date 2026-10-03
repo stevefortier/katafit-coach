@@ -1,4 +1,6 @@
-import test from "node:test";
+import test, { after } from "node:test";
+import { randomBytes } from "node:crypto";
+import { CleanupRegistry } from "../src/autonomy/cleanup.js";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
@@ -69,8 +71,14 @@ test(
   "real headless Pi: the planner executes a host tool over RPC and the composer runs tool-less, each in its own removed container",
   { skip: docker, timeout: 180000 },
   async () => {
+    const home = await mkdtemp(tmpdir() + "/autonomy-headless-owner-");
+    after(() => rm(home, { recursive: true, force: true }));
     const headless = new HeadlessCycleRuntime({
       image: process.env.NATIVE_TEST_IMAGE!,
+      cleanup: await CleanupRegistry.open(
+        home,
+        randomBytes(16).toString("hex"),
+      ),
     });
     await headless.sweep();
     const reports: any[] = [];

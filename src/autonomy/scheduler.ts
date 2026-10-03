@@ -43,6 +43,8 @@ export interface SchedulerOptions {
   /** Cancellable delay between ticks (injectable for tests). */
   wait?: (ms: number, signal: AbortSignal) => Promise<void>;
   onState?: (state: SchedulerState) => void;
+  /** Local precondition for a claim (e.g. owned cleanup confirmed). */
+  ready?: () => Promise<boolean>;
   onDiagnostic?: (event: LogInput) => void;
 }
 
@@ -160,6 +162,8 @@ export class AutonomyScheduler {
         this.set("idle");
         return { outcome: "idle", delayMs: tickMs };
       }
+      if (this.options.ready && !(await this.options.ready()))
+        return this.backoff();
     } catch (error) {
       return this.failed(error, tickMs);
     }

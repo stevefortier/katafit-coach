@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { constants } from "node:fs";
 import { link, open, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { managedFile } from "../update/managed.js";
