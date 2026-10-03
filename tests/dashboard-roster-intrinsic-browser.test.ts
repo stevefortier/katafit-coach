@@ -53,6 +53,10 @@ test("synthetic roster cards use bounded intrinsic widths across cache renders",
       res.end(
         '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><main style="padding:8px;min-width:0"><h1>SYNTHETIC ROSTER FIXTURE</h1><input id="dashboardMapDate" type="date"><div id="dashboardMapStatus"></div><div id="dashboardMap"></div><div id="dashboardMapSelection"></div><div id="dashboardMemberHeading"></div><div id="dashboardMemberCards" class="dashboard-member-cards"></div><div id="dashboardStatus"></div><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div></main><script src="/dashboard.js"></script>',
       );
+    } else if (url.pathname === "/favicon.ico") {
+      // Anonymous browser decoration is not an authorized dashboard read.
+      res.statusCode = 204;
+      res.end();
     } else {
       calls.push(url.pathname + url.search);
       if (url.pathname === "/api/dashboard/avatar") {
@@ -161,6 +165,10 @@ test("synthetic roster cards use bounded intrinsic widths across cache renders",
         assert.equal(await cards.nth(2).locator("img").count(), 0);
         assert.match(await cards.nth(2).innerText(), /Body fat.*Unavailable/);
         const reads = calls.length;
+        // Browser-owned resource traffic must not be counted as a new data read.
+        await page.evaluate(async () => {
+          await fetch("/favicon.ico");
+        });
         await cards.first().focus();
         await page.keyboard.press("Enter");
         assert.equal(await cards.first().getAttribute("aria-pressed"), "true");
@@ -190,7 +198,7 @@ test("synthetic roster cards use bounded intrinsic widths across cache renders",
         assert.equal(
           calls.length,
           reads,
-          "selection rerenders reuse cached authorized data",
+          `selection rerenders reuse cached authorized data: ${JSON.stringify({ before: calls.slice(0, reads), after: calls.slice(reads) })}`,
         );
         const cached = await measure();
         assert.deepEqual(cached.widths, initial.widths);
