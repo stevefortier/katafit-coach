@@ -1,6 +1,9 @@
 // Fixed vocabulary only: dynamic/discovered names not listed here become "other".
 // Never infer a diagnostic descriptor from arguments, URLs or backend messages.
 export const backendTools = [
+  "coach_autonomy_follow_up",
+  "coach_autonomy_intend",
+  "coach_autonomy_report",
   "coach_claim_request",
   "coach_claim_task",
   "coach_complete_task",

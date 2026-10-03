@@ -23,6 +23,12 @@ if (process.env.NATIVE_GATEWAY === "1") {
     "--system-prompt",
     config.prompt,
   );
+  // Headless autonomy cycles speak Pi's JSONL RPC; the audience composer
+  // additionally runs without any built-in or extension tools.
+  if (process.env.NATIVE_MODE === "rpc") {
+    args.push("--mode", "rpc");
+    if (process.env.NATIVE_PROFILE === "composer") args.push("--no-tools");
+  }
 }
 const child = spawn("/opt/coach/node_modules/.bin/pi", args, {
   stdio: "inherit",

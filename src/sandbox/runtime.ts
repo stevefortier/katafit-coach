@@ -189,6 +189,62 @@ function validFrame(frame: any): boolean {
   );
 }
 
+export const NATIVE_PROFILES = ["planner", "composer"] as const;
+export type NativeProfile = (typeof NATIVE_PROFILES)[number];
+export type RpcCommand =
+  | { type: "prompt"; message: string; id?: string }
+  | { type: "abort"; id?: string }
+  | { type: "get_last_assistant_text"; id?: string };
+const RPC_COMMAND_LIMIT = 1024 * 1024;
+/** Only prompt, abort and final-text reads; never sessions, bash or models. */
+function validRpc(command: any): command is RpcCommand {
+  if (!record(command)) return false;
+  const keys = Object.keys(command);
+  const id =
+    !keys.includes("id") ||
+    (typeof command.id === "string" &&
+      command.id.length > 0 &&
+      command.id.length <= 128);
+  const allowed =
+    command.type === "prompt"
+      ? ["type", "message", "id"]
+      : command.type === "abort" || command.type === "get_last_assistant_text"
+        ? ["type", "id"]
+        : undefined;
+  return (
+    !!allowed &&
+    id &&
+    keys.every((key) => allowed.includes(key)) &&
+    (command.type !== "prompt" ||
+      (typeof command.message === "string" && command.message.length > 0))
+  );
+}
+/** Streams Docker's multiplexed frames, passing stdout payload bytes only. */
+function demultiplex(write: (bytes: Buffer) => void) {
+  let header = Buffer.alloc(0);
+  let remaining = 0;
+  let stream = 0;
+  return (chunk: Buffer) => {
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (remaining === 0) {
+        const take = Math.min(8 - header.length, chunk.length - offset);
+        header = Buffer.concat([header, chunk.subarray(offset, offset + take)]);
+        offset += take;
+        if (header.length < 8) return;
+        stream = header[0];
+        remaining = header.readUInt32BE(4);
+        header = Buffer.alloc(0);
+        continue;
+      }
+      const take = Math.min(remaining, chunk.length - offset);
+      if (stream === 1) write(chunk.subarray(offset, offset + take));
+      offset += take;
+      remaining -= take;
+    }
+  };
+}
+
 /** Control-plane only. Docker's socket is never mounted inside the runtime. */
 export class NativeRuntime {
   readonly name: string;
@@ -211,6 +267,13 @@ export class NativeRuntime {
     options: any,
   ) => Promise<{ stdout: string }>;
   private readonly socketPath: string;
+  private readonly spawnRelay: (
+    file: string,
+    args: string[],
+    options: any,
+  ) => ChildProcessWithoutNullStreams;
+  private readonly labels: Record<string, string>;
+  private mode: "interactive" | "rpc" = "interactive";
   private readonly ownership?: NativeProbeOwnership;
   private readonly probeEngine?: NativeProbeEngine;
   constructor(
@@ -224,12 +287,24 @@ export class NativeRuntime {
       ) => Promise<{ stdout: string }>;
       ownership?: NativeProbeOwnership;
       probeEngine?: NativeProbeEngine;
+      /** Container name; ownership probes keep their own. */
+      name?: string;
+      /** Extra container labels, merged with ownership labels. */
+      labels?: Record<string, string>;
+      spawn?: (
+        file: string,
+        args: string[],
+        options: any,
+      ) => ChildProcessWithoutNullStreams;
     } = {},
   ) {
     this.run = engine.exec ?? exec;
+    this.spawnRelay = engine.spawn ?? spawn;
+    this.labels = engine.labels ?? {};
     this.socketPath = engine.socketPath ?? "/var/run/docker.sock";
     this.ownership = engine.ownership;
-    this.name = engine.ownership?.name ?? "katafit-pi-" + randomUUID();
+    this.name =
+      engine.ownership?.name ?? engine.name ?? "katafit-pi-" + randomUUID();
     this.probeEngine =
       engine.probeEngine ??
       (engine.ownership
@@ -239,11 +314,34 @@ export class NativeRuntime {
   private gateway?: NativeGateway;
   private relay?: ChildProcessWithoutNullStreams;
   private requests = new Map<number, AbortController>();
-  async start(gateway?: NativeGateway) {
+  async start(
+    gateway?: NativeGateway,
+    options: { mode?: "interactive" | "rpc"; profile?: NativeProfile } = {},
+  ) {
     if (this.closing) throw new Error("RUNTIME_CLEANUP_PENDING");
+    const rpc = options.mode === "rpc";
+    if (
+      rpc &&
+      (!gateway || !NATIVE_PROFILES.includes(options.profile as NativeProfile))
+    )
+      throw new Error("RPC_PROFILE_REQUIRED");
     this.gateway = gateway;
-    const args = sandboxArgs(this.name, this.image, this.ownership?.labels);
-    args.splice(1, 0, "--tty", ...(gateway ? ["--env=NATIVE_GATEWAY=1"] : []));
+    this.mode = rpc ? "rpc" : "interactive";
+    const args = sandboxArgs(this.name, this.image, {
+      ...this.labels,
+      ...this.ownership?.labels,
+    });
+    args.splice(
+      1,
+      0,
+      ...(rpc
+        ? [
+            "--env=NATIVE_GATEWAY=1",
+            "--env=NATIVE_MODE=rpc",
+            `--env=NATIVE_PROFILE=${options.profile}`,
+          ]
+        : ["--tty", ...(gateway ? ["--env=NATIVE_GATEWAY=1"] : [])]),
+    );
     // Negotiate the daemon version, capped at the API this client implements.
     const { stdout } = await this.run(
       "docker",
@@ -298,10 +396,13 @@ export class NativeRuntime {
         this.socket = socket;
         socket.on("error", () => socket.destroy());
         const decoder = new StringDecoder("utf8");
-        const emit = (bytes: Buffer) => {
+        const write = (bytes: Buffer) => {
           const text = decoder.write(bytes);
           if (text) this.onOutput(text);
         };
+        // Without a TTY Docker multiplexes stdout/stderr behind 8-byte
+        // headers; only stdout (Pi's RPC JSONL) is surfaced.
+        const emit = this.mode === "rpc" ? demultiplex(write) : write;
         if (head.length) emit(head);
         socket.on("data", emit);
         socket.once("close", () => {
@@ -329,7 +430,7 @@ export class NativeRuntime {
     );
     await this.api(`/containers/${this.name}/start`);
     if (this.gateway) {
-      const relay = (this.relay = spawn(
+      const relay = (this.relay = this.spawnRelay(
         "docker",
         [
           "--host=unix://" + this.socketPath,
@@ -471,7 +572,24 @@ export class NativeRuntime {
       });
     }
   }
+  /** Writes one allowlisted Pi RPC command (rpc mode only). */
+  rpc(command: RpcCommand): Promise<void> {
+    if (this.mode !== "rpc" || !validRpc(command))
+      throw new Error("RPC_COMMAND_REJECTED");
+    const line = JSON.stringify(command) + "\n";
+    const socket = this.socket;
+    if (
+      !socket ||
+      socket.destroyed ||
+      Buffer.byteLength(line) > RPC_COMMAND_LIMIT ||
+      socket.writableLength > RPC_COMMAND_LIMIT
+    )
+      throw new Error("RPC_BACKPRESSURE");
+    // Resolves once flushed, so a final abort is not lost to teardown.
+    return new Promise((resolve) => socket.write(line, () => resolve()));
+  }
   input(data: string) {
+    if (this.mode === "rpc") throw new Error("RPC_MODE");
     if (
       !this.socket ||
       this.socket.destroyed ||
