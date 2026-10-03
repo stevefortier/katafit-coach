@@ -19,6 +19,7 @@ import { startAutonomyBackend } from "./helpers/autonomy-backend.js";
 import { closeServer } from "./helpers/account-backend.js";
 import { until } from "./helpers/autonomy-admin.js";
 import { answer } from "./helpers/continuity.js";
+import { outcome } from "./helpers/autonomy-cycle.js";
 
 const enabled = process.env.AUTONOMY_NATIVE_ACCEPTANCE === "1";
 /** Real compiled child processes, updater, Docker Pi, Express and Mongo.
@@ -71,10 +72,7 @@ test(
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(
         answer(
-          JSON.stringify({
-            schema_version: 1,
-            result: "completed",
-            reason_codes: [],
+          outcome({
             decisions: [
               {
                 subject_id: String(b.member),
@@ -83,9 +81,6 @@ test(
                 follow_up_ids: [],
               },
             ],
-            observed: ["activity"],
-            unobserved: [],
-            uncertainty: [],
           }),
         ),
       );
@@ -205,7 +200,12 @@ test(
       await snapshot(baseline, join(home, "versions", oldMeta.revision));
       await writeFile(
         join(home, "active.json"),
-        JSON.stringify({ revision: oldMeta.revision }),
+        JSON.stringify({
+          revision: oldMeta.revision,
+          image:
+            process.env.NATIVE_PROCESS_BASELINE_IMAGE ||
+            process.env.NATIVE_TEST_IMAGE,
+        }),
       );
       await provisionArtifact(
         home,
@@ -263,7 +263,6 @@ test(
       assert.equal(providerRuns, 1);
       const later = await b.enqueue(mandate.mandate_id, {
         kind: "reconcile",
-        source: { subjects: [b.member] },
       });
       // Real wall-clock lifetime, not local ledger deletion or invented success.
       while (Date.now() <= expiresAt + 100)
@@ -329,13 +328,23 @@ test(
         ),
       });
       const pidBeforeUpgrade = (await readRecord("service")).runtimePid;
-      await owner.updates.check();
-      await owner.updates.prepare(newMeta.revision);
+      assert.equal((await call("/api/update/check", {})).status, 200);
       assert.equal(
-        (await call("/api/update/quiesce", { confirm: true })).status,
-        200,
+        (
+          await call("/api/update/apply", {
+            sha: newMeta.revision,
+            confirm: true,
+          })
+        ).status,
+        202,
       );
-      await owner.updates.apply(newMeta.revision, false, true);
+      await until(
+        () =>
+          owner!.updates.installed === newMeta.revision &&
+          !owner!.updates.applying,
+        "stable owner durably activates pinned candidate",
+        45000,
+      );
       const pointer = await readRecord("active");
       const pidAfterUpgrade = (await readRecord("service")).runtimePid;
       assert.equal(pointer?.revision, newMeta.revision);
@@ -361,6 +370,18 @@ test(
         status: (await call("/api/autonomy/status")).body,
         update: owner.updates.snapshot(),
       });
+    } catch (error) {
+      await record("failed-phase-diagnostics", {
+        error: (error as Error).message,
+        providerRuns,
+        calls,
+        status: owner
+          ? (await call("/api/autonomy/status").catch(() => ({ body: null })))
+              .body
+          : null,
+        work: await b.db.collection("coach_autonomy_work").find({}).toArray(),
+      });
+      throw error;
     } finally {
       holdAck = false;
       releaseAck?.();

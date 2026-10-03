@@ -88,15 +88,13 @@ export async function nativeKindSource(b: Backend, kind: string, auth: any) {
         .toArray();
   } else if (kind === "media_chat") {
     const activity = new O();
-    await db
-      .collection("activities")
-      .insertOne({
-        _id: activity,
-        user_id: user,
-        type: "media",
-        status: "pending",
-        data: { files: [] },
-      });
+    await db.collection("activities").insertOne({
+      _id: activity,
+      user_id: user,
+      type: "media",
+      status: "pending",
+      data: { files: [] },
+    });
     await load("mediaCoachChat").recordMediaCoachUserMessage(
       String(user),
       String(activity),
