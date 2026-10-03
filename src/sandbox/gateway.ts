@@ -16,6 +16,7 @@ import {
   restRequestArgs,
 } from "../katafit/restGet.js";
 import { restSession } from "../katafit/restSession.js";
+import { classifyAutonomyRequest } from "../katafit/autonomyNamespace.js";
 import {
   MemberMessageFailure,
   classifyMemberMessageRequest,
@@ -825,6 +826,10 @@ export async function openNativeGateway(
       if (request.name === restRequestTool.name && secrets.token) {
         const args = restRequestArgs(request.args);
         assertNoSecrets(request.args, Object.values(secrets));
+        // The continuous Coach control plane is host-only: a model must never
+        // change its own mandate, claim work or certify actions.
+        if (classifyAutonomyRequest(args.method, args.path).kind === "reject")
+          throw new NativeFailure("NATIVE_REQUEST_REJECTED");
         // Memory writes carry their own exact key/receipt contract: bound to
         // the selected call, host-keyed, reconciled by receipt, never resent.
         const memoryWrite = classifyMemoryWrite(
