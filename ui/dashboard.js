@@ -82,8 +82,10 @@ window.CoachDashboard = (() => {
       readQueue.splice(index, 1)[0].start();
     }
   }
-  // Last successful authorized roster; kept only across transient failures.
+  // Authorized roster/avatars belong to the dashboard scope, not the event day.
+  // Explicit reload/lock/account changes clear them; confirmed denials remove members.
   let rosterCache = null;
+  let rosterReady = Promise.resolve({ note: "" });
   // A confirmed same-load denial cannot be undone by a concurrent roster/map
   // snapshot. A fresh dashboard load is required to recheck this member.
   const suppressedMembers = new Set();
@@ -144,14 +146,12 @@ window.CoachDashboard = (() => {
         ? $("dashboardMapMonth")
         : null,
       year = $("dashboardMapYear")?.options ? $("dashboardMapYear") : null;
-    const range = $("dashboardMapDay"),
-      ticks = $("dashboardDayTicks");
+    const day = $("dashboardMapDay");
     const output = $("dashboardSelectedDate");
     const previous = $("dashboardMapPrevious"),
       next = $("dashboardMapNext"),
       today = $("dashboardMapToday");
-    let committedDate = input.value,
-      previewInvalidated = false;
+    let committedDate = input.value;
     const loadId = epoch;
     const live = () => loadId === epoch;
     function parts() {
@@ -182,69 +182,28 @@ window.CoachDashboard = (() => {
         );
       }
       if (year) year.value = String(y);
-      if (range) {
-        range.max = String(length);
-        range.value = String(d);
+      if (day?.options) {
+        if (day.options.length !== length)
+          day.replaceChildren(
+            ...Array.from({ length }, (_, i) => {
+              const option = text("option", String(i + 1));
+              option.value = String(i + 1);
+              return option;
+            }),
+          );
+        day.value = String(d);
       }
       if (output)
         output.textContent = civilDate(y, m, d).toLocaleDateString(undefined, {
           weekday: "long",
-          year: "numeric",
-          month: "long",
-          day: "numeric",
         });
-      if (range)
-        range.setAttribute(
-          "aria-valuetext",
-          output?.textContent || input.value,
-        );
-      if (ticks && ticks.childElementCount !== length) {
-        ticks.replaceChildren(
-          ...Array.from({ length }, (_, i) => {
-            const tick = text("div", "", "dashboard-day-tick");
-            tick.append(text("span", String(i + 1)));
-            return tick;
-          }),
-        );
-      }
     }
     function commit(force = false) {
       if (!live()) return;
       sync();
-      if (!force && input.value === committedDate && !previewInvalidated)
-        return;
+      if (!force && input.value === committedDate) return;
       committedDate = input.value;
-      previewInvalidated = false;
       void loadMap(adminKey);
-    }
-    function preview() {
-      if (!live()) return;
-      const [y, m] = parts();
-      const value = dateValue(civilDate(y, m, Number(range.value)));
-      if (value === input.value) return;
-      input.value = value;
-      sync();
-      // Fence pending old-date reads immediately, without dispatching new ones
-      // while the native slider is being dragged. Member selection is retained.
-      previewInvalidated = true;
-      mapEpoch++;
-      mapController?.abort();
-      timelineEpoch++;
-      timelineController?.abort();
-      timelinePending = false;
-      timelineInteraction(false);
-      timelineResize?.disconnect();
-      timelineResize = null;
-      selectionEpoch++;
-      linkActivity = () => {};
-      filterMap = () => {};
-      filterTimeline = () => {};
-      disposeMap();
-      $("dashboardMap")?.replaceChildren();
-      $("dashboardTimeline")?.replaceChildren();
-      $("dashboardMapSelection")?.replaceChildren();
-      if ($("dashboardMapStatus"))
-        $("dashboardMapStatus").textContent = `Release to load ${value}.`;
     }
     function stepDay(amount) {
       if (!live()) return;
@@ -306,21 +265,13 @@ window.CoachDashboard = (() => {
         input.value = dateValue(new Date());
         commit();
       };
-    if (range) {
-      range.oninput = preview;
-      range.onchange = () => {
-        preview();
+    if (day)
+      day.onchange = () => {
+        if (!live()) return;
+        const [y, m] = parts();
+        input.value = dateValue(civilDate(y, m, Number(day.value)));
         commit();
       };
-      range.onpointerup = () => {
-        preview();
-        commit();
-      };
-      range.onpointercancel = () => {
-        preview();
-        commit();
-      };
-    }
     // Preserve the native date fallback's explicit same-date Reload semantics.
     input.onchange = () => commit(true);
     clearDateNavigation = () => {
@@ -329,12 +280,7 @@ window.CoachDashboard = (() => {
       if (year) year.onchange = null;
       for (const button of [previous, next, today])
         if (button) button.onclick = null;
-      if (range)
-        range.oninput =
-          range.onchange =
-          range.onpointerup =
-          range.onpointercancel =
-            null;
+      if (day) day.onchange = null;
     };
     sync();
   }
@@ -372,6 +318,9 @@ window.CoachDashboard = (() => {
     mapMembers = new Map();
     feedMembers = new Map();
     rosterCache = null;
+    rosterReady = Promise.resolve({ note: "" });
+    avatarCache.clear();
+    for (const url of avatarUrls.splice(0)) URL.revokeObjectURL(url);
     suppressedMembers.clear();
     filterFeed = () => {};
     filterMap = () => {};
@@ -390,8 +339,6 @@ window.CoachDashboard = (() => {
     mapResizeObserver = undefined;
     leafletMap?.remove();
     leafletMap = undefined;
-    avatarCache.clear();
-    for (const url of avatarUrls.splice(0)) URL.revokeObjectURL(url);
   }
   function renderMemberCards() {
     closeMemberTooltip();
@@ -1960,33 +1907,10 @@ window.CoachDashboard = (() => {
       syncMap();
     }
   }
-  async function loadMap(adminKey) {
-    selectionEpoch++;
-    // A new date replaces every mark, so only the shared selection is reset.
-    selectedEventId = null;
-    syncMap = () => {};
-    refreshMap = () => {};
-    revealEvent = () => {};
-    mapEpoch++;
-    mapController?.abort();
-    mapController = new AbortController();
-    // Map and timeline share this one complete day-events reader.
-    void loadTimeline(adminKey);
-    const signal = mapController.signal,
-      id = mapEpoch;
-    const live = () => !signal.aborted && id === mapEpoch;
-    const map = $("dashboardMap"),
-      selection = $("dashboardMapSelection"),
-      status = $("dashboardMapStatus");
-    if (!map || !selection || !status) return;
-    disposeMap();
-    filterMap = () => {};
-    renderMemberCards();
-    map.replaceChildren();
-    selection.replaceChildren();
-    status.removeAttribute("data-tone");
-    let rosterNote = "";
-    let showStatus = () => {};
+  function loadRoster(adminKey) {
+    const signal = controller.signal,
+      id = epoch;
+    const live = () => !signal.aborted && id === epoch;
     const request = async (path) => {
       const response = await dashboardFetch(`/api/${path}`, {
         headers: { Authorization: `Bearer ${adminKey}` },
@@ -2003,8 +1927,6 @@ window.CoachDashboard = (() => {
         );
       return response.json();
     };
-    const deniedMembers = new Set();
-    let avatarLimited = false;
     const startAvatars = () => {
       // No per-activity reads; bound requests per load and concurrent BFF reads.
       // Remaining members retain their initials badge rather than silently requesting 5000 images.
@@ -2012,7 +1934,6 @@ window.CoachDashboard = (() => {
         /^[0-9a-f]{24}$/.test(id),
       );
       const avatarQueue = avatarMembers.slice(0, 80);
-      avatarLimited = avatarMembers.length > avatarQueue.length;
       let avatarIndex = 0;
       const readAvatar = async () => {
         while (live() && avatarIndex < avatarQueue.length) {
@@ -2037,7 +1958,7 @@ window.CoachDashboard = (() => {
             const blob = await response.blob();
             if (
               !live() ||
-              deniedMembers.has(memberId) ||
+              suppressedMembers.has(memberId) ||
               !mapMembers.has(memberId) ||
               blob.size > 1024 * 1024 ||
               !blob.size
@@ -2057,7 +1978,7 @@ window.CoachDashboard = (() => {
               pin.prepend(image);
             }
           } catch {
-            /* revoked access, aborted date, or unavailable image: initials remain */
+            /* revoked access, aborted scope, or unavailable image: initials remain */
           }
         }
       };
@@ -2066,7 +1987,7 @@ window.CoachDashboard = (() => {
     };
     // The roster is not date-scoped: request it at once so authorized member
     // cards never wait on, or disappear with, the event read or Leaflet.
-    const rosterReady = request("dashboard/members")
+    rosterReady = request("dashboard/members")
       .then((roster) => {
         if (!Array.isArray(roster?.members))
           throw new Error("Invalid member roster.");
@@ -2096,10 +2017,40 @@ window.CoachDashboard = (() => {
         );
         renderMemberCards();
         startAvatars();
-        rosterNote = members ? "" : ` ${note}`;
-        showStatus();
         return { note };
       });
+  }
+  async function loadMap(adminKey) {
+    selectionEpoch++;
+    // A new date replaces every mark, so only the shared selection is reset.
+    selectedEventId = null;
+    syncMap = () => {};
+    refreshMap = () => {};
+    revealEvent = () => {};
+    mapEpoch++;
+    mapController?.abort();
+    mapController = new AbortController();
+    // Map and timeline share this one complete day-events reader.
+    void loadTimeline(adminKey);
+    const signal = mapController.signal,
+      id = mapEpoch;
+    const live = () => !signal.aborted && id === mapEpoch;
+    const map = $("dashboardMap"),
+      selection = $("dashboardMapSelection"),
+      status = $("dashboardMapStatus");
+    if (!map || !selection || !status) return;
+    disposeMap();
+    filterMap = () => {};
+    map.replaceChildren();
+    selection.replaceChildren();
+    status.removeAttribute("data-tone");
+    let rosterNote = "";
+    let showStatus = () => {};
+    void rosterReady.then(({ note }) => {
+      if (!live()) return;
+      rosterNote = rosterCache ? "" : ` ${note}`;
+      showStatus();
+    });
     const fail = async (message) => {
       showStatus = () => {};
       status.dataset.tone = "error";
@@ -2868,6 +2819,8 @@ window.CoachDashboard = (() => {
   }
   async function load(_api, adminKey) {
     clear();
+    controller = new AbortController();
+    loadRoster(adminKey);
     if ($("dashboardMapDate")?.type === "date") {
       const dateInput = $("dashboardMapDate");
       const today = new Date();
@@ -2876,7 +2829,6 @@ window.CoachDashboard = (() => {
       void loadMap(adminKey);
     }
     const id = epoch;
-    controller = new AbortController();
     const signal = controller.signal;
     const live = () => id === epoch && !signal.aborted;
     const request = async (path, binary = false, queuedSignal = signal) => {
@@ -3176,10 +3128,7 @@ window.CoachDashboard = (() => {
             // and photos, and skip their later details this load. The map
             // snapshot may be stale too; drop it rather than retaining
             // coordinates after a fresh authorization denial.
-            forgetMember(activity.user_id);
-            mapMembers.delete(activity.user_id);
-            rosterCache?.delete(activity.user_id);
-            renderMemberCards();
+            denyMember(activity.user_id);
             void loadMap(adminKey);
           }
           detailError ||= error.message;

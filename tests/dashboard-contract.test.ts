@@ -148,7 +148,7 @@ const metric = (measurements: any[], extra = {}) => ({
   data: { measurements },
   ...extra,
 });
-test("feed detail 403 stays purged after the roster refresh it triggers", async () => {
+test("feed detail 403 stays purged without reacquiring the scope roster", async () => {
   const row = metric([{ type_id: "weight", value: 75, unit: "kg" }]);
   const r = await render([row], [row], undefined, { m: 403 }, [
     {
@@ -161,16 +161,10 @@ test("feed detail 403 stays purged after the roster refresh it triggers", async 
       },
     },
   ]);
-  for (
-    let i = 0;
-    i < 30 &&
-    r.calls.filter((url) => url === "/api/dashboard/members").length < 2;
-    i++
-  )
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  await new Promise((resolve) => setTimeout(resolve, 1));
-  assert.ok(
-    r.calls.filter((url) => url === "/api/dashboard/members").length >= 2,
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    r.calls.filter((url) => url === "/api/dashboard/members").length,
+    1,
   );
   assert.doesNotMatch(
     r

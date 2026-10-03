@@ -116,22 +116,6 @@
               aria-label="Shared activity map"
             >
               <div class="dashboard-map-date">
-                <div class="dashboard-date-selects">
-                  <label
-                    >Month
-                    <select id="dashboardMapMonth" aria-label="Month"></select
-                  ></label>
-                  <label
-                    >Year
-                    <select id="dashboardMapYear" aria-label="Year"></select
-                  ></label>
-                </div>
-                <button id="dashboardMapToday" type="button">Today</button>
-                <output
-                  id="dashboardSelectedDate"
-                  aria-live="polite"
-                  aria-label="Selected date"
-                ></output>
                 <div class="dashboard-day-navigation">
                   <button
                     id="dashboardMapPrevious"
@@ -140,20 +124,25 @@
                   >
                     ←
                   </button>
-                  <div class="dashboard-day-track">
-                    <input
-                      id="dashboardMapDay"
-                      type="range"
-                      min="1"
-                      max="31"
-                      step="1"
-                      aria-label="Day of month"
-                    />
-                    <div
-                      id="dashboardDayTicks"
-                      class="dashboard-day-ticks"
-                      aria-hidden="true"
-                    ></div>
+                  <div class="dashboard-date-selects">
+                    <label
+                      >Year<select
+                        id="dashboardMapYear"
+                        aria-label="Year"
+                      ></select
+                    ></label>
+                    <label
+                      >Month<select
+                        id="dashboardMapMonth"
+                        aria-label="Month"
+                      ></select
+                    ></label>
+                    <label
+                      >Day<select
+                        id="dashboardMapDay"
+                        aria-label="Day of month"
+                      ></select
+                    ></label>
                   </div>
                   <button
                     id="dashboardMapNext"
@@ -163,6 +152,12 @@
                     →
                   </button>
                 </div>
+                <output
+                  id="dashboardSelectedDate"
+                  aria-live="polite"
+                  aria-label="Selected weekday"
+                ></output>
+                <button id="dashboardMapToday" type="button">Today</button>
                 <label for="dashboardMapDate" class="dashboard-date-fallback">
                   <span class="dashboard-assistive"
                     >Event occurrence day (device timezone; map and

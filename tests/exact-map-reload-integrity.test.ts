@@ -110,91 +110,143 @@ for (const fault of ["invalid-event", "invalid-cursor"] as const)
     );
   });
 
-// Authorization, independent roster stats, and transient-versus-denied refresh
-// assertions carried forward from the former subject-coordinate map fixture.
-test("roster transient and denied reads retain or remove stats without substituting latest subject GPS", async () => {
-  let status = 200;
-  const members = [
-    {
-      _id: ada,
-      display_name: "Synthetic Ada",
-      stats: {
-        weight: { value: 68, unit: "kg" },
-        height_cm: 170,
-        body_fat_percent: 21,
-        body_fat_estimate: { source: "ai", estimated: true, value: 21 },
-        age_years: 30,
+// Roster inventory belongs to a dashboard scope, not the selected day.
+// Explicit reload starts a fresh scope even when its roster read fails.
+for (const denial of [401, 403])
+  test(`day reuse retains stats but explicit transient/denied (${denial}) reloads remove prior-scope stats without substituting latest subject GPS`, async () => {
+    let status = 200;
+    const members = [
+      {
+        _id: ada,
+        display_name: "Synthetic Ada",
+        stats: {
+          weight: { value: 68, unit: "kg" },
+          height_cm: 170,
+          body_fat_percent: 21,
+          body_fat_estimate: { source: "ai", estimated: true, value: 21 },
+          age_years: 30,
+        },
+        last_position: { position: { latitude: 1, longitude: 2 } },
       },
-      last_position: { position: { latitude: 1, longitude: 2 } },
-    },
-    { _id: bob, display_name: "Synthetic Bob", stats: {} },
-  ];
-  await fixture(
-    async (page) => {
-      await page.waitForFunction(() =>
-        document
-          .querySelector("#dashboardMemberCards")
-          ?.textContent?.includes("68 kg"),
-      );
-      assert.match(
-        await page.locator("#dashboardMemberCards").innerText(),
-        /Height: 170 cm.*Body fat: 21 %.*Age: 30/s,
-      );
-      assert.equal(
-        await page
-          .getByRole("button", {
-            name: "About body fat estimate for Synthetic Ada",
-          })
-          .count(),
-        1,
-      );
-      assert.equal(
-        await page.locator(`#dashboard-bodyfat-${ada}`).textContent(),
-        "Body fat is estimated from progress photos.",
-      );
-      assert.equal(await page.locator(".dashboard-member-pin").count(), 0);
-      status = 503;
-      await page.evaluate(() =>
-        document
-          .querySelector("#dashboardMapDate")!
-          .dispatchEvent(new Event("change")),
-      );
-      await page.waitForFunction(() =>
-        document
-          .querySelector("#dashboardMapStatus")
-          ?.textContent?.includes("refresh failed (503)"),
-      );
-      assert.match(
-        await page.locator("#dashboardMemberCards").innerText(),
-        /68 kg/,
-      );
-      assert.equal(await page.locator(".dashboard-event-dot").count(), 7);
-      status = 403;
-      await page.evaluate(() =>
-        document
-          .querySelector("#dashboardMapDate")!
-          .dispatchEvent(new Event("change")),
-      );
-      await page.waitForFunction(() =>
-        document
-          .querySelector("#dashboardMapStatus")
-          ?.textContent?.includes("roster access denied (403)"),
-      );
-      assert.doesNotMatch(
-        await page.locator("#dashboardMemberCards").innerText(),
-        /68 kg/,
-      );
-      assert.equal(
-        await page.locator(".dashboard-event-dot").count(),
-        7,
-        "separately authorized ledger remains independent",
-      );
-    },
-    {
-      override: (url) =>
-        url.pathname === "/api/dashboard/members"
-          ? { status, body: status === 200 ? { members } : {} }
-          : undefined,
-    },
-  );
-});
+      { _id: bob, display_name: "Synthetic Bob", stats: {} },
+    ];
+    await fixture(
+      async (page, { requests }) => {
+        const rosterReads = () =>
+          requests.filter((url) => url.startsWith("/api/dashboard/members"))
+            .length;
+        const reload = () =>
+          page.evaluate(async () => {
+            await (window as any).CoachDashboard.load(null, "synthetic");
+            // Dashboard reload initializes Today; restore this fixture's day
+            // without causing a second roster read.
+            const input =
+              document.querySelector<HTMLInputElement>("#dashboardMapDate")!;
+            input.value = "2026-09-28";
+            input.dispatchEvent(new Event("change"));
+          });
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMemberCards")
+            ?.textContent?.includes("68 kg"),
+        );
+        assert.match(
+          await page.locator("#dashboardMemberCards").innerText(),
+          /Height: 170 cm.*Body fat: 21 %.*Age: 30/s,
+        );
+        assert.equal(
+          await page
+            .getByRole("button", {
+              name: "About body fat estimate for Synthetic Ada",
+            })
+            .count(),
+          1,
+        );
+        assert.equal(
+          await page.locator(`#dashboard-bodyfat-${ada}`).textContent(),
+          "Body fat is estimated from progress photos.",
+        );
+        assert.equal(await page.locator(".dashboard-member-pin").count(), 0);
+        const initialReads = rosterReads();
+        status = 503;
+        // Even the native fallback's forced same-date ledger refresh reuses
+        // the roster; it is not an explicit dashboard-scope reload.
+        await page.locator("#dashboardMapDate").dispatchEvent("change");
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("complete day"),
+        );
+        assert.equal(
+          rosterReads(),
+          initialReads,
+          "day navigation performs zero roster reads",
+        );
+        assert.match(
+          await page.locator("#dashboardMemberCards").innerText(),
+          /68 kg/,
+        );
+        assert.equal(await page.locator(".dashboard-event-dot").count(), 7);
+        await reload();
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("roster unavailable (503)"),
+        );
+        assert.equal(rosterReads(), initialReads + 1);
+        assert.doesNotMatch(
+          await page.locator("#dashboardMemberCards").innerText(),
+          /68 kg|Height: 170|Body fat: 21|Age: 30/,
+        );
+        assert.equal(
+          await page
+            .getByRole("button", {
+              name: "About body fat estimate for Synthetic Ada",
+            })
+            .count(),
+          0,
+        );
+        assert.equal(await page.locator(".dashboard-member-pin").count(), 0);
+        assert.equal(
+          await page.locator(".dashboard-event-dot").count(),
+          7,
+          "transient roster failure does not erase the independently authorized ledger",
+        );
+        // Recover with a fresh authorized scope before testing denial cleanup.
+        status = 200;
+        await reload();
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMemberCards")
+            ?.textContent?.includes("68 kg"),
+        );
+        assert.equal(rosterReads(), initialReads + 2);
+        status = denial;
+        await reload();
+        await page.waitForFunction(
+          (status) =>
+            document
+              .querySelector("#dashboardMapStatus")
+              ?.textContent?.includes(`roster access denied (${status})`),
+          denial,
+        );
+        assert.equal(rosterReads(), initialReads + 3);
+        assert.equal(await page.locator(".dashboard-member-pin").count(), 0);
+        assert.doesNotMatch(
+          await page.locator("#dashboardMemberCards").innerText(),
+          /68 kg/,
+        );
+        assert.equal(
+          await page.locator(".dashboard-event-dot").count(),
+          7,
+          "separately authorized ledger remains independent",
+        );
+      },
+      {
+        override: (url) =>
+          url.pathname === "/api/dashboard/members"
+            ? { status, body: status === 200 ? { members } : {} }
+            : undefined,
+      },
+    );
+  });

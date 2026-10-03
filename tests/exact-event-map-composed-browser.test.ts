@@ -130,7 +130,7 @@ test("served exact map composes native civil-date navigation, decoded 512 roster
           await page.getByLabel("Day of month", { exact: true }).inputValue(),
           "28",
         );
-        assert.equal(await page.locator(".dashboard-day-tick").count(), 30);
+        assert.equal(await page.locator("#dashboardMapDay option").count(), 30);
         const group = page.locator('.dashboard-map-group[data-count="3"]');
         await group.click();
         await page

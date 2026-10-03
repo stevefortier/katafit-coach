@@ -1125,24 +1125,31 @@ header {
 .dashboard-map-date {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   justify-items: center;
   margin-bottom: 12px;
   min-width: 0;
 }
 .dashboard-date-selects {
-  display: flex;
-  gap: 8px;
-  max-width: 100%;
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr) 44px;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
 }
 .dashboard-date-selects label {
+  margin: 0;
+  min-width: 0;
   display: grid;
   gap: 4px;
   font-size: 12px;
 }
 .dashboard-date-selects select {
+  padding: 6px 3px;
+  font-size: 14px;
   margin: 0;
-  width: auto;
+  width: 100%;
   min-width: 0;
   border-radius: 0;
 }
@@ -1152,84 +1159,25 @@ header {
 }
 .dashboard-day-navigation {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 36px;
-  align-items: start;
-  gap: 8px;
-  width: 100%;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: end;
+  gap: 4px;
+  /* Leave room for full month names with wider Linux system-ui metrics,
+     without compressing the native year/day controls or flanking arrows. */
+  width: 320px;
+  max-width: 100%;
   min-width: 0;
 }
 .dashboard-day-navigation button {
-  width: 36px;
+  width: 28px;
   min-height: 36px;
   padding: 4px;
 }
-.dashboard-day-track {
-  min-width: 0;
-}
-.dashboard-day-track input {
-  display: block;
-  width: 100%;
-  padding: 0;
-  margin: 0;
-  min-width: 0;
-  height: 32px;
-  accent-color: currentColor;
-  cursor: pointer;
-  appearance: none;
-  border: 0;
-  background: transparent;
-}
-.dashboard-day-track input::-webkit-slider-runnable-track {
-  height: 2px;
-  background: currentColor;
-}
-.dashboard-day-track input::-webkit-slider-thumb {
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  margin-top: -7px;
-  border-radius: 0;
-  background: currentColor;
-}
-.dashboard-day-track input::-moz-range-track {
-  height: 2px;
-  background: currentColor;
-}
-.dashboard-day-track input::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
-  border: 0;
-  border-radius: 0;
-  background: currentColor;
-}
-.dashboard-day-ticks {
-  display: flex;
-  justify-content: space-between;
-  margin: 0 8px;
-}
-.dashboard-day-tick {
-  position: relative;
-  width: 1px;
-  height: 5px;
-  background: currentColor;
-}
-.dashboard-day-tick span {
-  position: absolute;
-  top: 6px;
-  transform: translateX(-50%);
-  font-size: 10px;
-  white-space: nowrap;
-  word-break: normal;
-  overflow-wrap: normal;
-}
-.dashboard-day-track {
-  padding-bottom: 24px;
-}
 @media (max-width: 480px) {
-  .dashboard-day-tick:not(:first-child):not(:last-child):not(:nth-child(5n))
-    span,
-  .dashboard-day-tick:nth-last-child(-n + 3):not(:last-child) span {
-    display: none;
+  .dashboard-day-navigation {
+    /* Reclaim the panel gutter without clipping long native month labels. */
+    width: min(320px, calc(100vw - 24px));
+    max-width: none;
   }
 }
 .dashboard-date-fallback {
