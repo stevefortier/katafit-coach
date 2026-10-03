@@ -680,12 +680,18 @@ export async function runAcceptance(): Promise<AcceptanceReceipt> {
     await b.close();
     b = undefined;
     assert.ok(image);
-    const typed = await typedAcceptance(image);
+    const typed = await typedAcceptance(image, "personal");
     await writeFile(
       evidence + "/typed-provider-payloads.json",
       JSON.stringify(typed.providerPayloads, null, 2),
     );
     receipt.phases.push({ name: "typed-nutrition", ...typed });
+    await save();
+    const concurrentTyped = await typedAcceptance(image, "dojo");
+    receipt.phases.push({
+      name: "native-concurrent-typed",
+      ...concurrentTyped,
+    });
     receipt.status = "mechanism-passed";
   } catch (error) {
     receipt.status = "failed";

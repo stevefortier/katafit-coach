@@ -29,5 +29,17 @@ test(
       24,
       "supported action needs canonical independent readback",
     );
+    const concurrent = receipt.phases.find(
+      (p: any) => p.name === "native-concurrent-typed",
+    );
+    assert.ok(concurrent?.passed);
+    assert.match(
+      concurrent.coordination,
+      /real typed Worker.*real scheduled native cycle/,
+    );
+    assert.equal(concurrent.action.kind, "member_message");
+    assert.equal(concurrent.cycleCompletion.status, "completed");
+    assert.equal(concurrent.cycleCompletion.completions.length, 1);
+    assert.ok(concurrent.dynamicMemory.populated);
   },
 );

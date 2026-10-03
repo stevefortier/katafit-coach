@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../../src/config/store.js";
@@ -13,10 +14,14 @@ import { answer, toolCall } from "./continuity.js";
  * Only the loopback provider's model policy is synthetic. No fixture-held lane,
  * host Agent, scripted Pi RPC peer, or injected completion implementation.
  */
-export async function typedAcceptance(image: string) {
+export async function typedAcceptance(
+  image: string,
+  scope: "personal" | "dojo" = "dojo",
+) {
   const b = await startTaskBackend();
   const home = await mkdtemp(tmpdir() + "/installed-native-typed-");
   let app: Awaited<ReturnType<typeof admin>> | undefined;
+  let liveWork: any;
   const bodies: any[] = [],
     plannerBodies: any[] = [];
   let failure: Error | undefined;
@@ -122,15 +127,24 @@ export async function typedAcceptance(image: string) {
         return void res.end(
           toolCall(
             "katafit_rest_request",
-            {
-              method: "PUT",
-              path: "/api/users/me/rest-days",
-              body: { per_year: 24 },
-            },
+            scope === "personal"
+              ? {
+                  method: "PUT",
+                  path: "/api/users/me/rest-days",
+                  body: { per_year: 24 },
+                }
+              : {
+                  method: "POST",
+                  path: "/api/coach/member-messages/" + String(b.user),
+                  body: { text: "Synthetic native task message." },
+                },
             "supported-action",
           ),
         );
-      assert.doesNotMatch(results[7], /tool failed|unknown|denied/i);
+      assert.doesNotMatch(
+        results[7],
+        /tool failed|unknown|denied|error|unavailable|unsupported/i,
+      );
       res.end(
         answer(
           JSON.stringify({
@@ -152,8 +166,8 @@ export async function typedAcceptance(image: string) {
     );
     await b.withTargets();
     await b.lunch();
+    const concurrent = scope === "dojo" ? await b.autonomyEvent() : undefined;
     await b.checkIn();
-    const concurrent = await b.autonomyEvent();
     const token = await b.credential(true);
     const memory = await fetch(b.origin + "/api/coach/memory", {
       method: "POST",
@@ -170,6 +184,19 @@ export async function typedAcceptance(image: string) {
     assert.equal(memory.status, 200, JSON.stringify(await memory.json()));
     const store = new Store(home);
     await store.init();
+    const savedSkill = store.skills.view("katafit-api");
+    await store.skills.save(
+      "katafit-api",
+      {
+        enabled: true,
+        purpose: savedSkill.skill!.purpose,
+        triggers: savedSkill.skill!.triggers,
+        instructions:
+          savedSkill.skill!.instructions +
+          "\nNative saved enabled skill marker: SYNTHETIC_SAVED_SKILL.",
+      },
+      savedSkill.revision,
+    );
     await store.save({
       ...store.publicConfig(),
       origin: b.origin,
@@ -185,18 +212,28 @@ export async function typedAcceptance(image: string) {
       apiKey: "synthetic-provider-key",
     });
     await provisionArtifact(home, process.cwd(), image);
-    await store.setAutonomyParticipate(true);
+    await store.setAutonomyParticipate(scope === "dojo");
     app = await admin(store, 0);
-    await Promise.race([
-      nativeProviderEntered,
-      new Promise<never>((_resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error("NATIVE_SCHEDULED_CYCLE_NOT_ENTERED")),
-          30000,
-        );
-        timer.unref();
-      }),
-    ]);
+    if (concurrent)
+      await Promise.race([
+        nativeProviderEntered,
+        new Promise<never>((_resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error("NATIVE_SCHEDULED_CYCLE_NOT_ENTERED")),
+            30000,
+          );
+          timer.unref();
+        }),
+      ]);
+    if (concurrent) {
+      liveWork = await b.db
+        .collection("coach_autonomy_work")
+        .findOne({ status: "running" });
+      assert.ok(
+        liveWork,
+        "held provider belongs to actual running backend scheduler work",
+      );
+    }
     const control = (path: string) =>
       fetch(app!.origin + path, {
         method: "POST",
@@ -210,20 +247,45 @@ export async function typedAcceptance(image: string) {
     const run = await control("/api/run");
     assert.equal(run.status, 200);
     const queuedDeadline = Date.now() + 10000;
-    while (!((await b.task())?.status === "working")) {
-      assert.ok(
-        Date.now() < queuedDeadline,
-        "actual installed typed Worker must claim/start while native cycle owns admission",
+    if (concurrent) {
+      while (true) {
+        const state: any = await (
+          await fetch(app.origin + "/api/status", {
+            headers: { authorization: "Bearer " + store.secrets.admin },
+          })
+        ).json();
+        if (state.state === "task-working") break;
+        if (Date.now() >= queuedDeadline) {
+          const task = await b.task();
+          const logs: any = await (
+            await fetch(app.origin + "/api/logs", {
+              headers: { authorization: "Bearer " + store.secrets.admin },
+            })
+          ).json();
+          console.log(
+            JSON.stringify({
+              workerState: state.state,
+              taskStatus: task?.status,
+              taskInvalidation: task?.invalidation,
+              diagnostics: logs,
+            }),
+          );
+        }
+        assert.ok(
+          Date.now() < queuedDeadline,
+          "actual installed typed Worker must enter generation while native cycle owns admission: " +
+            state.state,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(
+        bodies.length,
+        0,
+        "zero second provider execution while real native scheduler cycle is live",
       );
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(plannerBodies.length, 1);
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(
-      bodies.length,
-      0,
-      "zero second provider execution while real native scheduler cycle is live",
-    );
-    assert.equal(plannerBodies.length, 1);
     release();
     const doneDeadline = Date.now() + 30000;
     while ((await b.task())?.status !== "completed") {
@@ -237,6 +299,11 @@ export async function typedAcceptance(image: string) {
     await store.setAutonomyParticipate(false);
     if (failure) throw failure;
     assert.match(JSON.stringify(bodies[0]), /Native saved persona/);
+    assert.match(
+      JSON.stringify(bodies[0]),
+      /SYNTHETIC_SAVED_SKILL/,
+      "saved enabled skill customization reaches actual provider payload",
+    );
     assert.doesNotMatch(
       JSON.stringify(bodies[0]),
       /3000|daily_calories|protein_g/,
@@ -251,11 +318,63 @@ export async function typedAcceptance(image: string) {
       published[0].data.general_advice,
       "Your fetched target is 3000 kcal and 200 g protein. Synthetic lunch supplied 45 g protein.",
     );
-    const user = await b.db.collection("users").findOne({ _id: b.user });
-    assert.equal(user.rest_days_per_year, 24);
+    const canonicalTask = await b.task();
     const occurrences = await b.occurrences();
     assert.equal(occurrences.length, 1);
     assert.equal(occurrences[0].status, "succeeded");
+    let action: any;
+    if (scope === "personal") {
+      const user = await b.db.collection("users").findOne({ _id: b.user });
+      assert.equal(
+        user.rest_days_per_year,
+        24,
+        "supported personal policy action persisted",
+      );
+      const restDays: any = await (
+        await fetch(b.origin + "/api/users/me/rest-days", {
+          headers: { authorization: "Bearer " + token },
+        })
+      ).json();
+      assert.equal(
+        restDays.total,
+        24,
+        "backend-authorized canonical quota readback",
+      );
+      action = {
+        per_year: restDays.total,
+        storageScope: scope,
+        occurrence: occurrences[0],
+      };
+    } else {
+      const messages = (
+        await b.db.collection("coach_chats").find({ user_id: b.user }).toArray()
+      ).flatMap((chat: any) => chat.messages || []);
+      const exact = messages.filter(
+        (message: any) => message.text === "Synthetic native task message.",
+      );
+      assert.equal(
+        exact.length,
+        1,
+        "supported Dojo action has one exact canonical publication",
+      );
+      assert.equal(
+        occurrences[0].request_sha256,
+        createHash("sha256")
+          .update("Synthetic native task message.")
+          .digest("hex"),
+      );
+      assert.equal(
+        occurrences[0].receipt.message_id,
+        String(exact[0]._id),
+        "occurrence binds exact canonical publication ID",
+      );
+      action = {
+        kind: "member_message",
+        storageScope: scope,
+        occurrence: occurrences[0],
+        publication: exact[0],
+      };
+    }
     const memoryResult = bodies
       .flatMap((body) =>
         body.messages.filter(
@@ -266,27 +385,37 @@ export async function typedAcceptance(image: string) {
       .at(-1);
     assert.ok(memoryResult);
     assert.match(memoryResult, /Synthetic easy walk preference/);
-    const nativeWork = await b.db
-      .collection("coach_autonomy_work")
-      .findOne({ _id: new b.ObjectId(concurrent.work.id) });
-    assert.equal(
-      nativeWork?.status,
-      "completed",
-      "real live native cycle has exact canonical completion readback",
-    );
+    const nativeWork = concurrent
+      ? await b.db
+          .collection("coach_autonomy_work")
+          .findOne({ _id: liveWork._id })
+      : undefined;
+    if (concurrent)
+      assert.equal(
+        nativeWork?.status,
+        "completed",
+        "real live native cycle has exact canonical completion readback",
+      );
+    if (concurrent)
+      assert.equal(
+        nativeWork.completions.length,
+        1,
+        "one exact scheduler completion occurrence",
+      );
     return {
       passed: true,
       isolation:
         "installed default admin Worker and scheduler: protected image, network-none isolated Pi RPC; synthetic loopback provider policy only",
-      coordination:
-        "real typed Worker queued behind real scheduled native cycle on one installation, zero second provider execution before release",
+      coordination: concurrent
+        ? "real typed Worker queued behind real scheduled native cycle on one installation, zero second provider execution before release"
+        : "personal supported-action parity; no concurrent cycle claimed",
       dynamicMemory: {
         executed: true,
         populated: true,
         transport: "ordinary backend-authorized REST from request-scoped tool",
         result: memoryResult,
       },
-      action: { per_year: user.rest_days_per_year, occurrence: occurrences[0] },
+      action,
       generationInventory: [
         {
           kind: "daily_insight",

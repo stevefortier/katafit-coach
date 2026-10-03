@@ -16,7 +16,7 @@ import { classifyMemoryWrite } from "../memory/native.js";
 
 /**
  * Shared invocation capability (Steve's full-capability addendum). Every
- * in-process Pi invocation (typed tasks, worker chat requests) gets the same
+ * Pi invocation (typed tasks, worker chat requests) gets the same
  * real tools: API discovery and ordinary REST under the configured credential,
  * plus supported actions behind durable no-replay fences. Availability never
  * grants authority: the backend authorizes every request, and host-only,
@@ -432,13 +432,18 @@ export class InvocationCapability {
     fallback: Occurrence,
     status: Occurrence["status"],
   ): Occurrence {
+    // A transport-successful write is not a durably settled occurrence. If
+    // settlement was lost/rejected, preserve uncertainty instead of creating
+    // an in-memory success which a correction could use as canonical proof.
+    const fallbackStatus = status === "succeeded" ? "unknown" : status;
     const value =
       next && validOccurrence(next)
         ? next
         : ({
             ...fallback,
-            status,
-            resolution: status === "unknown" ? "unknown_no_replay" : "settled",
+            status: fallbackStatus,
+            resolution:
+              fallbackStatus === "unknown" ? "unknown_no_replay" : "settled",
           } as Occurrence);
     const index = this.known.findIndex((k) => k.slot === value.slot);
     if (index >= 0) this.known[index] = value;
@@ -493,10 +498,9 @@ export class InvocationCapability {
         "ARGUMENTS_REJECTED",
         "Send exactly {text}; the host supplies the delivery key.",
       );
-    const request_sha256 = digest({
-      recipient_id: this.o.recipient,
-      text: body.text,
-    });
+    // Canonical message publisher N1 binds SHA256(exact text), not a JSON
+    // envelope and not trimmed/normalized text. Recipient is bound separately.
+    const request_sha256 = createHash("sha256").update(body.text).digest("hex");
     const match = this.known.find(
       (o) =>
         o.action === "member_message" && o.request_sha256 === request_sha256,
@@ -564,6 +568,7 @@ export class InvocationCapability {
       opened,
       "succeeded",
     );
+    if (done.status !== "succeeded") this.uncertain();
     return text({
       status: "delivered",
       recipient_id: this.o.recipient,
@@ -632,13 +637,14 @@ export class InvocationCapability {
         );
         this.uncertain();
       }
-      this.record(
+      const done = this.record(
         await this.o.journal
           .settle(opened.slot, "succeeded")
           .catch(() => undefined),
         opened,
         "succeeded",
       );
+      if (done.status !== "succeeded") this.uncertain();
       return { content: result.content, details: {} };
     }
     if (!this.o.ledger || !this.o.ledgerSession) return this.unsupported();

@@ -216,10 +216,26 @@ export async function startTaskBackend() {
         await db
           .collection("users")
           .insertOne({ _id: member, name: "Synthetic concurrent member" });
-        await db.collection("dojos").insertOne({ _id: dojo, chief_id: user });
+        await db
+          .collection("dojos")
+          .insertOne({
+            _id: dojo,
+            chief_id: user,
+            external_coach_agent: { enabled: true },
+          });
         await db.collection("dojo_members").insertMany([
-          { dojo_id: dojo, user_id: user, role: "chief" },
-          { dojo_id: dojo, user_id: member, role: "member" },
+          {
+            dojo_id: dojo,
+            user_id: user,
+            role: "chief",
+            joined_at: new Date(Date.now() - 86400000),
+          },
+          {
+            dojo_id: dojo,
+            user_id: member,
+            role: "member",
+            joined_at: new Date(Date.now() - 86400000),
+          },
         ]);
         const jwt = require("jsonwebtoken");
         const human = jwt.sign(
@@ -258,6 +274,7 @@ export async function startTaskBackend() {
           mandate: {
             ...policy,
             mode: "observe",
+            timezone: "UTC",
             delegated_actions: ["manager_report", "follow_up"],
             digest: { ...policy.digest, enabled: false },
           },
