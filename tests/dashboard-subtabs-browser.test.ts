@@ -232,6 +232,9 @@ test("served Dojo subtabs preserve scope, keyboard selection and map return geom
     assert.equal(await map.isVisible(), false);
     assert.equal(await page.locator("#dashboardMapYear").isVisible(), false);
     await page.keyboard.press("End");
+    assert.ok(await page.locator("#dashboardStatsPane").isVisible());
+    assert.equal(await olderActivities.isVisible(), false);
+    await page.keyboard.press("ArrowLeft");
     assert.ok(await gallery.isVisible());
     assert.equal(
       await olderActivities.isVisible(),

@@ -149,7 +149,32 @@
               >
                 Gallery
               </button>
+              <button
+                id="dashboard-stats-tab"
+                type="button"
+                role="tab"
+                aria-controls="dashboardStatsPane"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Stats
+              </button>
             </nav>
+            <section
+              id="dashboardStatsPane"
+              role="tabpanel"
+              aria-labelledby="dashboard-stats-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Stats</h2>
+              <p class="muted">
+                Canonical per-member history. Missing or private sources are
+                unavailable, never zero.
+              </p>
+              <div id="dashboardStats"></div>
+            </section>
             <section
               id="dashboardMapPane"
               role="tabpanel"
@@ -1260,6 +1285,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
     <script src="/terminal.js"></script>
     <script src="/backend-performance.js"></script>
     <script src="/leaflet.js"></script>
+    <script src="/stats.js"></script>
     <script src="/dashboard.js"></script>
     <script src="/app.js"></script>
   </body>

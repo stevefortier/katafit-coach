@@ -5,6 +5,7 @@ window.CoachDashboard = (() => {
   const subtabs = [
     ...($("dashboardSubtabs")?.querySelectorAll('[role="tab"]') || []),
   ];
+  let stats = null;
   function selectPane(tab, focus = false) {
     for (const item of subtabs) {
       const selected = item === tab;
@@ -14,6 +15,7 @@ window.CoachDashboard = (() => {
       $(item.getAttribute("aria-controls")).hidden = !selected;
     }
     closeMemberTooltip();
+    if (tab.id === "dashboard-stats-tab") stats?.select();
     if (focus) tab.focus();
   }
   for (const tab of subtabs) {
@@ -315,6 +317,8 @@ window.CoachDashboard = (() => {
     sync();
   }
   function clear() {
+    stats?.clear();
+    stats = null;
     clearGallery();
     clearGallery = () => {};
     filterGallery = () => {};
@@ -585,6 +589,7 @@ window.CoachDashboard = (() => {
     // Keep the selected offscreen member in view across selection/cache renders;
     // the browser clamps naturally if an authorization denial shrinks the rail.
     rail.scrollLeft = rosterScrollLeft;
+    stats?.select();
   }
   function svg(tag, attributes) {
     const node = document.createElementNS(svgNS, tag);
@@ -2856,6 +2861,20 @@ window.CoachDashboard = (() => {
   async function load(_api, adminKey) {
     clear();
     controller = new AbortController();
+    stats = window.CoachStats?.attach({
+      host: $("dashboardStats"),
+      request: (path, signal) =>
+        dashboardFetch(path, {
+          headers: { Authorization: "Bearer " + adminKey },
+          signal,
+          cache: "no-store",
+          redirect: "error",
+        }),
+      getMembers: () =>
+        [...mapMembers.values()].filter((m) => !suppressedMembers.has(m._id)),
+      getSelected: () => selectedMember,
+      onDenial: (id) => forgetMember(id),
+    });
     loadRoster(adminKey);
     if ($("dashboardMapDate")?.type === "date") {
       const dateInput = $("dashboardMapDate");
