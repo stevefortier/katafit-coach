@@ -131,7 +131,7 @@ test("confirmed quiesce closes a starting Pi under the admission fence", async (
   }
 });
 
-test("confirmed manual update closes a starting Pi after source validation", async () => {
+test("confirmed manual update waits for supported native session teardown after source validation", async () => {
   const h = held();
   heldStartup = h;
   const f = await fixture();
@@ -160,7 +160,22 @@ test("confirmed manual update closes a starting Pi after source validation", asy
     pending = post("/api/update/apply", { confirm: true, sha: updates.latest });
     const response = await pending;
     assert.equal(response.status, 202);
+    const queued = await (
+      await fetch(app.origin + "/api/update", { headers })
+    ).json();
+    assert.equal(queued.manualQueue.phase, "waiting-native");
+    assert.equal(
+      ws.readyState,
+      WebSocket.OPEN,
+      "queue does not abort native startup",
+    );
+    assert.equal(updates.snapshot().lastOperation, undefined);
+    // Explicit human lifecycle action, not an upgrade-owned interrupt.
+    assert.equal((await post("/api/terminal/stop")).status, 200);
     assert.equal(await starting.closed, 1008);
+    for (let i = 0; i < 100 && updates.installed !== updates.latest; i++)
+      await new Promise((r) => setTimeout(r, 20));
+    assert.equal(updates.installed, updates.latest);
     assert.equal(updates.lastOperation?.sha, updates.latest);
   } finally {
     h.release();
@@ -342,8 +357,27 @@ async function confirmedUpgrade(
     body: JSON.stringify({ sha: target, confirm: true }),
   });
   assert.equal(response.status, 202, await response.text());
-  for (let i = 0; i < 200 && s.owner.updates.applying; i++)
+  // Manual intent waits for an active/starting native session, without
+  // interrupting it. Close it using the supported human Stop lifecycle.
+  assert.equal(
+    (
+      await fetch(s.owner.origin + "/api/terminal/stop", {
+        method: "POST",
+        headers: s.headers,
+        body: "{}",
+      })
+    ).status,
+    200,
+  );
+  for (let i = 0; i < 200; i++) {
+    if (
+      s.owner.updates.lastOperation?.sha === target &&
+      !s.owner.updates.applying
+    )
+      break;
     await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.equal(s.owner.updates.lastOperation?.sha, target);
   assert.equal(s.owner.updates.applying, false);
 }
 

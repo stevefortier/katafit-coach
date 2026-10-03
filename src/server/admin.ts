@@ -345,11 +345,35 @@ export async function admin(
         reason: keyof typeof admissionHelp;
       }
     | undefined;
+  // Waiting intent is child/process-local. The stable owner's durable operation
+  // and resume journal begin only after verified drain/Stop and apply acceptance.
+  let manualQueue:
+    | {
+        id: string;
+        sha: string;
+        phase:
+          | "waiting-worker"
+          | "waiting-publication"
+          | "waiting-native"
+          | "stopping"
+          | "installing"
+          | "accepted"
+          | "cancelled"
+          | "failed";
+        persistence: "process-local";
+        wasRunning: boolean;
+        reason?: string;
+      }
+    | undefined;
+  let manualQueueController: AbortController | undefined;
+  let manualQueueDone = Promise.resolve();
+  const queueActive = () => !!manualQueueController;
   const updateSnapshot = async () => {
     const state = updates.snapshot();
     return {
       ...state,
       lastAdmission,
+      manualQueue,
       ...(lastAdmission &&
       !state.preparing &&
       !state.applying &&
@@ -1061,6 +1085,27 @@ export async function admin(
         !["/api/stop", "/api/cancel", "/api/shutdown"].includes(path)
       )
         throw new SafeError("CONFIGURATION_STATE_UNCONFIRMED");
+      if (path === "/api/update/cancel") {
+        if (
+          !manualQueue ||
+          body.id !== manualQueue.id ||
+          Object.keys(body).join(",") !== "id"
+        )
+          return send(409, { error: "QUEUE_ID_MISMATCH" });
+        if (!queueActive() || !manualQueue.phase.startsWith("waiting-"))
+          return send(409, { error: "UPDATE_ALREADY_ADMITTED" });
+        manualQueueController!.abort();
+        await manualQueueDone;
+        return send(200, { ok: true, manualQueue });
+      }
+      if (
+        queueActive() &&
+        path === "/api/update/apply" &&
+        body.confirm === true &&
+        body.sha === manualQueue!.sha &&
+        Object.keys(body).sort().join(",") === "confirm,sha"
+      )
+        return send(202, { ok: true, queued: true, id: manualQueue!.id });
       if (["/api/update/auto", "/api/update/auto/quiesce"].includes(path))
         return send(410, { error: "AUTOMATIC_UPDATES_REMOVED" });
       // Legacy release is recovery-only; it grants no installation authority.
@@ -1278,6 +1323,14 @@ export async function admin(
           return send(400, { error: e.message });
         }
         const wasRunning = !!worker && worker.state !== "stopped";
+        const admissionWorker = worker;
+        const admissionScope = () =>
+          JSON.stringify([
+            store.publicConfig().revision,
+            store.skills.runtime().revision,
+            store.secrets,
+          ]);
+        const capturedScope = admissionScope();
         if (wasRunning && updates.snapshot().preparationSupported !== true)
           return send(409, {
             error: "LAUNCHER_UPGRADE_REQUIRED",
@@ -1322,69 +1375,146 @@ export async function admin(
         };
         // Preparation can be slow. Recheck every mutable admission condition
         // before fencing claims or stopping a running worker.
-        if (updateQuiesced || busy || preview || updates.recovering) {
+        if (
+          updateQuiesced ||
+          busy ||
+          preview ||
+          updates.recovering ||
+          closing ||
+          worker !== admissionWorker ||
+          admissionScope() !== capturedScope ||
+          (!!worker && worker.state !== "stopped") !== wasRunning
+        ) {
           await cancelPrepared("OPERATION_IN_PROGRESS");
           return send(409, {
             error: "OPERATION_IN_PROGRESS",
             hint: "Finish or cancel the other operation, then retry the upgrade.",
           });
         }
-        // Reject before native teardown or irreversible Worker.stop().
-        if (
-          worker &&
-          (!worker.safeToReplace || (!wasRunning && !worker.stopConfirmed))
-        ) {
+        if (wasRunning && !updates.snapshot().manualRestartSupported) {
+          await cancelPrepared("LAUNCHER_UPGRADE_REQUIRED");
+          return send(409, { error: "LAUNCHER_UPGRADE_REQUIRED" });
+        }
+        if (worker?.state === "stopped" && !worker.stopConfirmed) {
           await cancelPrepared("WORKER_STOP_UNCONFIRMED");
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
         }
-        if (wasRunning && !updates.snapshot().manualRestartSupported) {
-          await cancelPrepared("LAUNCHER_UPGRADE_REQUIRED");
-          return send(409, {
-            error: "LAUNCHER_UPGRADE_REQUIRED",
-            hint: "This older launcher cannot preserve running Coach across a manual update. Nothing was stopped or applied. Replace the stable launcher with a reviewed current build using the same Coach home; settings and preview restarts do not need this upgrade.",
-          });
-        }
-        // The confirmed upgrade closes Pi after the candidate is prepared.
-        // busy fences new native tickets before teardown; stop closes the
-        // gateway and reconciles its action journal before owner acceptance.
-        if (wasRunning && !worker!.quiesceForUpdate()) {
+        // The reservation and admin/native admission fence are synchronous:
+        // existing claims finish, but neither another claim nor another admin
+        // mutation can cross this boundary while we await their receipts.
+        if (
+          worker &&
+          worker.state !== "stopped" &&
+          !worker.reserveForManualUpdate()
+        ) {
           await cancelPrepared("UPDATE_BUSY");
-          return send(409, {
-            error: "UPDATE_BUSY",
-            hint: admissionHelp.UPDATE_BUSY,
-          });
+          return send(409, { error: "UPDATE_BUSY" });
         }
         busy = true;
-        try {
-          await terminal.stop();
-          if (!terminal.idle) throw new Error("WORKER_STOP_UNCONFIRMED");
-          if (wasRunning) await worker!.stop();
-          if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
-            throw new SafeError("WORKER_STOP_UNCONFIRMED");
-          void updates.apply(body.sha, wasRunning).catch(() => {});
-          prepared = false;
-          await updates.accepted;
-          lastAdmission = undefined;
-        } catch (error) {
-          await cancelPrepared();
-          if (
-            wasRunning &&
-            !updates.applying &&
-            worker?.presence !== "unconfirmed" &&
-            worker?.safeToReplace
-          )
-            await startWorker().catch(() => {});
-          if (error instanceof SafeError)
-            return send(400, { error: error.code, hint: error.hint });
-          return send(503, {
-            error: "UPDATE_NOT_ACCEPTED",
-            hint: "Could not persist the update request. Check protected home storage.",
+        const controller = new AbortController();
+        manualQueueController = controller;
+        const queued: NonNullable<typeof manualQueue> = (manualQueue = {
+          id: ref,
+          sha: body.sha,
+          phase: "waiting-worker" as NonNullable<typeof manualQueue>["phase"],
+          persistence: "process-local" as const,
+          wasRunning,
+        });
+        const wait = () =>
+          new Promise<void>((resolve, reject) => {
+            const abort = () => {
+              clearTimeout(timer);
+              reject(new SafeError("CANCELLED"));
+            };
+            const timer = setTimeout(() => {
+              controller.signal.removeEventListener("abort", abort);
+              resolve();
+            }, 250);
+            controller.signal.addEventListener("abort", abort, { once: true });
+            if (controller.signal.aborted) abort();
           });
-        } finally {
-          worker?.releaseUpdateQuiesce();
-          busy = false;
-        }
-        return send(202, { ok: true });
+        manualQueueDone = (async () => {
+          try {
+            if (wasRunning) {
+              let drained = false;
+              const drain = worker!.drainForUpdate().then(() => {
+                drained = true;
+              });
+              // Observe rejection even if cancellation wins; never cancel the
+              // accepted execution just because waiting intent was cancelled.
+              void drain.catch(() => {});
+              while (!drained) {
+                await Promise.race([drain, wait()]);
+              }
+            }
+            controller.signal.throwIfAborted();
+            queued.phase = "waiting-publication";
+            let nextReceiptPass = 0;
+            while (worker && !worker.safeToReplace) {
+              if (Date.now() >= nextReceiptPass) {
+                nextReceiptPass = Date.now() + 60000;
+                await worker.reconcilePublications(true).catch(() => {});
+              }
+              if (!worker.safeToReplace) await wait();
+              controller.signal.throwIfAborted();
+            }
+            queued.phase = "waiting-native";
+            // No reliable PTY turn-complete signal exists. Never infer completion
+            // from silence or stop a running native turn. Wait for supported
+            // session teardown (human Stop/normal exit), including its journal.
+            while (!terminal.idle) await wait();
+            controller.signal.throwIfAborted();
+            updates.validatePrepared(queued.sha);
+            queued.phase = "stopping"; // Cancel is now refused, before any await.
+            await terminal.stop();
+            if (!terminal.idle) throw new SafeError("WORKER_STOP_UNCONFIRMED");
+            if (wasRunning) await worker!.stop();
+            if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+              throw new SafeError("WORKER_STOP_UNCONFIRMED");
+            queued.phase = "installing";
+            const previousAcceptance = updates.accepted;
+            const applying = updates.apply(queued.sha, wasRunning, prepared);
+            void applying.catch(() => {});
+            if (updates.accepted === previousAcceptance) {
+              // A validation rejection before a fresh owner RPC/journal must
+              // not be mistaken for the previous operation's resolved receipt.
+              await applying;
+              throw new Error("UPDATE_NOT_ACCEPTED");
+            }
+            await updates.accepted;
+            prepared = false;
+            lastAdmission = undefined;
+            queued.phase = "accepted";
+          } catch (error) {
+            queued.phase = controller.signal.aborted ? "cancelled" : "failed";
+            queued.reason = controller.signal.aborted
+              ? "CANCELLED"
+              : error instanceof SafeError &&
+                  error.code === "WORKER_STOP_UNCONFIRMED"
+                ? "WORKER_STOP_UNCONFIRMED"
+                : "UPDATE_NOT_ACCEPTED";
+            if (controller.signal.aborted) {
+              if (prepared)
+                await updates.cancelPreparation(queued.sha).catch(() => {});
+              prepared = false;
+            } else await cancelPrepared();
+            // Never replace a worker with unresolved publication/presence.
+            if (
+              wasRunning &&
+              worker?.state === "stopped" &&
+              worker.stopConfirmed &&
+              worker.safeToReplace &&
+              !updates.applying &&
+              !closing
+            )
+              await startWorker().catch(() => {});
+          } finally {
+            worker?.releaseUpdateQuiesce();
+            manualQueueController = undefined;
+            busy = false;
+          }
+        })();
+        return send(202, { ok: true, queued: true, id: queued.id });
       }
       if (path === "/api/shutdown" && onShutdown) {
         await terminal.stop();
@@ -1693,6 +1823,8 @@ export async function admin(
     origin,
     async close() {
       closing = true;
+      manualQueueController?.abort();
+      await manualQueueDone;
       preview?.abort();
       await lifecycleDone;
       await previewDone;

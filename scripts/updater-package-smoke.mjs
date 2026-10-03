@@ -181,7 +181,9 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       if (
         lastState &&
         !lastState.applying &&
-        lastState.lastOperation?.state === "failed"
+        lastState.lastOperation?.state === "failed" &&
+        lastState.lastOperation.sha === lastState.latest &&
+        !lastState.manualQueue?.phase?.startsWith("waiting-")
       )
         break;
       await sleep(100);
