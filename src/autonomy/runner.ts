@@ -189,8 +189,10 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
           recovered.push(sent.receipt);
         }
       } catch (error) {
-        if (isUnknown(error)) uncertain = true;
-        else if (
+        if (isUnknown(error)) {
+          uncertain = true;
+          break;
+        } else if (
           error instanceof AutonomyFailure &&
           (VISIBLE_REFUSALS as readonly string[]).includes(error.code)
         )
@@ -217,7 +219,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     if (work.kind === "digest") {
       digest = await digestFacts(backend, work);
       signal.throwIfAborted();
-      if (digestEmpty(digest) && mandate.digest.suppress_empty) {
+      if (!uncertain && digestEmpty(digest) && mandate.digest.suppress_empty) {
         const final: CycleOutcome = {
           result: "completed",
           coverage: {
@@ -247,6 +249,11 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     // Backend refusals and unresolved writes are visible tool results the
     // planner adapts to; an unresolved write also blocks the work.
     const visible = async <T>(op: () => Promise<T>) => {
+      if (uncertain)
+        return {
+          error: "AUTONOMY_OUTCOME_UNKNOWN",
+          note: "A prior write remains unknown. No new action or composition is admitted; only terminal uncertain_write reporting is allowed.",
+        };
       try {
         return await op();
       } catch (error) {

@@ -86,6 +86,10 @@ class TrackedBackend extends AutonomyBackend {
   readonly dispatched = new Set<string>();
   binding?: Binding;
   cycle?: AbortSignal;
+  admitted?: { work_id: string; lease_generation: number; terminal: boolean };
+  // Serialize only durable admission, not network requests. Already dispatched
+  // operations drain normally; aborting them would manufacture more unknowns.
+  private admission: Promise<unknown> = Promise.resolve();
   onUnknown = () => {};
   constructor(
     origin: string,
@@ -108,32 +112,88 @@ class TrackedBackend extends AutonomyBackend {
   ): Promise<T> {
     const binding = this.binding;
     if (!binding) throw new AutonomyFailure("AUTONOMY_UNAVAILABLE");
-    let entry: { id: string; existing: boolean };
-    try {
-      entry = await this.ledger.begin({
-        op: e.op,
-        origin: this.origin,
-        chief_id: binding.chief_id,
-        dojo_id: binding.dojo_id,
-        mandate_id: binding.mandate_id,
-        installation: this.installation,
-        work_id: e.work_id,
-        lease_generation: e.lease_generation,
-        slot: e.slot,
-        follow_up_id: e.follow_up_id,
-        digest: ledgerDigest(e.method, e.path, e.body),
-        expect: e.expect,
-      });
-    } catch {
-      // Not durably recorded: nothing may be sent.
-      throw new AutonomyFailure("AUTONOMY_UNAVAILABLE");
-    }
-    if (this.scope.aborted) {
-      if (!entry.existing) await this.ledger.resolve(entry.id).catch(() => {});
-      this.scope.throwIfAborted();
-    }
-    this.inflight++;
-    this.dispatched.add(entry.id);
+    const admit = async () => {
+      const protectedWrites = (except?: string) =>
+        this.ledger.unresolved.filter(
+          (record) =>
+            record.id !== except &&
+            (record.state === "unknown" || !this.dispatched.has(record.id)),
+        );
+      const permits = (records: ReturnType<typeof protectedWrites>) => {
+        if (
+          !this.ledger.healthy ||
+          (e.op === "complete" && this.admitted?.terminal)
+        )
+          return false;
+        if (!records.length) return true;
+        const admitted = this.admitted;
+        const outcome = (
+          e.body as {
+            outcome?: {
+              result?: string;
+              blocked_reason?: string;
+              decisions?: unknown[];
+            };
+          }
+        ).outcome;
+        return (
+          !!admitted &&
+          !admitted.terminal &&
+          e.op === "complete" &&
+          e.work_id === admitted.work_id &&
+          e.lease_generation === admitted.lease_generation &&
+          outcome?.result === "blocked" &&
+          outcome.blocked_reason === "uncertain_write" &&
+          outcome.decisions?.length === 0 &&
+          records.every(
+            (record) =>
+              record.op !== "complete" &&
+              record.work_id === admitted.work_id &&
+              record.lease_generation === admitted.lease_generation,
+          )
+        );
+      };
+      if (!permits(protectedWrites()))
+        throw new AutonomyFailure("AUTONOMY_OUTCOME_UNKNOWN");
+      let entry: { id: string; existing: boolean };
+      try {
+        entry = await this.ledger.begin({
+          op: e.op,
+          origin: this.origin,
+          chief_id: binding.chief_id,
+          dojo_id: binding.dojo_id,
+          mandate_id: binding.mandate_id,
+          installation: this.installation,
+          work_id: e.work_id,
+          lease_generation: e.lease_generation,
+          slot: e.slot,
+          follow_up_id: e.follow_up_id,
+          digest: ledgerDigest(e.method, e.path, e.body),
+          expect: e.expect,
+        });
+      } catch {
+        // Not durably recorded: nothing may be sent.
+        throw new AutonomyFailure("AUTONOMY_UNAVAILABLE");
+      }
+      // A running request may become unknown while begin fsyncs. Recheck
+      // immediately before dispatch; never remove an existing obligation.
+      if (entry.existing || !permits(protectedWrites(entry.id))) {
+        if (!entry.existing)
+          await this.ledger.resolve(entry.id).catch(() => {});
+        throw new AutonomyFailure("AUTONOMY_OUTCOME_UNKNOWN");
+      }
+      if (this.scope.aborted) {
+        await this.ledger.resolve(entry.id).catch(() => {});
+        this.scope.throwIfAborted();
+      }
+      if (e.op === "complete" && this.admitted) this.admitted.terminal = true;
+      this.inflight++;
+      this.dispatched.add(entry.id);
+      return entry;
+    };
+    const admission = this.admission.then(admit);
+    this.admission = admission.catch(() => {});
+    const entry = await admission;
     try {
       const value = await run();
       await this.ledger.resolve(entry.id).catch(() => {});
@@ -478,6 +538,11 @@ export class AutonomyHost {
         mandate_id: cycle.mandate.mandate_id,
       };
       backend.cycle = cycle.signal;
+      backend.admitted = {
+        work_id: cycle.work.id,
+        lease_generation: cycle.work.lease_generation,
+        terminal: false,
+      };
     }
     const lease = (this.options.scheduler?.leaseSeconds ?? 120) * 1000;
     const every = Math.min(
@@ -518,6 +583,7 @@ export class AutonomyHost {
       if (backend) {
         backend.binding = undefined;
         backend.cycle = undefined;
+        backend.admitted = undefined;
       }
       if (this.ledger?.unresolved.length) void this.reconcile().catch(() => {});
     }
