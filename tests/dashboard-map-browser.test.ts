@@ -85,8 +85,8 @@ test("a singleton canonical location fits at the practical maximum zoom", async 
       const center = await page.evaluate(() =>
         (window as any).fixtureMap.getCenter(),
       );
-      assert.equal(center.lat, 40.7);
-      assert.equal(center.lng, -73.9);
+      assert.ok(Math.abs(center.lat - 40.7) < 0.00001);
+      assert.ok(Math.abs(center.lng + 73.9) < 0.00001);
     },
     { events: ledger().slice(0, 1) },
   ));
@@ -244,6 +244,7 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
       timezoneId: "America/New_York",
       viewport: { width: 1440, height: 900 },
     });
+    await page.clock.setFixedTime(new Date("2026-12-01T12:00:00Z"));
     await page.goto(app.origin + "/dashboard");
     await page.evaluate(async (key) => {
       document.getElementById("studio")!.hidden = false;

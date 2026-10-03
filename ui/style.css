@@ -2350,3 +2350,362 @@ html.coach-covered #workspaceScroll {
 #dashboardPanel [role="tabpanel"][hidden] {
   display: none;
 }
+
+/* Compact event workspace: retained panes, one viewport owner. */
+header {
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-height: 52px;
+  padding-block: 4px;
+}
+header .brand {
+  flex: none;
+}
+#coachLauncher {
+  margin: 0;
+  flex: 0 1 auto;
+  max-width: 22%;
+}
+#noticeBar,
+#noticeBar[data-severity] {
+  position: static;
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 3px 6px;
+  max-height: 32px;
+  height: 32px;
+  border-width: 1px;
+  overflow: hidden;
+  cursor: pointer;
+}
+#noticeBar:not([data-severity]) {
+  visibility: hidden;
+}
+#noticeBar[data-severity] #noticeRegion {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+  height: 24px;
+}
+#noticeLabel {
+  flex: none;
+  font-size: 11px;
+}
+#noticeBar[data-severity] #notice {
+  flex: 1 1 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  max-height: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  text-align: center;
+}
+#noticeIcon {
+  flex: none;
+}
+#noticeBar:focus-visible {
+  outline: 2px solid currentColor;
+}
+#noticeDetails {
+  width: min(560px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--line);
+  padding: 16px;
+}
+#noticeDetailsText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.studio-tabs {
+  position: sticky;
+  top: var(--header-offset, 52px);
+  z-index: 10;
+  background: var(--panel);
+  margin-top: 0;
+}
+#dashboardMemberCards {
+  position: sticky;
+  top: calc(var(--header-offset, 52px) + var(--primary-tabs-height, 48px));
+  z-index: 9;
+  margin: 0;
+  padding: 0;
+  gap: 0;
+}
+.dashboard-member-rail {
+  padding: 0;
+  gap: 3px;
+  align-items: flex-start;
+}
+.dashboard-member-all {
+  flex: none;
+  width: max-content;
+  min-width: 0;
+  max-width: 68px;
+  margin: 0;
+  padding: 6px;
+  align-self: stretch;
+  white-space: pre-line;
+}
+.dashboard-member-all strong {
+  white-space: pre-line;
+}
+.dashboard-member-all {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--panel);
+}
+.dashboard-date-fallback:focus-within {
+  top: 100%;
+  bottom: auto;
+  z-index: 12;
+  width: min(160px, 100%);
+  padding: 2px;
+  height: 36px;
+}
+.dashboard-date-fallback input {
+  margin: 0;
+  padding: 2px;
+  height: 30px;
+}
+#dashboardSubtabs {
+  position: sticky;
+  top: calc(
+    var(--header-offset, 52px) + var(--primary-tabs-height, 48px) +
+      var(--roster-height, 134px)
+  );
+  z-index: 8;
+  background: var(--panel);
+  margin: 0;
+  gap: 2px;
+}
+.dashboard-map-date {
+  margin: 0;
+  padding: 2px 0;
+  display: block;
+  position: relative;
+}
+.dashboard-day-navigation {
+  display: flex;
+  justify-content: center;
+  gap: 3px;
+}
+.dashboard-map-date button {
+  margin: 0;
+  min-height: 36px;
+  padding: 4px 8px;
+}
+#dashboardCalendarButton {
+  font-size: 13px;
+  white-space: nowrap;
+  min-width: 0;
+  width: auto;
+  flex: 0 1 auto;
+}
+.dashboard-day-navigation {
+  width: 100%;
+  max-width: 100%;
+}
+header {
+  margin-bottom: 0;
+}
+#dashboardCalendar {
+  position: fixed;
+  margin: 0;
+  width: min(304px, calc(100vw - 8px));
+  max-height: calc(100dvh - 8px);
+  overflow: auto;
+  padding: 8px;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--line);
+  z-index: 20;
+}
+.dashboard-calendar-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.dashboard-calendar-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+  text-align: center;
+}
+.dashboard-calendar-days span {
+  font-size: 11px;
+}
+.dashboard-calendar-days button {
+  min-width: 0;
+  padding: 2px;
+  min-height: 34px;
+}
+.dashboard-calendar-days [aria-current="date"] {
+  outline: 2px solid #a8d8ff;
+  outline-offset: -3px;
+}
+.dashboard-calendar-days [aria-pressed="true"] {
+  background: #454545;
+}
+.dashboard-calendar-days :disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+html.compact-map,
+.compact-map body {
+  overflow: hidden;
+}
+.compact-map #workspaceScroll {
+  overflow: hidden;
+  height: 100dvh;
+}
+.compact-map #restartStatus:empty {
+  display: none;
+}
+.compact-map main {
+  margin-block: 0;
+  padding-block: 0;
+}
+.compact-map #dashboardPanel {
+  padding: 0;
+  margin-bottom: 0;
+}
+.compact-map #dashboardMapPane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  margin: 0;
+  min-height: 0;
+  overflow: visible;
+}
+.compact-map #dashboardMapStatus {
+  position: absolute;
+}
+.compact-map #dashboardMapStatus[data-tone="error"] {
+  position: absolute;
+  z-index: 7;
+  bottom: 0;
+  background: var(--panel);
+  max-height: 25%;
+  overflow: auto;
+}
+.compact-map #dashboardTimeline {
+  grid-row: 2;
+  margin: 0;
+  padding: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.compact-map .dashboard-map-layout {
+  grid-row: 3;
+  min-height: 0;
+  gap: 4px;
+  position: relative;
+}
+.compact-map .dashboard-map-column {
+  position: relative;
+  min-height: 0;
+}
+.compact-map #dashboardMap {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  aspect-ratio: auto;
+}
+.compact-map #dashboardMapSelection {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 30px 8px 8px;
+}
+#dashboardInspectorClose {
+  position: absolute;
+  right: 8px;
+  top: 2px;
+  z-index: 8;
+  margin: 0;
+  min-height: 28px;
+  padding: 2px 8px;
+}
+.compact-map .dashboard-map-chooser {
+  position: absolute;
+  inset: 4px;
+  z-index: 7;
+  margin: 0;
+  max-height: calc(100% - 8px);
+  overflow: auto;
+  background: var(--panel);
+}
+.compact-map .dashboard-timeline-toolbar,
+.compact-map .dashboard-timeline-legend {
+  gap: 3px;
+  margin: 2px 0;
+}
+.compact-map .dashboard-timeline-count {
+  margin-bottom: 3px;
+}
+.compact-map .dashboard-timeline-legend button,
+.compact-map .dashboard-timeline-toolbar button {
+  min-height: 28px;
+  padding: 2px 5px;
+  margin: 0;
+}
+@media (max-width: 700px) {
+  header .brand {
+    font-size: 11px;
+  }
+  header #state {
+    font-size: 9px;
+    padding: 3px;
+  }
+  header #lockStudio {
+    font-size: 10px;
+    padding: 3px;
+    min-height: 32px;
+  }
+  header #coachLauncher {
+    font-size: 12px;
+    padding: 4px;
+    min-height: 36px;
+  }
+  header:has(#coachLauncher:not([hidden])) .brand {
+    display: none;
+  }
+  #noticeLabel {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  #noticeIcon {
+    display: none !important;
+  }
+  #noticeBar,
+  #noticeBar[data-severity] {
+    padding-inline: 3px;
+  }
+  .compact-map .dashboard-map-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .compact-map #dashboardMapSelection {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(85%, 360px);
+    z-index: 7;
+    background: var(--panel);
+  }
+  .compact-map #dashboardMapSelection:empty {
+    display: none;
+  }
+}

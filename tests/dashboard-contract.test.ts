@@ -79,7 +79,9 @@ async function render(
     window: {},
     document: {
       getElementById: (id: string) =>
-        id === "dashboardGallery" ? null : (nodes[id] ||= new Node()),
+        ["dashboardGallery", "dashboardMapPane"].includes(id)
+          ? null
+          : (nodes[id] ||= new Node()),
       createElement: (tag: string) => new Node(tag),
       createElementNS: () => new Node(),
     },

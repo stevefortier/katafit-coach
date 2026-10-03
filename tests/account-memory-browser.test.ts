@@ -327,7 +327,10 @@ test("lost write responses are reconciled by exact receipt and resent only with 
     await page.locator("#memorySave").click();
     await page.locator("#memoryUncertain").waitFor({ state: "visible" });
     await page.locator("#memoryCheck").click();
-    await page.getByText(/Not saved as of now/).waitFor();
+    await page
+      .locator("#notice")
+      .filter({ hasText: /Not saved as of now/ })
+      .waitFor();
     await page.locator("#memoryResend").click();
     await page.locator("#memoryUncertain").waitFor({ state: "hidden" });
     await statusText(page, /^2 memories/);

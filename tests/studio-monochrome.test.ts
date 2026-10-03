@@ -446,10 +446,10 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           ".dashboard-map-date",
         )!;
         const dayTrack = document.querySelector<HTMLElement>(
-          ".dashboard-date-selects",
+          "#dashboardCalendarButton",
         )!;
         const selects = document.querySelector<HTMLElement>(
-          ".dashboard-date-selects",
+          "#dashboardCalendarButton",
         )!;
         const status = document.querySelector<HTMLElement>(
           "#dashboardMapStatus",
@@ -465,8 +465,8 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           .getBoundingClientRect();
         return {
           dateName: document
-            .querySelector<HTMLInputElement>("#dashboardMapDay")!
-            .getAttribute("aria-label"),
+            .querySelector<HTMLInputElement>("#dashboardCalendarButton")!
+            .getAttribute("aria-haspopup"),
           occurrenceLabel: document
             .querySelector('label[for="dashboardMapDate"]')
             ?.textContent?.replace(/\s+/g, " ")
@@ -481,6 +481,9 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
                 (dateBox.left + dateBox.right) / 2,
             ) < 2,
           gap: mapBox.top - dateBox.bottom,
+          timelineHeight: document
+            .querySelector("#dashboardTimeline")!
+            .getBoundingClientRect().height,
           aligned:
             dateBox.left >= layoutBox.left && dateBox.right <= layoutBox.right,
           statusWidth: status.getBoundingClientRect().width,
@@ -490,7 +493,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           overflow: document.documentElement.scrollWidth > innerWidth,
         };
       });
-      assert.equal(dojoShell.dateName, "Day of month");
+      assert.equal(dojoShell.dateName, "dialog");
       assert.ok(dojoShell.centered, "month/year pair is centered");
       // Map and timeline both place events by their own occurrence time.
       assert.match(
@@ -505,8 +508,8 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         JSON.stringify(dojoShell),
       );
       assert.ok(
-        dojoShell.gap >= 0 && dojoShell.gap <= 16,
-        "date stays next to map",
+        Math.abs(dojoShell.gap - dojoShell.timelineHeight) <= 2,
+        "date precedes the timeline-above-map workspace",
       );
       assert.ok(
         dojoShell.aligned && !dojoShell.overflow,

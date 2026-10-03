@@ -265,7 +265,18 @@ test(
           const pin = page.locator(
             `.dashboard-event-dot[data-event-id="${events[0]._id}"]`,
           );
-          await page.locator('.dashboard-map-group[data-count="2"]').click();
+          const openGroup = async (timeout = 30000) => {
+            const inspector = page.locator("#dashboardMapSelection");
+            if (await inspector.evaluate((node) => node.hasChildNodes())) {
+              // Close the phone overlay before an ordinary map-pointer action.
+              await page.locator("#dashboardInspectorClose").click();
+              assert.equal(await inspector.textContent(), "");
+            }
+            await page
+              .locator('.dashboard-map-group[data-count="2"]')
+              .click({ timeout });
+          };
+          await openGroup();
           await page
             .locator(`.dashboard-map-choice[data-event-id="${events[0]._id}"]`)
             .click();
@@ -280,9 +291,7 @@ test(
           );
           assert.equal(await pin.getAttribute("aria-pressed"), "true");
           // Reopen via an ordinary pointer click, not force or DOM click.
-          await page
-            .locator('.dashboard-map-group[data-count="2"]')
-            .click({ timeout: 3000 });
+          await openGroup(3000);
           await page
             .locator(`.dashboard-map-choice[data-event-id="${events[1]._id}"]`)
             .click();
@@ -317,7 +326,7 @@ test(
               .privacy_settings.position,
             [],
           );
-          await page.locator('.dashboard-map-group[data-count="2"]').click();
+          await openGroup();
           await page
             .locator(`.dashboard-map-choice[data-event-id="${events[0]._id}"]`)
             .click();

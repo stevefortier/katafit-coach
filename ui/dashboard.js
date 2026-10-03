@@ -6,6 +6,82 @@ window.CoachDashboard = (() => {
     ...($("dashboardSubtabs")?.querySelectorAll('[role="tab"]') || []),
   ];
   let stats = null;
+  // Scope the viewport lock to the visible map pane, never Gallery/Settings.
+  const mapPane = $("dashboardMapPane");
+  if (mapPane) {
+    let frame;
+    const layout = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const active = mapPane.getClientRects().length > 0;
+        const root = document.documentElement;
+        const changed = active !== root.classList.contains("compact-map");
+        root.classList.toggle("compact-map", active);
+        if (changed && active) {
+          window.scrollTo(0, 0);
+          $("workspaceScroll")?.scrollTo(0, 0);
+        }
+        const height = (selector) =>
+          document.querySelector(selector)?.getBoundingClientRect().height || 0;
+        root.style.setProperty("--header-offset", height("header") + "px");
+        root.style.setProperty(
+          "--primary-tabs-height",
+          height(".studio-tabs") + "px",
+        );
+        root.style.setProperty(
+          "--roster-height",
+          height("#dashboardMemberCards") + "px",
+        );
+        if (active)
+          mapPane.style.height =
+            Math.max(0, innerHeight - mapPane.getBoundingClientRect().top - 8) +
+            "px";
+      });
+    };
+    const observer = new ResizeObserver(layout);
+    for (const node of [
+      document.querySelector("header"),
+      document.querySelector(".studio-tabs"),
+      $("dashboardMemberCards"),
+      $("dashboardSubtabs"),
+    ])
+      if (node) observer.observe(node);
+    new MutationObserver(layout).observe($("workspaceScroll"), {
+      attributes: true,
+      attributeFilter: ["hidden"],
+      subtree: true,
+    });
+    addEventListener("resize", layout);
+    layout();
+    const inspector = $("dashboardMapSelection"),
+      close = $("dashboardInspectorClose");
+    const dismiss = () => {
+      selectionEpoch++;
+      inspector.replaceChildren();
+      close.hidden = true;
+      $("dashboardMap")
+        ?.querySelector('[aria-pressed="true"]')
+        ?.focus({ preventScroll: true });
+    };
+    if (close) {
+      close.onclick = dismiss;
+      close.onkeydown = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dismiss();
+        }
+      };
+      inspector.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dismiss();
+        }
+      });
+      new MutationObserver(() => {
+        close.hidden = !inspector.childNodes.length;
+      }).observe(inspector, { childList: true });
+    }
+  }
   function selectPane(tab, focus = false) {
     for (const item of subtabs) {
       const selected = item === tab;
@@ -173,149 +249,207 @@ window.CoachDashboard = (() => {
     return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   }
   function bindDateNavigation(adminKey) {
-    const input = $("dashboardMapDate");
-    const month = $("dashboardMapMonth")?.options
-        ? $("dashboardMapMonth")
-        : null,
-      year = $("dashboardMapYear")?.options ? $("dashboardMapYear") : null;
-    const day = $("dashboardMapDay");
-    const output = $("dashboardSelectedDate");
+    const input = $("dashboardMapDate"),
+      button = $("dashboardCalendarButton"),
+      calendar = $("dashboardCalendar");
     const previous = $("dashboardMapPrevious"),
       next = $("dashboardMapNext"),
       today = $("dashboardMapToday");
-    let committedDate = input.value;
     const loadId = epoch;
+    let committedDate = input.value,
+      displayedMonth = input.value.slice(0, 7);
     const live = () => loadId === epoch;
-    function parts() {
-      return input.value.split("-").map(Number);
-    }
+    const localToday = () => dateValue(new Date());
+    const close = () => {
+      if (calendar?.matches(":popover-open")) calendar.hidePopover();
+      button?.setAttribute("aria-expanded", "false");
+    };
     function sync() {
-      const [y, m, d] = parts();
-      if (!y || !m || !d) return;
-      const length = civilDate(y, m + 1, 0).getDate();
-      if (month) month.value = String(m);
-      if (
-        year &&
-        ![...year.options].some((option) => option.value === String(y))
-      ) {
-        const years = new Set(
-          [...year.options].map((option) => Number(option.value)),
-        );
-        for (let n = Math.max(1, y - 10); n <= Math.min(9999, y + 10); n++)
-          years.add(n);
-        year.replaceChildren(
-          ...[...years]
-            .sort((a, b) => a - b)
-            .map((n) => {
-              const option = text("option", String(n));
-              option.value = String(n);
-              return option;
-            }),
-        );
-      }
-      if (year) year.value = String(y);
-      if (day?.options) {
-        if (day.options.length !== length)
-          day.replaceChildren(
-            ...Array.from({ length }, (_, i) => {
-              const option = text("option", String(i + 1));
-              option.value = String(i + 1);
-              return option;
-            }),
-          );
-        day.value = String(d);
-      }
-      if (output)
-        output.textContent = civilDate(y, m, d).toLocaleDateString(undefined, {
+      input.max = localToday();
+      if (next) next.disabled = input.value >= input.max;
+      if (button) {
+        const [y, m, d] = input.value.split("-").map(Number);
+        button.textContent = civilDate(y, m, d).toLocaleDateString(undefined, {
           weekday: "long",
+          month: "short",
+          day: "numeric",
+          year: "numeric",
         });
+      }
     }
-    function commit(force = false) {
+    function commit(value, force = false) {
       if (!live()) return;
+      // Native entry, calendar, arrows and Today all share this admission fence.
+      if (!validDay(value) || value > localToday()) {
+        input.value = committedDate;
+        sync();
+        return;
+      }
+      input.value = value;
       sync();
-      if (!force && input.value === committedDate) return;
-      committedDate = input.value;
+      if (!force && value === committedDate) return;
+      committedDate = value;
       void loadMap(adminKey);
     }
     function stepDay(amount) {
-      if (!live()) return;
-      const [y, m, d] = parts();
+      const [y, m, d] = input.value.split("-").map(Number);
       const date = civilDate(y, m, d);
       date.setDate(date.getDate() + amount);
       if (date.getFullYear() < 1 || date.getFullYear() > 9999) return;
-      input.value = dateValue(date);
-      commit();
+      commit(dateValue(date));
     }
-    function changePeriod() {
-      if (!live()) return;
-      const [y, m, d] = parts();
-      const nextYear = Number(year?.value || y),
-        nextMonth = Number(month?.value || m);
-      input.value = dateValue(
-        civilDate(
-          nextYear,
-          nextMonth,
-          Math.min(d, civilDate(nextYear, nextMonth + 1, 0).getDate()),
-        ),
+    function renderCalendar(focusDate = input.value) {
+      if (!calendar || !live()) return;
+      const [y, m] = displayedMonth.split("-").map(Number);
+      const first = civilDate(y, m, 1),
+        length = civilDate(y, m + 1, 0).getDate();
+      $("dashboardCalendarMonth").textContent = first.toLocaleDateString(
+        undefined,
+        { month: "long", year: "numeric" },
       );
-      commit();
-    }
-    if (month) {
-      month.replaceChildren(
-        ...Array.from({ length: 12 }, (_, i) => {
-          const option = text(
-            "option",
-            civilDate(2000, i + 1, 1).toLocaleDateString(undefined, {
-              month: "long",
-            }),
-          );
-          option.value = String(i + 1);
-          return option;
-        }),
-      );
-      month.onchange = changePeriod;
-    }
-    if (year) {
-      year.replaceChildren();
-      const current = new Date().getFullYear();
-      for (
-        let y = Math.max(1, current - 100);
-        y <= Math.min(9999, current + 10);
-        y++
-      ) {
-        const option = text("option", String(y));
-        option.value = String(y);
-        year.append(option);
+      $("dashboardCalendarNext").disabled =
+        displayedMonth >= localToday().slice(0, 7);
+      $("dashboardCalendarPrevious").disabled = y === 1 && m === 1;
+      const days = $("dashboardCalendarDays");
+      days.replaceChildren();
+      for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"])
+        days.append(text("span", name));
+      for (let i = 0; i < first.getDay(); i++) days.append(text("span", ""));
+      for (let d = 1; d <= length; d++) {
+        const date = civilDate(y, m, d),
+          value = dateValue(date),
+          day = text("button", String(d));
+        day.type = "button";
+        day.dataset.calendarDate = value;
+        day.disabled = value > localToday();
+        day.setAttribute(
+          "aria-label",
+          date.toLocaleDateString(undefined, {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          }),
+        );
+        day.setAttribute("aria-pressed", String(value === input.value));
+        if (value === localToday()) day.setAttribute("aria-current", "date");
+        day.onclick = () => {
+          commit(value);
+          close();
+          button.focus({ preventScroll: true });
+        };
+        day.onkeydown = (event) => {
+          const amount = {
+            ArrowLeft: -1,
+            ArrowRight: 1,
+            ArrowUp: -7,
+            ArrowDown: 7,
+            Home: -date.getDay(),
+            End: 6 - date.getDay(),
+          }[event.key];
+          if (amount === undefined) return;
+          event.preventDefault();
+          const target = civilDate(y, m, d + amount),
+            targetValue = dateValue(target);
+          if (targetValue > localToday() || target.getFullYear() < 1) return;
+          displayedMonth = targetValue.slice(0, 7);
+          renderCalendar(targetValue);
+          days.querySelector(`[data-calendar-date="${targetValue}"]`)?.focus();
+        };
+        days.append(day);
       }
-      year.onchange = changePeriod;
+      if (calendar.matches(":popover-open")) {
+        const anchor = button.getBoundingClientRect();
+        calendar.style.left =
+          Math.max(
+            4,
+            Math.min(anchor.left, innerWidth - calendar.offsetWidth - 4),
+          ) + "px";
+        calendar.style.top =
+          Math.max(
+            4,
+            Math.min(
+              anchor.bottom + 4,
+              innerHeight - calendar.offsetHeight - 4,
+            ),
+          ) + "px";
+      }
+      if (focusDate)
+        days
+          .querySelector(`[data-calendar-date="${focusDate}"]`)
+          ?.focus({ preventScroll: true });
+    }
+    function moveMonth(amount) {
+      const [y, m] = displayedMonth.split("-").map(Number);
+      const date = civilDate(y, m + amount, 1),
+        value = dateValue(date);
+      if (
+        date.getFullYear() < 1 ||
+        date.getFullYear() > 9999 ||
+        value.slice(0, 7) > localToday().slice(0, 7)
+      )
+        return;
+      displayedMonth = value.slice(0, 7);
+      renderCalendar(null);
+    }
+    if (button)
+      button.onclick = () => {
+        if (!live()) return;
+        if (calendar.matches(":popover-open")) {
+          close();
+          return;
+        }
+        displayedMonth = input.value.slice(0, 7);
+        calendar.showPopover();
+        button.setAttribute("aria-expanded", "true");
+        renderCalendar();
+      };
+    if (calendar) {
+      calendar.ontoggle = () =>
+        button.setAttribute(
+          "aria-expanded",
+          String(calendar.matches(":popover-open")),
+        );
+      calendar.onkeydown = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close();
+          button.focus({ preventScroll: true });
+        }
+      };
+      $("dashboardCalendarPrevious").onclick = () => moveMonth(-1);
+      $("dashboardCalendarNext").onclick = () => moveMonth(1);
     }
     if (previous) previous.onclick = () => stepDay(-1);
     if (next) next.onclick = () => stepDay(1);
     if (today)
       today.onclick = () => {
-        if (!live()) return;
-        input.value = dateValue(new Date());
-        commit();
+        commit(localToday());
+        close();
+        button?.focus({ preventScroll: true });
       };
-    if (day)
-      day.onchange = () => {
-        if (!live()) return;
-        const [y, m] = parts();
-        input.value = dateValue(civilDate(y, m, Number(day.value)));
-        commit();
-      };
-    // Preserve the native date fallback's explicit same-date Reload semantics.
-    input.onchange = () => commit(true);
+    input.onchange = () => commit(input.value, true);
     clearDateNavigation = () => {
+      close();
       input.onchange = null;
-      if (month) month.onchange = null;
-      if (year) year.onchange = null;
-      for (const button of [previous, next, today])
-        if (button) button.onclick = null;
-      if (day) day.onchange = null;
+      for (const control of [
+        previous,
+        next,
+        today,
+        button,
+        $("dashboardCalendarPrevious"),
+        $("dashboardCalendarNext"),
+      ])
+        if (control) control.onclick = null;
+      if (calendar) {
+        calendar.onkeydown = null;
+        calendar.ontoggle = null;
+        $("dashboardCalendarDays").replaceChildren();
+      }
     };
     sync();
   }
+
   function clear() {
     stats?.clear();
     stats = null;
@@ -433,7 +567,7 @@ window.CoachDashboard = (() => {
       button.setAttribute("aria-pressed", String(selectedMember === id));
       const entry = all ? null : text("div", "", "dashboard-member-entry");
       entry?.append(button);
-      const name = all ? "All members" : user.display_name || "Member";
+      const name = all ? "Select\nAll" : user.display_name || "Member";
       const nameNode = text("strong", name);
       nameNode.title = name;
       button.append(nameNode);
@@ -581,7 +715,7 @@ window.CoachDashboard = (() => {
         filterFeed();
         filterTimeline();
       });
-      (all ? target : rail).append(entry || button);
+      rail.append(entry || button);
     };
     makeCard(null, {}, true);
     target.append(rail);
@@ -2113,12 +2247,7 @@ window.CoachDashboard = (() => {
     chooser.hidden = true;
     chooser.setAttribute("role", "group");
     chooser.setAttribute("aria-label", "Events at this recorded location");
-    const note = text(
-      "p",
-      `Recorded event locations—not live tracking. Dashed straight connections show each member's event order, not a travelled route; gaps over ${GAP_HOURS} hours or events without a recorded shared location break connections.`,
-      "dashboard-map-note",
-    );
-    map.after(chooser, note);
+    map.after(chooser);
     const closeChooser = (restore = true) => {
       chooser.hidden = true;
       chooser.replaceChildren();
@@ -2132,7 +2261,6 @@ window.CoachDashboard = (() => {
       () => {
         closeChooser(false);
         chooser.remove();
-        note.remove();
       },
       { once: true },
     );
@@ -2466,7 +2594,8 @@ window.CoachDashboard = (() => {
             i + 1 < longitudes.length ? longitudes[i + 1] : longitudes[0] + 360;
           if (next - longitudes[i] > largestGap) {
             largestGap = next - longitudes[i];
-            arcStart = next % 360;
+            // Avoid rounding endpoint + 360 back past the endpoint.
+            arcStart = longitudes[(i + 1) % longitudes.length];
           }
         }
       }
@@ -2480,11 +2609,67 @@ window.CoachDashboard = (() => {
         });
       else
         instance.fitBounds(L.latLngBounds(coords), {
-          padding: [48, 48],
+          padding: [
+            Math.min(48, map.clientWidth / 4),
+            Math.min(48, map.clientHeight / 4),
+          ],
           maxZoom: 16,
           animate: false,
         });
     };
+    let userViewChanged = false;
+    instance.on("dragstart", () => {
+      userViewChanged = true;
+    });
+    const markUserView = () => {
+      userViewChanged = true;
+    };
+    map.addEventListener(
+      "keydown",
+      (event) => {
+        if (
+          [
+            "+",
+            "-",
+            "=",
+            "_",
+            "ArrowLeft",
+            "ArrowRight",
+            "ArrowUp",
+            "ArrowDown",
+          ].includes(event.key)
+        )
+          markUserView();
+      },
+      { capture: true, signal },
+    );
+    map.addEventListener("dblclick", markUserView, { capture: true, signal });
+    map.addEventListener(
+      "touchstart",
+      (event) => {
+        if (event.touches.length > 1) markUserView();
+      },
+      { passive: true, signal },
+    );
+    map.addEventListener(
+      "touchmove",
+      (event) => {
+        if (event.touches.length > 1) markUserView();
+      },
+      { passive: true, signal },
+    );
+    map.addEventListener(
+      "wheel",
+      () => {
+        userViewChanged = true;
+      },
+      { passive: true },
+    );
+    map
+      .querySelector(".leaflet-control-zoom")
+      ?.addEventListener("click", () => {
+        userViewChanged = true;
+      });
     mapResizeObserver = new ResizeObserver(() => {
       if (!map.getClientRects().length) return;
       instance.invalidateSize();
@@ -2492,7 +2677,13 @@ window.CoachDashboard = (() => {
       const shown = dots.filter(visible);
       // A desktop fit may leave every event offscreen when the map narrows.
       // Refit only then, preserving deliberate user panning when one is visible.
-      if (shown.length && shown.every(({ marker }) => marker.hidden)) {
+      if (
+        shown.length &&
+        (!userViewChanged ||
+          shown.every(({ fix }) =>
+            offscreen(project(fix, instance.getCenter().lng)),
+          ))
+      ) {
         fitPins(shown);
         if (!selectedMember)
           initialView = {

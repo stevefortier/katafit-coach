@@ -304,7 +304,8 @@ test(
       });
       assert.equal(chrome.headerTop, 0, "workspace header remains sticky");
       assert.ok(
-        chrome.noticeTop >= chrome.headerBottom && chrome.noticeBottom < 200,
+        chrome.noticeTop < chrome.headerBottom &&
+          chrome.noticeBottom <= chrome.headerBottom,
         "notice sticks beneath header",
       );
       await page

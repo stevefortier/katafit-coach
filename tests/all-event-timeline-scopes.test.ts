@@ -74,6 +74,7 @@ test("map-independent member filtering clears event selection and fences held ol
   });
   try {
     const page = await browser.newPage({ timezoneId: "UTC" });
+    await page.clock.setFixedTime(new Date("2026-12-01T12:00:00Z"));
     await page.goto(app.origin + "/dashboard");
     await page.evaluate(async (key) => {
       document.getElementById("studio")!.hidden = false;
@@ -111,9 +112,7 @@ test("map-independent member filtering clears event selection and fences held ol
     );
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
     await page.locator('[data-event-id="2026-11-01-2"]').click();
-    await page
-      .getByRole("button", { name: "All members", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Select All", exact: true }).click();
     assert.equal(await page.locator(".dashboard-timeline-mark").count(), 3);
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
     await change("2026-11-02");

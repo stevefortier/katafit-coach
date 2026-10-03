@@ -201,10 +201,7 @@ test("per-member dashed event connections follow occurrence order and break at u
         assert.equal(line.dash, "6px, 5px");
         assert.ok(line.exact, JSON.stringify(line));
       }
-      assert.match(
-        await page.locator(".dashboard-map-note").innerText(),
-        /not live tracking.*not a travelled route.*4 hours/s,
-      );
+      assert.equal(await page.locator(".dashboard-map-note").count(), 0);
     },
     { events },
   );

@@ -185,7 +185,7 @@ test("synthetic roster cards use bounded intrinsic widths across cache renders",
           );
         }
         await page
-          .getByRole("button", { name: "All members", exact: true })
+          .getByRole("button", { name: "Select All", exact: true })
           .click();
         assert.equal(
           calls.length,
@@ -263,7 +263,7 @@ test("synthetic roster cards use bounded intrinsic widths across cache renders",
           await page.mouse.move(0, 0);
         }
         await page
-          .getByRole("button", { name: "All members", exact: true })
+          .getByRole("button", { name: "Select All", exact: true })
           .focus();
         await page.keyboard.press("Tab");
         await page.keyboard.press("Tab");

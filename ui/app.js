@@ -123,22 +123,41 @@ function notice(message, severity) {
   $("noticeLabel").textContent = tone ? noticeLabels[tone] : "";
   $("noticeLabel").hidden = !tone;
   $("notice").textContent = tone ? message : "";
+  $("noticeDetailsText").textContent = tone
+    ? `${noticeLabels[tone]}: ${message}`
+    : "";
+  $("noticeBar").tabIndex = tone ? 0 : -1;
+  $("noticeBar").setAttribute(
+    "aria-label",
+    tone
+      ? `${noticeLabels[tone]}: ${message}. Read full status message`
+      : "Status messages",
+  );
+  if (!tone && $("noticeDetails").matches(":popover-open"))
+    $("noticeDetails").hidePopover();
   syncStickyOffsets();
 }
-// The header wraps on narrow screens; the notice sticks directly beneath it
-// and anchored scrolling clears both.
+$("noticeBar").onclick = () => {
+  if ($("noticeBar").dataset.severity) $("noticeDetails").showPopover();
+};
+$("noticeBar").onkeydown = (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    $("noticeBar").click();
+  }
+};
+$("noticeDetailsClose").onclick = () => {
+  $("noticeDetails").hidePopover();
+  $("noticeBar").focus();
+};
+// The notice shares the fixed-height header; it owns no extra offset.
 function syncStickyOffsets() {
   const root = document.documentElement.style;
   root.setProperty(
     "--header-offset",
     document.querySelector("header").offsetHeight + "px",
   );
-  root.setProperty(
-    "--notice-offset",
-    $("noticeBar").dataset.severity
-      ? $("noticeBar").offsetHeight + 8 + "px"
-      : "0px",
-  );
+  root.setProperty("--notice-offset", "0px");
 }
 if (typeof ResizeObserver === "function") {
   const stickyObserver = new ResizeObserver(syncStickyOffsets);
