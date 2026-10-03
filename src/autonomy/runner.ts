@@ -8,6 +8,8 @@ import {
   settleFollowUp,
   VISIBLE_REFUSALS,
 } from "./actions.js";
+import { AcquisitionLedger, responseText } from "./acquisition.js";
+import { composer, type ComposeOptions } from "./compose.js";
 import { HeadlessFailure, type HeadlessRun } from "./headless.js";
 import {
   correctionMessage,
@@ -15,12 +17,19 @@ import {
   plannerMessage,
 } from "./prompt.js";
 import { digestEmpty, digestFacts, type DigestFacts } from "./reporting.js";
-import type { FollowUpArgs, PlannerCallbacks, ReportArgs } from "./tools.js";
+import type {
+  FollowUpArgs,
+  IntendArgs,
+  PlannerCallbacks,
+  ReportArgs,
+} from "./tools.js";
 import {
   outcomeCoherent,
   validate,
+  type ActionReceipt,
   type ActionType,
   type CycleOutcome,
+  type FollowUp,
   type MandateView,
   type WorkItem,
 } from "./types.js";
@@ -48,7 +57,7 @@ export interface AutonomyRunnerOptions {
   store: Store;
   runtime: { run(run: HeadlessRun): Promise<{ text: string }> };
   /** [AC1] Composer pipeline (C11); without it no trainee/public action exists. */
-  compose?: unknown;
+  compose?: ComposeOptions;
   leaseSeconds?: number;
   now?: () => number;
 }
@@ -87,6 +96,9 @@ function parseOutcome(text: string): unknown {
 }
 
 export function autonomyRunner(options: AutonomyRunnerOptions) {
+  // [AC1] The composer runs in its own container, never the planner's.
+  if (options.compose && options.compose.runtime === options.runtime)
+    throw new Error("COMPOSER_RUNTIME_SHARED");
   const now = options.now ?? Date.now;
   return async (cycle: AutonomyCycle): Promise<CycleResult> => {
     const started = now();
@@ -104,6 +116,17 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     const reads = { ok: 0, denied: 0, failed: 0 };
     const exhausted = new Set<string>();
     let uncertain = false;
+    // [AC1] Trainee/public intents: the acquisition ledger, the planner's
+    // own private prose (literal check only) and composition outcomes.
+    const composing =
+      !!options.compose && actions.some((a) => TRAINEE_ACTIONS.includes(a));
+    const ledger = new AcquisitionLedger(work);
+    const plannerProse: string[] = [];
+    const rejected: string[] = [];
+    const composeNotes: string[] = [];
+    const recovered: ActionReceipt[] = [];
+    let composerTokens = 0;
+    let plannerUsage = () => 0;
 
     const controller = new AbortController();
     const signal = AbortSignal.any([cycle.signal, controller.signal]);
@@ -127,6 +150,67 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
           },
         );
     await renew();
+    signal.throwIfAborted();
+
+    const deadline = started + mandate.budgets.cycle_seconds * 1000;
+    const compose = options.compose
+      ? composer({
+          store: options.store,
+          options: options.compose,
+          backend,
+          work,
+          fence,
+          ledger,
+          signal,
+          remainingMs: () => deadline - now(),
+          remainingTokens: () =>
+            mandate.budgets.provider_tokens - plannerUsage() - composerTokens,
+          privateSources: () => [
+            mandate.instructions,
+            ...ledger.privateText,
+            ...plannerProse,
+          ],
+          onTokens: (tokens) => (composerTokens += tokens),
+          onExhausted: () => exhausted.add("provider_tokens"),
+        })
+      : undefined;
+    // Lease-loss recovery (contracts §21.4 step 5): a composition an earlier
+    // holder stored is dispatched exactly; it is never redrafted.
+    for (const pending of work.intents ?? []) {
+      if (pending.status !== "composed" || slots.has(pending.slot)) continue;
+      if (!compose) {
+        composeNotes.push(`stored_composition_pending:${pending.slot}`);
+        continue;
+      }
+      try {
+        const sent = await compose.recover(pending.slot);
+        if (sent?.kind === "sent") {
+          slots.add(sent.receipt.slot);
+          recovered.push(sent.receipt);
+        }
+      } catch (error) {
+        if (isUnknown(error)) uncertain = true;
+        else if (
+          error instanceof AutonomyFailure &&
+          (VISIBLE_REFUSALS as readonly string[]).includes(error.code)
+        )
+          composeNotes.push(
+            `stored_composition_refused:${pending.slot}:${error.code}`,
+          );
+        else throw error;
+      }
+    }
+    // fu: evidence is acquired once, at cycle start, from the backend.
+    let openFollowUps: FollowUp[] | undefined;
+    if (composing)
+      try {
+        openFollowUps = (
+          await backend.listFollowUps({ status: "open", limit: 50 })
+        ).items.filter((f) => work.subject_ids.includes(f.subject_id));
+        for (const f of openFollowUps) ledger.followUp(f);
+      } catch {
+        composeNotes.push("open follow-ups unavailable");
+      }
     signal.throwIfAborted();
 
     let digest: DigestFacts | undefined;
@@ -186,12 +270,43 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       }
     };
     const callbacks: PlannerCallbacks = {
-      async intend() {
-        // [AC1] Intents need the C11 composer; the tool is never offered without it.
-        throw new Error("INTENT_UNAVAILABLE");
-      },
+      intend: (args: IntendArgs) =>
+        visible(async () => {
+          // [AC1] The tool is never offered without the C11 composer.
+          if (!compose) throw new Error("INTENT_UNAVAILABLE");
+          const result = await compose.fulfil(args.slot, args.intent);
+          if (result.kind === "sent") {
+            slots.add(result.receipt.slot);
+            return {
+              slot: result.receipt.slot,
+              status: result.receipt.status,
+              idempotent: result.idempotent,
+              ...(result.recovered ? { recovered: true } : {}),
+            };
+          }
+          if (result.kind === "refused")
+            return {
+              error: result.code,
+              note: "Refused before anything was composed or sent. Cite only evidence this cycle acquired about this recipient (or, for praise, the attested event and pub:<activity_id>).",
+            };
+          if (result.kind === "rejected") {
+            rejected.push(args.slot);
+            return {
+              error: "COMPOSITION_REJECTED",
+              note: "The composed text failed the host's audience checks; nothing was stored or sent. The work will be blocked for the manager.",
+            };
+          }
+          composeNotes.push(
+            `composer_unavailable:${args.slot}:${result.reason}`,
+          );
+          return {
+            error: "COMPOSER_UNAVAILABLE",
+            note: "No text was composed for this intent; nothing was sent.",
+          };
+        }),
       report: (args: ReportArgs) =>
         visible(async () => {
+          plannerProse.push(args.text);
           const { receipt, idempotent, recovered } = await settleAction(
             backend,
             work.id,
@@ -209,6 +324,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       followUp: (args: FollowUpArgs) =>
         visible(async () => {
           if (args.op === "create") {
+            plannerProse.push(args.summary, args.next_condition);
             const { slot, op, ...input } = args;
             const { follow_up, idempotent, recovered } = await settleFollowUp(
               backend,
@@ -217,6 +333,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
               { ...fence, ...input },
             );
             followUps.add(follow_up.id);
+            ledger.followUp(follow_up);
             return {
               follow_up_id: follow_up.id,
               status: follow_up.status,
@@ -255,7 +372,6 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     const prompt =
       compileAutonomy(config, mandate, secrets) +
       plannerGuidance({ capability, rest, actions });
-    const deadline = started + mandate.budgets.cycle_seconds * 1000;
     const gateway = await openProfileGateway(options.store, signal, {
       profile: "planner",
       prompt,
@@ -269,8 +385,14 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         images_per_cycle: mandate.budgets.images_per_cycle,
       },
       onExhausted: (reason) => exhausted.add(reason),
-      onRead: ({ outcome }) => reads[outcome]++,
+      onRead: ({ path, outcome, body }) => {
+        reads[outcome]++;
+        if (outcome === "ok" && body !== undefined) ledger.read(path, body);
+      },
+      onProviderResponse: (body, type) =>
+        plannerProse.push(...responseText(body, type)),
     });
+    plannerUsage = () => gateway.usage().provider_tokens;
 
     let failure: string | undefined;
     let invalid: string | undefined;
@@ -296,11 +418,22 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     };
     try {
       let message = plannerMessage({
-        work,
+        work: recovered.length
+          ? {
+              ...work,
+              actions: [...work.actions, ...recovered],
+              intents: work.intents?.map((i) =>
+                recovered.some((r) => r.slot === i.slot)
+                  ? { ...i, status: "dispatched" as const }
+                  : i,
+              ),
+            }
+          : work,
         now: now(),
         reports,
         digest,
         rest,
+        ...(openFollowUps ? { followUps: openFollowUps } : {}),
       });
       for (let attempt = 0; attempt < 2; attempt++) {
         let text: string;
@@ -347,7 +480,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
 
     const usage = gateway.usage();
     const budget = {
-      provider_tokens: usage.provider_tokens,
+      provider_tokens: usage.provider_tokens + composerTokens,
       tool_calls: usage.tool_calls,
       elapsed_ms: Math.max(0, now() - started),
     };
@@ -357,6 +490,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       notes.push(`${reads.failed} REST read(s) failed or missing`);
     if (digest && !digest.window_complete)
       notes.push(`digest window incomplete: ${digest.unknowns[0]}`);
+    notes.push(...composeNotes);
     const confirmed = [
       ...[...slots].map((s) => `slot ${s}`),
       ...[...followUps].map((f) => `follow-up ${f}`),
@@ -393,6 +527,14 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         "blocked",
         `budget_exhausted:${[...exhausted].join(",")}`,
         "budget_exhausted",
+      );
+    else if (rejected.length)
+      // contracts §21.4 composition_rejected; coach.autonomy.v1 has no such
+      // blocked_reason yet (backend seam), so the manager decides.
+      final = fallback(
+        "blocked",
+        `composition_rejected:${rejected.join(",")}`,
+        "manager_decision_needed",
       );
     else if (failure) final = fallback("failed", `planner_failed:${failure}`);
     else if (invalid || !outcome)

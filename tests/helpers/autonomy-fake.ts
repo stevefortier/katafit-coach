@@ -92,6 +92,21 @@ export async function autonomyFake(
     /** B8 dojo_coach_comments by occurrence id. */
     comments: new Map<string, any>(),
     followUps: new Map<string, any>(),
+    /** B11 intents (and their stored compositions) by `${work}:${slot}`. */
+    intents: new Map<string, any>(),
+    /** B11 dispatch precondition: trainee/public text needs a stored composition. */
+    requireComposition: false,
+    /** B11 public projections by activity id (defaults are synthesized). */
+    projections: new Map<string, any>(),
+    /** Synthetic provider for profile gateways: returns the assistant text. */
+    provider: undefined as
+      | undefined
+      | ((body: any) => { content: string; tokens?: number }),
+    providerRequests: [] as string[],
+    /** Observes each autonomy write after it is processed (fault injection). */
+    afterWrite: undefined as
+      | undefined
+      | ((method: string, path: string, body: any) => void),
     reports: [] as any[],
     members: new Set([MEMBER, OTHER_MEMBER, CHIEF]),
     /** Backend `SUPPORTED_ACTION_TYPES` (advertised in mandate capabilities). */
@@ -115,8 +130,12 @@ export async function autonomyFake(
     key: string;
     message_id: string;
   }[] = [];
-  const calls: { method: string; path: string; credential: string | null }[] =
-    [];
+  const calls: {
+    method: string;
+    path: string;
+    credential: string | null;
+    body?: string;
+  }[] = [];
   let dropNextWrite = false;
   let loseNextWrite = false;
 
@@ -361,6 +380,151 @@ export async function autonomyFake(
     }
     if (
       (m = p.match(
+        /^\/work\/([a-f0-9]{24})\/intents\/([a-z0-9][a-z0-9_-]{0,63})(\/composition)?$/,
+      ))
+    ) {
+      const [, id, slot, composing] = m;
+      const key = `${id}:${slot}`;
+      const row = state.intents.get(key);
+      const record = (r: any) => {
+        const { digest, public_projection, composition, work_id, ...intent } =
+          r;
+        return intent;
+      };
+      if (method === "GET" && !composing) {
+        if (!row) throw new Fail(404, "INTENT_NOT_FOUND");
+        const c = row.composition;
+        return {
+          intent: record(row),
+          composition:
+            c && c.text != null
+              ? {
+                  text: c.text,
+                  text_sha256: c.text_sha256,
+                  stored_at: c.stored_at,
+                }
+              : null,
+          receipt: state.actions.get(key) ?? null,
+        };
+      }
+      if (method !== "PUT") throw new Fail(404, "AUTONOMY_NOT_FOUND");
+      const w = state.work.get(id);
+      if (!w) throw new Fail(404, "AUTONOMY_NOT_FOUND");
+      if (composing) {
+        if (!row) throw new Fail(404, "INTENT_REQUIRED");
+        if (row.status === "dispatched") throw new Fail(409, "INTENT_CONFLICT");
+        const c = row.composition;
+        if (c)
+          return {
+            composition: {
+              slot,
+              text: c.text,
+              text_sha256: c.text_sha256,
+              stored_at: c.stored_at,
+            },
+            stored: true,
+          };
+        held(id, body.lease_generation, credential);
+        const praise = row.type === "public_praise";
+        if (!body.text.trim() || body.text.length > (praise ? 100 : 8000))
+          throw new Fail(400, "COMPOSITION_INVALID");
+        row.composition = {
+          text: body.text,
+          text_sha256: sha256(body.text),
+          stored_at: iso(now),
+          composer: body.composer,
+        };
+        row.status = "composed";
+        const summary = w.intents.find((i: any) => i.slot === slot);
+        summary.status = "composed";
+        summary.composition_sha256 = row.composition.text_sha256;
+        return {
+          composition: {
+            slot,
+            text_sha256: row.composition.text_sha256,
+            stored_at: row.composition.stored_at,
+          },
+          stored: false,
+          http: 201,
+        };
+      }
+      const digest = JSON.stringify(body.intent);
+      if (row) {
+        if (row.digest !== digest) throw new Fail(409, "INTENT_CONFLICT");
+        return {
+          intent: record(row),
+          idempotent: true,
+          ...(row.public_projection
+            ? { public_projection: row.public_projection }
+            : {}),
+        };
+      }
+      held(id, body.lease_generation, credential);
+      fenceMandate(w, body.mandate_revision);
+      const i = body.intent;
+      if (
+        !state.mandate.delegated_actions.includes(i.type) ||
+        state.mandate.mode !== "message"
+      )
+        throw new Fail(400, "ACTION_UNSUPPORTED");
+      // Refs the fake can attest: this work's events and follow-up subjects.
+      for (const ref of i.evidence_refs) {
+        const [kind, value] = [
+          ref.slice(0, ref.indexOf(":")),
+          ref.slice(ref.indexOf(":") + 1),
+        ];
+        const ok =
+          kind === "ev"
+            ? (w.source?.events ?? []).some((e: any) => e.ledger_id === value)
+            : kind === "fu"
+              ? state.followUps.get(value)?.subject_id === i.recipient_id
+              : kind === "pub"
+                ? i.type === "public_praise" && value === i.activity_id
+                : i.type === "member_message";
+        if (!ok) throw new Fail(403, "INTENT_EVIDENCE_NOT_AUTHORIZED");
+      }
+      const intent = {
+        slot,
+        ...i,
+        status: "intended",
+        created_at: iso(now),
+      };
+      const projection =
+        i.type === "public_praise"
+          ? (state.projections.get(i.activity_id) ?? {
+              subject_display_name: "Mika",
+              activity_type: "workout",
+              activity_name: "Leg day",
+              completed_at: i.completed_at,
+              personal_record: false,
+            })
+          : null;
+      state.intents.set(key, {
+        ...intent,
+        work_id: id,
+        digest,
+        public_projection: projection,
+        composition: null,
+      });
+      w.intents ??= [];
+      w.intents.push({
+        slot,
+        type: i.type,
+        ...(i.recipient_id ? { recipient_id: i.recipient_id } : {}),
+        ...(i.activity_id ? { activity_id: i.activity_id } : {}),
+        purpose: i.purpose,
+        status: "intended",
+        composition_sha256: null,
+      });
+      return {
+        intent,
+        idempotent: false,
+        ...(projection ? { public_projection: projection } : {}),
+        http: 201,
+      };
+    }
+    if (
+      (m = p.match(
         /^\/work\/([a-f0-9]{24})\/actions\/([a-z0-9][a-z0-9_-]{0,63})$/,
       ))
     ) {
@@ -393,6 +557,25 @@ export async function autonomyFake(
         state.mandate.delegated_actions.includes(body.type) &&
         (body.type === "manager_report" || state.mandate.mode === "message");
       if (!allowed) throw new Fail(400, "ACTION_UNSUPPORTED");
+      // B11 (contracts §21.4 step 4): trainee/public text is the stored composition.
+      const composed = state.intents.get(key);
+      if (state.requireComposition && body.type !== "manager_report") {
+        if (!composed?.composition) throw new Fail(409, "INTENT_REQUIRED");
+        if (
+          composed.type !== body.type ||
+          composed.composition.text !== body.text ||
+          (composed.recipient_id ?? null) !== (body.recipient_id ?? null) ||
+          (composed.activity_id ?? null) !== (body.activity_id ?? null)
+        )
+          throw new Fail(409, "COMPOSITION_MISMATCH");
+      }
+      const dispatched = () => {
+        if (!composed?.composition) return;
+        composed.status = "dispatched";
+        delete composed.composition.text;
+        const summary = w.intents?.find((i: any) => i.slot === slot);
+        if (summary) summary.status = "dispatched";
+      };
       if (body.type === "public_praise") {
         // B8 (contracts §14): attested by this work's completion events; one
         // published comment per completion occurrence.
@@ -422,6 +605,7 @@ export async function autonomyFake(
         });
         state.actions.set(key, receipt);
         w.actions.push(receipt);
+        dispatched();
         return { receipt, idempotent: false, http: 201 };
       }
       if (!state.members.has(recipient))
@@ -451,6 +635,7 @@ export async function autonomyFake(
       };
       state.actions.set(key, receipt);
       w.actions.push(receipt);
+      dispatched();
       return { receipt, idempotent: false, http: 201 };
     }
     if (
@@ -572,6 +757,17 @@ export async function autonomyFake(
     const bearer = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
     const identity = tokens.get(bearer);
     const url = new URL(req.url!, "http://fake");
+    if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+      state.providerRequests.push(raw);
+      const out = state.provider?.(JSON.parse(raw)) ?? { content: "ok" };
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content: out.content } }],
+          usage: { total_tokens: out.tokens ?? 10 },
+        }),
+      );
+    }
     if (
       identity &&
       !url.pathname.startsWith("/api/coach/autonomy/") &&
@@ -590,6 +786,7 @@ export async function autonomyFake(
       method: req.method!,
       path: req.url!,
       credential: identity?.credential ?? null,
+      ...(raw ? { body: raw } : {}),
     });
     const send = (status: number, value: unknown) => {
       res.writeHead(status, { "content-type": "application/json" });
@@ -624,8 +821,16 @@ export async function autonomyFake(
         raw ? JSON.parse(raw) : undefined,
         identity.credential,
       ) as { http?: number } & Record<string, unknown>;
-      if (dropNextWrite && req.method !== "GET") {
-        dropNextWrite = false;
+      const drop = dropNextWrite && req.method !== "GET";
+      if (drop) dropNextWrite = false;
+      // A hook may arm faults for the next write, never for this one.
+      if (req.method !== "GET")
+        state.afterWrite?.(
+          req.method!,
+          url.pathname,
+          raw ? JSON.parse(raw) : undefined,
+        );
+      if (drop) {
         req.socket.destroy();
         return;
       }
@@ -682,6 +887,7 @@ export async function autonomyFake(
         lease_expires_at: null,
         timeout_at: iso(now + 600_000),
         actions: [],
+        intents: [],
         follow_ups: [],
         blocked_reason: null,
         created_at: iso(now),

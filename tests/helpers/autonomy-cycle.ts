@@ -19,6 +19,8 @@ export async function closeLeaked() {
 
 export interface Io {
   call(name: string, args: unknown): Promise<any>;
+  /** One provider completion through the gateway, as Pi sends it. */
+  provider(body: unknown): Promise<any>;
   catalog: any;
   message: string;
 }
@@ -34,7 +36,10 @@ export class ScriptedRuntime {
     calls: { name: string; ok: boolean; code?: string; result?: any }[];
   }[] = [];
   errors: Error[] = [];
-  constructor(private readonly scripts: Script[]) {}
+  constructor(
+    private readonly scripts: Script[],
+    private readonly container = "c",
+  ) {}
   async run(run: {
     profile: string;
     gateway: any;
@@ -71,7 +76,9 @@ export class ScriptedRuntime {
     };
     let text: string;
     try {
-      text = await script({ call, catalog, message: run.message });
+      const provider = (body: unknown) =>
+        run.gateway.handle({ kind: "provider", body });
+      text = await script({ call, provider, catalog, message: run.message });
     } catch (error) {
       // A failed script assertion (or bug) must fail the test, not become a
       // planner error; only simulated runtime failures and crashes pass through.
@@ -82,7 +89,7 @@ export class ScriptedRuntime {
         this.errors.push(error as Error);
       throw error;
     }
-    return { text, container: `c${this.runs.length}` };
+    return { text, container: `${this.container}${this.runs.length}` };
   }
 }
 
@@ -221,3 +228,20 @@ export const restServer = (fake: AutonomyFake, routes: Record<string, any>) => {
 export const toolNames = (catalog: any) =>
   catalog.tools.map((t: any) => t.name);
 export const work = (fake: AutonomyFake, id: string) => fake.state.work.get(id);
+
+/**
+ * A composer run as headless Pi performs it: one provider completion with the
+ * system prompt and the host message, then the final text (scripted here).
+ */
+export const composerScript =
+  (text: string | ((io: Io) => string)): Script =>
+  async (io) => {
+    await io.provider({
+      model: "synthetic-model",
+      messages: [
+        { role: "system", content: io.catalog.prompt },
+        { role: "user", content: io.message },
+      ],
+    });
+    return typeof text === "function" ? text(io) : text;
+  };

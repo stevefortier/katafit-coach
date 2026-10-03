@@ -1110,15 +1110,21 @@ export interface ProfileGatewayOptions {
   rest?: boolean;
   /** Planner: offer the installation's enabled skills (autonomy scope). */
   skills?: boolean;
-  /** Planner: each REST read's outcome, for honest coverage. */
+  /**
+   * Planner: each REST read's outcome, for honest coverage, with the parsed
+   * JSON body of a successful read (the host acquisition ledger).
+   */
   onRead?: (read: {
     path: string;
     outcome: "ok" | "denied" | "failed";
+    body?: unknown;
   }) => void;
   budgets?: ProfileBudgets;
   onExhausted?: (reason: "tool_calls" | "provider_tokens") => void;
   /** Exact provider wire bytes, for audience-separation probes. */
   onProviderRequest?: (wire: string) => void;
+  /** Each admitted provider response body (planner transcript spans). */
+  onProviderResponse?: (body: string, type: string) => void;
   onDiagnostic?: BackendLogger;
 }
 // The composer drafts one bounded text: a handful of completions at most.
@@ -1227,8 +1233,16 @@ export async function openProfileGateway(
             body: `# ${name}\n\nPurpose: ${purpose}\n\nTriggers: ${triggers}\n\n${instructions}\n\nThis headless Pi session is autonomy planner scope (manager-private). Read only through katafit_rest_get and act only through the offered coach_autonomy_* tools; never write trainee- or public-visible text yourself.`,
           }))
       : [];
-  const readResult = (path: string, outcome: "ok" | "denied" | "failed") => {
-    options.onRead?.({ path, outcome });
+  const readResult = (
+    path: string,
+    outcome: "ok" | "denied" | "failed",
+    body?: unknown,
+  ) => {
+    options.onRead?.({
+      path,
+      outcome,
+      ...(body !== undefined ? { body } : {}),
+    });
   };
   const visible = (value: unknown) => ({
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
@@ -1296,7 +1310,12 @@ export async function openProfileGateway(
           note: "This fact is unavailable to this cycle. Record it as partial coverage; do not invent it.",
         });
       }
-      readResult(path, "ok");
+      let body: unknown;
+      if (result.content?.length === 1 && result.content[0].type === "text")
+        try {
+          body = JSON.parse(result.content[0].text);
+        } catch {}
+      readResult(path, "ok", body);
       return result;
     }
     if (!plannerArgs(request.name, request.args))
@@ -1409,6 +1428,7 @@ export async function openProfileGateway(
       );
     }
     check();
+    options.onProviderResponse?.(body, type);
     return { body, type };
   }
 

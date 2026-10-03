@@ -59,8 +59,8 @@ test(
           claimed.work.id,
           claimed.work.lease_generation,
         );
-        // Stored compositions at the storage boundary until the B11 intents
-        // route exists (the backend's own B4 suite does the same).
+        // Dispatch-path isolation: compositions seeded at the storage boundary
+        // (the full B11 intent route is paired in autonomy-compose-paired).
         const compose = (slot: string, body: string, recipient = b.member) =>
           b.db.collection("coach_autonomy_intents").insertOne({
             _id: sha(JSON.stringify([String(work.id), slot])),
@@ -459,7 +459,7 @@ test(
           claimed.work.lease_generation,
         );
         const words = "Synthetic Member closed out leg day. Strong work.";
-        // Stored compositions at the storage boundary until B11 + C11.
+        // Dispatch-path isolation (B11 + C11: autonomy-compose-paired).
         const compose = (slot: string, act: any) =>
           b.db.collection("coach_autonomy_intents").insertOne({
             _id: sha(JSON.stringify([work.id, slot])),
