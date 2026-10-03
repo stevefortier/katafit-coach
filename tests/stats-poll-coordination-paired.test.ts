@@ -36,11 +36,26 @@ async function fixture(t: TestContext, lane: "main" | "typed") {
     bodyQueue: Gate[] = [];
   let pollHold: Gate | undefined;
   let claimHold: Gate | undefined;
+  let presenceHold: Gate | undefined;
   let admitted: ReturnType<typeof deferred> | undefined;
   const makeGate = () => {
     const g = gate();
     gates.push(g);
     return g;
+  };
+  let presenceTick!: () => void;
+  const actualInterval = globalThis.setInterval;
+  t.mock.method(
+    globalThis,
+    "setInterval",
+    (callback: any, ms: number, ...args: any[]) => {
+      if (ms === 60000) presenceTick = callback;
+      return actualInterval(callback, ms, ...args);
+    },
+  );
+  const tick = async () => {
+    presenceTick();
+    await (worker as any).presenceCall;
   };
   const originalStart = Worker.prototype.start;
   t.mock.method(Worker.prototype, "start", function (this: Worker) {
@@ -146,6 +161,17 @@ async function fixture(t: TestContext, lane: "main" | "typed") {
         const name = message.params?.name ?? message.method;
         calls.push(name);
 
+        if (presenceHold && name === "coach_report_worker_presence") {
+          const bytes = await response.arrayBuffer();
+          response = new Response(bytes, {
+            status: response.status,
+            headers: response.headers,
+          });
+          const held = presenceHold;
+          presenceHold = undefined;
+          held.entered.resolve();
+          await held.release.promise;
+        }
         if (claimHold && name === "coach_claim_request") {
           // MCP sends SSE headers before its transaction commits. Consume the
           // actual claim body before announcing the accepted-claim gate.
@@ -271,6 +297,17 @@ async function fixture(t: TestContext, lane: "main" | "typed") {
         return statsReads;
       },
       calls,
+      tick,
+      presence() {
+        const held = makeGate();
+        presenceHold = held;
+        return held;
+      },
+      presenceRow: () =>
+        b.db.collection("external_coach_worker_presence").findOne({
+          credential_id: credential,
+          instance_id: (worker as any).instanceId,
+        }),
       body() {
         const held = makeGate();
         bodyQueue.push(held);
@@ -330,19 +367,25 @@ for (const lane of ["main", "typed"] as const) {
               pending = f.stats();
             await held.entered.promise;
             const before = await f.row(),
+              presenceBefore = await f.presenceRow(),
               touches = f.touches;
-            await f.worker.pollOnce();
-            assert.equal(
-              (await f.row()).authority_revision,
-              before.authority_revision,
-              "idle poll changed credential authority while Stats body was held",
-            );
-            assert.equal(
-              f.touches,
-              touches,
-              "no idle MCP dispatch through held Stats body",
-            );
-            held.release.resolve();
+            try {
+              await f.worker.pollOnce();
+              await f.tick();
+              assert.equal(
+                (await f.row()).authority_revision,
+                before.authority_revision,
+                "idle presence tick changed credential authority while Stats body was held",
+              );
+              assert.equal(
+                f.touches,
+                touches,
+                "no idle MCP dispatch through held Stats body",
+              );
+            } finally {
+              held.release.resolve();
+              await pending;
+            }
             const response = await pending;
             assert.equal(response.status, 200);
             assert.deepEqual(
@@ -350,10 +393,50 @@ for (const lane of ["main", "typed"] as const) {
               dto,
               "complete history remains unchanged",
             );
+            await (f.worker as any).presenceCall;
+            assert.notEqual(
+              (await f.presenceRow()).generation,
+              presenceBefore.generation,
+              "deferred heartbeat resumes on final release without another timer tick",
+            );
             await f.worker.pollOnce();
             assert.ok(f.touches > touches);
             assert.equal(f.worker.presence, "reported");
             assert.equal(f.worker.safeToReplace, true);
+          },
+        );
+        await t.test(
+          "admitted presence RPC drains before Stats body and does not overlap resumed beats",
+          async () => {
+            const presence = f.presence(),
+              heartbeat = f.tick();
+            await presence.entered.promise;
+            const reads = f.statsReads,
+              admission = f.admission(),
+              body = f.body(),
+              pending = f.stats();
+            await admission;
+            try {
+              await new Promise((resolve) => setTimeout(resolve, 30));
+              assert.equal(
+                f.statsReads,
+                reads,
+                "Stats dispatched before admitted presence response settled",
+              );
+            } finally {
+              presence.release.resolve();
+              await heartbeat;
+              await body.entered.promise;
+              body.release.resolve();
+              await pending;
+            }
+            assert.equal((await pending).status, 200);
+            const before = await f.presenceRow();
+            await f.tick();
+            assert.notEqual(
+              (await f.presenceRow()).generation,
+              before.generation,
+            );
           },
         );
         await t.test(
@@ -377,6 +460,7 @@ for (const lane of ["main", "typed"] as const) {
             await polling;
             await body.entered.promise;
             const before = await f.row(),
+              presenceBefore = await f.presenceRow(),
               touches = f.touches;
             await f.worker.pollOnce();
             assert.equal(
@@ -492,6 +576,13 @@ for (const lane of ["main", "typed"] as const) {
                 reads,
                 "busy accepted work has no false-positive Stats JSON",
               );
+              const presenceBefore = await f.presenceRow();
+              await f.tick();
+              assert.notEqual(
+                (await f.presenceRow()).generation,
+                presenceBefore.generation,
+                "accepted main work retains periodic presence while Stats drains",
+              );
               timeout.abort(
                 new DOMException("synthetic drain deadline", "TimeoutError"),
               );
@@ -525,6 +616,93 @@ for (const lane of ["main", "typed"] as const) {
             }
           },
         );
+        if (lane === "typed")
+          await t.test(
+            "accepted typed work retains presence while Stats drains",
+            async () => {
+              const completed = new Date(),
+                activityId = new f.b.ObjectId(),
+                eventId = new f.b.ObjectId();
+              await f.b.db
+                .collection("dojo_members")
+                .updateOne(
+                  { user_id: f.member },
+                  { $set: { joined_at: new Date("2020-01-01") } },
+                );
+              await f.b.db.collection("activities").insertOne({
+                _id: activityId,
+                dojo_id: (await f.row()).owner_id,
+                user_id: f.member,
+                type: "metric",
+                status: "complete",
+                created_at: completed,
+                completed_at: completed,
+                data: {
+                  measurements: [{ type_id: "weight", value: 80, unit: "kg" }],
+                },
+              });
+              const event = {
+                _id: eventId,
+                user_id: f.member,
+                activity_id: activityId,
+                activity_type: "metric",
+                event_type: "activity_completed",
+                event_key: "synthetic-presence-task",
+                occurred_at: completed,
+                completed_at: completed,
+                generation_state: "pending",
+                summary: "Synthetic metric",
+              };
+              await f.b.db.collection("coach_activity_events").insertOne(event);
+              const captured = await f.b
+                .require("./core/externalActivityCoachTasks")
+                .captureEvent(f.b.db, undefined, String(f.member), event);
+              assert.ok(captured.task.id);
+              const model = f.gate(),
+                caller = new AbortController();
+              (f.worker as any).options.complete = async () => {
+                model.entered.resolve();
+                await model.release.promise;
+                return JSON.stringify({
+                  activity_feedback: {
+                    reaction: "flex",
+                    reply_worthwhile: false,
+                  },
+                  general_advice: "",
+                });
+              };
+              const polling = f.worker.pollOnce();
+              try {
+                await Promise.race([
+                  model.entered.promise,
+                  polling.then(() => {
+                    throw new Error("typed work ended before inference");
+                  }),
+                ]);
+                const admission = f.admission(),
+                  pending = f.stats();
+                await admission;
+                const before = await f.presenceRow();
+                await f.tick();
+                assert.notEqual(
+                  (await f.presenceRow()).generation,
+                  before.generation,
+                );
+                assert.equal(f.worker.state, "task-working");
+                model.release.resolve();
+                await polling;
+                assert.equal((await pending).status, 200);
+                const task = await f.b.db
+                  .collection("external_coach_tasks")
+                  .findOne({ _id: new f.b.ObjectId(captured.task.id) });
+                assert.equal(task.status, "completed");
+              } finally {
+                caller.abort();
+                model.release.resolve();
+                await polling;
+              }
+            },
+          );
         await t.test(
           "stopped Worker Stats stays available and replacement cannot escape the single slot",
           async () => {
@@ -559,7 +737,13 @@ for (const lane of ["main", "typed"] as const) {
             const stopped = f.body(),
               stopRead = f.stats();
             await stopped.entered.promise;
+            await f.tick();
             assert.equal((await f.post("/api/stop")).status, 200);
+            assert.equal(
+              (await f.presenceRow()).state,
+              "stopped",
+              "Stop report is never suppressed by deferred idle presence",
+            );
             assert.equal(f.worker.stopConfirmed, true);
             assert.equal((await f.post("/api/run")).status, 200);
             stopped.release.resolve();
@@ -614,6 +798,8 @@ for (const lane of ["main", "typed"] as const) {
               caller = new AbortController(),
               pending = f.stats(caller.signal);
             await held.entered.promise;
+            const presenceBefore = await f.presenceRow();
+            await f.tick();
             caller.abort();
             await assert.rejects(pending);
             // Read back on the same local server to join response-close handling.
@@ -623,6 +809,12 @@ for (const lane of ["main", "typed"] as const) {
               attempt++
             )
               await new Promise((resolve) => setTimeout(resolve, 5));
+            await (f.worker as any).presenceCall;
+            assert.notEqual(
+              (await f.presenceRow()).generation,
+              presenceBefore.generation,
+              "disconnect releases deferred presence",
+            );
             const touches = f.touches;
             await f.worker.pollOnce();
             assert.ok(f.touches > touches);
@@ -637,12 +829,20 @@ for (const lane of ["main", "typed"] as const) {
               const body = f.body(),
                 read = f.stats();
               await body.entered.promise;
+              const beforePresence = await f.presenceRow();
+              await f.tick();
               timeout.abort(
                 new DOMException("synthetic deadline", "TimeoutError"),
               );
               const response = await read;
               assert.equal(response.status, 504);
               assert.equal((await response.json()).error, "BACKEND_TIMEOUT");
+              await (f.worker as any).presenceCall;
+              assert.notEqual(
+                (await f.presenceRow()).generation,
+                beforePresence.generation,
+                "timeout releases deferred presence",
+              );
               body.release.resolve();
               const before = f.touches;
               await f.worker.pollOnce();

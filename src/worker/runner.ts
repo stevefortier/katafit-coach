@@ -158,6 +158,7 @@ export class Worker {
   private active?: Promise<void>;
   private updateQuiesced = false;
   private statsPollPauses = 0;
+  private deferredPresence?: () => void;
   /** Process-local read admission, independent of update/Stop ownership. Reserve
    * before awaiting the displayed-idle poll: it can still be touching credential
    * authority or returning an accepted claim. Never abort/replay that execution.
@@ -181,6 +182,9 @@ export class Worker {
         await this.startup;
         await stopped;
         await this.active?.catch(() => {});
+        // Accepted work keeps its heartbeats while draining. Once idle, no new
+        // periodic presence is admitted; settle the last independent RPC too.
+        await this.presenceCall;
       }, scope);
       scope.throwIfAborted();
       if (invalid()) throw new SafeError("CANCELLED");
@@ -190,6 +194,11 @@ export class Worker {
       return result;
     } finally {
       this.statsPollPauses--;
+      if (!this.statsPollPauses) {
+        const resume = this.deferredPresence;
+        this.deferredPresence = undefined;
+        resume?.();
+      }
     }
   }
 
@@ -1336,8 +1345,15 @@ export class Worker {
         this.update("connecting");
         this.loop = this.run();
         if (this.presence === "reported") {
-          this.presenceTimer = setInterval(() => {
+          const tick = () => {
             if (this.controller.signal.aborted || this.presenceCall) return;
+            if (this.statsPollPauses > 0 && !this.active) {
+              // Coalesce missed idle ticks. Release promptly in finally rather
+              // than starving presence under consecutive eight-second reads.
+              this.deferredPresence = tick;
+              return;
+            }
+            this.deferredPresence = undefined;
             this.presenceCall = this.report("running")
               .then(() => {
                 this.presence = "reported";
@@ -1348,7 +1364,11 @@ export class Worker {
               .finally(() => {
                 this.presenceCall = undefined;
               });
-          }, this.options.presenceMs ?? 10000);
+          };
+          this.presenceTimer = setInterval(
+            tick,
+            this.options.presenceMs ?? 10000,
+          );
         }
         return this.presence;
       } catch (error) {
