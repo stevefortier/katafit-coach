@@ -146,9 +146,11 @@ for (const negotiate of [true, false])
           assert.match(s.discovery.content[0].text, /api\/user\/targets/);
         }
         assert.ok(seen[1].budget.deadlineAt <= seen[0].budget.deadlineAt);
+        // Acquisition-time reuse: the correction's tool call returns the
+        // discovery already acquired in this invocation without refetching.
         assert.equal(
           f.restCalls.filter((c: any) => c.path === "/api/docs/coach").length,
-          2,
+          1,
         );
         assert.ok(
           f.restCalls.every((c: any) => c.authorization === `Bearer ${TOKEN}`),
@@ -276,6 +278,86 @@ for (const control of ["fetched", "denied", "missing", "timeout"] as const)
       }
     },
   );
+
+test("acquisition-time reuse: an identical read within one invocation is served from the acquired result, a failed read is not repeated, and a write forces a fresh read-back", async () => {
+  const f = await taskFixture({
+    negotiate: true,
+    rest: async (c: any) => {
+      if (c.path === "/api/user/targets")
+        return { status: 200, body: { calories: 2350, protein_g: 160 } };
+      if (c.path === "/api/activities/user/today")
+        return { status: 404, body: { error: "Not found" } };
+      if (c.method === "PUT" && c.path === "/api/users/me/rest-days")
+        return { status: 200, body: { per_year: 24 } };
+    },
+  });
+  const seen: Record<string, string[]> = {};
+  const read = async (tools: any[], path: string) => {
+    const r = await attempt(tools, "katafit_rest_request", {
+      method: "GET",
+      path,
+    });
+    (seen[path] ??= []).push(r.text);
+    return r;
+  };
+  let attempts = 0;
+  const w = worker(
+    f,
+    async (_c: string, _s: any, sys: string, tools: any[]) => {
+      if (sys.startsWith("You maintain the long-term memory"))
+        return JSON.stringify({ proposals: [] });
+      attempts++;
+      if (attempts === 1) {
+        await read(tools, "/api/user/targets");
+        await read(tools, "/api/user/targets");
+        for (let i = 0; i < 3; i++)
+          await read(tools, "/api/activities/user/today");
+        return "not json";
+      }
+      // The correction is the same invocation: acquired context still applies.
+      await read(tools, "/api/user/targets");
+      await attempt(tools, "katafit_rest_request", {
+        method: "PUT",
+        path: "/api/users/me/rest-days",
+        body: { per_year: 24 },
+      });
+      await read(tools, "/api/user/targets");
+      return JSON.stringify({
+        general_advice: "Synthetic advice.",
+        meal_recommendations: [],
+        recovery_recommendations: [],
+        workout_directives: [],
+      });
+    },
+  );
+  try {
+    f.enqueue("daily_insight");
+    await w.pollOnce();
+    assert.equal(w.state, "task-result-stored");
+    assert.deepEqual(
+      f.restCalls.map((c: any) => `${c.method} ${c.path}`),
+      [
+        "GET /api/user/targets",
+        "GET /api/activities/user/today",
+        "PUT /api/users/me/rest-days",
+        "GET /api/user/targets",
+      ],
+    );
+    const targets = seen["/api/user/targets"];
+    assert.equal(targets.length, 4);
+    for (const t of targets) assert.match(t, /2350/);
+    const [first, ...repeats] = seen["/api/activities/user/today"];
+    assert.match(first, /REST_READ_MISSING/);
+    for (const r of repeats) {
+      assert.match(r, /REST_READ_MISSING/);
+      assert.match(r, /already failed in this invocation/);
+      assert.match(r, /\/api\/docs\/coach/);
+    }
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
 
 const valid = {
   activity_feedback: { reaction: "flex", reply_worthwhile: true },

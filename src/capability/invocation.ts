@@ -249,6 +249,15 @@ export function requestAdmission(
 
 export class InvocationCapability {
   private readonly known: Occurrence[];
+  /**
+   * Acquisition-time reuse: reads already made in this invocation (all of
+   * its attempts) by canonical path. Any write attempt clears it so a
+   * read-back after a change is always fresh.
+   */
+  private readonly acquired = new Map<
+    string,
+    { result: any; failed?: { error: string; status?: number } }
+  >();
   constructor(private readonly o: InvocationOptions) {
     this.known = [...(o.occurrences ?? [])];
   }
@@ -295,12 +304,22 @@ export class InvocationCapability {
     const target = classifyMemberMessageRequest(args.method, args.path);
     if (target.kind === "reject")
       return refusal("ARGUMENTS_REJECTED", "Malformed member-message path.");
-    if (target.kind === "send")
+    if (target.kind === "send") {
+      this.acquired.clear();
       return this.message(target.recipient, raw, signal);
-    if (args.method === "GET") return this.read(raw, signal);
+    }
+    if (args.method === "GET") return this.read(raw, args.path, signal);
+    this.acquired.clear();
     return this.mutate(raw, args, signal);
   }
-  private async read(raw: any, signal?: AbortSignal) {
+  private async read(raw: any, path: string, signal?: AbortSignal) {
+    const prior = this.acquired.get(path);
+    if (prior?.failed)
+      return text({
+        ...prior.failed,
+        note: "This exact read already failed in this invocation and was not repeated. Use a documented path from GET /api/docs/coach (domain index) or state the fact as unavailable.",
+      });
+    if (prior) return prior.result;
     try {
       const result: any = await restRequest(
         this.o.origin,
@@ -311,7 +330,7 @@ export class InvocationCapability {
       );
       if (result.restReadError) {
         const status = result.restReadError.status;
-        return text({
+        const failed = {
           error:
             status === 401 || status === 403
               ? "REST_READ_DENIED"
@@ -319,6 +338,10 @@ export class InvocationCapability {
                 ? "REST_READ_MISSING"
                 : "REST_READ_UNAVAILABLE",
           status,
+        };
+        this.acquired.set(path, { result: undefined, failed });
+        return text({
+          ...failed,
           note: "This fact is unavailable to this invocation. State that plainly; do not invent it.",
         });
       }
@@ -328,12 +351,18 @@ export class InvocationCapability {
           error: "IMAGE_UNSUPPORTED",
           note: "The configured provider cannot view images; do not describe it.",
         });
-      return { content: result.content, details: {} };
+      const acquired = { content: result.content, details: {} };
+      this.acquired.set(path, { result: acquired });
+      return acquired;
     } catch (error) {
       const code = (error as Error).message;
       if (code === "CANCELLED") throw error;
-      return text({
+      const failed = {
         error: /^[A-Z_]{3,64}$/.test(code) ? code : "REST_READ_UNAVAILABLE",
+      };
+      this.acquired.set(path, { result: undefined, failed });
+      return text({
+        ...failed,
         note: "This read did not complete. Report the fact as unavailable; do not invent it.",
       });
     }
