@@ -416,6 +416,7 @@ export async function admin(
           [
             "/backend-performance.js",
             "/dashboard.js",
+            "/stats.js",
             "/app.js",
             "/terminal.js",
             "/style.css",
@@ -463,24 +464,26 @@ export async function admin(
         const url = new URL(path, origin);
         const params = url.searchParams;
         const allowed =
-          url.pathname === "/api/dashboard/gallery"
-            ? ["cursor"]
-            : url.pathname === "/api/dashboard"
-              ? ["before"]
-              : url.pathname === "/api/dashboard/members"
-                ? []
-                : url.pathname === "/api/dashboard/map" ||
-                    url.pathname === "/api/dashboard/timeline"
-                  ? ["date", "start", "end", "cursor"]
-                  : url.pathname === "/api/dashboard/event"
-                    ? ["event_id", "date", "start", "end"]
-                    : url.pathname === "/api/dashboard/activity"
-                      ? ["id"]
-                      : url.pathname === "/api/dashboard/avatar"
+          url.pathname === "/api/dashboard/stats"
+            ? ["user_id"]
+            : url.pathname === "/api/dashboard/gallery"
+              ? ["cursor"]
+              : url.pathname === "/api/dashboard"
+                ? ["before"]
+                : url.pathname === "/api/dashboard/members"
+                  ? []
+                  : url.pathname === "/api/dashboard/map" ||
+                      url.pathname === "/api/dashboard/timeline"
+                    ? ["date", "start", "end", "cursor"]
+                    : url.pathname === "/api/dashboard/event"
+                      ? ["event_id", "date", "start", "end"]
+                      : url.pathname === "/api/dashboard/activity"
                         ? ["id"]
-                        : url.pathname === "/api/dashboard/photo"
-                          ? ["activity_id", "file_id"]
-                          : [];
+                        : url.pathname === "/api/dashboard/avatar"
+                          ? ["id"]
+                          : url.pathname === "/api/dashboard/photo"
+                            ? ["activity_id", "file_id"]
+                            : [];
         if (
           (url.pathname !== "/api/dashboard/members" && !allowed.length) ||
           [...params.keys()].some(
@@ -497,7 +500,12 @@ export async function admin(
         let target: string;
         const photo = url.pathname === "/api/dashboard/photo";
         const avatar = url.pathname === "/api/dashboard/avatar";
-        if (photo)
+        if (url.pathname === "/api/dashboard/stats") {
+          const id = params.get("user_id");
+          if (!id || !/^[a-f0-9]{24}$/.test(id))
+            throw new SafeError("ARGUMENTS_REJECTED");
+          target = `/api/friends/dojo/member-stats?user_id=${id}`;
+        } else if (photo)
           target = `/api/media/${segment("activity_id")}/files/${segment("file_id")}`;
         else if (avatar) {
           const id = params.get("id");
@@ -611,6 +619,7 @@ export async function admin(
             { path: target },
             controller.signal,
             Object.values(store.secrets),
+            url.pathname === "/api/dashboard/stats" ? 2097152 : 262144,
           );
           controller.signal.throwIfAborted();
           if (

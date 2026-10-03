@@ -115,7 +115,7 @@ test("served Gallery independently pages historical inventories, lazily decodes 
       store.secrets.admin,
     );
     const tabs = page.getByRole("tablist", { name: "Dojo sections" });
-    assert.equal(await tabs.getByRole("tab").count(), 3);
+    assert.equal(await tabs.getByRole("tab").count(), 4);
     assert.equal(await page.locator("#dashboardGallery").isVisible(), false);
     await tabs.getByRole("tab", { name: "Gallery", exact: true }).click();
     assert.equal(

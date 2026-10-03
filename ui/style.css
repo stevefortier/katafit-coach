@@ -256,6 +256,38 @@ a.button[aria-disabled="true"] {
   }
 }
 
+/* Canonical Stats retains each member separately, including in All. */
+.stats-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.stats-controls select {
+  width: auto;
+  max-width: 100%;
+  margin: 0;
+}
+.stats-member {
+  min-width: 0;
+  margin-top: 1rem;
+}
+.stats-lane {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding: 0.6rem 0;
+}
+.stats-lane h4,
+.stats-member h3 {
+  overflow-wrap: anywhere;
+  margin: 0.4rem 0;
+}
+.stats-lane svg {
+  display: block;
+  width: 100%;
+  max-height: 160px;
+}
+
 :root {
   color-scheme: dark;
   --bg: #0b0b0b;
@@ -2305,6 +2337,15 @@ html.coach-covered #workspaceScroll {
   min-width: 0;
   margin: 0;
   padding: 8px 6px;
+}
+@media (max-width: 400px) {
+  .dashboard-subtabs {
+    flex-wrap: wrap;
+  }
+  .dashboard-subtabs button {
+    flex-basis: calc(50% - 3px);
+    overflow-wrap: normal;
+  }
 }
 #dashboardPanel [role="tabpanel"][hidden] {
   display: none;

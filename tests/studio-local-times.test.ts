@@ -34,6 +34,7 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
       const file = [
         "/backend-performance.js",
         "/dashboard.js",
+        "/stats.js",
         "/app.js",
         "/terminal.js",
         "/style.css",
