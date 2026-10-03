@@ -138,7 +138,7 @@ export async function runAcceptance(): Promise<AcceptanceReceipt> {
       "Final package/browser/update/full-suite and independent review remain parent-owned gates.",
       "Planner catalog on this source offers finite autonomy + REST GET; dynamic memory, configured integration and generic supported-action parity for heartbeat/event are not implemented by this harness or certified.",
       "OS-crash, lost ACK, upgrade, credential rotation, stale producers and full A1-A13 matrices remain covered only by separate focused suites, not this integrated run.",
-      "Typed daily_insight is exercised through installed default native Worker; other typed kinds are not enumerated native execution proofs in this harness.",
+      "All actually advertised typed producers and main member reply are enumerated and executed in installed-native-per-kind; media_chat is the backend's explicit text-only media reply, not image/photo-analysis proof. Declared but unregistered kinds are not advertised or counted as executed.",
     ],
     cleanup: { complete: false, containers: [] },
   };

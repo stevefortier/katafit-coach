@@ -427,13 +427,6 @@ export async function typedAcceptance(
           savedPersona: true,
           enabledSkills: true,
         },
-        ...[
-          "main_member_reply",
-          "activity_feedback",
-          "photo_feedback",
-          "closeout",
-          "suggestion",
-        ].map((kind) => ({ kind, status: "not_executed", executed: false })),
       ],
       nativeCycle: nativeWork,
       providerPayloads: bodies,

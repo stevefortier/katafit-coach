@@ -38,8 +38,8 @@ test(
       /real typed Worker.*real scheduled native cycle/,
     );
     assert.equal(concurrent.action.kind, "member_message");
-    assert.equal(concurrent.cycleCompletion.status, "completed");
-    assert.equal(concurrent.cycleCompletion.completions.length, 1);
+    assert.equal(concurrent.nativeCycle.status, "completed");
+    assert.equal(concurrent.nativeCycle.completions.length, 1);
     assert.ok(concurrent.dynamicMemory.populated);
     const kinds = receipt.phases.find(
       (phase: any) => phase.name === "installed-native-per-kind",
