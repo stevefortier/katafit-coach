@@ -91,7 +91,10 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
       ]) {
         const box = await page.locator("#" + id).boundingBox();
         assert.ok(
-          box && box.x >= 0 && box.x + box.width <= width && box.height >= 44,
+          box &&
+            box.x >= 0 &&
+            box.x + box.width <= width &&
+            box.height >= (id === "coachLauncher" && width <= 700 ? 36 : 44),
           id,
         );
       }

@@ -119,18 +119,16 @@ test("served exact map composes native civil-date navigation, decoded 512 roster
           { width: 341, height: 512, fit: "cover" },
         ]);
         assert.equal(
-          await page.getByLabel("Month", { exact: true }).inputValue(),
-          "9",
+          await page.locator("#dashboardMapDate").inputValue(),
+          "2026-09-28",
         );
-        assert.equal(
-          await page.getByLabel("Year", { exact: true }).inputValue(),
-          "2026",
+        assert.match(
+          await page.locator("#dashboardCalendarButton").innerText(),
+          /Monday.*Sep 28.*2026/,
         );
-        assert.equal(
-          await page.getByLabel("Day of month", { exact: true }).inputValue(),
-          "28",
-        );
-        assert.equal(await page.locator("#dashboardMapDay option").count(), 30);
+        await page.locator("#dashboardCalendarButton").click();
+        assert.equal(await page.locator("[data-calendar-date]").count(), 30);
+        await page.keyboard.press("Escape");
         const group = page.locator('.dashboard-map-group[data-count="3"]');
         await group.click();
         await page
@@ -149,6 +147,7 @@ test("served exact map composes native civil-date navigation, decoded 512 roster
             .getAttribute("aria-pressed"),
           "true",
         );
+        if (width < 700) await page.locator("#dashboardInspectorClose").click();
         await group.click({ timeout: 3000 });
         await page
           .locator(`.dashboard-map-choice[data-event-id="${ev(1)}"]`)
@@ -192,7 +191,8 @@ test("served exact map composes native civil-date navigation, decoded 512 roster
         assert.ok(geometry.scroll <= width + 1, JSON.stringify(geometry));
         assert.ok(
           width === 320
-            ? geometry.detail.top >= geometry.map.bottom
+            ? geometry.detail.top === geometry.map.top &&
+                geometry.detail.bottom === geometry.map.bottom
             : geometry.detail.left >= geometry.map.right,
         );
         // Ordinary approved date controls update the same canonical stream.

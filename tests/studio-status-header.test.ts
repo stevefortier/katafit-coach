@@ -138,6 +138,16 @@ test("Studio header remains visible on scroll and shows semantic worker state", 
       await page.locator("#unlock").click();
       await page.locator("#studio").waitFor({ state: "visible" });
       await refresh("idle");
+      // Map is intentionally viewport-locked; Settings retains normal page scroll.
+      await page.locator("#settingsTab").click();
+      await page.waitForFunction(
+        () => !document.documentElement.classList.contains("compact-map"),
+      );
+      await page.evaluate(() => {
+        const spacer = document.createElement("div");
+        spacer.style.height = "1800px";
+        document.getElementById("settingsPanel")!.append(spacer);
+      });
       await page.evaluate(() =>
         window.scrollTo(0, document.documentElement.scrollHeight),
       );

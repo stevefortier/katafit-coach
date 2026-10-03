@@ -321,7 +321,7 @@ test("served Dojo subtabs preserve scope, keyboard selection and map return geom
           overflow: document.documentElement.scrollWidth > innerWidth,
         };
       });
-      assert.equal(geometry.position, "static");
+      assert.equal(geometry.position, "sticky");
       assert.ok(geometry.rosterBottom <= geometry.tabsTop + 1);
       assert.ok(geometry.tabsBottom <= geometry.paneTop + 1);
       assert.equal(geometry.overflow, false);

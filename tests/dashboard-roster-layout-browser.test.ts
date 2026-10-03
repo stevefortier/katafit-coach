@@ -112,8 +112,8 @@ test("roster covers full-height slots with decoded larger avatars and cached sel
         };
       });
       assert.ok(
-        geometry.all.bottom <= geometry.card.top,
-        `All members must be above member slots at ${width}px`,
+        geometry.all.top === geometry.card.top,
+        `Select All shares the member rail row at ${width}px`,
       );
       assert.ok(
         geometry.all.width < 170,
@@ -122,7 +122,7 @@ test("roster covers full-height slots with decoded larger avatars and cached sel
       assert.equal(
         geometry.sharedParent,
         false,
-        "All members is outside the photo rail",
+        "member photo/content wrapper is retained",
       );
       assert.equal(
         geometry.overflow,
@@ -226,7 +226,7 @@ test("roster covers full-height slots with decoded larger avatars and cached sel
       );
       const selectedLeft = await rail.evaluate((el) => el.scrollLeft);
       await page
-        .getByRole("button", { name: "All members", exact: true })
+        .getByRole("button", { name: "Select All", exact: true })
         .click();
       assert.ok(
         Math.abs(
@@ -291,7 +291,7 @@ test("roster covers full-height slots with decoded larger avatars and cached sel
         1,
       );
       const all = page.getByRole("button", {
-        name: "All members",
+        name: "Select All",
         exact: true,
       });
       await all.focus();
@@ -309,7 +309,7 @@ test("roster covers full-height slots with decoded larger avatars and cached sel
         await page
           .locator("#dashboardMemberCards")
           .evaluate((el) => getComputedStyle(el).position),
-        "static",
+        "sticky",
         "shared roster remains in normal flow instead of covering pane rows",
       );
       const evidence = process.env.COACH_ROSTER_EVIDENCE;

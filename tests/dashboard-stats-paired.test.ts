@@ -459,7 +459,7 @@ test(
       );
       await page
         .locator("#dashboardMemberCards button")
-        .filter({ hasText: "All members" })
+        .filter({ hasText: "Select\nAll" })
         .first()
         .click();
       await page
@@ -538,7 +538,7 @@ test(
       await held;
       await page
         .locator("#dashboardMemberCards button")
-        .filter({ hasText: "All members" })
+        .filter({ hasText: "Select\nAll" })
         .first()
         .click();
       assert.equal(await page.locator(".stats-member").count(), 2);

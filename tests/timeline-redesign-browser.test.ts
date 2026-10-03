@@ -343,9 +343,7 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       await page.locator(".dashboard-timeline-count").innerText(),
       /1 visible · 323 loaded/,
     );
-    await page
-      .getByRole("button", { name: "All members", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Select All", exact: true }).click();
     assert.match(
       await page.locator(".dashboard-timeline-count").innerText(),
       /323 visible · 323 loaded/,

@@ -27,21 +27,38 @@
             <span id="coachLauncherName">Coach</span
             ><span id="coachLauncherIndicator" class="coach-new-output" hidden
               ><span class="native-sr-only">New output</span></span
-            ></button
-          ><span class="pill" id="state" data-tone="neutral">LOCKED</span>
+            >
+          </button>
+          <div
+            id="noticeBar"
+            tabindex="0"
+            role="button"
+            aria-label="Read full status message"
+            aria-haspopup="dialog"
+            aria-controls="noticeDetails"
+          >
+            <div
+              id="noticeRegion"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <span id="noticeIcon" aria-hidden="true"></span
+              ><strong id="noticeLabel" hidden></strong>
+              <p id="notice"></p>
+            </div>
+          </div>
+          <span class="pill" id="state" data-tone="neutral">LOCKED</span>
           <button id="lockStudio" class="secondary" hidden>Lock studio</button>
         </header>
-        <div id="noticeBar">
-          <div
-            id="noticeRegion"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            <span id="noticeIcon" aria-hidden="true"></span
-            ><strong id="noticeLabel" hidden></strong>
-            <p id="notice"></p>
-          </div>
+        <div
+          id="noticeDetails"
+          popover="auto"
+          role="dialog"
+          aria-label="Full status message"
+        >
+          <button id="noticeDetailsClose" type="button">Close</button>
+          <p id="noticeDetailsText"></p>
         </div>
         <section id="login" class="card">
           <h2>Unlock Coach</h2>
@@ -192,26 +209,15 @@
                   >
                     ←
                   </button>
-                  <div class="dashboard-date-selects">
-                    <label
-                      >Year<select
-                        id="dashboardMapYear"
-                        aria-label="Year"
-                      ></select
-                    ></label>
-                    <label
-                      >Month<select
-                        id="dashboardMapMonth"
-                        aria-label="Month"
-                      ></select
-                    ></label>
-                    <label
-                      >Day<select
-                        id="dashboardMapDay"
-                        aria-label="Day of month"
-                      ></select
-                    ></label>
-                  </div>
+                  <button
+                    id="dashboardCalendarButton"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                    aria-controls="dashboardCalendar"
+                  >
+                    Choose date
+                  </button>
                   <button
                     id="dashboardMapNext"
                     type="button"
@@ -220,12 +226,40 @@
                     →
                   </button>
                 </div>
-                <output
-                  id="dashboardSelectedDate"
-                  aria-live="polite"
-                  aria-label="Selected weekday"
-                ></output>
-                <button id="dashboardMapToday" type="button">Today</button>
+                <div
+                  id="dashboardCalendar"
+                  popover="auto"
+                  role="dialog"
+                  aria-label="Choose event day"
+                >
+                  <div class="dashboard-calendar-navigation">
+                    <button
+                      id="dashboardCalendarPrevious"
+                      type="button"
+                      aria-label="Previous month"
+                    >
+                      ←
+                    </button>
+                    <strong
+                      id="dashboardCalendarMonth"
+                      aria-live="polite"
+                    ></strong>
+                    <button
+                      id="dashboardCalendarNext"
+                      type="button"
+                      aria-label="Next month"
+                    >
+                      →
+                    </button>
+                  </div>
+                  <div
+                    id="dashboardCalendarDays"
+                    class="dashboard-calendar-days"
+                    role="group"
+                    aria-label="Days of month"
+                  ></div>
+                  <button id="dashboardMapToday" type="button">Today</button>
+                </div>
                 <label for="dashboardMapDate" class="dashboard-date-fallback">
                   <span class="dashboard-assistive"
                     >Event occurrence day (device timezone; map and
@@ -240,6 +274,12 @@
                 role="status"
                 aria-live="polite"
               ></p>
+
+              <section
+                id="dashboardTimeline"
+                class="dashboard-timeline"
+                aria-label="Day activity timeline"
+              ></section>
               <div class="dashboard-map-layout">
                 <div class="dashboard-map-column">
                   <div
@@ -247,12 +287,15 @@
                     class="dashboard-map"
                     aria-label="Interactive OpenStreetMap activity map"
                   ></div>
-                  <section
-                    id="dashboardTimeline"
-                    class="dashboard-timeline"
-                    aria-label="Day activity timeline"
-                  ></section>
                 </div>
+                <button
+                  id="dashboardInspectorClose"
+                  type="button"
+                  aria-label="Close event detail"
+                  hidden
+                >
+                  ×
+                </button>
                 <aside
                   id="dashboardMapSelection"
                   class="dashboard-map-selection"

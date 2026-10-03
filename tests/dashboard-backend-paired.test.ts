@@ -471,6 +471,7 @@ test(
             requestedTiles.length > 0,
             "served Studio uses OSM raster tiles",
           );
+          await page.locator("#dashboard-map-tab").click();
           await page.locator("#dashboardMap .dashboard-event-dot").click();
           await page.waitForFunction(
             () =>
@@ -512,6 +513,7 @@ test(
             {},
             { timeout: 10000 },
           );
+          await page.locator("#dashboard-gallery-tab").click();
           await page.locator("#dashboardGallery").scrollIntoViewIfNeeded();
           await page.waitForFunction(
             () =>
@@ -601,6 +603,7 @@ test(
               () => document.documentElement.scrollWidth <= innerWidth + 1,
             ),
           );
+          await page.locator("#dashboard-map-tab").click();
           await page.locator("#dashboardMap .dashboard-event-dot").click();
           await page.waitForFunction(() =>
             document
@@ -612,6 +615,7 @@ test(
             path: `${evidence}/paired-dashboard-${width}.png`,
             fullPage: true,
           });
+          await page.locator("#dashboard-gallery-tab").click();
           const image = page.locator("#dashboardGallery img").first();
           const readsBeforeViewer = storageCalls.length;
           await image.click();
