@@ -2295,3 +2295,47 @@ html.coach-covered #workspaceScroll {
     line-height: 16px;
   }
 }
+.autonomy-status {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 12px 0;
+}
+.autonomy-status dt {
+  color: var(--muted);
+}
+.autonomy-status dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.autonomy-list {
+  margin: 8px 0 16px;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+.autonomy-mandate fieldset {
+  border: 1px solid var(--line);
+  margin: 12px 0;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.autonomy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+.autonomy-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.autonomy-mandate textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (max-width: 600px) {
+  .autonomy-status {
+    grid-template-columns: 1fr;
+  }
+}

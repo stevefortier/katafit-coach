@@ -160,11 +160,18 @@ export class AutonomyScheduler {
     } catch (error) {
       return this.failed(error, tickMs);
     }
+    // A pause or stop that landed during the reads admits no claim.
+    if (this.stopped) return { outcome: "stopped", delayMs: 0 };
+    if (this.paused) {
+      this.set("paused");
+      return { outcome: "paused", delayMs: 0 };
+    }
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, this.lifetime.signal]);
     this.cycle = controller;
     try {
       return await admission.run("autonomy", signal, async () => {
+        signal.throwIfAborted();
         this.set("claiming");
         const claim = await backend.claimCycle({
           lease_seconds: this.options.leaseSeconds ?? 120,

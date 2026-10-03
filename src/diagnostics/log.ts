@@ -64,6 +64,10 @@ export const stages = [
   "autonomy-completed",
   "autonomy-blocked",
   "autonomy-action",
+  "autonomy-participation",
+  "autonomy-started",
+  "autonomy-stopped",
+  "autonomy-outcome-unknown",
 ] as const;
 export type Stage = (typeof stages)[number];
 export interface LogInput {

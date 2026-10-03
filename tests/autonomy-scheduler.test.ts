@@ -450,3 +450,39 @@ test("FC2: the claim negotiates coach.capability.v1 and the runner receives the 
     await fake.close();
   }
 });
+
+test("C5: a pause that lands while the due queue is read admits no claim", async () => {
+  const fake = await setup();
+  const r = recorder();
+  const backend = fake.client("installation-a");
+  let reading!: () => void;
+  const read = new Promise<void>((resolve) => (reading = resolve));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const list = backend.listWork.bind(backend);
+  backend.listWork = async (...args: Parameters<typeof list>) => {
+    reading();
+    await gate;
+    return list(...args);
+  };
+  const s = new AutonomyScheduler({
+    backend,
+    admission: new Admission(),
+    run: r.run,
+    random: () => 0.5,
+  });
+  try {
+    fake.enqueue({ kind: "event", subject_ids: [MEMBER] });
+    const tick = s.tick();
+    await read;
+    const paused = s.pause();
+    release();
+    await paused;
+    assert.equal((await tick).outcome, "paused");
+    assert.equal(r.cycles.length, 0);
+    assert.ok(!paths(fake).includes("POST /api/coach/autonomy/work/claim"));
+  } finally {
+    await s.stop();
+    await fake.close();
+  }
+});

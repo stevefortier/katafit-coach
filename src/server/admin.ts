@@ -24,6 +24,9 @@ import { Worker } from "../worker/runner.js";
 import { Client, ToolFailure } from "../katafit/client.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 import { archiveTaskInvalidation } from "../worker/taskInvalidationArchive.js";
+import { Admission } from "../runtime/admission.js";
+import { AutonomyHost, type AutonomyHostOptions } from "../autonomy/host.js";
+import { AutonomyBackend, AutonomyFailure } from "../autonomy/backend.js";
 // The stable runtime imports this value from the selected application module.
 // Absence means a legacy one-step admin; never infer capability from source text.
 export const updatePreparationProtocol = 1;
@@ -33,6 +36,9 @@ export async function admin(
   infer = complete,
   onShutdown?: () => void,
   updates = new Updates(null, null),
+  options: {
+    autonomy?: Pick<AutonomyHostOptions, "runtimes" | "scheduler">;
+  } = {},
 ) {
   const logs = new Diagnostics(store.dir);
   const onBackendDiagnostic = (
@@ -49,6 +55,14 @@ export async function admin(
     },
   });
   let worker: Worker | undefined;
+  // One inference slot shared by the request Worker and the continuous Coach.
+  const admission = new Admission();
+  const autonomy = new AutonomyHost({
+    ...options.autonomy,
+    store,
+    admission,
+    onDiagnostic: (event) => logs.record(event),
+  });
   // Preview is isolated from worker/native lifecycle: it never holds `busy`,
   // but it excludes configuration mutation and update admission.
   let preview: AbortController | undefined;
@@ -164,6 +178,47 @@ export async function admin(
   };
   const memoryCall = (name: string, args: unknown) =>
     memoryOperation()(name, args);
+  // Host-only autonomy surfaces: the backend owns the mandate; this proxy
+  // only adds the installation credential and never widens the request.
+  const autonomyCall = <T>(work: (backend: AutonomyBackend) => Promise<T>) => {
+    const token = store.secrets.token;
+    if (!token) throw new SafeError("TOKEN_REQUIRED");
+    return work(
+      new AutonomyBackend(
+        store.publicConfig().origin,
+        token,
+        AbortSignal.timeout(15000),
+        Object.values(store.secrets),
+      ),
+    );
+  };
+  const autonomyFailure = (error: AutonomyFailure) => ({
+    status:
+      error.code === "AUTONOMY_INVALID"
+        ? 400
+        : error.code === "AUTONOMY_OUTCOME_UNKNOWN"
+          ? 502
+          : error.status && error.status >= 400 && error.status < 500
+            ? error.status
+            : 503,
+    body: { error: error.code },
+  });
+  const autonomyView = async () => {
+    let backend: unknown;
+    try {
+      backend = await autonomyCall((b) => b.status());
+    } catch (error) {
+      backend = {
+        error:
+          error instanceof AutonomyFailure ? error.code : safeError(error).code,
+      };
+    }
+    return {
+      participate: store.autonomySettings().participate,
+      local: autonomy.snapshot(),
+      backend,
+    };
+  };
   // Default "My memories": ordinary account REST. The retired Studio MCP
   // collection is reachable only under its own separately labeled path.
   const accountMemory = accountMemoryRoutes(
@@ -210,6 +265,7 @@ export async function admin(
         vision: c.provider.vision === true,
         skills,
         personaRevision: String(c.revision),
+        admission,
         onDiagnostic: (event) => logs.record(event),
         archiveTaskInvalidation: (record) =>
           archiveTaskInvalidation(store.dir, record),
@@ -245,6 +301,29 @@ export async function admin(
       }
     }
   };
+  // The continuous Coach runs only while this installation participates; it
+  // is independent of the Worker, the native terminal and any browser.
+  const startAutonomy = async () => {
+    if (
+      !store.autonomySettings().participate ||
+      closing ||
+      configurationUncertain ||
+      updateQuiesced ||
+      updates.applying ||
+      updates.recovering
+    )
+      return;
+    try {
+      await autonomy.start();
+    } catch (error) {
+      logs.record({
+        source: "worker",
+        stage: "operation-failed",
+        level: "error",
+        error: safeError(error),
+      });
+    }
+  };
   const transition = async <T>(
     operation: string,
     body: any,
@@ -267,8 +346,12 @@ export async function admin(
       resumed: false,
     };
     let safeToResume = false;
+    // Configuration changes reach autonomy only through a restart; an active
+    // cycle is aborted without local release (the backend lease fences it).
+    const autonomyWasRunning = autonomy.running;
     try {
       await terminal.stop();
+      await autonomy.stop();
       if (wasRunning) await worker!.stop();
       if (
         worker?.state === "stopped" &&
@@ -323,6 +406,7 @@ export async function admin(
             "Coach could not restart. Retry starts the saved revision only; it never saves again or replays chat or actions.";
         }
       }
+      if (autonomyWasRunning) await startAutonomy();
       lifecycle.running = !!worker && worker.state !== "stopped";
       lifecycle.phase = "complete";
       settled();
@@ -463,7 +547,10 @@ export async function admin(
         return send(401, { error: "UNAUTHORIZED" });
       if (req.headers.origin && req.headers.origin !== origin)
         return send(403, { error: "ORIGIN_REJECTED" });
-      if (req.method === "POST" && req.headers.origin !== origin)
+      if (
+        (req.method === "POST" || req.method === "PUT") &&
+        req.headers.origin !== origin
+      )
         return send(403, { error: "ORIGIN_REQUIRED" });
       if (req.method === "GET" && /^\/api\/dashboard(?:[/?]|$)/.test(path)) {
         if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
@@ -964,6 +1051,58 @@ export async function admin(
         return send(200, { persona: stockPersona() });
       if (req.method === "GET" && path === "/api/logs")
         return send(200, logs.snapshot());
+      if (req.method === "GET" && path === "/api/autonomy/status")
+        return send(200, await autonomyView());
+      if (req.method === "GET" && path === "/api/autonomy/mandate")
+        return send(200, await autonomyCall((b) => b.mandate()));
+      if (
+        req.method === "GET" &&
+        (path === "/api/autonomy/reports" ||
+          path.startsWith("/api/autonomy/reports?"))
+      ) {
+        const params = new URL(path, origin).searchParams;
+        if (
+          [...params.keys()].some(
+            (k) =>
+              !["cursor", "limit"].includes(k) || params.getAll(k).length !== 1,
+          ) ||
+          (params.has("limit") && !/^[1-9][0-9]?$/.test(params.get("limit")!))
+        )
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        return send(
+          200,
+          await autonomyCall((b) =>
+            b.reports({
+              ...(params.has("cursor")
+                ? { cursor: params.get("cursor")! }
+                : {}),
+              ...(params.has("limit")
+                ? { limit: Number(params.get("limit")) }
+                : {}),
+            }),
+          ),
+        );
+      }
+      if (req.method === "PUT" && path === "/api/autonomy/mandate") {
+        if (closing) return send(503, { error: "SERVICE_CLOSING" });
+        if (!req.headers["content-type"]?.startsWith("application/json"))
+          return send(415, { error: "JSON_REQUIRED" });
+        if (updateQuiesced) return send(409, { error: "UPDATE_QUIESCED" });
+        if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+        let raw = "";
+        for await (const c of req) {
+          raw += c;
+          if (Buffer.byteLength(raw) > 65536)
+            return send(413, { error: "TOO_LARGE" });
+        }
+        let input: any;
+        try {
+          input = JSON.parse(raw);
+        } catch {
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        }
+        return send(200, await autonomyCall((b) => b.putMandate(input)));
+      }
       if (req.method === "GET" && path === "/api/status")
         return send(200, {
           state: worker?.state ?? "stopped",
@@ -1080,6 +1219,7 @@ export async function admin(
         updateQuiesced = false;
         updateWasRunning = false;
         worker?.releaseUpdateQuiesce();
+        await startAutonomy();
         return send(200, { ok: true });
       }
       if (path === "/api/update/quiesce" && updates.snapshot().supported) {
@@ -1091,6 +1231,7 @@ export async function admin(
             await updateQuiescePending;
             if (
               !terminal.idle ||
+              !autonomy.safeToReplace ||
               (worker && (!worker.stopConfirmed || !worker.safeToReplace))
             )
               throw new Error("WORKER_STOP_UNCONFIRMED");
@@ -1107,16 +1248,25 @@ export async function admin(
           updates.recovering ||
           busy ||
           preview ||
+          // An in-flight autonomy cycle or action is never interrupted.
+          autonomy.busy ||
           (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
         )
           return send(409, { error: "UPDATE_BUSY" });
+        // An abandoned autonomy write must be settled before replacement.
+        if (!autonomy.safeToReplace) {
+          worker?.releaseUpdateQuiesce();
+          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+        }
         updateQuiesced = true;
         updateWasRunning = !!worker && worker.state !== "stopped";
         const stopping = (async () => {
+          await autonomy.stop();
           await terminal.stop();
           if (updateWasRunning) await worker!.stop();
           if (
             !terminal.idle ||
+            !autonomy.safeToReplace ||
             (worker && (!worker.stopConfirmed || !worker.safeToReplace))
           )
             throw new Error("WORKER_STOP_UNCONFIRMED");
@@ -1155,6 +1305,23 @@ export async function admin(
               }
             : { error: "OPERATION_IN_PROGRESS" },
         );
+      if (path === "/api/autonomy/participate") {
+        if (
+          Object.keys(input).join() !== "participate" ||
+          typeof input.participate !== "boolean"
+        )
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        // Durable first: a restart honours exactly what was acknowledged.
+        await store.setAutonomyParticipate(input.participate);
+        logs.record({
+          source: "studio",
+          stage: "autonomy-participation",
+          metadata: { status: input.participate ? 1 : 0 },
+        });
+        if (input.participate) await startAutonomy();
+        else await autonomy.stop();
+        return send(200, await autonomyView());
+      }
       if (/^\/api\/memories(?:\/|$)/.test(path)) {
         const result = await accountMemory.post(path, body);
         return result === undefined
@@ -1329,10 +1496,18 @@ export async function admin(
             hint: "Finish or cancel the other operation, then retry the upgrade.",
           });
         }
+        if (autonomy.busy) {
+          await cancelPrepared("UPDATE_BUSY");
+          return send(409, {
+            error: "UPDATE_BUSY",
+            hint: admissionHelp.UPDATE_BUSY,
+          });
+        }
         // Reject before native teardown or irreversible Worker.stop().
         if (
-          worker &&
-          (!worker.safeToReplace || (!wasRunning && !worker.stopConfirmed))
+          !autonomy.safeToReplace ||
+          (worker &&
+            (!worker.safeToReplace || (!wasRunning && !worker.stopConfirmed)))
         ) {
           await cancelPrepared("WORKER_STOP_UNCONFIRMED");
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
@@ -1356,6 +1531,9 @@ export async function admin(
         }
         busy = true;
         try {
+          await autonomy.stop();
+          if (!autonomy.safeToReplace)
+            throw new SafeError("WORKER_STOP_UNCONFIRMED");
           await terminal.stop();
           if (!terminal.idle) throw new Error("WORKER_STOP_UNCONFIRMED");
           if (wasRunning) await worker!.stop();
@@ -1374,6 +1552,7 @@ export async function admin(
             worker?.safeToReplace
           )
             await startWorker().catch(() => {});
+          if (!updates.applying) await startAutonomy();
           if (error instanceof SafeError)
             return send(400, { error: error.code, hint: error.hint });
           return send(503, {
@@ -1640,6 +1819,10 @@ export async function admin(
       if (account) return send(account.status, account.body);
       const memory = memoryError(e);
       if (memory) return send(memory.status, memory.body);
+      if (e instanceof AutonomyFailure) {
+        const failure = autonomyFailure(e);
+        return send(failure.status, failure.body);
+      }
       if ((e as Error)?.message === "NATIVE_HISTORY_BUSY")
         return send(409, {
           error: "NATIVE_HISTORY_BUSY",
@@ -1689,6 +1872,8 @@ export async function admin(
     server.listen(port, "127.0.0.1", resolve);
   });
   origin = `http://127.0.0.1:${(server.address() as any).port}`;
+  // A participating installation resumes autonomy on (re)start by itself.
+  void startAutonomy();
   return {
     origin,
     async close() {
@@ -1699,6 +1884,7 @@ export async function admin(
       await terminal.close();
       for (const controller of memberReads) controller.abort();
       preview?.abort();
+      await autonomy.stop();
       await worker?.stop();
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));

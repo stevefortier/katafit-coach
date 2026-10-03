@@ -453,6 +453,9 @@ export class Store {
     admin: randomBytes(32).toString("hex"),
   };
   readonly skills: SkillStore;
+  // Installation-local, never part of a configuration revision: older owners
+  // ignore autonomy.json, and anything unreadable means not participating.
+  private autonomy = { participate: false };
   constructor(
     readonly dir: string,
     // An old stable runtime imports the new child's Store without passing a
@@ -594,6 +597,21 @@ export class Store {
       this.secrets.apiKey = this.keyOf(activeProvider(this.registry));
     }
     this.checkHistory();
+    this.autonomy = { participate: false };
+    try {
+      const p = this.dir + "/autonomy.json";
+      if (!(await lstat(p)).isSymbolicLink()) {
+        const data = JSON.parse((await regularBytes(p, 4096)).toString("utf8"));
+        if (
+          data &&
+          Object.keys(data).join() === "participate" &&
+          typeof data.participate === "boolean"
+        )
+          this.autonomy = { participate: data.participate };
+      }
+    } catch {
+      // Absent or unreadable: fail closed to not participating.
+    }
     assertNoSecrets(
       [this.config, this.previous, this.history],
       [...loaded, ...Object.values(this.secrets)],
@@ -631,6 +649,19 @@ export class Store {
       })),
       limits: { ...registryLimits },
     };
+  }
+  autonomySettings() {
+    return { ...this.autonomy };
+  }
+  /** Serialized with configuration writes; durable before it takes effect. */
+  setAutonomyParticipate(participate: boolean) {
+    if (typeof participate !== "boolean") throw new Error("INVALID_CONFIG");
+    const run = this.pending.then(async () => {
+      await this.atomic("autonomy", { participate });
+      this.autonomy = { participate };
+    });
+    this.pending = run.catch(() => {});
+    return run;
   }
   async atomic(file: string, data: unknown) {
     const p = this.dir + "/" + file + ".json";

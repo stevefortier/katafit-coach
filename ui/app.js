@@ -265,13 +265,13 @@ action("restartRetry", async () => {
     }
   }
 });
-async function api(path, body, signal) {
+async function api(path, body, signal, method) {
   const generation = authGeneration,
     requestKey = key;
   let r, data;
   try {
     r = await fetch("/api/" + path, {
-      method: body === undefined ? "GET" : "POST",
+      method: method ?? (body === undefined ? "GET" : "POST"),
       headers: {
         Authorization: "Bearer " + requestKey,
         "Content-Type": "application/json",
@@ -1434,7 +1434,14 @@ let logData = { entries: [] },
   logController;
 const settingsGroups = {
   settings: ["katafit", "models", "updates"],
-  coachSettings: ["persona", "preview", "skills", "memories", "worker"],
+  coachSettings: [
+    "persona",
+    "preview",
+    "skills",
+    "memories",
+    "autonomy",
+    "worker",
+  ],
 };
 const settingsSections = Object.values(settingsGroups).flat();
 const rememberedSettings = { settings: "katafit", coachSettings: "persona" };
@@ -1469,6 +1476,7 @@ function selectSettingsSection(section, navigate = true) {
       if (!error.stale) $("skillsRevision").textContent = error.message;
     });
   if (settingsSection === "memories" && key) void loadMemories();
+  if (settingsSection === "autonomy" && key) void loadAutonomy(true);
   if (historyVisible()) void loadPersonaHistory();
   if (skillHistoryVisible()) void loadSkillHistory();
   logVisibility();
@@ -1498,6 +1506,283 @@ for (const section of settingsSections) {
     });
   };
 }
+// Autonomy: local participation, the backend mandate (CAS), monitoring status
+// apart from terminal presence, blocked work and content-free cycle receipts.
+const autonomyLimits = {
+  member_daily: "autonomyMemberDaily",
+  member_cooldown_minutes: "autonomyMemberCooldown",
+  dojo_daily: "autonomyDojoDaily",
+  praise_daily: "autonomyPraiseDaily",
+};
+const autonomyActions = [
+  "member_message",
+  "manager_report",
+  "follow_up",
+  "public_praise",
+];
+const autonomyActionBox = (type) =>
+  $("autonomyAction" + type[0].toUpperCase() + type.slice(1));
+let autonomyMandate = null,
+  autonomyPending = null,
+  autonomyEpoch = 0,
+  autonomyMandateEpoch = 0;
+function autonomyKey() {
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  return (
+    "studio-" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")
+  );
+}
+function renderAutonomyMandate(m) {
+  autonomyMandate = m;
+  $("autonomyRevision").textContent = "revision " + m.revision;
+  $("autonomyMode").value = m.mode;
+  $("autonomyPaused").checked = m.paused;
+  $("autonomyTimezone").value = m.timezone ?? "";
+  $("autonomyQuietStart").value = m.quiet_hours?.start ?? "";
+  $("autonomyQuietEnd").value = m.quiet_hours?.end ?? "";
+  for (const [field, id] of Object.entries(autonomyLimits))
+    $(id).value = String(m.contact_limits[field]);
+  const offered = m.capabilities?.action_types ?? autonomyActions;
+  for (const type of autonomyActions) {
+    autonomyActionBox(type).checked = m.delegated_actions.includes(type);
+    autonomyActionBox(type).disabled = !offered.includes(type);
+  }
+  $("autonomyDigestEnabled").checked = m.digest.enabled;
+  $("autonomyDigestTime").value = m.digest.local_time;
+  for (let day = 0; day < 7; day++)
+    $("autonomyDigestDay" + day).checked = m.digest.weekdays.includes(day);
+  $("autonomyDigestSuppress").checked = m.digest.suppress_empty;
+  $("autonomyInstructions").value = m.instructions;
+  $("autonomyBudgets").textContent =
+    "Per cycle: up to " +
+    m.budgets.cycle_seconds +
+    " s, " +
+    m.budgets.tool_calls +
+    " tool calls, " +
+    m.budgets.provider_tokens +
+    " provider tokens, " +
+    m.budgets.max_attempts +
+    " attempts.";
+}
+function autonomyDraft() {
+  const m = autonomyMandate;
+  const start = $("autonomyQuietStart").value,
+    end = $("autonomyQuietEnd").value;
+  return {
+    mode: $("autonomyMode").value,
+    paused: $("autonomyPaused").checked,
+    timezone: $("autonomyTimezone").value.trim() || null,
+    quiet_hours: start && end ? { start, end } : null,
+    contact_limits: Object.fromEntries(
+      Object.entries(autonomyLimits).map(([field, id]) => [
+        field,
+        Number($(id).value),
+      ]),
+    ),
+    cadence: m.cadence,
+    digest: {
+      enabled: $("autonomyDigestEnabled").checked,
+      local_time: $("autonomyDigestTime").value || m.digest.local_time,
+      weekdays: [0, 1, 2, 3, 4, 5, 6].filter(
+        (day) => $("autonomyDigestDay" + day).checked,
+      ),
+      suppress_empty: $("autonomyDigestSuppress").checked,
+    },
+    budgets: m.budgets,
+    delegated_actions: autonomyActions.filter(
+      (type) => autonomyActionBox(type).checked,
+    ),
+    instructions: $("autonomyInstructions").value,
+  };
+}
+function autonomyItem(text) {
+  const item = document.createElement("li");
+  item.textContent = text;
+  return item;
+}
+function renderAutonomyStatus(view, presence) {
+  const local = view.local;
+  $("autonomyParticipate").checked = view.participate;
+  $("autonomyLocalState").textContent =
+    (local.state === "stopped"
+      ? view.participate
+        ? "Stopped (waiting to start)"
+        : "Stopped"
+      : local.state[0].toUpperCase() + local.state.slice(1)) +
+    (local.lastCycleAt
+      ? " · last cycle " +
+        formatTimestamp(local.lastCycleAt) +
+        " (" +
+        local.lastOutcome +
+        ")"
+      : "") +
+    (local.unknownOutcome
+      ? " · an interrupted write's outcome is unknown; replacement waits until it settles"
+      : "") +
+    (local.lastError ? " · " + local.lastError : "");
+  const b = view.backend;
+  $("autonomyMonitoring").textContent = b.error
+    ? "Unavailable: " + b.error
+    : b.mandate.mode +
+      (b.mandate.paused ? " · paused" : "") +
+      (b.mandate.status === "suspended" ? " · suspended" : "") +
+      " · revision " +
+      b.mandate.revision +
+      " · " +
+      b.queue.queued +
+      " queued, " +
+      b.queue.running +
+      " running, " +
+      b.queue.blocked +
+      " blocked" +
+      " · last completed " +
+      (b.last_completed_at ? formatTimestamp(b.last_completed_at) : "never") +
+      (b.next_due_at ? " · next due " + formatTimestamp(b.next_due_at) : "");
+  if (presence) $("autonomyPresence").textContent = presence;
+  $("autonomyBlocked").replaceChildren(
+    ...(b.error || !b.blocked.length
+      ? [autonomyItem(b.error ? "Unavailable." : "Nothing blocked.")]
+      : b.blocked.map((w) => autonomyItem(w.reason + " · work " + w.work_id))),
+  );
+}
+function renderAutonomyReports(page) {
+  $("autonomyReports").replaceChildren(
+    ...(page.items.length
+      ? page.items.map((r) =>
+          autonomyItem(
+            formatTimestamp(r.created_at) +
+              " · " +
+              r.kind +
+              " · " +
+              r.result +
+              " · " +
+              r.counts.acted +
+              " acted, " +
+              r.counts.no_action +
+              " no action, " +
+              r.counts.deferred +
+              " deferred, " +
+              r.counts.escalated +
+              " escalated · " +
+              r.action_slots.length +
+              (r.action_slots.length === 1 ? " receipt" : " receipts") +
+              " · " +
+              r.coverage.members_read +
+              "/" +
+              r.coverage.members_considered +
+              " members read",
+          ),
+        )
+      : [autonomyItem("No cycles yet.")]),
+  );
+}
+async function loadAutonomy(withMandate = false) {
+  if (!key) return;
+  const epoch = ++autonomyEpoch;
+  try {
+    const [view, worker] = await Promise.all([
+      api("autonomy/status"),
+      api("status").catch(() => null),
+    ]);
+    if (epoch === autonomyEpoch) renderAutonomyStatus(view, worker?.presence);
+  } catch (error) {
+    if (error.stale) return;
+    if (epoch === autonomyEpoch)
+      $("autonomyLocalState").textContent = "Unavailable: " + error.message;
+  }
+  // A status refresh never supersedes a mandate load; only a newer one does.
+  if (withMandate)
+    try {
+      const mandateEpoch = ++autonomyMandateEpoch;
+      const mandate = await api("autonomy/mandate");
+      if (mandateEpoch === autonomyMandateEpoch) renderAutonomyMandate(mandate);
+    } catch (error) {
+      if (!error.stale)
+        $("autonomyMandateStatus").textContent =
+          "Mandate unavailable: " + error.message;
+    }
+  try {
+    const reports = await api("autonomy/reports?limit=10");
+    if (epoch === autonomyEpoch) renderAutonomyReports(reports);
+  } catch (error) {
+    if (!error.stale)
+      $("autonomyReports").replaceChildren(
+        autonomyItem("Unavailable: " + error.message),
+      );
+  }
+}
+$("autonomyParticipate").onchange = async () => {
+  const box = $("autonomyParticipate");
+  box.disabled = true;
+  try {
+    renderAutonomyStatus(
+      await api("autonomy/participate", { participate: box.checked }),
+    );
+  } catch (error) {
+    if (!error.stale) notice(error.message, "error");
+  } finally {
+    box.disabled = false;
+    void loadAutonomy();
+  }
+};
+$("autonomyMandateForm").onsubmit = async (event) => {
+  event.preventDefault();
+  if (!autonomyMandate) return;
+  const mandate = autonomyDraft();
+  const body = JSON.stringify(mandate);
+  // Only an identical body under the same revision may replay its key.
+  if (
+    !autonomyPending ||
+    autonomyPending.body !== body ||
+    autonomyPending.revision !== autonomyMandate.revision
+  )
+    autonomyPending = {
+      body,
+      revision: autonomyMandate.revision,
+      key: autonomyKey(),
+    };
+  const pending = autonomyPending;
+  $("autonomySave").disabled = true;
+  $("autonomyMandateStatus").textContent = "Saving…";
+  try {
+    const result = await api(
+      "autonomy/mandate",
+      {
+        idempotency_key: pending.key,
+        expected_revision: pending.revision,
+        mandate,
+      },
+      undefined,
+      "PUT",
+    );
+    autonomyPending = null;
+    ++autonomyMandateEpoch;
+    renderAutonomyMandate({
+      ...result.mandate,
+      capabilities: autonomyMandate.capabilities,
+    });
+    $("autonomyMandateStatus").textContent =
+      "Saved revision " + result.mandate.revision + ".";
+    void loadAutonomy();
+  } catch (error) {
+    if (error.stale) return;
+    if (error.code === "AUTONOMY_CONFLICT") {
+      autonomyPending = null;
+      $("autonomyMandateStatus").textContent =
+        "The mandate changed elsewhere; the latest revision is shown. Review it and save again.";
+      void loadAutonomy(true);
+    } else {
+      if (error.status && error.status < 500) autonomyPending = null;
+      $("autonomyMandateStatus").textContent = "Not saved: " + error.message;
+    }
+  } finally {
+    $("autonomySave").disabled = false;
+  }
+};
+setInterval(() => {
+  if (settingsSection === "autonomy" && key && !document.hidden)
+    void loadAutonomy();
+}, 4000);
 const diagnosticsSections = ["performance", "logs"];
 let diagnosticsSection = "logs";
 function selectDiagnosticsSection(section, navigate = true) {
