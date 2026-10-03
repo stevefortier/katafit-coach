@@ -34,10 +34,10 @@ request.
 Open **Settings → Updates**. The installed identifier is the exact source Git SHA,
 not npm `0.1.0` or a persona revision. Dirty/unknown builds remain unknown.
 
-1. Save or revert unsaved edits and finish/cancel any preview or Operator turn. No manual worker stop is required.
+1. Save or revert unsaved edits and finish/cancel any preview. No manual worker stop is required. Accepted worker work drains automatically; finish and close native Pi before installation can proceed.
 2. Check the displayed latest revision from the fixed public repository, `stevefortier/katafit-coach`, branch `main`.
 3. Click Upgrade and explicitly confirm the full displayed SHA and stop/apply/restart operation. This authorizes executing that trusted source and its pinned dependencies on your machine. Cancel performs no stop or apply. A running Coach is stopped safely, native sessions are closed, and actions/chat are never replayed.
-4. The stable owner stages, validates, native-preflights and probes the revision while the existing server and worker remain available. Because this can be slow, it rechecks the target and live admission afterward; unsafe worker or preview activity defers activation without stopping Coach. For a confirmed upgrade, it fences new native Pi admission, closes any active session (interrupting turns or unsent drafts), and waits for safe journal/publication teardown before replacement. Once activation is accepted, Run, configuration changes and preview are rejected. Brief reconnecting is normal during replacement; disappearance is not success.
+4. The stable owner stages, validates, native-preflights and probes the exact revision while Coach remains available. The child rechecks configuration/worker scope and reserves a manual queue: new worker claims and native starts are fenced synchronously, while already-dispatched polls/claims finish without abort or replay. Studio shows waiting-worker, waiting-publication or waiting-native. Native Pi is never interrupted by the upgrade; finish its turn and use supported Close / Stop Pi. Cancel is available while waiting, before safe worker Stop begins. After publication safety, native cleanup and confirmed backend Stop, the existing owner durably accepts installation and captured running intent.
 5. Wait for the installed SHA to match the confirmed target and the success result. The stable owner resumes a previously running Coach after activation or rollback; an intentionally stopped Coach stays stopped. Read Worker status separately from source success. Resume failure exposes **Retry Coach restart**, which starts the saved configuration only, without reinstalling or replaying work. Reload Studio to load its new UI assets. Closing the browser does not cancel an accepted upgrade.
 
 Manual resume requires the explicitly advertised `manualRestartSupported` launcher capability. Source-upgrading an old child does **not** upgrade its stable owner. An old owner receives no stop/apply for a running manual upgrade: Studio reports `LAUNCHER_UPGRADE_REQUIRED` with instructions to replace the reviewed stable launcher using the same protected home. Do not bypass the guard. Settings, persona restore and legacy rollback use the child-owned lifecycle, and preview does not stop Coach at all; none of them need this launcher upgrade.
@@ -216,9 +216,35 @@ one-minute receipt-read throttle and durable archival fences.
 
 ## Publication-safe update admission and stopped recovery
 
-Manual apply now requires an idle, publication-safe running worker, alongside
-confirmed maintenance quiescence. An unsafe or busy worker is rejected **before** native
-teardown or worker stop; no update is accepted. Wait for active work to finish.
+Manual apply prepares and pins the explicitly confirmed release, then returns
+HTTP 202 `{ok:true, queued:true, id}` for **process-local waiting intent**, not
+proof of durable owner acceptance or completed installation. `GET /api/update`
+exposes `manualQueue` with the exact ID/SHA, captured running intent, phase and
+`persistence: "process-local"`. A lost POST is observed through status, never
+replayed by the browser. An identical confirmation while the queue is active
+returns the same queue ID; a different target or configuration mutation is
+refused. Source checks cannot change the prepared pin while queued. Prepared
+activation retains the existing exact-pin validation (approval does not expire
+merely because the confirmed work takes longer than the fresh-check window).
+
+New claims are fenced at both main and typed dispatch boundaries, but an
+already-dispatched claim is drained through its original execution/publication.
+Pending publication identities are reconciled read-only on the same Worker,
+with bounded one-minute receipt passes; missing/denied/mismatched evidence and
+archive failure keep installation waiting. Native startup/runtime/cleanup must
+be fully idle before teardown; no PTY silence is treated as turn completion.
+`POST /api/update/cancel` with `{id}` cancels only the matching waiting queue,
+releases preparation and admission without aborting accepted work. Once phase
+is `stopping` or `installing`, cancellation is refused. Worker Stop must be
+confirmed before one owner apply; failed acceptance/Stop retains safety and
+never fabricates installation success.
+
+The child queue survives tab closure/reload, **not child or service restart**.
+The existing stable owner's durable operation/resume journal begins only at
+installation acceptance, not at the early queued 202. No durable queue promise
+or new owner capability is implied by an application-only update. Automatic
+native turn-end installation would require separately reviewed trustworthy PTY
+lifecycle signaling; until then, native session closure is required.
 `GET /api/status` exposes `safeToReplace` separately from `stopConfirmed` and
 historical `lastError`. An old delivery error is not itself live uncertainty;
 retained unresolved task/request identities are.

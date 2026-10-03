@@ -94,7 +94,9 @@ test("source checks occur only on Updates entry and explicit Check, not unlock o
     await page.locator("#settingsTab").click();
     await settingsTab(page, "Persona");
     assert.equal(checks, 0);
+    const enteredCheck = page.waitForResponse("**/api/update/check");
     await settingsTab(page, "Updates");
+    await enteredCheck;
     await page.waitForFunction(
       () =>
         document.getElementById("updateLatest")?.textContent === "aaaaaaaaaaaa",

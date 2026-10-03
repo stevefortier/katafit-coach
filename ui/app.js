@@ -3164,9 +3164,42 @@ function safeUpdateOperation(outcome) {
       : {}),
   };
 }
+function manualUpdateQueue(data = updateData) {
+  const queue = data?.manualQueue;
+  return queue &&
+    sourceSha(queue.sha) &&
+    typeof queue.id === "string" &&
+    queue.id.length <= 100 &&
+    [
+      "waiting-worker",
+      "waiting-publication",
+      "waiting-native",
+      "stopping",
+      "installing",
+      "accepted",
+      "cancelled",
+      "failed",
+    ].includes(queue.phase)
+    ? queue
+    : undefined;
+}
+function manualUpdateWaiting(data = updateData) {
+  return manualUpdateQueue(data)?.phase.startsWith("waiting-") === true;
+}
+function manualUpdateActive(data = updateData) {
+  const queue = manualUpdateQueue(data);
+  return (
+    !!queue &&
+    (queue.phase.startsWith("waiting-") ||
+      ["stopping", "installing"].includes(queue.phase))
+  );
+}
 function renderHeaderStatus() {
   if (!key || $("studio").hidden) return;
-  if (lifecycleBusy || lifecycleUncertain || serverTransition) {
+  if (manualUpdateWaiting()) {
+    $("state").textContent = "QUEUED";
+    $("state").dataset.tone = "busy";
+  } else if (lifecycleBusy || lifecycleUncertain || serverTransition) {
     $("state").textContent = "APPLYING";
     $("state").dataset.tone = "busy";
   } else if (
@@ -3211,7 +3244,31 @@ function renderUpdate() {
     historyBusy || updatePending || data?.applying === true;
   if (!data) return;
 
+  const queue = manualUpdateQueue(data);
+  const queueLabels = {
+    "waiting-worker": "Waiting for accepted worker work to finish.",
+    "waiting-publication":
+      "Waiting for authoritative publication receipts; nothing will be discarded or replayed.",
+    "waiting-native":
+      "Waiting for native Pi to finish and close. Finish the turn, then use Close / Stop Pi.",
+    stopping:
+      "Confirming safe worker Stop. Installation can no longer be cancelled.",
+    installing: "Submitting the prepared installation to the launcher.",
+    accepted:
+      "Launcher accepted the installation. Verify installed revision and restart status.",
+    cancelled:
+      "Cancelled queued upgrade. New worker claims may resume; accepted work was not aborted.",
+    failed:
+      "Queued upgrade could not be admitted. Verify worker safety and launcher status before retrying.",
+  };
+  $("updateQueueStatus").hidden = !queue;
+  $("updateQueueStatus").textContent = queue
+    ? `${queueLabels[queue.phase]} Target ${queue.sha.slice(0, 12)}. Waiting intent is process-local and does not survive service restart.`
+    : "";
+  $("updateQueueCancel").hidden = !manualUpdateWaiting(data);
+  $("updateQueueCancel").disabled = updateRequest;
   const locked =
+    manualUpdateActive(data) ||
     updatePending ||
     data.applying ||
     data.recovering ||
@@ -3356,18 +3413,25 @@ async function refreshUpdate(check = false) {
   updateController = controller;
   renderUpdate();
   try {
-    const data = await api(
-      check ? "update/check" : "update",
-      check ? {} : undefined,
-      AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
-    );
+    const signal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(15000),
+    ]);
+    // Observe an existing queued pin before asking for source discovery. A
+    // reload/lost POST never submits apply again or overwrites the queued target.
+    let data = await api("update", undefined, signal);
+    if (check && !manualUpdateActive(data) && !data.preparing && !data.applying)
+      data = await api("update/check", {}, signal);
     if (controller.signal.aborted || generation !== authGeneration) return;
     if (updateInitialRevision === undefined)
       updateInitialRevision = data.installed;
     updateData = data;
 
     updatePending =
-      updateApplyRequest || data.preparing === true || data.applying === true;
+      updateApplyRequest ||
+      manualUpdateActive(data) ||
+      data.preparing === true ||
+      data.applying === true;
     updateError = "";
   } catch {
     if (!controller.signal.aborted && generation === authGeneration)
@@ -3407,6 +3471,17 @@ async function refreshUpdate(check = false) {
       );
   }
 }
+action("updateQueueCancel", async () => {
+  const queue = manualUpdateQueue();
+  if (!queue || !manualUpdateWaiting()) return;
+  try {
+    await api("update/cancel", { id: queue.id });
+  } catch (error) {
+    notice(error.message, "error");
+  }
+  await status();
+  await refreshUpdate();
+});
 action("updateCheck", async () => {
   $("updateConfirm").hidden = true;
   await refreshUpdate(true);
@@ -3434,7 +3509,7 @@ action("updateApply", async () => {
   }
   if (updateWorkerBlocked) {
     notice(
-      "Finish or cancel preview and stop native Pi before upgrading. Coach will be restarted automatically after confirmation.",
+      "Finish or cancel preview before queuing an upgrade. Accepted worker work drains first; native Pi must finish and close before installation.",
       "warning",
     );
     return;
