@@ -109,6 +109,7 @@ export async function taskFixture(options: any = {}) {
   // Ordinary REST surface and the negotiated coach.capability.v1 action
   // journal (mirrors backend core/coachCapability.js + externalCoachTasks.js).
   const restCalls: any[] = [];
+  const commitments: any[] = [];
   const journal = new Map<string, any>();
   const negotiated = new Set<string>();
   const memberReceipts = new Map<string, any>();
@@ -321,6 +322,26 @@ export async function taskFixture(options: any = {}) {
       value = {
         tools: [
           ...(options.tools ?? names).map((name: string) => ({ name })),
+          // [v2 §2.7] request-worker commitment handoff (B10), opt-in.
+          ...(options.commitment
+            ? [
+                {
+                  name: "coach_record_commitment",
+                  inputSchema: {
+                    type: "object",
+                    required: [
+                      "request_id",
+                      "lease_generation",
+                      "slot",
+                      "quote",
+                      "due_at",
+                      "timezone",
+                      "next_condition",
+                    ],
+                  },
+                },
+              ]
+            : []),
           ...(options.negotiate
             ? ["coach_open_task_action", "coach_settle_task_action"].map(
                 (name) => ({ name }),
@@ -609,6 +630,9 @@ export async function taskFixture(options: any = {}) {
           scope: options.requestScope ?? "personal",
           status: "claimed",
           lease_generation: main,
+          ...(options.requestMessage !== undefined
+            ? { message: options.requestMessage }
+            : {}),
           lease_expires_at: new Date(Date.now() + 120000).toISOString(),
           timeout_at: new Date(Date.now() + 180000).toISOString(),
         },
@@ -655,7 +679,20 @@ export async function taskFixture(options: any = {}) {
           },
         };
       }
+    } else if (n === "coach_record_commitment" && options.commitment) {
+      commitments.push(a);
+      const out = await options.commitment(a);
+      if (out === "drop") {
+        req.socket.destroy();
+        return;
+      }
+      if (out?.error) {
+        toolError(out.error);
+        return;
+      }
+      value = out;
     } else if (n === "coach_respond") {
+      await options.beforeRespond?.();
       options.main = false;
       if (options.dropRespond) {
         req.socket.destroy();
@@ -732,6 +769,7 @@ export async function taskFixture(options: any = {}) {
     calls,
     saved,
     restCalls,
+    commitments,
     journal,
     state,
     deny(id: string) {

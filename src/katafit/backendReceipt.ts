@@ -35,6 +35,7 @@ export const backendTools = [
   "coach_read_task_context",
   "coach_read_task_receipt",
   "coach_reconcile_task",
+  "coach_record_commitment",
   "coach_report_worker_presence",
   "coach_respond",
   "coach_settle_task_action",

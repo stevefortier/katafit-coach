@@ -18,6 +18,11 @@ import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { discoverReads } from "../katafit/readTools.js";
+import {
+  COMMITMENT_GUIDANCE,
+  COMMITMENT_TOOL,
+  commitmentTool,
+} from "./commitment.js";
 import type { InferenceBudget } from "../runtime/piAdapter.js";
 import { assertNoSecrets } from "../config/store.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -836,6 +841,28 @@ export class Worker {
             }
           : {}),
       });
+      // Commitments are recorded only under the active request fence: the
+      // tool closes before publication, whatever the model does later.
+      let fenceOpen = true;
+      const commitment = reads.advertised.has(COMMITMENT_TOOL)
+        ? commitmentTool({
+            client: new Client(
+              this.options.origin,
+              this.options.token,
+              inferenceSignal,
+              (event) => this.diagnostic(event),
+            ),
+            fence,
+            message: current.message,
+            current: () =>
+              fenceOpen &&
+              !inferenceSignal.aborted &&
+              !this.controller.signal.aborted &&
+              Date.now() < requestDeadline,
+            budget,
+            secrets: [this.options.token, ...(this.options.secrets ?? [])],
+          })
+        : undefined;
       const text = await bounded(
         () =>
           this.options.complete(
@@ -855,9 +882,11 @@ export class Worker {
                 ? "\nMemory recall covered a bounded page. Use coach_memory_search and its continuation for deeper recall.\n"
                 : "") +
               CAPABILITY_GUIDANCE +
+              (commitment ? COMMITMENT_GUIDANCE : "") +
               (admission.subjectIsPrincipal ? "" : PRINCIPAL_REST_NOTE),
             [
               ...reads.tools,
+              ...(commitment ? [commitment] : []),
               ...(memory
                 ? [this.memorySearchTool(c, memory, budget, terminal)]
                 : []),
@@ -867,7 +896,9 @@ export class Worker {
             { deadlineAt, readBudget: reads.readBudget },
           ),
         modelSignal,
-      );
+      ).finally(() => {
+        fenceOpen = false;
+      });
       modelSignal.throwIfAborted();
       budget();
       if (

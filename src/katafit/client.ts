@@ -41,6 +41,12 @@ const toolCodes = [
   "ACTION_RECEIPT_MISSING",
   "TASK_IDEMPOTENCY_CONFLICT",
   "TASK_CAPABILITY_REQUIRED",
+  // [v2 §2.7] commitment handoff
+  "COMMITMENT_EVIDENCE_MISMATCH",
+  "COMMITMENT_SLOT_CONFLICT",
+  "COMMITMENT_UNAVAILABLE",
+  "SCOPE_CHANGED",
+  "REQUESTER_SCOPE_CHANGED",
 ];
 export function toolFailure(r: any) {
   let code: string | undefined;
