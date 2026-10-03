@@ -1,6 +1,36 @@
 /* Standalone Coach Dashboard; all values arrive from an authorized snapshot. */
 window.CoachDashboard = (() => {
   const $ = (id) => document.getElementById(id);
+  // Presentation-only switches: retain the dashboard's authorized scope and DOM.
+  const subtabs = [
+    ...($("dashboardSubtabs")?.querySelectorAll('[role="tab"]') || []),
+  ];
+  function selectPane(tab, focus = false) {
+    for (const item of subtabs) {
+      const selected = item === tab;
+      item.setAttribute("aria-selected", String(selected));
+      item.tabIndex = selected ? 0 : -1;
+      item.classList.toggle("secondary", !selected);
+      $(item.getAttribute("aria-controls")).hidden = !selected;
+    }
+    closeMemberTooltip();
+    if (focus) tab.focus();
+  }
+  for (const tab of subtabs) {
+    tab.addEventListener("click", () => selectPane(tab));
+    tab.addEventListener("keydown", (event) => {
+      const index = subtabs.indexOf(tab);
+      const next = {
+        ArrowRight: (index + 1) % subtabs.length,
+        ArrowLeft: (index + subtabs.length - 1) % subtabs.length,
+        Home: 0,
+        End: subtabs.length - 1,
+      }[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      selectPane(subtabs[next], true);
+    });
+  }
   const svgNS = "http://www.w3.org/2000/svg";
   const isPhoto = (f) =>
     f &&
@@ -2451,6 +2481,7 @@ window.CoachDashboard = (() => {
         });
     };
     mapResizeObserver = new ResizeObserver(() => {
+      if (!map.getClientRects().length) return;
       instance.invalidateSize();
       placePins();
       const shown = dots.filter(visible);
@@ -2479,6 +2510,7 @@ window.CoachDashboard = (() => {
     more.type = "button";
     const sentinel = text("div", "", "dashboard-gallery-sentinel");
     host.replaceChildren(text("h3", "Gallery"), status, grid, more, sentinel);
+    const paneVisible = () => host.getClientRects().length > 0;
     const entries = new Map();
     const frames = new WeakMap();
     const seenCursors = new Set();
@@ -2497,7 +2529,7 @@ window.CoachDashboard = (() => {
     const imageObserver = new IntersectionObserver(
       (changes) => {
         for (const change of changes)
-          if (change.isIntersecting) {
+          if (change.isIntersecting && paneVisible()) {
             const frame = frames.get(change.target);
             if (frame) {
               if (visible(frame.entry)) void loadFrame(frame);
@@ -2511,7 +2543,11 @@ window.CoachDashboard = (() => {
     );
     const pageObserver = new IntersectionObserver(
       (changes) => {
-        if (changes.some((change) => change.isIntersecting) && !failed)
+        if (
+          paneVisible() &&
+          changes.some((change) => change.isIntersecting) &&
+          !failed
+        )
           void page();
       },
       { rootMargin: "300px" },
@@ -2761,8 +2797,8 @@ window.CoachDashboard = (() => {
       } finally {
         loading = false;
         more.disabled = false;
-        if (live() && generation !== scope) void page();
-        else if (live() && !stopped && !failed) {
+        if (live() && paneVisible() && generation !== scope) void page();
+        else if (live() && paneVisible() && !stopped && !failed) {
           const rect = sentinel.getBoundingClientRect();
           if (rect.top < innerHeight + 300 && rect.bottom > -300) void page();
         }

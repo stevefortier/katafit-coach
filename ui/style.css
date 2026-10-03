@@ -959,9 +959,7 @@ header {
   }
 }
 .dashboard-member-cards {
-  position: sticky;
-  top: calc(var(--header-offset, 0px) + var(--notice-offset, 0px));
-  z-index: 8;
+  position: static;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2294,4 +2292,20 @@ html.coach-covered #workspaceScroll {
     padding-block: 6px;
     line-height: 16px;
   }
+}
+
+/* Dojo's shared roster stays in flow; tall photos never cover pane content. */
+.dashboard-subtabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.dashboard-subtabs button {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 6px;
+}
+#dashboardPanel [role="tabpanel"][hidden] {
+  display: none;
 }

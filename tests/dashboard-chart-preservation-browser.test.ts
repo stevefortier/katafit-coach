@@ -150,6 +150,7 @@ test("served dashboard preserves workout, meal and body trends while Gallery sta
       (key) => (window as any).CoachDashboard.load(null, key),
       store.secrets.admin,
     );
+    await page.getByRole("tab", { name: "Activity trends" }).click();
     const labels = await page
       .locator("#dashboardCharts svg")
       .evaluateAll((nodes) =>
