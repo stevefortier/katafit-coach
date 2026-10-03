@@ -1,4 +1,5 @@
 import type { AutonomyCapability } from "../capability/autonomy.js";
+import type { DigestFacts } from "./reporting.js";
 import type { ActionType, Report, WorkItem } from "./types.js";
 
 // Context framing for the planner: the host's own rules and the backend's
@@ -35,7 +36,18 @@ export function plannerMessage(input: {
   work: WorkItem;
   now: number;
   reports: Pick<Report, "kind" | "result" | "counts" | "created_at">[] | null;
+  digest?: DigestFacts;
 }) {
+  const prior = {
+    actions: input.work.actions.map((a) => ({
+      slot: a.slot,
+      type: a.type,
+      recipient_id: a.recipient_id,
+      text_sha256: a.text_sha256,
+      committed_at: a.committed_at,
+    })),
+    follow_ups: input.work.follow_ups,
+  };
   const work = {
     id: input.work.id,
     kind: input.work.kind,
@@ -54,6 +66,17 @@ export function plannerMessage(input: {
         ? "unavailable"
         : JSON.stringify(input.reports) || "[]"
     }`,
+    ...(prior.actions.length || prior.follow_ups.length
+      ? [
+          `Already committed for this work item by an earlier attempt (backend receipts; cite them in decisions, never repeat them): ${JSON.stringify(prior)}`,
+        ]
+      : []),
+    ...(input.digest
+      ? [
+          `Digest facts (host-computed from content-free cycle reports since the previous digest): <host_digest>${JSON.stringify(input.digest)}</host_digest>`,
+          "Send one private manager report with coach_autonomy_report that states these facts, including coverage gaps and unknowns. Never invent activity the facts do not show.",
+        ]
+      : []),
     "Work the item with your tools, then return only the cycle outcome JSON.",
   ].join("\n");
 }

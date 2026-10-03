@@ -1,211 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { Store } from "../src/config/store.js";
-import { autonomyRunner } from "../src/autonomy/runner.js";
 import { HeadlessFailure } from "../src/autonomy/headless.js";
-import { WORK_KINDS, type CycleOutcome } from "../src/autonomy/types.js";
+import { WORK_KINDS } from "../src/autonomy/types.js";
+import { CHIEF, MEMBER } from "./helpers/autonomy-fake.js";
 import {
-  autonomyFake,
-  CHIEF,
-  MEMBER,
-  type AutonomyFake,
-} from "./helpers/autonomy-fake.js";
+  closeLeaked,
+  cycle,
+  outcome,
+  restServer,
+  SECRET_INSTRUCTION,
+  setup,
+  toolNames,
+  work,
+} from "./helpers/autonomy-cycle.js";
+
+test.after(closeLeaked);
 
 // C3 + FC2 (work-packages C3, AC1 §2.10, full-capability addendum 1-4):
 // every autonomy work kind runs the real planner gateway with the shared
 // capability (REST reads, dynamic memory search, enabled skills, admitted
 // actions) under the user's observe/delegation controls; the host validates
 // and certifies the cycle outcome.
-
-const SECRET_INSTRUCTION = "MANAGER-PRIVATE-MARKER-7f3a";
-const leaked = new Set<() => Promise<void>>();
-test.after(async () => {
-  for (const close of [...leaked]) await close();
-});
-
-interface Io {
-  call(name: string, args: unknown): Promise<any>;
-  catalog: any;
-  message: string;
-}
-type Script = (io: Io) => Promise<string>;
-
-/** Drives the real profile gateway the way headless Pi does over RPC. */
-class ScriptedRuntime {
-  runs: {
-    profile: string;
-    message: string;
-    catalog: any;
-    cycleMs: number;
-    calls: { name: string; ok: boolean; code?: string; result?: any }[];
-  }[] = [];
-  constructor(private readonly scripts: Script[]) {}
-  async run(run: {
-    profile: string;
-    gateway: any;
-    message: string;
-    cycleMs: number;
-    signal?: AbortSignal;
-  }) {
-    const catalog = await run.gateway.handle({ kind: "catalog" });
-    const record = {
-      profile: run.profile,
-      message: run.message,
-      catalog,
-      cycleMs: run.cycleMs,
-      calls: [] as any[],
-    };
-    this.runs.push(record);
-    const script = this.scripts.shift();
-    if (!script) throw new Error("UNSCRIPTED_RUN");
-    let n = 0;
-    const call = async (name: string, args: unknown) => {
-      try {
-        const result = await run.gateway.handle({
-          kind: "tool",
-          name,
-          args,
-          toolCallId: `t${++n}`,
-        });
-        record.calls.push({ name, ok: true, result });
-        return result;
-      } catch (error: any) {
-        record.calls.push({ name, ok: false, code: error.code });
-        return { error: error.code };
-      }
-    };
-    const text = await script({ call, catalog, message: run.message });
-    return { text, container: `c${this.runs.length}` };
-  }
-}
-
-async function setup(
-  o: {
-    mode?: "observe" | "message";
-    delegated?: string[];
-    budgets?: Record<string, number>;
-    negotiates?: boolean;
-    restAccess?: boolean;
-    kind?: string;
-  } = {},
-) {
-  const fake = await autonomyFake();
-  const dir = await mkdtemp(tmpdir() + "/autonomy-runner-");
-  const close = async () => {
-    leaked.delete(close);
-    await fake.close();
-    await rm(dir, { recursive: true, force: true });
-  };
-  leaked.add(close);
-  fake.state.negotiates = o.negotiates ?? true;
-  fake.state.restAccess = o.restAccess ?? true;
-  const owner = fake.client("installation-a");
-  const {
-    capabilities,
-    protocol,
-    mandate_id,
-    dojo_id,
-    chief_id,
-    revision,
-    status,
-    suspended_reason,
-    updated_at,
-    updated_by,
-    ...fields
-  } = await owner.mandate();
-  await owner.putMandate({
-    idempotency_key: "runner-setup",
-    expected_revision: 0,
-    mandate: {
-      ...fields,
-      mode: o.mode ?? "observe",
-      timezone: "Europe/Paris",
-      delegated_actions: (o.delegated ?? [
-        "manager_report",
-        "follow_up",
-      ]) as any,
-      instructions: `Prioritise recovery. ${SECRET_INSTRUCTION}`,
-      budgets: { ...fields.budgets, ...(o.budgets ?? {}) },
-    },
-  });
-  const store = new Store(dir);
-  await store.init();
-  const bearer = fake.token("installation-a");
-  await store.save({
-    ...store.publicConfig(),
-    origin: fake.origin,
-    provider: { baseUrl: fake.origin + "/v1", model: "synthetic-model" },
-    token: bearer,
-    apiKey: "synthetic-provider-credential",
-  });
-  const backend = fake.client("installation-a");
-  const workId = fake.enqueue({
-    kind: o.kind ?? "reconcile",
-    subject_ids: [MEMBER],
-  });
-  return { fake, store, backend, workId, close };
-}
-
-async function cycle(
-  env: Awaited<ReturnType<typeof setup>>,
-  scripts: Script[],
-  extra: Record<string, unknown> = {},
-) {
-  const runtime = new ScriptedRuntime(scripts);
-  const claimed = await env.backend.claimCycle({ lease_seconds: 120 });
-  assert.ok(claimed, "work claimed");
-  const work = await env.backend.start(
-    claimed.work.id,
-    claimed.work.lease_generation,
-  );
-  const mandate = await env.backend.mandate();
-  const run = autonomyRunner({ store: env.store, runtime, ...extra });
-  const result = await run({
-    work,
-    mandate,
-    backend: env.backend,
-    signal: new AbortController().signal,
-    capability: claimed.capability,
-  });
-  return { runtime, result, claimed };
-}
-
-const outcome = (over: Partial<CycleOutcome> = {}): string =>
-  JSON.stringify({
-    result: "completed",
-    coverage: {
-      members_considered: 1,
-      members_read: 1,
-      partial: false,
-      unobserved: [],
-    },
-    decisions: [
-      {
-        subject_id: MEMBER,
-        decision: "no_action",
-        action_slots: [],
-        follow_up_ids: [],
-      },
-    ],
-    uncertainty: [],
-    budget: { provider_tokens: 0, tool_calls: 0, elapsed_ms: 0 },
-    ...over,
-  });
-
-const restServer = (fake: AutonomyFake, routes: Record<string, any>) => {
-  fake.state.rest = (method, url) => {
-    const key = `${method} ${url.pathname}`;
-    if (key in routes) {
-      const value = routes[key];
-      return typeof value === "function" ? value(url) : value;
-    }
-    return { status: 404, body: { code: "NOT_FOUND" } };
-  };
-};
-const toolNames = (catalog: any) => catalog.tools.map((t: any) => t.name);
-const work = (fake: AutonomyFake, id: string) => fake.state.work.get(id);
 
 test("claim: negotiates coach.capability.v1 and returns a validated autonomy capability", async () => {
   const env = await setup();
@@ -277,7 +92,8 @@ test("claim: a malformed or over-granting autonomy capability is rejected", asyn
 
 test("FC2 inventory: every autonomy work kind runs the planner with shared REST, memory, skills and admitted actions", async () => {
   for (const kind of WORK_KINDS) {
-    const env = await setup({ kind });
+    // An empty digest window is suppressed without a planner run (C4).
+    const env = await setup({ kind, digest: { suppress_empty: false } });
     try {
       restServer(env.fake, {
         "GET /api/docs/coach": { status: 200, body: { routes: ["/api/x"] } },

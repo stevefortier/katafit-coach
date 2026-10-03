@@ -2,12 +2,19 @@ import type { AutonomyCapability } from "../capability/autonomy.js";
 import { compileAutonomy, type Store } from "../config/store.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
 import { AutonomyFailure, type AutonomyBackend } from "./backend.js";
+import {
+  isUnknown,
+  settleAction,
+  settleFollowUp,
+  VISIBLE_REFUSALS,
+} from "./actions.js";
 import { HeadlessFailure, type HeadlessRun } from "./headless.js";
 import {
   correctionMessage,
   plannerGuidance,
   plannerMessage,
 } from "./prompt.js";
+import { digestEmpty, digestFacts, type DigestFacts } from "./reporting.js";
 import type { FollowUpArgs, PlannerCallbacks, ReportArgs } from "./tools.js";
 import {
   outcomeCoherent,
@@ -91,8 +98,9 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       lease_generation: work.lease_generation,
       mandate_revision: work.mandate_revision,
     };
-    const slots = new Set<string>();
-    const followUps = new Set<string>();
+    // Receipts committed by an earlier (crashed) holder are already proven.
+    const slots = new Set<string>(work.actions.map((a) => a.slot));
+    const followUps = new Set<string>(work.follow_ups);
     const reads = { ok: 0, denied: 0, failed: 0 };
     const exhausted = new Set<string>();
     let uncertain = false;
@@ -120,48 +128,103 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         );
     await renew();
     signal.throwIfAborted();
+
+    let digest: DigestFacts | undefined;
+    if (work.kind === "digest") {
+      digest = await digestFacts(backend, work);
+      signal.throwIfAborted();
+      if (digestEmpty(digest) && mandate.digest.suppress_empty) {
+        const final: CycleOutcome = {
+          result: "completed",
+          coverage: {
+            members_considered: 0,
+            members_read: 0,
+            partial: false,
+            unobserved: [],
+          },
+          decisions: [],
+          uncertainty: ["digest_empty_suppressed"],
+          budget: {
+            provider_tokens: 0,
+            tool_calls: 0,
+            elapsed_ms: Math.max(0, now() - started),
+          },
+        };
+        const done = await backend.complete(work.id, {
+          ...fence,
+          outcome: final,
+        });
+        return { outcome: final, report_id: done.report_id };
+      }
+    }
     const timer = setInterval(renew, (leaseSeconds * 1000) / 3);
     timer.unref?.();
 
-    const unknown = (error: unknown): never => {
-      if (
-        error instanceof AutonomyFailure &&
-        error.code === "AUTONOMY_OUTCOME_UNKNOWN"
-      )
-        uncertain = true;
-      throw error;
+    // Backend refusals and unresolved writes are visible tool results the
+    // planner adapts to; an unresolved write also blocks the work.
+    const visible = async <T>(op: () => Promise<T>) => {
+      try {
+        return await op();
+      } catch (error) {
+        if (isUnknown(error)) {
+          uncertain = true;
+          return {
+            error: "AUTONOMY_OUTCOME_UNKNOWN",
+            note: "This write's result is unknown. Do not retry or cite it; the work will be blocked as uncertain_write for the manager.",
+          };
+        }
+        if (
+          error instanceof AutonomyFailure &&
+          (VISIBLE_REFUSALS as readonly string[]).includes(error.code)
+        )
+          return {
+            error: error.code,
+            ...(error.limit ? { limit: error.limit } : {}),
+            note: "The backend refused this write; nothing new was committed for this slot.",
+          };
+        throw error;
+      }
     };
     const callbacks: PlannerCallbacks = {
       async intend() {
         // [AC1] Intents need the C11 composer; the tool is never offered without it.
         throw new Error("INTENT_UNAVAILABLE");
       },
-      async report(args: ReportArgs) {
-        const { receipt, idempotent } = await backend
-          .act(work.id, args.slot, {
-            ...fence,
-            type: "manager_report",
-            text: args.text,
-          })
-          .catch(unknown);
-        slots.add(receipt.slot);
-        return { slot: receipt.slot, status: receipt.status, idempotent };
-      },
-      async followUp(args: FollowUpArgs) {
-        if (args.op === "create") {
-          const { slot, op, ...input } = args;
-          const { follow_up, idempotent } = await backend
-            .followUp(work.id, slot, { ...fence, ...input })
-            .catch(unknown);
-          followUps.add(follow_up.id);
+      report: (args: ReportArgs) =>
+        visible(async () => {
+          const { receipt, idempotent, recovered } = await settleAction(
+            backend,
+            work.id,
+            args.slot,
+            { ...fence, type: "manager_report", text: args.text },
+          );
+          slots.add(receipt.slot);
           return {
-            follow_up_id: follow_up.id,
-            status: follow_up.status,
+            slot: receipt.slot,
+            status: receipt.status,
             idempotent,
+            ...(recovered ? { recovered } : {}),
           };
-        }
-        const follow_up = await backend
-          .patchFollowUp(args.follow_up_id, {
+        }),
+      followUp: (args: FollowUpArgs) =>
+        visible(async () => {
+          if (args.op === "create") {
+            const { slot, op, ...input } = args;
+            const { follow_up, idempotent, recovered } = await settleFollowUp(
+              backend,
+              work.id,
+              slot,
+              { ...fence, ...input },
+            );
+            followUps.add(follow_up.id);
+            return {
+              follow_up_id: follow_up.id,
+              status: follow_up.status,
+              idempotent,
+              ...(recovered ? { recovered } : {}),
+            };
+          }
+          const follow_up = await backend.patchFollowUp(args.follow_up_id, {
             expected_revision: args.expected_revision,
             status: "closed",
             closure_reason: args.closure_reason,
@@ -169,11 +232,10 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
               work_id: work.id,
               lease_generation: work.lease_generation,
             },
-          })
-          .catch(unknown);
-        followUps.add(follow_up.id);
-        return { follow_up_id: follow_up.id, status: follow_up.status };
-      },
+          });
+          followUps.add(follow_up.id);
+          return { follow_up_id: follow_up.id, status: follow_up.status };
+        }),
     };
 
     let reports: RecentReports = null;
@@ -233,7 +295,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       return undefined;
     };
     try {
-      let message = plannerMessage({ work, now: now(), reports });
+      let message = plannerMessage({ work, now: now(), reports, digest });
       for (let attempt = 0; attempt < 2; attempt++) {
         let text: string;
         try {
@@ -287,6 +349,8 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     if (reads.denied) notes.push(`${reads.denied} REST read(s) denied`);
     if (reads.failed)
       notes.push(`${reads.failed} REST read(s) failed or missing`);
+    if (digest && !digest.window_complete)
+      notes.push(`digest window incomplete: ${digest.unknowns[0]}`);
     const confirmed = [
       ...[...slots].map((s) => `slot ${s}`),
       ...[...followUps].map((f) => `follow-up ${f}`),
@@ -332,7 +396,10 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         ...outcome,
         coverage: {
           ...outcome.coverage,
-          partial: outcome.coverage.partial || reads.denied + reads.failed > 0,
+          partial:
+            outcome.coverage.partial ||
+            reads.denied + reads.failed > 0 ||
+            digest?.window_complete === false,
         },
         uncertainty: [...outcome.uncertainty, ...notes].slice(0, 10),
         budget,

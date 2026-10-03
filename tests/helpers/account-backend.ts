@@ -122,13 +122,22 @@ export async function startAccountBackend() {
 }
 export type AccountBackend = Awaited<ReturnType<typeof startAccountBackend>>;
 
-/** Loopback hop that commits a write upstream and then loses its response. */
+/**
+ * Loopback hop that commits a write upstream and then loses its response
+ * (`dropNext`), or loses the write before forwarding it (`loseNext`).
+ */
 export async function lossyProxy(target: string) {
-  const state = { dropNext: false, requests: [] as any[] };
+  const state = { dropNext: false, loseNext: false, requests: [] as any[] };
   const server = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     state.requests.push({ method: req.method, path: req.url });
+    if (state.loseNext && req.method !== "GET") {
+      // Lost before the backend sees it: nothing commits upstream.
+      state.loseNext = false;
+      req.socket.destroy();
+      return;
+    }
     const upstream = await fetch(target + req.url, {
       method: req.method,
       headers: Object.fromEntries(

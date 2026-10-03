@@ -98,6 +98,8 @@ export async function autonomyFake(
     negotiates: true,
     restAccess: true,
     claims: [] as any[],
+    receiptReadsFail: false,
+    reportsFail: false,
     /** Mutates a negotiated claim response (malformed-capability tests). */
     capabilityPatch: undefined as undefined | ((value: any) => void),
     /** Non-autonomy REST routes served to the installation's token. */
@@ -114,6 +116,7 @@ export async function autonomyFake(
   const calls: { method: string; path: string; credential: string | null }[] =
     [];
   let dropNextWrite = false;
+  let loseNextWrite = false;
 
   const leaseLive = (w: any) =>
     ["claimed", "running"].includes(w.status) &&
@@ -558,6 +561,24 @@ export async function autonomyFake(
     };
     if (!identity)
       return send(401, { code: "UNAUTHENTICATED", error: "unauthenticated" });
+    if (loseNextWrite && req.method !== "GET") {
+      // The request never reaches the backend: nothing commits.
+      loseNextWrite = false;
+      req.socket.destroy();
+      return;
+    }
+    if (
+      state.receiptReadsFail &&
+      req.method === "GET" &&
+      /\/actions\/[^/]+$/.test(url.pathname)
+    )
+      return send(503, { code: "AUTONOMY_UNAVAILABLE", error: "synthetic" });
+    if (
+      state.reportsFail &&
+      req.method === "GET" &&
+      url.pathname.endsWith("/reports")
+    )
+      return send(503, { code: "AUTONOMY_UNAVAILABLE", error: "synthetic" });
     try {
       // `http` is the fake's private status channel; DTO fields (such as a
       // mandate's own `status`) pass through untouched.
@@ -642,6 +663,10 @@ export async function autonomyFake(
     now: () => now,
     dropNextWrite() {
       dropNextWrite = true;
+    },
+    /** The next write is lost before the backend sees it. */
+    loseNextWrite() {
+      loseNextWrite = true;
     },
     async close() {
       clients.abort();
