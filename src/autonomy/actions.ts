@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { AutonomyFailure, type AutonomyBackend } from "./backend.js";
+import { PRAISE_TEXT_LIMIT } from "./types.js";
 import type {
+  WorkItem,
   ActionIntent,
   ActionReceipt,
   FollowUp,
@@ -53,7 +55,10 @@ export async function settleAction(
   if (
     receipt.type !== input.type ||
     receipt.recipient_id !== recipient ||
-    receipt.text_sha256 !== sha256(input.text)
+    receipt.text_sha256 !== sha256(input.text) ||
+    (input.type === "public_praise" &&
+      (receipt.activity_id !== input.activity_id ||
+        !["published", "already_published"].includes(receipt.status)))
   )
     throw new AutonomyFailure("ACTION_CONFLICT");
   return { receipt, idempotent: true, recovered: true };
@@ -85,6 +90,49 @@ export async function settleFollowUp(
 }
 
 /** Backend refusals the planner can see and adapt to; nothing was sent. */
+// contracts §14 step 2: the work's own completion events attest the activity.
+// completed_at is the occurrence the planner read; the backend checks it.
+export function praiseIntentFault(
+  work: Pick<WorkItem, "source">,
+  intent: { activity_id?: string; completed_at?: string },
+): "AUTONOMY_INVALID" | "PRAISE_NOT_AUTHORIZED" | null {
+  if (
+    typeof intent.completed_at !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(
+      intent.completed_at,
+    ) ||
+    Number.isNaN(Date.parse(intent.completed_at))
+  )
+    return "AUTONOMY_INVALID";
+  const attested = (work.source.events ?? []).some(
+    (e) =>
+      e.subject?.id === intent.activity_id &&
+      /\.(completed|completion_time_corrected)$/.test(e.event_type),
+  );
+  return attested && typeof intent.activity_id === "string"
+    ? null
+    : "PRAISE_NOT_AUTHORIZED";
+}
+
+// Mirrors the backend's sanitizePublicCoachComment so a doomed praise is
+// refused before any write; the backend remains authoritative.
+export function praiseTextFault(text: string): "PRAISE_TEXT_REJECTED" | null {
+  const t = String(text ?? "").trim();
+  if (
+    !t ||
+    t.length > PRAISE_TEXT_LIMIT ||
+    /[\r\n\u0000-\u001f]/.test(t) ||
+    /https?:\/\/|www\.|```|ignore\s+(all\s+)?previous|system\s+prompt|developer\s+message/i.test(
+      t,
+    ) ||
+    /\b(kill\s+yourself|kys|pathetic|loser|worthless|idiot|moron|stupid|hate|subhuman|f+u+c+k(?:ing)?|bitch|asshole|rape|rapist|sex(?:y|ual)?|nude|naked|porn|dick|cock|pussy|whore|slut)\b/i.test(
+      t,
+    )
+  )
+    return "PRAISE_TEXT_REJECTED";
+  return null;
+}
+
 export const VISIBLE_REFUSALS = [
   "ACTION_CONFLICT",
   "ACTION_LIMITED",

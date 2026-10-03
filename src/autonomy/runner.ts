@@ -295,7 +295,13 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       return undefined;
     };
     try {
-      let message = plannerMessage({ work, now: now(), reports, digest });
+      let message = plannerMessage({
+        work,
+        now: now(),
+        reports,
+        digest,
+        rest,
+      });
       for (let attempt = 0; attempt < 2; attempt++) {
         let text: string;
         try {

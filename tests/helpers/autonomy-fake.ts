@@ -89,6 +89,8 @@ export async function autonomyFake(
     work: new Map<string, any>(),
     claimedBy: new Map<string, string>(),
     actions: new Map<string, any>(),
+    /** B8 dojo_coach_comments by occurrence id. */
+    comments: new Map<string, any>(),
     followUps: new Map<string, any>(),
     reports: [] as any[],
     members: new Set([MEMBER, OTHER_MEMBER, CHIEF]),
@@ -377,7 +379,10 @@ export async function autonomyFake(
         if (
           prior.type !== body.type ||
           prior.recipient_id !== recipient ||
-          prior.text_sha256 !== sha256(body.text)
+          prior.text_sha256 !== sha256(body.text) ||
+          // B8: the slot digest binds the praised occurrence too.
+          prior.activity_id !== body.activity_id ||
+          prior.completed_at_digest !== body.completed_at
         )
           throw new Fail(409, "ACTION_CONFLICT");
         return { receipt: prior, idempotent: true, http: 200 };
@@ -388,6 +393,37 @@ export async function autonomyFake(
         state.mandate.delegated_actions.includes(body.type) &&
         (body.type === "manager_report" || state.mandate.mode === "message");
       if (!allowed) throw new Fail(400, "ACTION_UNSUPPORTED");
+      if (body.type === "public_praise") {
+        // B8 (contracts §14): attested by this work's completion events; one
+        // published comment per completion occurrence.
+        const attested = (w.source?.events ?? []).some(
+          (e: any) =>
+            e.subject?.id === body.activity_id &&
+            /\.(completed|completion_time_corrected)$/.test(e.event_type),
+        );
+        if (!attested) throw new Fail(403, "PRAISE_NOT_AUTHORIZED");
+        const comment_id = `${DOJO}:${body.activity_id}:${body.completed_at}`;
+        const published = state.comments.has(comment_id);
+        if (!published)
+          state.comments.set(comment_id, { text: body.text, slot, work: id });
+        const receipt: any = {
+          slot,
+          type: body.type,
+          status: published ? "already_published" : "published",
+          comment_id,
+          activity_id: body.activity_id,
+          subject_user_id: MEMBER,
+          text_sha256: sha256(body.text),
+          committed_at: iso(now),
+        };
+        Object.defineProperty(receipt, "completed_at_digest", {
+          value: body.completed_at,
+          enumerable: false,
+        });
+        state.actions.set(key, receipt);
+        w.actions.push(receipt);
+        return { receipt, idempotent: false, http: 201 };
+      }
       if (!state.members.has(recipient))
         throw new Fail(403, "RECIPIENT_NOT_MEMBER");
       const idempotency_key =

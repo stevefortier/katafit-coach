@@ -53,6 +53,8 @@ export async function startAutonomyBackend() {
     inject("./config/db", connect);
     inject("./core/websocket", {
       sendToUser: (...args: unknown[]) => fanout.push(args),
+      broadcastToUsers: (...args: unknown[]) =>
+        fanout.push(["broadcastToUsers", ...args]),
       broadcast() {},
       broadcastToDojo() {},
     });
@@ -76,10 +78,11 @@ export async function startAutonomyBackend() {
       })),
     );
     await db.collection("dojos").insertOne({ _id: dojo, chief_id: chief });
+    const joined_at = new Date(Date.now() - 86400000);
     await db.collection("dojo_members").insertMany([
-      { user_id: chief, dojo_id: dojo, role: "chief" },
-      { user_id: member, dojo_id: dojo, role: "member" },
-      { user_id: other, dojo_id: dojo, role: "member" },
+      { user_id: chief, dojo_id: dojo, role: "chief", joined_at },
+      { user_id: member, dojo_id: dojo, role: "member", joined_at },
+      { user_id: other, dojo_id: dojo, role: "member", joined_at },
     ]);
     /** A fresh installation credential (bearer) for the user. */
     const bearer = async (user: any = chief) => {
@@ -161,9 +164,12 @@ export async function startAutonomyBackend() {
       (
         await db.collection("coach_chats").find({ user_id: user }).toArray()
       ).flatMap((row: any) => row.messages || []);
+    /** The backend's own module, for seeding at its storage boundary. */
+    const backendModule = (name: string) => require(name);
     return {
       db,
       ObjectId,
+      backendModule,
       origin,
       chief,
       member,

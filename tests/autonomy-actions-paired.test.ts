@@ -309,5 +309,227 @@ test(
         assert.equal(done.actions.length, 1);
       },
     );
+
+    await t.test(
+      "real runner: conversation work reads the member conversation over REST (B7); a pending question shows its request status",
+      async () => {
+        const mandate = await b.saveMandate({
+          mode: "observe",
+          timezone: "UTC",
+          delegated_actions: ["manager_report", "follow_up"],
+        });
+        const token = await b.bearer();
+        const dir = await mkdtemp(tmpdir() + "/autonomy-paired-");
+        t.after(() => rm(dir, { recursive: true, force: true }));
+        const store = new Store(dir);
+        await store.init();
+        await store.save({
+          ...store.publicConfig(),
+          origin: b.origin,
+          provider: { baseUrl: b.origin + "/v1", model: "synthetic-model" },
+          token,
+          apiKey: "synthetic-provider-credential",
+        });
+        const request = (
+          await b.db.collection("external_coach_requests").insertOne({
+            user_id: b.member,
+            requester_id: b.member,
+            owner_type: "dojo",
+            owner_id: b.dojo,
+            requester_generation: 0,
+            status: "working",
+            created_at: new Date(Date.now() - 120000),
+          })
+        ).insertedId;
+        await b
+          .backendModule("./core/coachChatStore")
+          .appendCoachChatMessages(b.db, b.member, [
+            {
+              _id: new b.ObjectId(),
+              role: "user",
+              text: "Synthetic question: should I deload next week?",
+              created_at: new Date(Date.now() - 60000),
+              external_request_id: String(request),
+            },
+          ]);
+        await b.enqueue(mandate.mandate_id, {
+          kind: "conversation",
+          source: {
+            conversation: {
+              member_id: String(b.member),
+              from_epoch: 0,
+              to_epoch: 1,
+            },
+          },
+        });
+        const backend = client(b.origin, token);
+        const claimed = await backend.claimCycle({ lease_seconds: 120 });
+        assert.ok(claimed);
+        const work = await backend.start(
+          claimed.work.id,
+          claimed.work.lease_generation,
+        );
+        let read: any;
+        const runtime = new ScriptedRuntime([
+          async ({ message, call }) => {
+            const path = message.match(
+              /GET (\/api\/coach\/member-conversations\/\S+)/,
+            )?.[1];
+            assert.ok(path, "reader hint for this member");
+            const r = await call("katafit_rest_get", { path });
+            read = r.content[0].text;
+            return outcome({
+              decisions: [
+                {
+                  subject_id: String(b.member),
+                  decision: "no_action",
+                  action_slots: [],
+                  follow_up_ids: [],
+                },
+              ],
+            });
+          },
+        ]);
+        const result = await autonomyRunner({ store, runtime })({
+          work,
+          mandate: await backend.mandate(),
+          backend,
+          signal,
+          capability: claimed.capability,
+        });
+        if (runtime.errors.length) throw runtime.errors[0];
+        assert.ok(runtime.runs[0].calls.every((c) => c.ok));
+        assert.match(runtime.runs[0].catalog.prompt, /request worker/i);
+        assert.match(read, /should I deload next week/);
+        assert.match(read, /"request_status":"working"/);
+        assert.match(read, /retained_main_coach_conversation/);
+        assert.equal(result.outcome.result, "completed");
+      },
+    );
+
+    await t.test(
+      "public_praise (B8): lost response recovered by receipt, different activity on the slot is a conflict, same occurrence never published twice",
+      async () => {
+        const mandate = await b.saveMandate({
+          mode: "message",
+          timezone: "UTC",
+          quiet_hours: AWAY(),
+          delegated_actions: [...ALL, "public_praise"],
+        });
+        await b.db.collection("users").updateOne(
+          { _id: b.member },
+          {
+            $set: {
+              display_name: "Synthetic Member",
+              privacy_settings: { workout: ["dojo"] },
+            },
+          },
+        );
+        const completed = new Date("2026-10-02T09:30:00.000Z");
+        const activity = async () => {
+          const doc = {
+            _id: new b.ObjectId(),
+            user_id: b.member,
+            type: "workout",
+            name: "Synthetic leg day",
+            status: "completed",
+            completed_at: completed,
+            is_template: false,
+            data: { exercises: [] },
+          };
+          await b.db.collection("activities").insertOne(doc);
+          return doc;
+        };
+        const [actA, actB] = [await activity(), await activity()];
+        const refs = [actA, actB].map((act) => ({
+          ledger_id: String(new b.ObjectId()),
+          occurred_at: new Date().toISOString(),
+          event_type: "workout.completed",
+          subject: { type: "workout", id: String(act._id) },
+        }));
+        await b.enqueue(mandate.mandate_id, {
+          source: { event_ids: refs.map((r) => r.ledger_id), events: refs },
+        });
+        const token = await b.bearer();
+        const backend = client(proxy.origin, token);
+        const claimed = await backend.claimCycle({ lease_seconds: 120 });
+        assert.ok(claimed);
+        const work = await backend.start(
+          claimed.work.id,
+          claimed.work.lease_generation,
+        );
+        const words = "Synthetic Member closed out leg day. Strong work.";
+        // Stored compositions at the storage boundary until B11 + C11.
+        const compose = (slot: string, act: any) =>
+          b.db.collection("coach_autonomy_intents").insertOne({
+            _id: sha(JSON.stringify([work.id, slot])),
+            work_id: new b.ObjectId(work.id),
+            mandate_id: new b.ObjectId(mandate.mandate_id),
+            slot,
+            type: "public_praise",
+            activity_id: String(act._id),
+            completed_at: completed.toISOString(),
+            purpose: "completion_praise",
+            evidence_refs: [],
+            composition: {
+              text: words,
+              text_sha256: sha(words),
+              stored_at: new Date(),
+            },
+            created_at: new Date(),
+          });
+        await compose("p1", actA);
+        await compose("p2", actA);
+        const praise = (act: any) => ({
+          lease_generation: work.lease_generation,
+          mandate_revision: work.mandate_revision,
+          type: "public_praise" as const,
+          activity_id: String(act._id),
+          completed_at: completed.toISOString(),
+          text: words,
+        });
+        const before = b.fanout.length;
+        const chatBefore = (await b.chat(b.member)).length;
+        proxy.state.requests.length = 0;
+        proxy.state.dropNext = true;
+        const first = await settleAction(backend, work.id, "p1", praise(actA));
+        assert.equal(first.recovered, true);
+        assert.equal(first.receipt.status, "published");
+        assert.equal(first.receipt.activity_id, String(actA._id));
+        assert.deepEqual(
+          proxy.state.requests.map((r: any) => r.method),
+          ["PUT", "GET"],
+        );
+
+        proxy.state.loseNext = true;
+        await assert.rejects(
+          settleAction(backend, work.id, "p1", praise(actB)),
+          (e: any) => e.code === "ACTION_CONFLICT",
+        );
+
+        const again = await settleAction(backend, work.id, "p2", praise(actA));
+        assert.equal(again.receipt.status, "already_published");
+        assert.equal(again.receipt.comment_id, first.receipt.comment_id);
+
+        const comments = await b.db
+          .collection("dojo_coach_comments")
+          .find({})
+          .toArray();
+        assert.equal(comments.length, 1);
+        assert.equal(comments[0].text, words);
+        assert.equal(comments[0].provenance.source, "external_agent");
+        assert.equal(
+          (await b.chat(b.member)).length,
+          chatBefore,
+          "never a private message",
+        );
+        assert.equal(
+          b.fanout.slice(before).filter((f: any) => f[0] === "broadcastToUsers")
+            .length,
+          1,
+          "one toast",
+        );
+      },
+    );
   },
 );
