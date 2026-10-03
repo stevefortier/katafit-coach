@@ -13,7 +13,10 @@ import { Admission } from "../src/runtime/admission.js";
 import { startAutonomyBackend } from "../tests/helpers/autonomy-backend.js";
 import { closeServer } from "../tests/helpers/account-backend.js";
 import { answer, toolCall } from "../tests/helpers/continuity.js";
-import { typedAcceptance } from "../tests/helpers/autonomy-native-task.js";
+import {
+  perKindAcceptance,
+  typedAcceptance,
+} from "../tests/helpers/autonomy-native-task.js";
 import { outcome } from "../tests/helpers/autonomy-cycle.js";
 
 const exec = promisify(execFile);
@@ -692,6 +695,10 @@ export async function runAcceptance(): Promise<AcceptanceReceipt> {
       name: "native-concurrent-typed",
       ...concurrentTyped,
     });
+    await save();
+    const perKind = await perKindAcceptance(image);
+    receipt.phases.push({ name: "installed-native-per-kind", ...perKind });
+    await save();
     receipt.status = "mechanism-passed";
   } catch (error) {
     receipt.status = "failed";

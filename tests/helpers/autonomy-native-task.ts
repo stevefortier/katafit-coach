@@ -10,6 +10,8 @@ import { startTaskBackend } from "./task-backend.js";
 import { closeServer } from "./account-backend.js";
 import { answer, toolCall } from "./continuity.js";
 
+export { perKindAcceptance } from "./native-kind-acceptance.js";
+
 /** Actual installed default Worker + live scheduled native cycle + paired backend.
  * Only the loopback provider's model policy is synthetic. No fixture-held lane,
  * host Agent, scripted Pi RPC peer, or injected completion implementation.

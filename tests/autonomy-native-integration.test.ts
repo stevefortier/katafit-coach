@@ -41,5 +41,18 @@ test(
     assert.equal(concurrent.cycleCompletion.status, "completed");
     assert.equal(concurrent.cycleCompletion.completions.length, 1);
     assert.ok(concurrent.dynamicMemory.populated);
+    const kinds = receipt.phases.find(
+      (phase: any) => phase.name === "installed-native-per-kind",
+    );
+    assert.ok(kinds?.passed);
+    assert.deepEqual(
+      kinds.generationInventory.map((row: any) => row.kind).sort(),
+      [...kinds.inventory.advertised, "main_member_reply"].sort(),
+    );
+    assert.ok(
+      kinds.generationInventory.every(
+        (row: any) => row.executed && row.status === "pass",
+      ),
+    );
   },
 );
