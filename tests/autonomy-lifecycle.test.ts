@@ -197,6 +197,11 @@ test("C5: update quiesce refuses while an autonomy action is in flight, then qui
       "the in-flight cycle completes undisturbed",
     );
     assert.equal(env.fake.state.reports[0].counts.acted, 1);
+    // The completion's answer (and its ledger settlement) lands locally.
+    await until(
+      async () => !(await env.status()).local.busy,
+      "the completion answer settles locally",
+    );
     const quiesced = await env.call("POST", "/api/update/quiesce", {
       confirm: true,
     });
@@ -219,7 +224,7 @@ test("C5: update quiesce refuses while an autonomy action is in flight, then qui
   }
 });
 
-test("C5: an unknown action outcome blocks replacement until a later cycle settles it", async () => {
+test("C5: an unknown action outcome blocks replacement until an exact receipt read proves it (a later completed cycle alone does not)", async () => {
   const planner = new ScriptedRuntime([
     async ({ call }) => {
       await call(REPORT_TOOL, { slot: "r1", text: "Private." });
@@ -246,7 +251,12 @@ test("C5: an unknown action outcome blocks replacement until a later cycle settl
     assert.equal(off.body.local.state, "stopped");
     assert.equal(off.body.local.unknownOutcome, true);
     assert.equal(off.body.local.safeToReplace, false);
-    // The held write commits upstream after the client gave up on it.
+    // The held write commits upstream after the client gave up on it, while
+    // its exact receipt read is unavailable.
+    proxy.state.intercept = (method, url) =>
+      method === "GET" && /\/actions\/r1$/.test(url.split("?")[0])
+        ? { status: 503, body: { code: "AUTONOMY_UNAVAILABLE" } }
+        : undefined;
     proxy.release();
     await until(
       () => env.fake.state.work.get(id).actions.length === 1,
@@ -257,26 +267,33 @@ test("C5: an unknown action outcome blocks replacement until a later cycle settl
     });
     assert.equal(refused.status, 409);
     assert.equal(refused.body.error, "WORKER_STOP_UNCONFIRMED");
-    // A later cycle on the same work proves the receipt and clears the fence.
+    // A later cycle on the same work completes; completion is not a receipt.
     await env.call("POST", "/api/autonomy/participate", { participate: true });
     env.fake.advance(LEASE_MS);
     await until(
       () => env.fake.state.work.get(id).status === "completed",
       "the settling cycle completes",
     );
-    const s = await until(async () => {
+    const held = await until(async () => {
       const v = await env.status();
-      return !v.local.unknownOutcome && v;
-    }, "unknown outcome cleared");
-    assert.equal(s.local.safeToReplace, true);
+      return v.local.state === "idle" && v;
+    }, "settling cycle idle");
+    assert.equal(held.local.unknownOutcome, true);
+    assert.equal(held.local.safeToReplace, false);
+    // The exact receipt read (taken by the replacement gate) proves the
+    // write and clears the fence; nothing is ever replayed.
+    proxy.state.intercept = undefined;
+    const quiesced = await env.call("POST", "/api/update/quiesce", {
+      confirm: true,
+    });
+    assert.equal(quiesced.status, 200, JSON.stringify(quiesced.body));
+    const s = await env.status();
+    assert.equal(s.local.unknownOutcome, false);
+    assert.equal(s.local.unresolvedWrites, 0);
     const acts = env.fake.calls.filter(
       (c) => c.method === "PUT" && c.path.includes("/actions/"),
     );
     assert.equal(acts.length, 1, "the uncertain write was never replayed");
-    const quiesced = await env.call("POST", "/api/update/quiesce", {
-      confirm: true,
-    });
-    assert.equal(quiesced.status, 200);
   } finally {
     await env.close();
     await proxy.close();

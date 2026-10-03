@@ -816,7 +816,11 @@ export async function autonomyFake(
       ...(raw ? { body: raw } : {}),
     });
     const send = (status: number, value: unknown) => {
-      res.writeHead(status, { "content-type": "application/json" });
+      // Like any HTTP server, the Date header is the backend's clock.
+      res.writeHead(status, {
+        "content-type": "application/json",
+        date: new Date(now).toUTCString(),
+      });
       res.end(JSON.stringify({ protocol: PROTOCOL, ...(value as object) }));
     };
     if (!identity)

@@ -47,6 +47,7 @@ import {
   type WorkItem,
   type WorkKind,
 } from "./types.js";
+import type { LedgerOp } from "./ledger.js";
 
 /** Fixed code only; never carries backend text, member prose or credentials. */
 export class AutonomyFailure extends Error {
@@ -162,6 +163,52 @@ function negotiatedClaim(
   }
 }
 
+/**
+ * One effectful typed write: its exact identity, for the host's durable
+ * unknown-write ledger (C5 F1/F2). Facts are ids, codes and hashes only.
+ */
+export interface Effect {
+  op: LedgerOp;
+  method: string;
+  path: string;
+  body: unknown;
+  work_id: string;
+  lease_generation: number;
+  slot: string | null;
+  follow_up_id: string | null;
+  expect: Record<string, string | number | null>;
+}
+
+/** Canonical JSON (sorted keys) so equal values hash equally. */
+const canonical = (value: unknown): string =>
+  Array.isArray(value)
+    ? `[${value.map(canonical).join(",")}]`
+    : value && typeof value === "object"
+      ? `{${Object.keys(value)
+          .sort()
+          .filter((k) => (value as any)[k] !== undefined)
+          .map((k) => `${JSON.stringify(k)}:${canonical((value as any)[k])}`)
+          .join(",")}}`
+      : JSON.stringify(value ?? null);
+
+/** The report-visible projection of one completion, hashed for exact proof. */
+export const reportDigest = (report: {
+  work_id: string;
+  result: string;
+  coverage: unknown;
+  counts: unknown;
+  action_slots: string[];
+}) =>
+  sha256(
+    canonical({
+      work_id: report.work_id,
+      result: report.result,
+      coverage: report.coverage,
+      counts: report.counts,
+      action_slots: [...new Set(report.action_slots)].sort(),
+    }),
+  );
+
 export class AutonomyBackend {
   constructor(
     readonly origin: string,
@@ -170,6 +217,22 @@ export class AutonomyBackend {
     readonly secrets: string[],
     private readonly timeoutMs = 15000,
   ) {}
+
+  /** The backend's clock (HTTP Date header) at its latest answer. */
+  serverTime?: number;
+
+  /** The signal every request honours (the host narrows it per cycle). */
+  protected get scope(): AbortSignal {
+    return this.signal;
+  }
+
+  /**
+   * Run one effectful typed write: request plus response validation. The
+   * host overrides this to bracket the whole operation in its ledger.
+   */
+  protected effect<T>(_effect: Effect, run: () => Promise<T>): Promise<T> {
+    return run();
+  }
 
   async request(method: string, path: string, body?: unknown): Promise<any> {
     let base: URL;
@@ -210,7 +273,8 @@ export class AutonomyBackend {
       payload = JSON.stringify(body);
       if (Buffer.byteLength(payload) > REQUEST_LIMIT) fail("AUTONOMY_INVALID");
     }
-    this.signal.throwIfAborted();
+    const signal = this.scope;
+    signal.throwIfAborted();
     let response: Response;
     try {
       response = await fetch(new URL(path, base), {
@@ -225,10 +289,7 @@ export class AutonomyBackend {
             : {}),
         },
         body: payload,
-        signal: AbortSignal.any([
-          this.signal,
-          AbortSignal.timeout(this.timeoutMs),
-        ]),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]),
       });
     } catch {
       // A write may have committed before the connection failed.
@@ -236,9 +297,11 @@ export class AutonomyBackend {
         write(method) ? "AUTONOMY_OUTCOME_UNKNOWN" : "AUTONOMY_UNAVAILABLE",
       );
     }
+    const date = Date.parse(response.headers.get("date") ?? "");
+    this.serverTime = Number.isFinite(date) ? date : undefined;
     try {
       if (response.status >= 300 && response.status < 400)
-        fail("AUTONOMY_RESULT_REJECTED");
+        fail("AUTONOMY_RESULT_REJECTED", response.status);
       if (response.status === 401) fail("AUTONOMY_AUTH_EXPIRED", 401);
       const json =
         response.headers.get("content-type")?.split(";")[0].trim() ===
@@ -482,15 +545,35 @@ export class AutonomyBackend {
       !outcomeCoherent(outcome)
     )
       fail("AUTONOMY_INVALID");
-    const value = await this.request(
-      "POST",
-      `${AUTONOMY_ROOT}/work/${id}/complete`,
-      input,
-    );
-    return this.accept(
-      "POST",
-      value,
-      (v) => validate.completeResult(v) && v.work.id === id,
+    const counts = { acted: 0, no_action: 0, deferred: 0, escalated: 0 };
+    for (const d of outcome.decisions) counts[d.decision] += 1;
+    const path = `${AUTONOMY_ROOT}/work/${id}/complete`;
+    return this.effect(
+      {
+        op: "complete",
+        method: "POST",
+        path,
+        body: input,
+        work_id: id,
+        lease_generation,
+        slot: null,
+        follow_up_id: null,
+        expect: {
+          report_sha256: reportDigest({
+            work_id: id,
+            result: outcome.result,
+            coverage: outcome.coverage,
+            counts,
+            action_slots: outcome.decisions.flatMap((d) => d.action_slots),
+          }),
+        },
+      },
+      async () =>
+        this.accept<{ work: WorkItem; report_id: string }>(
+          "POST",
+          await this.request("POST", path, input),
+          (v) => validate.completeResult(v) && v.work.id === id,
+        ),
     );
   }
 
@@ -535,21 +618,37 @@ export class AutonomyBackend {
       )
     )
       fail("AUTONOMY_INVALID");
-    const value = await this.request(
-      "PUT",
-      `${AUTONOMY_ROOT}/work/${id}/actions/${slot}`,
-      input,
-    );
+    const path = `${AUTONOMY_ROOT}/work/${id}/actions/${slot}`;
     const digest = sha256(text);
-    return this.accept(
-      "PUT",
-      value,
-      (v) =>
-        validate.actResult(v) &&
-        v.receipt.slot === slot &&
-        v.receipt.type === type &&
-        v.receipt.text_sha256 === digest &&
-        receiptFits(v.receipt, input),
+    return this.effect(
+      {
+        op: "act",
+        method: "PUT",
+        path,
+        body: input,
+        work_id: id,
+        lease_generation,
+        slot,
+        follow_up_id: null,
+        expect: {
+          type,
+          recipient_id:
+            type === "member_message" ? (recipient_id as string) : null,
+          activity_id: type === "public_praise" ? praise.activity_id : null,
+          text_sha256: digest,
+        },
+      },
+      async () =>
+        this.accept<{ receipt: ActionReceipt; idempotent: boolean }>(
+          "PUT",
+          await this.request("PUT", path, input),
+          (v) =>
+            validate.actResult(v) &&
+            v.receipt.slot === slot &&
+            v.receipt.type === type &&
+            v.receipt.text_sha256 === digest &&
+            receiptFits(v.receipt, input),
+        ),
     );
   }
 
@@ -574,12 +673,40 @@ export class AutonomyBackend {
     )
       fail("AUTONOMY_INVALID");
     const { intent } = input;
-    const value = await this.request(
-      "PUT",
-      `${AUTONOMY_ROOT}/work/${id}/intents/${slot}`,
-      input,
+    const path = `${AUTONOMY_ROOT}/work/${id}/intents/${slot}`;
+    return this.effect(
+      {
+        op: "intent",
+        method: "PUT",
+        path,
+        body: input,
+        work_id: id,
+        lease_generation: input.lease_generation,
+        slot,
+        follow_up_id: null,
+        expect: {
+          type: intent.type,
+          purpose: intent.purpose,
+          recipient_id: intent.recipient_id ?? null,
+          activity_id: intent.activity_id ?? null,
+          completed_at: intent.completed_at ?? null,
+        },
+      },
+      async () =>
+        this.acceptIntent(await this.request("PUT", path, input), slot, intent),
     );
-    return this.accept("PUT", value, (v) => {
+  }
+
+  private acceptIntent(
+    value: unknown,
+    slot: string,
+    intent: IntentInput["intent"],
+  ) {
+    return this.accept<{
+      intent: IntentRecord;
+      idempotent: boolean;
+      public_projection?: PublicProjection;
+    }>("PUT", value, (v) => {
       if (!validate.intentResult(v)) return false;
       const saved = v.intent;
       return (
@@ -612,11 +739,33 @@ export class AutonomyBackend {
       !input.text.trim()
     )
       fail("AUTONOMY_INVALID");
-    const value = await this.request(
-      "PUT",
-      `${AUTONOMY_ROOT}/work/${id}/intents/${slot}/composition`,
-      input,
+    const path = `${AUTONOMY_ROOT}/work/${id}/intents/${slot}/composition`;
+    return this.effect(
+      {
+        op: "composition",
+        method: "PUT",
+        path,
+        body: input,
+        work_id: id,
+        lease_generation: input.lease_generation,
+        slot,
+        follow_up_id: null,
+        expect: { text_sha256: sha256(input.text) },
+      },
+      async () =>
+        this.acceptComposition(
+          await this.request("PUT", path, input),
+          slot,
+          input,
+        ),
     );
+  }
+
+  private acceptComposition(
+    value: unknown,
+    slot: string,
+    input: CompositionInput,
+  ) {
     const saved = this.accept<{
       composition: { slot: string; text?: string; text_sha256: string };
       stored: boolean;
@@ -680,39 +829,66 @@ export class AutonomyBackend {
       !followUpCoherent(input)
     )
       fail("AUTONOMY_INVALID");
-    const value = await this.request(
-      "PUT",
-      `${AUTONOMY_ROOT}/work/${id}/follow-ups/${slot}`,
-      input,
-    );
-    return this.accept(
-      "PUT",
-      value,
-      (v) =>
-        validate.followUpResult(v) &&
-        v.follow_up.source.work_id === id &&
-        v.follow_up.source.slot === slot &&
-        v.follow_up.subject_id === input.subject_id &&
-        v.follow_up.basis === input.basis,
+    const path = `${AUTONOMY_ROOT}/work/${id}/follow-ups/${slot}`;
+    return this.effect(
+      {
+        op: "follow_up",
+        method: "PUT",
+        path,
+        body: input,
+        work_id: id,
+        lease_generation: input.lease_generation,
+        slot,
+        follow_up_id: null,
+        expect: { subject_id: input.subject_id, basis: input.basis },
+      },
+      async () =>
+        this.accept<{ follow_up: FollowUp; idempotent: boolean }>(
+          "PUT",
+          await this.request("PUT", path, input),
+          (v) =>
+            validate.followUpResult(v) &&
+            v.follow_up.source.work_id === id &&
+            v.follow_up.source.slot === slot &&
+            v.follow_up.subject_id === input.subject_id &&
+            v.follow_up.basis === input.basis,
+        ),
     );
   }
 
   /** Close or cancel with CAS on the follow-up revision. */
   async patchFollowUp(id: string, input: FollowUpPatch): Promise<FollowUp> {
     if (!isId(id) || !validate.followUpPatch(input)) fail("AUTONOMY_INVALID");
-    const value = await this.request(
-      "PATCH",
-      `${AUTONOMY_ROOT}/follow-ups/${id}`,
-      input,
+    const path = `${AUTONOMY_ROOT}/follow-ups/${id}`;
+    const run = async () =>
+      this.accept<{ follow_up: FollowUp }>(
+        "PATCH",
+        await this.request("PATCH", path, input),
+        (v) =>
+          validate.followUpPatchResult(v) &&
+          v.follow_up.id === id &&
+          v.follow_up.status === input.status,
+      ).follow_up;
+    // Only a leased (machine) patch is an autonomy write.
+    if (!input.lease) return run();
+    return this.effect(
+      {
+        op: "follow_up_patch",
+        method: "PATCH",
+        path,
+        body: input,
+        work_id: input.lease.work_id,
+        lease_generation: input.lease.lease_generation,
+        slot: null,
+        follow_up_id: id,
+        expect: {
+          status: input.status,
+          closure_reason: input.closure_reason,
+          expected_revision: input.expected_revision,
+        },
+      },
+      run,
     );
-    return this.accept<{ follow_up: FollowUp }>(
-      "PATCH",
-      value,
-      (v) =>
-        validate.followUpPatchResult(v) &&
-        v.follow_up.id === id &&
-        v.follow_up.status === input.status,
-    ).follow_up;
   }
 
   async listFollowUps(

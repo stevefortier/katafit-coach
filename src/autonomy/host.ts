@@ -2,8 +2,11 @@ import type { Store } from "../config/store.js";
 import type { LogInput } from "../diagnostics/log.js";
 import type { Admission } from "../runtime/admission.js";
 import { nativeImage } from "../sandbox/artifact.js";
-import { AutonomyBackend, AutonomyFailure } from "./backend.js";
+import { AutonomyBackend, AutonomyFailure, type Effect } from "./backend.js";
 import { HeadlessCycleRuntime, type HeadlessRun } from "./headless.js";
+import { ledgerDigest, WriteLedger } from "./ledger.js";
+import { autonomyOwner } from "./owner.js";
+import { prove, RESOLVED, type Proof } from "./reconcile.js";
 import { autonomyRunner } from "./runner.js";
 import {
   AutonomyScheduler,
@@ -38,27 +41,93 @@ export async function productionRuntimes(
   return { planner, composer };
 }
 
-// Lease steps have no external effect: a lost answer just lets the lease expire.
-const LEASE_STEP = /\/work\/(?:claim|[0-9a-f]{24}\/(?:start|checkpoint))$/;
+interface Binding {
+  chief_id: string;
+  dojo_id: string;
+  mandate_id: string | null;
+}
 
-/** Tracks effectful writes so an abandoned one is never mistaken for none. */
+/** A definite rejection: the backend answered and committed nothing. */
+const definite = (error: unknown) =>
+  error instanceof AutonomyFailure &&
+  error.code !== "AUTONOMY_OUTCOME_UNKNOWN" &&
+  (error.status === undefined || (error.status >= 400 && error.status < 500));
+
+/**
+ * C5 F1/F2: every effectful typed write (request AND response validation) is
+ * a durable ledger entry, fsynced before dispatch and bound to the exact
+ * origin, account, installation and lease. Only a validated answer or a
+ * definite first rejection removes it here; anything else stays for exact
+ * read-only proof (`prove`). Reads, claims and checkpoints have no effect.
+ */
 class TrackedBackend extends AutonomyBackend {
   inflight = 0;
+  readonly dispatched = new Set<string>();
+  binding?: Binding;
+  cycle?: AbortSignal;
   onUnknown = () => {};
-  override async request(method: string, path: string, body?: unknown) {
-    if (method === "GET" || LEASE_STEP.test(path))
-      return super.request(method, path, body);
-    this.inflight++;
+  constructor(
+    origin: string,
+    token: string,
+    signal: AbortSignal,
+    secrets: string[],
+    private readonly ledger: WriteLedger,
+    private readonly installation: string,
+  ) {
+    super(origin, token, signal, secrets);
+  }
+  protected override get scope() {
+    return this.cycle
+      ? AbortSignal.any([this.signal, this.cycle])
+      : this.signal;
+  }
+  protected override async effect<T>(
+    e: Effect,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const binding = this.binding;
+    if (!binding) throw new AutonomyFailure("AUTONOMY_UNAVAILABLE");
+    let entry: { id: string; existing: boolean };
     try {
-      return await super.request(method, path, body);
+      entry = await this.ledger.begin({
+        op: e.op,
+        origin: this.origin,
+        chief_id: binding.chief_id,
+        dojo_id: binding.dojo_id,
+        mandate_id: binding.mandate_id,
+        installation: this.installation,
+        work_id: e.work_id,
+        lease_generation: e.lease_generation,
+        slot: e.slot,
+        follow_up_id: e.follow_up_id,
+        digest: ledgerDigest(e.method, e.path, e.body),
+        expect: e.expect,
+      });
+    } catch {
+      // Not durably recorded: nothing may be sent.
+      throw new AutonomyFailure("AUTONOMY_UNAVAILABLE");
+    }
+    if (this.scope.aborted) {
+      if (!entry.existing) await this.ledger.resolve(entry.id).catch(() => {});
+      this.scope.throwIfAborted();
+    }
+    this.inflight++;
+    this.dispatched.add(entry.id);
+    try {
+      const value = await run();
+      await this.ledger.resolve(entry.id).catch(() => {});
+      return value;
     } catch (error) {
-      if (
-        error instanceof AutonomyFailure &&
-        error.code === "AUTONOMY_OUTCOME_UNKNOWN"
-      )
+      // A rejected re-send says nothing about an earlier unknown attempt.
+      if (definite(error) && !entry.existing)
+        await this.ledger.resolve(entry.id).catch(() => {});
+      else {
+        await this.ledger.unknown(entry.id).catch(() => {});
         this.onUnknown();
+      }
       throw error;
     } finally {
+      this.dispatched.delete(entry.id);
       this.inflight--;
     }
   }
@@ -75,21 +144,28 @@ export interface AutonomyHostOptions {
   >;
 }
 export type AutonomyHostState = SchedulerState | "starting";
+const PROOF_TIMEOUT_MS = 30000;
+const PROOF_THROTTLE_MS = 30000;
 
 /**
  * The continuous Coach inside the admin process, independent of the request
  * Worker, the native terminal and any browser. It shares only the inference
  * admission slot. Stopping aborts an active cycle without a local release;
- * an effectful write abandoned mid-flight leaves its work "unknown", which
- * blocks process replacement until a later cycle on that work settles it.
+ * an effectful write abandoned mid-flight stays a durable ledger entry that
+ * blocks process replacement (independent of participation) until an exact
+ * read-only proof settles it.
  */
 export class AutonomyHost {
   private scheduler?: AutonomyScheduler;
   private lifetime?: AbortController;
   private starting?: Promise<void>;
   private backend?: TrackedBackend;
-  private active?: string;
-  private readonly unknown = new Set<string>();
+  private ledger?: WriteLedger;
+  private owner?: string;
+  private initializing?: Promise<void>;
+  private reconciling?: Promise<boolean>;
+  private lastProof = 0;
+  private readonly reasons = new Map<string, Proof>();
   private last: {
     outcome?: string;
     workId?: string;
@@ -114,15 +190,33 @@ export class AutonomyHost {
       (this.backend?.inflight ?? 0) > 0
     );
   }
+  get unresolvedWrites() {
+    return this.ledger?.unresolved.length ?? 0;
+  }
   get safeToReplace() {
-    return !this.busy && this.unknown.size === 0;
+    return (
+      !this.busy &&
+      !!this.ledger?.healthy &&
+      this.ledger.unresolved.length === 0
+    );
   }
 
   snapshot() {
+    const unresolved = this.ledger?.unresolved ?? [];
     return {
       state: this.state,
       busy: this.busy,
-      unknownOutcome: this.unknown.size > 0,
+      unknownOutcome: unresolved.length > 0,
+      unresolvedWrites: unresolved.length,
+      ledgerHealthy: this.ledger?.healthy ?? false,
+      unresolved: unresolved.slice(0, 10).map((e) => ({
+        op: e.op,
+        work_id: e.work_id,
+        slot: e.slot,
+        state: e.state,
+        reason: this.reasons.get(e.id) ?? null,
+        created_at: e.created_at,
+      })),
       safeToReplace: this.safeToReplace,
       lastOutcome: this.last.outcome ?? null,
       lastWorkId: this.last.workId ?? null,
@@ -141,6 +235,89 @@ export class AutonomyHost {
     } catch {}
   }
 
+  /**
+   * Load the durable ledger and owner token. Runs at admin startup whether or
+   * not the installation participates: replacement safety needs it.
+   */
+  init(): Promise<void> {
+    this.initializing ??= (async () => {
+      const dir = this.options.store.dir;
+      this.ledger = await WriteLedger.open(dir);
+      this.owner = await autonomyOwner(dir);
+    })().catch((error) => {
+      this.initializing = undefined;
+      throw error;
+    });
+    return this.initializing;
+  }
+
+  /**
+   * Exact read-only proof for every settled unknown write (never a replay).
+   * Single-flight; returns whether replacement is now safe.
+   */
+  reconcile(): Promise<boolean> {
+    this.reconciling ??= this.proveAll().finally(
+      () => (this.reconciling = undefined),
+    );
+    return this.reconciling;
+  }
+
+  /** Throttled background proof for status polling. */
+  nudge() {
+    if (
+      !this.ledger?.unresolved.length ||
+      Date.now() - this.lastProof < PROOF_THROTTLE_MS
+    )
+      return;
+    void this.reconcile().catch(() => {});
+  }
+
+  private async proveAll(): Promise<boolean> {
+    try {
+      await this.init();
+    } catch {
+      return false;
+    }
+    const ledger = this.ledger!;
+    this.lastProof = Date.now();
+    const settled = ledger.unresolved.filter(
+      (e) => !this.backend?.dispatched.has(e.id),
+    );
+    if (!settled.length) return this.safeToReplace;
+    const { store } = this.options;
+    const token = store.secrets.token;
+    const keep = (reason: Proof) => {
+      for (const e of settled) this.reasons.set(e.id, reason);
+      return this.safeToReplace;
+    };
+    if (!token) return keep("binding_unavailable");
+    const backend = new AutonomyBackend(
+      store.publicConfig().origin,
+      token,
+      AbortSignal.timeout(PROOF_TIMEOUT_MS),
+      Object.values(store.secrets),
+    );
+    let mandate;
+    try {
+      mandate = await backend.mandate();
+    } catch {
+      return keep("unavailable");
+    }
+    for (const entry of settled) {
+      const proof = await prove(entry, { backend, mandate });
+      if (RESOLVED.includes(proof)) {
+        try {
+          await ledger.resolve(entry.id);
+          this.reasons.delete(entry.id);
+          this.diagnostic("autonomy-outcome-settled");
+        } catch {
+          this.reasons.set(entry.id, "unavailable");
+        }
+      } else this.reasons.set(entry.id, proof);
+    }
+    return this.safeToReplace;
+  }
+
   async start() {
     if (this.scheduler) return;
     if (this.starting) return this.starting;
@@ -154,18 +331,19 @@ export class AutonomyHost {
       );
       if (runtimes.planner === runtimes.composer)
         throw new Error("COMPOSER_RUNTIME_SHARED");
+      await this.init();
+      if (!this.ledger!.healthy) throw new Error("AUTONOMY_LEDGER_UNAVAILABLE");
       const lifetime = new AbortController();
       const backend = new TrackedBackend(
         store.publicConfig().origin,
         token,
         lifetime.signal,
         Object.values(store.secrets),
+        this.ledger!,
+        this.owner!,
       );
-      backend.onUnknown = () => {
-        if (!this.active) return;
-        this.unknown.add(this.active);
+      backend.onUnknown = () =>
         this.diagnostic("autonomy-outcome-unknown", "warn");
-      };
       const runner = autonomyRunner({
         store,
         runtime: runtimes.planner,
@@ -200,11 +378,19 @@ export class AutonomyHost {
   }
 
   private async run(runner: ReturnType<typeof autonomyRunner>, cycle: Cycle) {
-    this.active = cycle.work.id;
+    const backend = this.backend;
+    if (backend) {
+      // Writes are bound to the authority this cycle was admitted under.
+      backend.binding = {
+        chief_id: cycle.mandate.chief_id,
+        dojo_id: cycle.mandate.dojo_id,
+        mandate_id: cycle.mandate.mandate_id,
+      };
+      backend.cycle = cycle.signal;
+    }
     try {
+      // A completion settles nothing by itself: only exact proof does.
       const result = await runner(cycle);
-      // Completed: the backend now holds every receipt durably.
-      this.unknown.delete(cycle.work.id);
       this.last = {
         outcome: result.outcome.result,
         workId: cycle.work.id,
@@ -212,7 +398,11 @@ export class AutonomyHost {
       };
       return result;
     } finally {
-      this.active = undefined;
+      if (backend) {
+        backend.binding = undefined;
+        backend.cycle = undefined;
+      }
+      if (this.ledger?.unresolved.length) void this.reconcile().catch(() => {});
     }
   }
 
@@ -220,15 +410,14 @@ export class AutonomyHost {
     await this.starting?.catch(() => {});
     const scheduler = this.scheduler;
     if (!scheduler) return;
-    // An aborted effectful write fails AUTONOMY_OUTCOME_UNKNOWN, which
-    // fences replacement through onUnknown until the work completes.
+    // An aborted effectful write stays a durable unknown ledger entry.
     this.lifetime?.abort(new Error("AUTONOMY_STOPPED"));
     await scheduler.stop();
     this.scheduler = undefined;
     this.backend = undefined;
     this.lifetime = undefined;
     this.diagnostic("autonomy-stopped", "info", {
-      calls: this.unknown.size,
+      calls: this.unresolvedWrites,
     });
   }
 }

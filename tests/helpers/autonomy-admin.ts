@@ -60,15 +60,37 @@ export const blockingRuntime = (entered?: () => void) => ({
 export async function holdingProxy(target: string) {
   const state = {
     hold: false,
+    /** Which requests `hold` captures (default: action PUTs). */
+    holds: (method: string, url: string) =>
+      method === "PUT" && /\/actions\//.test(url),
     held: [] as (() => void)[],
     entered: [] as string[],
+    /** Answer without reaching the backend (nothing commits). */
+    intercept: undefined as
+      | undefined
+      | ((method: string, url: string) => { status: number; body: any } | void),
+    /** Rewrite a JSON answer after the backend processed the request. */
+    rewrite: undefined as
+      | undefined
+      | ((method: string, url: string, body: any) => any),
   };
   const server: Server = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
-    if (state.hold && req.method === "PUT" && /\/actions\//.test(req.url!)) {
+    const intercepted = () => {
+      const answer = state.intercept?.(req.method!, req.url!);
+      if (!answer) return false;
+      if (!res.destroyed) {
+        res.writeHead(answer.status, { "content-type": "application/json" });
+        res.end(JSON.stringify(answer.body));
+      }
+      return true;
+    };
+    if (intercepted()) return;
+    if (state.hold && state.holds(req.method!, req.url!)) {
       state.entered.push(req.url!);
       await new Promise<void>((resolve) => state.held.push(resolve));
+      if (intercepted()) return;
     }
     try {
       const upstream = await fetch(target + req.url, {
@@ -80,9 +102,24 @@ export async function holdingProxy(target: string) {
         ),
         body: raw && req.method !== "GET" ? raw : undefined,
       });
-      const body = Buffer.from(await upstream.arrayBuffer());
+      let body = Buffer.from(await upstream.arrayBuffer());
+      if (
+        state.rewrite &&
+        upstream.headers.get("content-type")?.startsWith("application/json")
+      ) {
+        const value = state.rewrite(
+          req.method!,
+          req.url!,
+          JSON.parse(body.toString("utf8")),
+        );
+        if (value !== undefined) body = Buffer.from(JSON.stringify(value));
+      }
       res.writeHead(upstream.status, {
         "content-type": upstream.headers.get("content-type") ?? "text/plain",
+        // The backend's own clock: lease fencing never uses the client's.
+        ...(upstream.headers.get("date")
+          ? { date: upstream.headers.get("date")! }
+          : {}),
       });
       res.end(body);
     } catch {

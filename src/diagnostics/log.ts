@@ -68,6 +68,7 @@ export const stages = [
   "autonomy-started",
   "autonomy-stopped",
   "autonomy-outcome-unknown",
+  "autonomy-outcome-settled",
 ] as const;
 export type Stage = (typeof stages)[number];
 export interface LogInput {

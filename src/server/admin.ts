@@ -78,6 +78,7 @@ export async function admin(
   // Child-owned compatibility path: existing stable owners already call
   // quiesce/release. Never stop an idle worker just to inspect a receipt.
   const reconcileForUpdate = async () => {
+    await autonomy.reconcile().catch(() => false);
     if (
       updateQuiesced &&
       worker?.presenceStopRecovery === "pending" &&
@@ -213,6 +214,7 @@ export async function admin(
           error instanceof AutonomyFailure ? error.code : safeError(error).code,
       };
     }
+    autonomy.nudge();
     return {
       participate: store.autonomySettings().participate,
       local: autonomy.snapshot(),
@@ -324,14 +326,23 @@ export async function admin(
       });
     }
   };
+  // An unresolved autonomy write is provable only by its original origin and
+  // account: a binding change waits until exact proof settles it.
+  const bindingSettled = async () => (
+    await autonomy.reconcile().catch(() => false),
+    autonomy.unresolvedWrites === 0 && autonomy.snapshot().ledgerHealthy
+  );
   const transition = async <T>(
     operation: string,
     body: any,
     apply: () => Promise<T>,
+    rebinding = false,
   ) => {
     const wasRunning = !!worker && worker.state !== "stopped";
     if ((wasRunning || terminal.active) && body.confirmRestart !== true)
       throw new SafeError("RESTART_CONFIRMATION_REQUIRED");
+    if (rebinding && !(await bindingSettled()))
+      throw new SafeError("AUTONOMY_WRITE_UNRESOLVED");
     let settled!: () => void;
     lifecycleDone = new Promise<void>((resolve) => {
       settled = resolve;
@@ -352,6 +363,8 @@ export async function admin(
     try {
       await terminal.stop();
       await autonomy.stop();
+      if (rebinding && !(await bindingSettled()))
+        throw new SafeError("AUTONOMY_WRITE_UNRESOLVED");
       if (wasRunning) await worker!.stop();
       if (
         worker?.state === "stopped" &&
@@ -1109,7 +1122,10 @@ export async function admin(
           presence: worker?.presence ?? "unconfirmed",
           presenceStopRecovery: worker?.presenceStopRecovery ?? "none",
           preview: !!preview,
-          safeToReplace: worker?.safeToReplace ?? true,
+          // Autonomy writes fence replacement independent of participation.
+          safeToReplace:
+            (worker?.safeToReplace ?? true) && autonomy.safeToReplace,
+          autonomyUnresolvedWrites: autonomy.unresolvedWrites,
           stopConfirmed: worker?.stopConfirmed ?? true,
           nativeActive: terminal.active,
           lastError: logs.lastError,
@@ -1119,7 +1135,10 @@ export async function admin(
           transition: busy,
           updateQuiesced,
           updateQuiesceReady:
-            updateQuiesced && !updateQuiescePending && terminal.idle,
+            updateQuiesced &&
+            !updateQuiescePending &&
+            terminal.idle &&
+            autonomy.safeToReplace,
           updateWasRunning: updateQuiesced && updateWasRunning,
         });
       if (req.method !== "POST") return send(404, { error: "NOT_FOUND" });
@@ -1213,6 +1232,7 @@ export async function admin(
         if (
           updateQuiesced &&
           (!terminal.idle ||
+            !autonomy.safeToReplace ||
             (worker && (!worker.stopConfirmed || !worker.safeToReplace)))
         )
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
@@ -1262,6 +1282,7 @@ export async function admin(
         updateWasRunning = !!worker && worker.state !== "stopped";
         const stopping = (async () => {
           await autonomy.stop();
+          await autonomy.reconcile();
           await terminal.stop();
           if (updateWasRunning) await worker!.stop();
           if (
@@ -1496,6 +1517,7 @@ export async function admin(
             hint: "Finish or cancel the other operation, then retry the upgrade.",
           });
         }
+        await autonomy.reconcile().catch(() => false);
         if (autonomy.busy) {
           await cancelPrepared("UPDATE_BUSY");
           return send(409, {
@@ -1532,6 +1554,7 @@ export async function admin(
         busy = true;
         try {
           await autonomy.stop();
+          await autonomy.reconcile().catch(() => false);
           if (!autonomy.safeToReplace)
             throw new SafeError("WORKER_STOP_UNCONFIRMED");
           await terminal.stop();
@@ -1725,52 +1748,67 @@ export async function admin(
               error: "RESTART_CONFIRMATION_REQUIRED",
               hint: "Confirm to stop Coach, apply this change and restart it if it was running. Native sessions close; chat and actions are never replayed.",
             });
-          await transition(path, { confirmRestart, operationId }, async () => {
-            if (skillMutation) {
-              const id = skillMutation[1];
-              const restored = !!skillMutation[2];
-              if (
-                restored &&
-                (!body || Array.isArray(body) || Object.keys(body).length !== 0)
-              )
-                throw new Error("INVALID_SKILL");
-              const result = restored
-                ? await store.skills.restoreDefault(id, expectedRevision)
-                : await store.skills.save(id, body, expectedRevision);
-              logs.record({
-                source: "studio",
-                stage: "skills-revision-saved",
-                metadata: {
-                  skillRevision: result.revision,
-                  enabledSkills: store.skills.runtime().skills.length,
-                },
-              });
-            } else if (path === "/api/config") {
-              // Every incoming credential, including inactive and new registry
-              // providers, must be absent from retained action receipts.
-              // Retired chat archives are never loaded, served or rewritten.
-              const secrets = [
-                ...Object.values(store.secrets),
-                ...[
-                  body?.apiKey,
-                  body?.token,
-                  ...(Array.isArray(body?.models?.providers)
-                    ? body.models.providers.map((p: any) => p?.apiKey)
-                    : []),
-                ].filter((v): v is string => typeof v === "string"),
-              ];
-              new Actions(store, onBackendDiagnostic).assertSecrets(secrets);
-              await store.save(body);
-            } else if (path === "/api/persona-restore") {
-              if (
-                !body ||
-                Array.isArray(body) ||
-                Object.keys(body).join() !== "revision"
-              )
-                throw new Error("INVALID_REVISION");
-              await store.restorePersona(body.revision);
-            } else await store.rollback();
-          });
+          // Origin/account changes (and rollbacks, which may restore either)
+          // rebind autonomy authority.
+          const rebinding =
+            path === "/api/rollback" ||
+            (path === "/api/config" &&
+              (body?.origin !== store.publicConfig().origin ||
+                (typeof body?.token === "string" &&
+                  body.token !== store.secrets.token)));
+          await transition(
+            path,
+            { confirmRestart, operationId },
+            async () => {
+              if (skillMutation) {
+                const id = skillMutation[1];
+                const restored = !!skillMutation[2];
+                if (
+                  restored &&
+                  (!body ||
+                    Array.isArray(body) ||
+                    Object.keys(body).length !== 0)
+                )
+                  throw new Error("INVALID_SKILL");
+                const result = restored
+                  ? await store.skills.restoreDefault(id, expectedRevision)
+                  : await store.skills.save(id, body, expectedRevision);
+                logs.record({
+                  source: "studio",
+                  stage: "skills-revision-saved",
+                  metadata: {
+                    skillRevision: result.revision,
+                    enabledSkills: store.skills.runtime().skills.length,
+                  },
+                });
+              } else if (path === "/api/config") {
+                // Every incoming credential, including inactive and new registry
+                // providers, must be absent from retained action receipts.
+                // Retired chat archives are never loaded, served or rewritten.
+                const secrets = [
+                  ...Object.values(store.secrets),
+                  ...[
+                    body?.apiKey,
+                    body?.token,
+                    ...(Array.isArray(body?.models?.providers)
+                      ? body.models.providers.map((p: any) => p?.apiKey)
+                      : []),
+                  ].filter((v): v is string => typeof v === "string"),
+                ];
+                new Actions(store, onBackendDiagnostic).assertSecrets(secrets);
+                await store.save(body);
+              } else if (path === "/api/persona-restore") {
+                if (
+                  !body ||
+                  Array.isArray(body) ||
+                  Object.keys(body).join() !== "revision"
+                )
+                  throw new Error("INVALID_REVISION");
+                await store.restorePersona(body.revision);
+              } else await store.rollback();
+            },
+            rebinding,
+          );
           return send(
             200,
             skillMutation
@@ -1845,7 +1883,9 @@ export async function admin(
             : failure.code === "CONNECTIVITY_ERROR"
               ? 503
               : 400
-          : 400;
+          : failure.code === "AUTONOMY_WRITE_UNRESOLVED"
+            ? 409
+            : 400;
       send(status, {
         error: failure.code,
         hint: failure.hint,
@@ -1872,6 +1912,10 @@ export async function admin(
     server.listen(port, "127.0.0.1", resolve);
   });
   origin = `http://127.0.0.1:${(server.address() as any).port}`;
+  // The write ledger loads (and starts exact proof) whether or not this
+  // installation participates; replacement safety depends on it.
+  await autonomy.init().catch(() => {});
+  void autonomy.reconcile().catch(() => {});
   // A participating installation resumes autonomy on (re)start by itself.
   void startAutonomy();
   return {
