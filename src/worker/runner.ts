@@ -49,6 +49,7 @@ import {
   CAPABILITY_PROTOCOL,
   InvocationCapability,
   PRINCIPAL_REST_NOTE,
+  requestAdmission,
   type ActionLedger,
 } from "../capability/invocation.js";
 import { ToolFailure } from "../katafit/client.js";
@@ -711,8 +712,13 @@ export class Worker {
       // Never reclaim/replay an ambiguously published request, even under a new lease.
       // Typed tasks can still progress; main publication resumes after reconciliation.
       if (this.unresolvedRequests.size) return;
+      // No separate request-plane advertisement exists: the task plane's
+      // coach.capability.v1 advertisement is the same backend's opt-in.
       const { request } = await c.call("coach_claim_request", {
         lease_seconds: 120,
+        ...(taskPlane.capability
+          ? { capability_protocols: [CAPABILITY_PROTOCOL] }
+          : {}),
       });
       if (!request) {
         if (await tryTasks()) return;
@@ -742,6 +748,7 @@ export class Worker {
         !["personal", "dojo"].includes(current.scope)
       )
         throw new Error("CONTEXT_REJECTED");
+      const admission = requestAdmission(current, context);
       const serialized = serializeContext(context);
       stage("context-read", {
         bytes: Buffer.byteLength(serialized),
@@ -808,9 +815,9 @@ export class Worker {
       });
       inferenceStarted = true;
       const requestDeadline = deadline;
-      // Chat requests share the invocation capability. Writes need the host
-      // ledger and the requester's own account (personal scope): a Dojo
-      // member's request never writes as the chief.
+      // Chat requests share the invocation capability. Writes need the
+      // backend's negotiated admission (never for a Dojo request: no
+      // chief-account write) and the host durable ledger.
       const capability = new InvocationCapability({
         plane: "request",
         origin: this.options.origin,
@@ -821,10 +828,7 @@ export class Worker {
           !inferenceSignal.aborted &&
           !this.controller.signal.aborted &&
           Date.now() < requestDeadline,
-        actions:
-          current.scope === "personal" && this.options.actionLedger
-            ? ["rest_mutation"]
-            : [],
+        actions: this.options.actionLedger ? admission.actions : [],
         ...(this.options.actionLedger
           ? {
               ledger: this.options.actionLedger,
@@ -851,7 +855,7 @@ export class Worker {
                 ? "\nMemory recall covered a bounded page. Use coach_memory_search and its continuation for deeper recall.\n"
                 : "") +
               CAPABILITY_GUIDANCE +
-              (current.scope === "personal" ? "" : PRINCIPAL_REST_NOTE),
+              (admission.subjectIsPrincipal ? "" : PRINCIPAL_REST_NOTE),
             [
               ...reads.tools,
               ...(memory

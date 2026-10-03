@@ -25,6 +25,69 @@ const limits = {
   lease_seconds_max: 300,
   lease_seconds_default: 60,
 };
+// Mirrors backend core/coachCapability.js descriptor().
+export function descriptor(o: {
+  plane: "task" | "request";
+  kind: string;
+  rest: boolean;
+  ownerType: string;
+  subject: string;
+  actions: string[];
+}) {
+  const principal = o.ownerType === "dojo" ? "c".repeat(24) : o.subject;
+  return {
+    protocol: "coach.capability.v1",
+    plane: o.plane,
+    kind: o.kind,
+    tools_during_generation: true,
+    final_result: o.plane === "task" ? "structured_result" : "reply",
+    structured_result_correction: {
+      tools_retained: true,
+      replay_actions: false,
+    },
+    seed_evidence: "partial_untrusted",
+    discovery: o.rest ? { method: "GET", path: "/api/docs/coach" } : null,
+    rest: {
+      available: o.rest,
+      reads: o.rest,
+      writes: o.rest && o.actions.length > 0,
+      generic_mutations: o.rest && o.actions.includes("rest_mutation"),
+      principal: "credential_account",
+      principal_user_id: principal,
+      subject_user_id: o.subject,
+      subject_is_principal: principal === o.subject,
+      unavailable_reason: o.rest ? null : "REST_ACCESS_NOT_GRANTED",
+    },
+    memory: {
+      available: o.rest,
+      search: {
+        method: "GET",
+        path: "/api/coach/memory",
+        query_param: "query",
+      },
+      private_to_principal: true,
+      copy_into_subject_visible_text: false,
+    },
+    integrations: { source: "worker_configured" },
+    skills: { source: "worker_enabled" },
+    actions: {
+      supported: o.rest ? o.actions : [],
+      receipted: ["member_message"],
+      unreceipted: "pending_unknown_no_replay",
+      occurrence_journal:
+        o.plane === "task"
+          ? "coach.tasks.v1/occurrences"
+          : "worker_durable_action_journal",
+      secret_producing_interactive_only: "denied",
+    },
+    audience: {
+      visible_to: "requester",
+      owner_type: o.ownerType,
+      private_principal_data_in_subject_text: false,
+    },
+    honesty: { report_denials: true, invent_facts: false },
+  };
+}
 export async function taskFixture(options: any = {}) {
   const calls: any[] = [];
   const queue: any[] = [];
@@ -377,55 +440,14 @@ export async function taskFixture(options: any = {}) {
         ],
         direct_mutations_forbidden: !rest,
         capability: {
-          protocol: "coach.capability.v1",
-          plane: "task",
-          kind: current.kind,
-          tools_during_generation: true,
-          final_result: "structured_result",
-          structured_result_correction: {
-            tools_retained: true,
-            replay_actions: false,
-          },
-          seed_evidence: "partial_untrusted",
-          discovery: rest ? { method: "GET", path: "/api/docs/coach" } : null,
-          rest: {
-            available: rest,
-            reads: rest,
-            writes: rest,
-            principal: "credential_account",
-            principal_user_id:
-              current.owner_type === "dojo"
-                ? "c".repeat(24)
-                : current.requester_id,
-            subject_user_id: current.requester_id,
-            subject_is_principal: current.owner_type !== "dojo",
-            unavailable_reason: rest ? null : "REST_ACCESS_NOT_GRANTED",
-          },
-          memory: {
-            available: rest,
-            search: {
-              method: "GET",
-              path: "/api/coach/memory",
-              query_param: "query",
-            },
-            private_to_principal: true,
-            copy_into_subject_visible_text: false,
-          },
-          integrations: { source: "worker_configured" },
-          skills: { source: "worker_enabled" },
-          actions: {
-            supported: rest ? actions : [],
-            receipted: ["member_message"],
-            unreceipted: "pending_unknown_no_replay",
-            occurrence_journal: "coach.tasks.v1/occurrences",
-            secret_producing_interactive_only: "denied",
-          },
-          audience: {
-            visible_to: "requester",
-            owner_type: current.owner_type,
-            private_principal_data_in_subject_text: false,
-          },
-          honesty: { report_denials: true, invent_facts: false },
+          ...descriptor({
+            plane: "task",
+            kind: current.kind,
+            rest,
+            ownerType: current.owner_type,
+            subject: current.requester_id,
+            actions,
+          }),
           ...options.capabilityPatch,
         },
         occurrences: [...journal.values()]
@@ -566,11 +588,16 @@ export async function taskFixture(options: any = {}) {
       value = { requests: options.main ? [{ status: "queued" }] : [] };
     else if (n === "coach_claim_request") {
       main++;
+      // Mirrors routes/personalExternalCoach.js: the claim opts in per lease.
+      state.requestNegotiated =
+        options.negotiate === true &&
+        Array.isArray(a.capability_protocols) &&
+        a.capability_protocols.includes("coach.capability.v1");
       value = {
         request: {
           id: "main",
-          requester_id: "member",
-          scope: "personal",
+          requester_id: options.requester ?? "member",
+          scope: options.requestScope ?? "personal",
           status: "claimed",
           lease_generation: main,
           lease_expires_at: new Date(Date.now() + 120000).toISOString(),
@@ -578,12 +605,48 @@ export async function taskFixture(options: any = {}) {
         },
       };
       options.mainRequest = value.request;
-    } else if (n === "coach_read_context")
+    } else if (n === "coach_read_context") {
       value = {
         request: { ...options.mainRequest, attachment_count: 0 },
         conversation: [],
+        boundaries: {
+          scope: options.mainRequest.scope,
+          direct_mutations_forbidden: true,
+          proposals_supported: false,
+        },
       };
-    else if (n === "coach_respond") {
+      if (state.requestNegotiated) {
+        const rest = options.restAccess !== false;
+        const base = descriptor({
+          plane: "request",
+          kind: "chat",
+          rest,
+          ownerType: options.mainRequest.scope,
+          subject: options.mainRequest.requester_id,
+          actions:
+            options.mainRequest.scope === "dojo" ? [] : ["rest_mutation"],
+        });
+        const capability =
+          typeof options.capabilityPatch === "function"
+            ? options.capabilityPatch(base)
+            : { ...base, ...options.capabilityPatch };
+        value = {
+          ...value,
+          capability,
+          allowed_tools: [
+            ...(rest ? ["api_discovery", "rest_read", "memory_search"] : []),
+            "integrations",
+            "skills",
+            ...(capability.actions.supported.length ? ["actions"] : []),
+          ],
+          capability_guidance: "Synthetic backend capability guidance.",
+          boundaries: {
+            ...value.boundaries,
+            direct_mutations_forbidden: !capability.actions.supported.length,
+          },
+        };
+      }
+    } else if (n === "coach_respond") {
       options.main = false;
       if (options.dropRespond) {
         req.socket.destroy();

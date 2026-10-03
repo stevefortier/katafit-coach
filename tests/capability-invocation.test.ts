@@ -6,6 +6,7 @@ import { taskCatalog } from "../src/katafit/taskCatalog.js";
 import { stockSkills } from "../src/config/skills.js";
 import {
   CAPABILITY_PROTOCOL,
+  PRINCIPAL_REST_NOTE,
   classifySecretRequest,
 } from "../src/capability/invocation.js";
 import { taskFixture } from "./task-fixtures.js";
@@ -649,6 +650,7 @@ test("worker chat requests receive the same REST capability with durable local w
   const ledger: any[] = [];
   const f = await taskFixture({
     main: true,
+    negotiate: true,
     rest: async (c: any) =>
       c.path === "/api/docs/coach"
         ? { status: 200, body: docs }
@@ -705,8 +707,132 @@ test("worker chat requests receive the same REST capability with durable local w
       [["katafit_rest_request", "unknown"]],
     );
     assert.match(ledger[0].session_id, /^worker-request:main:/);
+    assert.deepEqual(
+      f.calls.find((c) => c.name === "coach_claim_request")?.args
+        .capability_protocols,
+      ["coach.capability.v1"],
+      "the request lease opts into coach.capability.v1",
+    );
   } finally {
     await w.stop();
     await f.close();
   }
 });
+
+const memoryLedger = (ledger: any[]) => ({
+  unresolved: () =>
+    ledger.some((a) => ["pending", "unknown"].includes(a.status)),
+  save: (a: any) => ledger.push(a),
+});
+const requestRun = async (options: any, ledger: any[] = []) => {
+  const f = await taskFixture({
+    main: true,
+    rest: async (c: any) =>
+      c.path === "/api/docs/coach" ? { status: 200, body: docs } : undefined,
+    ...options,
+  });
+  const seen: any = { inferences: 0 };
+  const w = worker(
+    f,
+    async (_c: string, _s: any, sys: string, tools: any[]) => {
+      seen.inferences++;
+      seen.system = sys;
+      seen.read = await attempt(tools, "katafit_rest_request", {
+        method: "GET",
+        path: "/api/docs/coach",
+      });
+      seen.write = await attempt(tools, "katafit_rest_request", {
+        method: "POST",
+        path: "/api/user/goals",
+        body: { goal: "x" },
+      });
+      return "Synthetic reply.";
+    },
+    { actionLedger: memoryLedger(ledger) },
+  );
+  try {
+    await w.pollOnce().catch((e: Error) => (seen.error = e.message));
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+  return { f, seen, ledger };
+};
+
+test("legacy chat request context keeps the backend write prohibition: reads only", async () => {
+  const { f, seen, ledger } = await requestRun({});
+  assert.equal(seen.read.ok, true);
+  assert.match(seen.read.text, /api\/user\/targets/);
+  assert.match(seen.write.text, /ACTION_UNSUPPORTED/);
+  assert.equal(f.restCalls.filter((c: any) => c.method !== "GET").length, 0);
+  assert.deepEqual(ledger, []);
+  assert.equal(
+    f.calls.find((c) => c.name === "coach_claim_request")?.args
+      .capability_protocols,
+    undefined,
+    "no opt-in without the advertised protocol",
+  );
+});
+
+test("negotiated Dojo chat request reads as the chief principal and never writes", async () => {
+  const { f, seen, ledger } = await requestRun({
+    negotiate: true,
+    requestScope: "dojo",
+  });
+  assert.equal(seen.inferences, 1);
+  assert.equal(seen.read.ok, true);
+  assert.match(seen.write.text, /ACTION_UNSUPPORTED/);
+  assert.equal(f.restCalls.filter((c: any) => c.method !== "GET").length, 0);
+  assert.deepEqual(ledger, []);
+  assert.ok(seen.system.includes(PRINCIPAL_REST_NOTE));
+});
+
+test("negotiated chat request without REST access offers no writes", async () => {
+  const { f, seen, ledger } = await requestRun({
+    negotiate: true,
+    restAccess: false,
+  });
+  assert.equal(seen.inferences, 1);
+  assert.match(seen.write.text, /ACTION_UNSUPPORTED/);
+  assert.equal(f.restCalls.filter((c: any) => c.method !== "GET").length, 0);
+  assert.deepEqual(ledger, []);
+});
+
+for (const [label, patch] of [
+  ["wrong plane", (c: any) => ({ ...c, plane: "task" })],
+  [
+    "foreign subject",
+    (c: any) => ({
+      ...c,
+      rest: { ...c.rest, subject_user_id: "someone-else" },
+    }),
+  ],
+  [
+    "replaying correction",
+    (c: any) => ({
+      ...c,
+      structured_result_correction: {
+        tools_retained: true,
+        replay_actions: true,
+      },
+    }),
+  ],
+  [
+    "Dojo write-admitting",
+    (c: any) => ({
+      ...c,
+      actions: { ...c.actions, supported: ["rest_mutation"] },
+    }),
+  ],
+] as const)
+  test(`negotiated chat request with a ${label} descriptor is rejected before inference`, async () => {
+    const { f, seen } = await requestRun({
+      negotiate: true,
+      capabilityPatch: patch,
+      ...(label === "Dojo write-admitting" ? { requestScope: "dojo" } : {}),
+    });
+    assert.equal(seen.inferences, 0);
+    assert.equal(seen.error, "CONTEXT_REJECTED");
+    assert.ok(!f.calls.some((c) => c.name === "coach_respond"));
+    assert.equal(f.restCalls.length, 0);
+  });

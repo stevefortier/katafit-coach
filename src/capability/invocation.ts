@@ -190,6 +190,63 @@ export const CAPABILITY_GUIDANCE =
 export const PRINCIPAL_REST_NOTE =
   "REST calls authenticate as the principal account (the Dojo chief), not the requester. Account-scoped endpoints such as /api/user/targets describe the principal account; read requester facts only through documented Dojo/member surfaces and never attribute principal-account data to the requester. Principal-private memory is planning context and must never be copied into requester-visible text.\n";
 
+export interface RequestAdmission {
+  negotiated: boolean;
+  actions: CapabilityAction[];
+  subjectIsPrincipal: boolean;
+}
+/**
+ * Validates a chat-request context's coach.capability.v1 admission. A legacy
+ * context keeps the backend's direct-mutation prohibition (reads only).
+ */
+export function requestAdmission(
+  request: { requester_id: string; scope: string },
+  context: any,
+): RequestAdmission {
+  if (!context || !Object.hasOwn(context, "capability"))
+    return {
+      negotiated: false,
+      actions: [],
+      subjectIsPrincipal: request.scope === "personal",
+    };
+  const cap = context.capability;
+  const supported = cap?.actions?.supported;
+  if (
+    !cap ||
+    typeof cap !== "object" ||
+    cap.protocol !== CAPABILITY_PROTOCOL ||
+    cap.plane !== "request" ||
+    !["chat", "setup_test"].includes(cap.kind) ||
+    cap.tools_during_generation !== true ||
+    cap.final_result !== "reply" ||
+    cap.structured_result_correction?.replay_actions !== false ||
+    typeof cap.rest?.available !== "boolean" ||
+    typeof cap.rest?.subject_is_principal !== "boolean" ||
+    String(cap.rest?.subject_user_id) !== String(request.requester_id) ||
+    !Array.isArray(supported) ||
+    supported.length > 1 ||
+    !supported.every((a: any) => a === "rest_mutation") ||
+    // A Dojo reply is itself the communication: never a chief-account write.
+    (request.scope === "dojo" && supported.length > 0) ||
+    context.boundaries?.direct_mutations_forbidden !==
+      (supported.length === 0) ||
+    !Array.isArray(context.allowed_tools) ||
+    context.allowed_tools.length > 16 ||
+    !context.allowed_tools.every(
+      (t: any) => typeof t === "string" && /^[a-z_]{1,40}$/.test(t),
+    ) ||
+    typeof context.capability_guidance !== "string" ||
+    context.capability_guidance.length > 8000 ||
+    Buffer.byteLength(JSON.stringify(cap)) > 16384
+  )
+    throw new Error("CONTEXT_REJECTED");
+  return {
+    negotiated: true,
+    actions: cap.rest.available ? [...supported] : [],
+    subjectIsPrincipal: cap.rest.subject_is_principal,
+  };
+}
+
 export class InvocationCapability {
   private readonly known: Occurrence[];
   constructor(private readonly o: InvocationOptions) {
