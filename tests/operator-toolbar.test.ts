@@ -97,7 +97,8 @@ test(
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.locator("#coachPaneCollapse").click();
       await page.locator("#dashboardTab").click();
-      await page.locator("#diagnosticsTab").click();
+      await page.locator("#settingsTab").click();
+      await page.locator("#settings-log-tab").click();
       await page.waitForTimeout(1800);
       assert.equal(
         await page.locator("#nativeStatus").innerText(),

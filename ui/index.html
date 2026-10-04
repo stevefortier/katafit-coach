@@ -80,14 +80,6 @@
               Dojo
             </button>
             <button
-              id="diagnosticsTab"
-              class="secondary"
-              aria-controls="diagnostics"
-              aria-pressed="false"
-            >
-              Activity
-            </button>
-            <button
               id="settingsTab"
               class="secondary"
               aria-controls="settingsPanel"
@@ -360,6 +352,17 @@
                 class="secondary"
               >
                 Updates
+              </button>
+              <button
+                type="button"
+                id="settings-log-tab"
+                role="tab"
+                aria-controls="diagnostics"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Log
               </button>
             </div>
             <div
@@ -1075,142 +1078,138 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
                 ><button id="stop" class="secondary">Stop worker</button>
               </div>
             </section>
-            <div class="actions">
+            <div class="actions" id="settingsSaveActions">
               <button id="save">Save new revision</button
               ><button id="export" class="secondary">
                 Export nonsecret configuration</button
               ><span id="revision"></span>
             </div>
-            <p class="hint">
+            <p class="hint" id="settingsSaveHint">
               Save applies Kata.fit, Models and Persona drafts across tabs.
               Preview and worker use saved settings.
             </p>
-          </section>
-          <section
-            class="card diagnostics"
-            id="diagnostics"
-            role="region"
-            aria-labelledby="diagnosticsTab"
-            tabindex="0"
-            hidden
-          >
-            <h2>Activity</h2>
-            <p id="lastError" role="status">No retained error.</p>
-            <div
-              class="settings-tabs"
-              role="tablist"
-              aria-label="Activity sections"
-            >
-              <button
-                id="diagnostics-performance-tab"
-                class="secondary"
-                role="tab"
-                aria-selected="false"
-                aria-controls="backendPerformance"
-                tabindex="-1"
-              >
-                Performance
-              </button>
-              <button
-                id="diagnostics-logs-tab"
-                role="tab"
-                aria-selected="true"
-                aria-controls="logsView"
-                tabindex="0"
-              >
-                Logs
-              </button>
-            </div>
-            <div class="log-controls">
-              <button id="logRefresh" class="secondary">Refresh</button>
-              <button id="logPause" class="secondary" aria-pressed="false">
-                Pause live
-              </button>
-            </div>
             <section
-              id="backendPerformance"
+              class="card diagnostics"
+              id="diagnostics"
               role="tabpanel"
-              aria-labelledby="diagnostics-performance-tab"
+              aria-labelledby="settings-log-tab"
               tabindex="0"
               hidden
             >
-              <h3 id="performanceHeading">Backend performance</h3>
-              <p class="hint">
-                All retained backend receipts, independent of log level.
-                Cumulative request time is not wallclock time: overlapping
-                requests add together. This is not lifetime usage; the
-                20,000-entry window also includes other logs.
-              </p>
-              <p id="performanceWindow"></p>
-              <div class="log-controls">
-                <label
-                  >Sort descending<select id="performanceSort">
-                    <option value="totalMs">Cumulative time</option>
-                    <option value="calls">Calls</option>
-                    <option value="p95Ms">p95 duration</option>
-                    <option value="timeouts">Timeouts</option>
-                  </select></label
+              <h2>Log</h2>
+              <p id="lastError" role="status">No retained error.</p>
+              <div class="settings-tabs" role="tablist" aria-label="Log views">
+                <button
+                  id="diagnostics-performance-tab"
+                  class="secondary"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="backendPerformance"
+                  tabindex="-1"
                 >
-                <button id="performanceExport" class="secondary" disabled>
-                  Export aggregate JSON
+                  Performance
+                </button>
+                <button
+                  id="diagnostics-logs-tab"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="logsView"
+                  tabindex="0"
+                >
+                  Logs
                 </button>
               </div>
-              <details>
-                <summary>How metrics are calculated</summary>
-                <p class="hint">
-                  Durations use measured calls only; missing durations are not
-                  zero. p95 uses nearest rank (small samples under 20 can
-                  mislead); median uses the midpoint. Outcome rates use all
-                  calls, including unknown outcomes. Failed time includes
-                  timeouts and other failures, not cancellations.
-                </p>
-              </details>
-              <p class="hint">
-                Select a call to inspect receipts. Scroll the breakdown for more
-                calls.
-              </p>
-              <div
-                id="performanceRows"
+              <div class="log-controls">
+                <button id="logRefresh" class="secondary">Refresh</button>
+                <button id="logPause" class="secondary" aria-pressed="false">
+                  Pause live
+                </button>
+              </div>
+              <section
+                id="backendPerformance"
+                role="tabpanel"
+                aria-labelledby="diagnostics-performance-tab"
                 tabindex="0"
-                role="region"
-                aria-label="Backend call breakdown"
-              ></div>
-            </section>
-            <div
-              id="logsView"
-              role="tabpanel"
-              aria-labelledby="diagnostics-logs-tab"
-              tabindex="0"
-            >
-              <h3>Activity logs</h3>
-              <p id="performanceSelection" role="status"></p>
-              <button id="performanceClear" class="secondary" hidden>
-                Clear call selection
-              </button>
-              <p class="hint">
-                Logs may contain health or meal details. Inspect and redact
-                copied or downloaded JSON before sharing it.
-              </p>
-              <div class="log-controls">
-                <label
-                  >Level<select id="logLevel">
-                    <option value="all">All levels</option>
-                    <option value="verbose">Verbose</option>
-                    <option value="info" selected>Info</option>
-                    <option value="warn">Warnings</option>
-                    <option value="error">Errors</option>
-                  </select></label
-                >
-                <button id="logCopy" class="secondary">Copy JSON</button>
-                <button id="logDownload" class="secondary">
-                  Download JSON
+                hidden
+              >
+                <h3 id="performanceHeading">Backend performance</h3>
+                <p class="hint">
+                  All retained backend receipts, independent of log level.
+                  Cumulative request time is not wallclock time: overlapping
+                  requests add together. This is not lifetime usage; the
+                  20,000-entry window also includes other logs.
+                </p>
+                <p id="performanceWindow"></p>
+                <div class="log-controls">
+                  <label
+                    >Sort descending<select id="performanceSort">
+                      <option value="totalMs">Cumulative time</option>
+                      <option value="calls">Calls</option>
+                      <option value="p95Ms">p95 duration</option>
+                      <option value="timeouts">Timeouts</option>
+                    </select></label
+                  >
+                  <button id="performanceExport" class="secondary" disabled>
+                    Export aggregate JSON
+                  </button>
+                </div>
+                <details>
+                  <summary>How metrics are calculated</summary>
+                  <p class="hint">
+                    Durations use measured calls only; missing durations are not
+                    zero. p95 uses nearest rank (small samples under 20 can
+                    mislead); median uses the midpoint. Outcome rates use all
+                    calls, including unknown outcomes. Failed time includes
+                    timeouts and other failures, not cancellations.
+                  </p>
+                </details>
+                <p class="hint">
+                  Select a call to inspect receipts. Scroll the breakdown for
+                  more calls.
+                </p>
+                <div
+                  id="performanceRows"
+                  tabindex="0"
+                  role="region"
+                  aria-label="Backend call breakdown"
+                ></div>
+              </section>
+              <div
+                id="logsView"
+                role="tabpanel"
+                aria-labelledby="diagnostics-logs-tab"
+                tabindex="0"
+              >
+                <h3>Log entries</h3>
+                <p id="performanceSelection" role="status"></p>
+                <button id="performanceClear" class="secondary" hidden>
+                  Clear call selection
                 </button>
+                <p class="hint">
+                  Logs may contain health or meal details. Inspect and redact
+                  copied or downloaded JSON before sharing it.
+                </p>
+                <div class="log-controls">
+                  <label
+                    >Level<select id="logLevel">
+                      <option value="all">All levels</option>
+                      <option value="verbose">Verbose</option>
+                      <option value="info" selected>Info</option>
+                      <option value="warn">Warnings</option>
+                      <option value="error">Errors</option>
+                    </select></label
+                  >
+                  <button id="logCopy" class="secondary">Copy JSON</button>
+                  <button id="logDownload" class="secondary">
+                    Download JSON
+                  </button>
+                </div>
+                <p id="logStatus" role="status">
+                  Logs load only while Log is active and the tab is visible.
+                </p>
+                <div id="logRows" aria-label="Log entries"></div>
               </div>
-              <p id="logStatus" role="status">
-                Logs load only while Activity is active and the tab is visible.
-              </p>
-              <div id="logRows" aria-label="Activity entries"></div>
-            </div>
+            </section>
           </section>
         </div>
         <p id="restartStatus" role="status" aria-live="polite"></p>

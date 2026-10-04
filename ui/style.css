@@ -2259,8 +2259,7 @@ html.coach-covered #workspaceScroll {
 }
 
 @media (max-width: 480px) {
-  .studio-tabs #dashboardTab,
-  .studio-tabs #diagnosticsTab {
+  .studio-tabs #dashboardTab {
     flex: 0 0 auto;
   }
   .studio-tabs #settingsTab,

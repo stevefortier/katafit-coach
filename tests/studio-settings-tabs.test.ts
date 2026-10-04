@@ -107,10 +107,10 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
         .locator(".studio-tabs button")
         .allTextContents()
         .then((names) => names.map((name) => name.trim())),
-      ["Dojo", "Activity", "Server Settings", "Coach Settings"],
+      ["Dojo", "Server Settings", "Coach Settings"],
     );
-    assert.equal(await tabs.count(), 3);
-    assert.equal(await page.locator("#diagnosticsTab").count(), 1);
+    assert.equal(await tabs.count(), 4);
+    assert.equal(await page.locator("#diagnosticsTab").count(), 0);
     assert.equal(await page.getByRole("tabpanel").count(), 1);
     await page.locator("#token").fill("unsaved-secret");
     for (const name of [
@@ -130,7 +130,10 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
         name.toLowerCase().replace(".", ""),
       );
       assert.equal(
-        await page.getByRole("tab", { selected: true }).innerText(),
+        await page
+          .locator("#serverSettingsTabs, #coachSettingsTabs")
+          .getByRole("tab", { selected: true })
+          .innerText(),
         name,
       );
       assert.equal(
@@ -143,62 +146,95 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       .getByRole("tab", { name: "Kata.fit", exact: true })
       .press("ArrowRight");
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Models",
     );
     await page
       .getByRole("tab", { name: "Models", exact: true })
       .press("ArrowRight");
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Updates",
     );
     await page
       .getByRole("tab", { name: "Updates", exact: true })
       .press("ArrowRight");
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page.locator("#settings-log-tab").getAttribute("aria-selected"),
+      "true",
+    );
+    assert.equal(await page.locator("#diagnostics").isVisible(), true);
+    await page.locator("#settings-log-tab").press("ArrowRight");
+    assert.equal(
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Kata.fit",
     );
     await page.getByRole("tab", { name: "Kata.fit", exact: true }).press("End");
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
-      "Updates",
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
+      "Log",
     );
-    await page.getByRole("tab", { name: "Updates", exact: true }).press("Home");
+    await page.getByRole("tab", { name: "Log", exact: true }).press("Home");
     await settingsTab(page, "Persona");
     assert.equal(new URL(page.url()).search, "?section=persona");
     assert.equal(await tabs.count(), 5);
     await page.locator("#name").fill("Draft coach");
     await page.getByRole("tab", { name: "Persona", exact: true }).press("End");
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Worker",
     );
     await page
       .getByRole("tab", { name: "Worker", exact: true })
       .press("ArrowRight");
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Persona",
     );
     await page
       .getByRole("tab", { name: "Persona", exact: true })
       .press("ArrowLeft");
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Worker",
     );
     await page.getByRole("tab", { name: "Worker", exact: true }).press("Home");
     await settingsTab(page, "Models");
     await page.locator("#coachSettingsTab").click();
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Persona",
     );
     await page.locator("#settingsTab").click();
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Models",
     );
     assert.equal(await page.locator("#token").inputValue(), "unsaved-secret");
@@ -207,25 +243,37 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await settingsTab(page, "Preview");
     await page.goBack();
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Persona",
     );
     await page.goForward();
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Preview",
     );
     await page.reload();
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Preview",
     );
     await page.locator("#dashboardTab").click();
     assert.equal(new URL(page.url()).pathname, "/dashboard");
     await page.goBack();
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Preview",
     );
     await page.locator("#lockStudio").click();
@@ -234,24 +282,33 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Worker",
     );
     await page.goto(new URL("/settings?section=unknown", page.url()).href);
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Kata.fit",
     );
     await page.goto(new URL("/settings#updates", page.url()).href);
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Updates",
     );
     await page.evaluate(() => {
       location.hash = "logsView";
     });
-    await page.getByRole("region", { name: "Activity", exact: true }).waitFor();
+    await page.getByRole("tabpanel", { name: "Log", exact: true }).waitFor();
     await page.goBack();
     await page
       .getByRole("tabpanel", { name: "Updates", exact: true })
@@ -259,7 +316,10 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.reload();
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Updates",
     );
     await page.goto(
@@ -267,7 +327,10 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     );
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Persona",
     );
     await page.goto(
@@ -275,7 +338,10 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     );
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Kata.fit",
     );
     await page.locator("#lockStudio").click();
@@ -284,7 +350,10 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     );
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(
-      await page.getByRole("tab", { selected: true }).innerText(),
+      await page
+        .locator("#serverSettingsTabs, #coachSettingsTabs")
+        .getByRole("tab", { selected: true })
+        .innerText(),
       "Preview",
     );
     assert.equal(
@@ -300,7 +369,8 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       route.fulfill({ json: { entries: [] } }),
     );
     const loaded = page.waitForResponse("**/api/logs");
-    await page.getByRole("button", { name: "Activity", exact: true }).click();
+    await page.locator("#settingsTab").click();
+    await page.locator("#settings-log-tab").click();
     await loaded;
     await page.locator("#settingsTab").click();
     await settingsTab(page, "Persona");

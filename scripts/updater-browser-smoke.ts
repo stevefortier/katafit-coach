@@ -294,7 +294,8 @@ try {
       /was deferred/,
     );
   }
-  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await page.locator("#settingsTab").click();
+  await page.locator("#settings-log-tab").click();
   await page.locator("#logRefresh").waitFor({ state: "visible" });
   const downloaded = page.waitForEvent("download");
   await page.locator("#logDownload").click();
