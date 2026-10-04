@@ -306,6 +306,83 @@ for (const plane of ["request", "task"] as const)
     }
   });
 
+for (const nextPlane of ["request", "task"] as const)
+  test(`P3 actual work UNKNOWN fences later ${nextPlane} before invocation open`, async () => {
+    const t = await uncertaintyFixture(emptyOutcome);
+    try {
+      await ordinaryPolicy(t);
+      await invocationPolicy(t);
+      t.b.app.use("/api", t.b.backendModule("./routes/plans"));
+      await t.enqueue("work-to-invocation-unknown-" + nextPlane);
+      const backend = t.backend(),
+        cycle = await backend.claimCycle();
+      assert.ok(cycle);
+      await backend.start(cycle.work.id, cycle.work.lease_generation);
+      const actions = new Actions(t.store);
+      const work = new WorkActions({
+        backend,
+        origin: t.origin,
+        token: t.store.secrets.token!,
+        secrets: [],
+        directory: t.home,
+        work: cycle.work,
+        actions,
+        descriptor: cycle.capability!.ordinary!,
+        dispatch: true,
+        proposalApproval: true,
+        current: () => true,
+        held: () => false,
+        onUnknown: () => {},
+        onObserved: () => {},
+      });
+      t.setWireFault(async (meta) =>
+        meta.method === "POST" && meta.path === "/api/plans"
+          ? "drop"
+          : undefined,
+      );
+      const lost = parsed(await work.execute(planRequest));
+      assert.equal(lost.error, "WORK_ACTION_UNRESOLVED");
+      assert.ok(
+        actions
+          .snapshot()
+          .some(
+            (row) =>
+              "tool_name" in row &&
+              row.tool_name === "katafit_rest_request" &&
+              row.status === "unknown",
+          ),
+      );
+      assert.equal(actions.unresolved(), true);
+      t.setWireFault(undefined);
+      const next = await claimedInvocation(t, nextPlane),
+        before = t.requests.length;
+      assert.equal(
+        parsed(
+          await next.adapter().execute({
+            ...planRequest,
+            body: { title: "Work UNKNOWN remains held" },
+          }),
+        ).error,
+        "INVOCATION_ACTION_UNRESOLVED",
+      );
+      assert.equal(t.requests.length, before);
+      assert.equal(
+        await t.b.db
+          .collection("activity_plans")
+          .countDocuments({ user_id: t.b.user }),
+        1,
+      );
+      assert.equal(
+        await t.b.db
+          .collection("coach_invocation_occurrences")
+          .countDocuments({}),
+        0,
+      );
+    } finally {
+      await t.close();
+    }
+  });
+
 test("N1 legacy capability-only Dojo task uses real canonical member_message journal and receipt, never successor ordinary header", async () => {
   const t = await uncertaintyFixture(emptyOutcome);
   try {

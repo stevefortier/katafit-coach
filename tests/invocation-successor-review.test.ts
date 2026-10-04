@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { writeFile } from "node:fs/promises";
 import { Store } from "../src/config/store.js";
 import { Actions } from "../src/chat/actions.js";
 import { InvocationActions } from "../src/capability/invocationActions.js";
@@ -112,6 +115,48 @@ for (const plane of ["request", "task"] as const)
         hosted.hostedBodies.length,
         1,
         "replacement did not invoke another planner",
+      );
+      const input = t.home + "/cold-review-input.json";
+      await writeFile(
+        input,
+        JSON.stringify({
+          home: t.home,
+          origin: t.origin,
+          admission: i.admission.ordinary,
+          request,
+        }),
+      );
+      const coldBefore = t.requests.length;
+      const child = await promisify(execFile)(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "tests/helpers/invocation-successor-cold.ts",
+          input,
+        ],
+        { timeout: 15000, maxBuffer: 65536 },
+      );
+      const cold = JSON.parse(child.stdout);
+      assert.equal(cold.recovered, true);
+      assert.equal(cold.observation.completion_receipt, undefined);
+      assert.deepEqual(cold.job, {
+        id: jobId,
+        status: "processing",
+        result: null,
+      });
+      assert.deepEqual(
+        t.requests.slice(coldBefore).map((r) => r.method),
+        ["GET", "GET"],
+      );
+      assert.equal(
+        t.requests.slice(coldBefore)[1].path,
+        "/api/strategy/jobs/" + jobId,
+      );
+      assert.equal(
+        hosted.hostedBodies.length,
+        1,
+        "actual fresh OS process did not re-enqueue or repeat the pending planner",
       );
       release();
       const until = Date.now() + 20000;

@@ -35,12 +35,33 @@ const canonical = parsed.observation?.local_effect?.resource_id
       ).content[0].text,
     )
   : undefined;
+const job = parsed.observation?.accepted_receipt?.job_id
+  ? JSON.parse(
+      (
+        (await restRequest(
+          input.origin,
+          store.secrets.token!,
+          {
+            method: "GET",
+            path:
+              "/api/strategy/jobs/" +
+              parsed.observation.accepted_receipt.job_id,
+          },
+          new AbortController().signal,
+          [],
+        )) as any
+      ).content[0].text,
+    )
+  : undefined;
 console.log(
   JSON.stringify({
     recovered: parsed.recovered,
     error: parsed.error,
     observation: parsed.observation,
     canonical_plan_id: canonical?._id,
+    job: job
+      ? { id: job._id, status: job.status, result: job.result }
+      : undefined,
     unresolved: new Actions(store).unresolved(),
   }),
 );
