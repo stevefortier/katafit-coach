@@ -31,9 +31,7 @@ for (const width of [320, 390, 760, 1440]) {
               .map((n) => n.getBoundingClientRect().toJSON());
           return {
             track: track.toJSON(),
-            marks: boxes(
-              ".dashboard-timeline-mark, .dashboard-timeline-cluster",
-            ),
+            marks: boxes(".dashboard-timeline-mark, .dashboard-timeline-mark"),
             ticks: boxes(".dashboard-timeline-tick"),
             now: boxes(".dashboard-timeline-now > span"),
             future: boxes(".dashboard-timeline-future"),
@@ -333,12 +331,12 @@ for (const width of [320, 390, 760, 1440]) {
   });
 }
 
-test("focused timeline pill does not paint its outline over ruler text", async () => {
+test("focused timeline slice does not paint its outline over ruler text", async () => {
   await fixture(
     async (page) => {
-      await page.locator(".dashboard-timeline-cluster").first().focus();
+      await page.locator(".dashboard-timeline-mark").first().focus();
       const paint = await page
-        .locator(".dashboard-timeline-cluster:focus")
+        .locator(".dashboard-timeline-mark:focus")
         .evaluate((node: HTMLElement) => {
           const style = getComputedStyle(node);
           const extension = Math.max(
@@ -359,7 +357,7 @@ test("focused timeline pill does not paint its outline over ruler text", async (
 });
 
 for (const width of [320, 390]) {
-  test(`tall timeline chooser scrolls locally while retaining a usable map at ${width}px`, async () => {
+  test(`dense individual timeline remains compact while retaining a usable map at ${width}px`, async () => {
     const events = Array.from({ length: 80 }, (_, i) => ({
       ...ledger()[i % 8],
       id: `e${i.toString(16).padStart(23, "0")}`,
@@ -367,9 +365,9 @@ for (const width of [320, 390]) {
     }));
     await fixture(
       async (page) => {
-        await page.locator(".dashboard-timeline-cluster").click();
+        await page.locator(".dashboard-timeline-mark").first().focus();
         assert.equal(
-          await page.locator(".dashboard-timeline-choice").count(),
+          await page.locator(".dashboard-timeline-mark").count(),
           80,
         );
         const geometry = await page.evaluate(() => {
@@ -386,20 +384,47 @@ for (const width of [320, 390]) {
         });
         assert.ok(geometry.map.height >= 110, JSON.stringify(geometry));
         assert.ok(geometry.map.height > geometry.timeline.height);
-        assert.equal(geometry.overflows, true);
-        assert.equal(geometry.pageOverflow, false);
-        await page.locator(".dashboard-timeline-choice").last().focus();
+        if (geometry.overflows) {
+          assert.equal(
+            await page
+              .locator("#dashboardTimeline")
+              .evaluate(
+                (node: HTMLElement) => getComputedStyle(node).overflowY,
+              ),
+            "auto",
+          );
+          await page
+            .locator("#dashboardTimeline")
+            .evaluate((node: HTMLElement) => {
+              node.scrollTop = node.scrollHeight;
+            });
+          assert.ok(
+            await page
+              .locator("#dashboardTimeline")
+              .evaluate((node: HTMLElement) => node.scrollTop > 0),
+          );
+        }
         assert.equal(
-          await page.locator(".dashboard-timeline-choice:focus").count(),
+          await page
+            .locator(".dashboard-timeline-track")
+            .evaluate(
+              (node: HTMLElement) => node.getBoundingClientRect().height,
+            ),
+          51,
+        );
+        assert.equal(geometry.pageOverflow, false);
+        await page.locator(".dashboard-timeline-mark").last().focus();
+        assert.equal(
+          await page.locator(".dashboard-timeline-mark:focus").count(),
           1,
         );
         await page.keyboard.press("Escape");
         assert.equal(
-          await page.locator(".dashboard-timeline-inspector").isVisible(),
+          await page.locator(".dashboard-timeline-tooltip").isVisible(),
           false,
         );
         assert.equal(
-          await page.locator(".dashboard-timeline-cluster:focus").count(),
+          await page.locator(".dashboard-timeline-mark:focus").count(),
           1,
         );
         assert.ok(

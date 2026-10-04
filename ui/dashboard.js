@@ -222,6 +222,7 @@ window.CoachDashboard = (() => {
   // this ledger generation; only a new page-one load can restore their GPS.
   const withheldMembers = new Set();
   let selectedEventId = null;
+  let previewEventId = null;
   let syncMap = () => {};
   let refreshMap = () => {};
   let revealEvent = () => {};
@@ -1014,28 +1015,14 @@ window.CoachDashboard = (() => {
         "aria-pressed",
         String(!!eventId && node.dataset.eventId === eventId),
       );
-    for (const cluster of document.querySelectorAll(
-      ".dashboard-timeline-cluster",
-    ))
-      cluster.setAttribute(
-        "aria-pressed",
-        String(
-          !!eventId && JSON.parse(cluster.dataset.eventIds).includes(eventId),
-        ),
-      );
     refreshMap();
   }
-  // Scroll the selected occurrence, or the cluster that owns it, into view.
+  // Scroll the selected individual occurrence into view.
   function revealTimelineEvent(eventId) {
     const mark = [
       ...document.querySelectorAll(".dashboard-timeline-mark"),
     ].find((node) => node.dataset.eventId === eventId);
-    const owner = mark?.hidden
-      ? [...document.querySelectorAll(".dashboard-timeline-cluster")].find(
-          (node) => JSON.parse(node.dataset.eventIds).includes(eventId),
-        )
-      : mark;
-    owner?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    mark?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   // A confirmed 401/403 removes everything loaded for that member at once.
   function denyMember(memberId) {
@@ -1371,7 +1358,8 @@ window.CoachDashboard = (() => {
       `${name(item)} · ${eventLabel(item.event_type)} · ${time(item)}`;
     let selectedCategory = null,
       zoom = 1,
-      inspectorOwner = null;
+      gesture = null,
+      suppressPointerClick = false;
     const toolbar = text("div", "", "dashboard-timeline-toolbar");
     const filters = text("div", "", "dashboard-timeline-legend");
     filters.setAttribute("aria-label", "Filter event category");
@@ -1379,42 +1367,128 @@ window.CoachDashboard = (() => {
     scroll.tabIndex = 0;
     scroll.setAttribute(
       "aria-label",
-      "Day event timeline; scroll horizontally to pan",
+      "Day event timeline; drag events to scrub, drag time labels to pan",
     );
     const track = text("div", "", "dashboard-timeline-track");
     scroll.append(track);
     const interactive = () =>
       renderEpoch === timelineEpoch && !timelinePending && scroll.isConnected;
-    const inspector = text("div", "", "dashboard-timeline-inspector");
-    inspector.hidden = true;
-    inspector.setAttribute("aria-label", "Event inspector");
-    let dismissTimer,
-      restoringFocus = false;
+    const tooltip = text("div", "", "dashboard-timeline-tooltip");
+    tooltip.hidden = true;
+    tooltip.setAttribute("role", "tooltip");
+    tooltip.id = "dashboardTimelineTooltip";
+    const highlightPreviewSlice = (eventId) => {
+      for (const mark of track.querySelectorAll(".dashboard-timeline-mark"))
+        mark.dataset.preview = String(mark.dataset.eventId === eventId);
+    };
     const dismiss = () => {
-      clearTimeout(dismissTimer);
-      inspector.replaceChildren();
-      inspector.hidden = true;
-      inspectorOwner = null;
-      inspector.style.cssText = "";
+      highlightPreviewSlice(null);
+      tooltip.replaceChildren();
+      tooltip.hidden = true;
+      tooltip.removeAttribute("data-event-id");
+      previewEventId = null;
+      refreshMap();
     };
-    const dismissAndRestoreFocus = () => {
-      const owner = inspectorOwner;
+    const preview = (item, x, y) => {
+      if (!interactive() || !item) return;
+      tooltip.dataset.eventId = item.id;
+      highlightPreviewSlice(item.id);
+      const snapshot = eventSnapshot(item, name(item));
+      tooltip.replaceChildren(
+        text("div", label(item)),
+        text("div", (snapshot[4]?.textContent || "").slice(0, 120), "hint"),
+      );
+      tooltip.hidden = false;
+      tooltip.style.width = `${Math.min(280, innerWidth - 24)}px`;
+      const card = tooltip.getBoundingClientRect();
+      tooltip.style.left = `${Math.max(12, Math.min(innerWidth - card.width - 12, x - card.width / 2))}px`;
+      tooltip.style.top = `${Math.max(12, Math.min(innerHeight - card.height - 12, y + 16))}px`;
+      previewEventId = eventPosition(item) ? item.id : null;
+      refreshMap();
+      if (previewEventId) revealEvent(item);
+    };
+    const previewMark = (item, mark) => {
+      const rect = mark.getBoundingClientRect();
+      preview(item, rect.left + rect.width / 2, rect.bottom);
+    };
+    const nearest = (x) => {
+      const rect = track.getBoundingClientRect();
+      const stamp =
+        +start +
+        Math.max(0, Math.min(1, (x - rect.left) / rect.width)) *
+          (+end - +start);
+      return visibleItems().reduce(
+        (best, item) =>
+          !best ||
+          Math.abs(Date.parse(item.occurred_at) - stamp) <
+            Math.abs(Date.parse(best.occurred_at) - stamp)
+            ? item
+            : best,
+        null,
+      );
+    };
+    const cancelGesture = () => {
+      const old = gesture;
+      gesture = null;
+      if (old && track.hasPointerCapture(old.id))
+        track.releasePointerCapture(old.id);
       dismiss();
-      if (!interactive() || !owner?.isConnected) return;
-      restoringFocus = true;
-      try {
-        owner.focus({ preventScroll: true });
-      } finally {
-        restoringFocus = false;
+    };
+    // The event band scrubs. The time-label band pans at every zoom level;
+    // toolbar pan buttons and native horizontal scrolling remain available.
+    track.onpointerdown = (event) => {
+      if (!interactive()) return;
+      if (event.pointerType !== "touch") {
+        suppressPointerClick = false;
+        return;
       }
+      suppressPointerClick = true;
+      gesture = {
+        id: event.pointerId,
+        mode:
+          event.clientY - track.getBoundingClientRect().top >= 41
+            ? "pan"
+            : "scrub",
+        x: event.clientX,
+        left: scroll.scrollLeft,
+      };
+      track.setPointerCapture(event.pointerId);
+      if (gesture.mode === "scrub")
+        preview(nearest(event.clientX), event.clientX, event.clientY);
+      else dismiss();
+      event.preventDefault();
     };
-    const scheduleDismiss = () => {
-      clearTimeout(dismissTimer);
-      if (interactive() && inspector.dataset.mode === "preview")
-        dismissTimer = setTimeout(dismiss, 180);
+    track.onpointermove = (event) => {
+      if (!interactive()) return;
+      if (gesture?.id === event.pointerId) {
+        if (gesture.mode === "pan")
+          scroll.scrollLeft = gesture.left + gesture.x - event.clientX;
+        else preview(nearest(event.clientX), event.clientX, event.clientY);
+      } else if (event.pointerType !== "touch")
+        preview(nearest(event.clientX), event.clientX, event.clientY);
     };
-    inspector.onpointerenter = () => clearTimeout(dismissTimer);
-    inspector.onpointerleave = scheduleDismiss;
+    track.onpointerup = (event) => {
+      if (gesture?.id !== event.pointerId) return;
+      const item = gesture.mode === "scrub" ? nearest(event.clientX) : null;
+      cancelGesture();
+      if (item) select(item);
+    };
+    track.onpointercancel = () => {
+      if (interactive()) cancelGesture();
+    };
+    track.onlostpointercapture = () => {
+      if (interactive() && gesture) cancelGesture();
+    };
+    track.onclick = (event) => {
+      if (event.detail > 0 && !suppressPointerClick)
+        select(nearest(event.clientX));
+    };
+    track.onpointerleave = () => {
+      if (interactive() && !gesture) dismiss();
+    };
+    scroll.onscroll = () => {
+      if (interactive()) dismiss();
+    };
     const visibleItems = () =>
       [...items.values()]
         .filter(
@@ -1429,94 +1503,17 @@ window.CoachDashboard = (() => {
             a.id.localeCompare(b.id),
         );
     const select = (item) => {
-      if (!interactive()) return;
+      if (!interactive() || !item) return;
       if (!visibleItems().some((event) => event.id === item.id)) return;
       void selectEvent(item, adminKey, true, name(item));
-      dismissAndRestoreFocus();
-    };
-    const preview = (group, owner, choose = false) => {
-      if (!interactive() || !owner.isConnected) return;
       dismiss();
-      inspectorOwner = owner;
-      inspector.hidden = false;
-      inspector.dataset.mode = choose ? "chooser" : "preview";
-      const close = text(
-        "button",
-        "Close inspector",
-        "dashboard-timeline-close",
-      );
-      close.type = "button";
-      close.onclick = dismissAndRestoreFocus;
-      inspector.append(close);
-      if (group.length === 1) {
-        const rows = eventSnapshot(group[0], name(group[0]));
-        inspector.append(rows[0], rows[1], rows[2], ...rows.slice(4, -1));
-        const pick = text(
-          "button",
-          "Select event",
-          "dashboard-timeline-choice",
-        );
-        pick.type = "button";
-        pick.dataset.eventId = group[0].id;
-        pick.onclick = () => select(group[0]);
-        inspector.append(pick);
-      } else {
-        inspector.append(
-          text(
-            "h3",
-            `${group.length} events · ${time(group[0])}${group.at(-1).occurred_at !== group[0].occurred_at ? ` – ${time(group.at(-1))}` : ""}`,
-          ),
-        );
-        inspector.append(
-          text(
-            "p",
-            "Separate occurrences at their recorded times. Choose an event; zoom can separate nearby times.",
-            "hint",
-          ),
-        );
-        for (const item of group) {
-          const choice = text(
-            "button",
-            label(item),
-            "dashboard-timeline-choice",
-          );
-          choice.type = "button";
-          choice.dataset.eventId = item.id;
-          choice.style.borderLeftColor =
-            activityColors[category(item)] || "#6b7280";
-          const snapshot = eventSnapshot(item, name(item));
-          const detail = text(
-            "span",
-            [
-              snapshot[2].textContent,
-              ...snapshot.slice(4, -1).map((row) => row.textContent),
-            ].join(" · "),
-            "dashboard-timeline-choice-snapshot",
-          );
-          choice.append(detail);
-          choice.onclick = () => select(item);
-          inspector.append(choice);
-        }
-      }
-      inspector.scrollTop = 0;
-      if (!choose) {
-        const rect = owner.getBoundingClientRect();
-        inspector.style.width = `${Math.min(380, innerWidth - 24)}px`;
-        inspector.style.maxHeight = `${Math.min(300, innerHeight - 24)}px`;
-        const card = inspector.getBoundingClientRect();
-        inspector.style.left = `${Math.max(12, Math.min(innerWidth - card.width - 12, rect.left + rect.width / 2 - card.width / 2))}px`;
-        inspector.style.top = `${Math.max(12, Math.min(innerHeight - card.height - 12, rect.bottom + 10 + card.height <= innerHeight - 12 ? rect.bottom + 10 : rect.top - card.height - 10))}px`;
-      }
-      if (choose)
-        inspector
-          .querySelector(".dashboard-timeline-choice")
-          ?.focus({ preventScroll: true });
     };
     const draw = () => {
-      dismiss();
+      cancelGesture();
       for (const [id, item] of items)
         if (suppressedMembers.has(item.user_id)) items.delete(id);
       const events = visibleItems();
+      const visibleIds = new Set(events.map((item) => item.id));
       const selected = $("dashboardMapSelection").querySelector(
         ".dashboard-event-detail",
       );
@@ -1561,21 +1558,12 @@ window.CoachDashboard = (() => {
         );
         track.append(marker);
       }
-      const groups = [];
-      for (const item of events) {
-        const x = fraction(Date.parse(item.occurred_at)) * width;
-        const last = groups.at(-1);
-        // Bound each cluster around its first recorded timestamp, not an invented duration.
-        if (last && x - last.x < 48) last.items.push(item);
-        else groups.push({ x, items: [item] });
-      }
-      const singles = new Set(
-        groups
-          .filter((group) => group.items.length === 1)
-          .map((group) => group.items[0].id),
-      );
       // Keep one unique, inspectable occurrence node for every loaded authorized event.
-      for (const item of items.values()) {
+      for (const item of [...items.values()].sort(
+        (a, b) =>
+          Date.parse(a.occurred_at) - Date.parse(b.occurred_at) ||
+          a.id.localeCompare(b.id),
+      )) {
         const mark = text("button", "", "dashboard-timeline-mark");
         mark.type = "button";
         mark.dataset.eventId = item.id;
@@ -1592,66 +1580,18 @@ window.CoachDashboard = (() => {
           "dashboard-timeline-future-event",
           now >= +start && now < +end && Date.parse(item.occurred_at) > now,
         );
-        mark.hidden = !singles.has(item.id);
-        mark.onpointerenter = (event) => {
-          if (event.pointerType !== "touch") preview([item], mark);
-        };
-        mark.onpointerleave = scheduleDismiss;
+        mark.hidden = !visibleIds.has(item.id);
+        mark.setAttribute("aria-describedby", tooltip.id);
         mark.onfocus = () => {
-          if (!restoringFocus) preview([item], mark);
+          if (mark.isConnected) previewMark(item, mark);
+        };
+        mark.onblur = () => {
+          if (mark.isConnected && interactive()) dismiss();
         };
         mark.onclick = (event) => {
-          if (event.pointerType === "touch") preview([item], mark, true);
-          else select(item);
+          if (event.detail === 0 && mark.isConnected) select(item);
         };
         track.append(mark);
-      }
-      for (const group of groups.filter((group) => group.items.length > 1)) {
-        const cluster = text(
-          "button",
-          String(group.items.length),
-          "dashboard-timeline-cluster",
-        );
-        cluster.type = "button";
-        cluster.classList.toggle(
-          "dashboard-timeline-future-event",
-          now >= +start &&
-            now < +end &&
-            group.items.every((item) => Date.parse(item.occurred_at) > now),
-        );
-        cluster.dataset.eventIds = JSON.stringify(
-          group.items.map((item) => item.id),
-        );
-        cluster.style.left = `${(group.x / width) * 100}%`;
-        cluster.style.top = "13px";
-        cluster.setAttribute(
-          "aria-label",
-          `${group.items.length} events at ${time(group.items[0])}; choose an occurrence`,
-        );
-        cluster.setAttribute(
-          "aria-pressed",
-          String(group.items.some((item) => item.id === selectedEventId)),
-        );
-        cluster.onpointerenter = (event) => {
-          if (event.pointerType !== "touch") preview(group.items, cluster);
-        };
-        cluster.onpointerleave = scheduleDismiss;
-        cluster.onfocus = () => {
-          if (!restoringFocus) preview(group.items, cluster);
-        };
-        cluster.onclick = () => preview(group.items, cluster, true);
-        const swatches = text("span", "", "dashboard-timeline-cluster-colors");
-        for (const type of [...new Set(group.items.map(category))].slice(
-          0,
-          4,
-        )) {
-          const swatch = text("i", "", "dashboard-timeline-swatch");
-          swatch.style.backgroundColor = activityColors[type] || "#6b7280";
-          swatch.setAttribute("aria-hidden", "true");
-          swatches.append(swatch);
-        }
-        cluster.append(swatches);
-        track.append(cluster);
       }
       const step =
         Math.max(
@@ -1716,6 +1656,8 @@ window.CoachDashboard = (() => {
       filters.append(chip);
     }
     for (const action of [
+      "Previous event",
+      "Next event",
       "Pan earlier",
       "Zoom out",
       "Zoom in",
@@ -1725,6 +1667,9 @@ window.CoachDashboard = (() => {
       const button = text(
         "button",
         {
+          "Previous event": "‹",
+          "Next event": "›",
+          "Full day": "↺",
           "Pan earlier": "←",
           "Zoom out": "−",
           "Zoom in": "+",
@@ -1736,6 +1681,22 @@ window.CoachDashboard = (() => {
       button.setAttribute("aria-label", action);
       button.onclick = () => {
         if (!interactive()) return;
+        if (action === "Previous event" || action === "Next event") {
+          const events = visibleItems();
+          const index = events.findIndex((item) => item.id === selectedEventId);
+          const next =
+            index < 0
+              ? action === "Next event"
+                ? 0
+                : events.length - 1
+              : index + (action === "Next event" ? 1 : -1);
+          const item = events[next];
+          if (item) {
+            select(item);
+            revealTimelineEvent(item.id);
+          }
+          return;
+        }
         if (action.startsWith("Pan")) {
           scroll.scrollBy({
             left:
@@ -1763,33 +1724,11 @@ window.CoachDashboard = (() => {
       toolbar.append(button);
     }
     toolbar.append(text("span", "", "dashboard-timeline-zoom-label"));
-    target.append(filters, toolbar, scroll, inspector);
+    target.append(filters, toolbar, scroll, tooltip);
     target.onkeydown = (event) => {
       if (!interactive()) return;
-      if (
-        (event.key === "ArrowRight" || event.key === "ArrowLeft") &&
-        event.target.closest(".dashboard-timeline-choice")
-      ) {
-        const choices = [
-          ...inspector.querySelectorAll(".dashboard-timeline-choice"),
-        ];
-        const index = choices.indexOf(
-          event.target.closest(".dashboard-timeline-choice"),
-        );
-        choices[
-          Math.max(
-            0,
-            Math.min(
-              choices.length - 1,
-              index + (event.key === "ArrowRight" ? 1 : -1),
-            ),
-          )
-        ]?.focus();
-        event.preventDefault();
-        return;
-      }
       if (event.key === "Escape") {
-        dismissAndRestoreFocus();
+        dismiss();
         event.preventDefault();
       } else if (
         (event.key === "ArrowRight" || event.key === "ArrowLeft") &&
@@ -1833,14 +1772,14 @@ window.CoachDashboard = (() => {
       }
     };
     draw();
-    // Recompute collision distances after viewport changes, with no leaked observers.
+    // Recompute the time scale after viewport changes, without leaked observers.
     timelineResize?.disconnect();
     timelineResize = new ResizeObserver(() => {
       if (scroll.isConnected) draw();
     });
     timelineResize.observe(scroll);
     timelineInteraction = (enabled) => {
-      dismiss();
+      cancelGesture();
       for (const region of [scroll, filters, toolbar]) region.inert = !enabled;
       if (enabled && scroll.isConnected) {
         // A transient read failure deliberately restores this retained
@@ -1877,11 +1816,11 @@ window.CoachDashboard = (() => {
     for (const old of target.querySelectorAll(":scope > p, :scope > button"))
       old.remove();
     timelineResize?.disconnect();
-    for (const inspector of target.querySelectorAll(
-      ".dashboard-timeline-inspector",
+    for (const tooltip of target.querySelectorAll(
+      ".dashboard-timeline-tooltip",
     )) {
-      inspector.replaceChildren();
-      inspector.hidden = true;
+      tooltip.replaceChildren();
+      tooltip.hidden = true;
     }
     if (!resume) {
       // A new page-one read never mixes with an older inventory or geometry.
@@ -2500,10 +2439,11 @@ window.CoachDashboard = (() => {
           "aria-label",
           `${active.length} events at this recorded location; choose an event`,
         );
-        // The selected event keeps its own exact dot above the count badge.
+        // Selected and previewed events keep their exact dots above the location badge.
         if (active.length > 1)
           for (const { item, marker } of active)
-            if (item.id !== selectedEventId) marker.hidden = true;
+            if (item.id !== selectedEventId && item.id !== previewEventId)
+              marker.hidden = true;
       }
     };
     // A selected event emphasizes its member's sequence and dims, never hides,
@@ -2515,6 +2455,8 @@ window.CoachDashboard = (() => {
       for (const { item, marker } of dots) {
         marker.classList.toggle("dashboard-filtered", !visible({ item }));
         marker.classList.toggle("dashboard-map-dim", dim(item.user_id));
+        marker.dataset.preview = String(item.id === previewEventId);
+        marker.style.zIndex = item.id === previewEventId ? "6" : "";
         marker.setAttribute(
           "aria-pressed",
           String(item.id === selectedEventId),

@@ -2087,6 +2087,7 @@ html.coach-covered #workspaceScroll {
 .dashboard-timeline-track {
   position: relative;
   height: 51px;
+  touch-action: none;
   min-width: 0;
 }
 .dashboard-timeline-track::before {
@@ -2098,41 +2099,29 @@ html.coach-covered #workspaceScroll {
   height: 1px;
   background: var(--line);
 }
-.dashboard-timeline-mark,
-.dashboard-timeline-cluster {
+.dashboard-timeline-mark {
   position: absolute;
   height: 28px;
-  min-width: 24px;
-  width: 24px;
+  min-width: 2px;
+  width: 2px;
   padding: 0;
   transform: translateX(-50%);
   border-radius: 0;
-  border: 1px solid var(--line);
+  border: 0;
   z-index: 2;
 }
-.dashboard-timeline-mark {
-  background-image: linear-gradient(
-    to right,
-    var(--panel) 0 8px,
-    transparent 8px 15px,
-    var(--panel) 15px 24px
-  );
-}
-.dashboard-timeline-cluster {
-  width: auto;
-  padding: 0 7px;
-  font-size: 11px;
-  color: var(--accent);
-  background: var(--panel);
-  font-variant-numeric: tabular-nums;
-}
 .dashboard-timeline-mark[aria-pressed="true"],
-.dashboard-timeline-cluster[aria-pressed="true"],
-.dashboard-timeline-mark:focus-visible,
-.dashboard-timeline-cluster:focus-visible {
+.dashboard-timeline-mark:focus-visible {
   outline: 2px solid white;
-  /* Keep the focus/selection ring inside the hit target, off the compact ruler. */
   outline-offset: -2px;
+}
+.dashboard-timeline-mark[data-preview="true"] {
+  box-shadow: 0 0 0 2px white;
+  z-index: 4;
+}
+.dashboard-event-dot[data-preview="true"] {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
 }
 .dashboard-event-dot[aria-pressed="true"] {
   outline: 2px solid white;
@@ -2181,41 +2170,28 @@ html.coach-covered #workspaceScroll {
   padding-left: 4px;
   pointer-events: none;
 }
-.dashboard-timeline-inspector {
-  border-top: 1px solid var(--line);
-  margin-top: 4px;
-  padding-top: 10px;
-  max-height: 300px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-.dashboard-timeline-inspector h3 {
-  font-size: 13px;
-  margin: 0 0 8px;
-}
-.dashboard-timeline-inspector p {
+.dashboard-timeline-tooltip {
+  position: fixed;
+  z-index: 30;
+  pointer-events: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 6px 8px;
   font-size: 11px;
-  margin: 5px 0;
+  line-height: 1.35;
   overflow-wrap: anywhere;
+  box-shadow: 0 4px 12px #0009;
 }
-.dashboard-timeline-choice {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border-left: 3px solid var(--line);
-  margin-top: 5px;
-  padding: 8px;
-  font-size: 12px;
-  white-space: normal;
-  overflow-wrap: anywhere;
+.dashboard-timeline-tooltip > div {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
-.dashboard-timeline-close {
-  float: right;
-  font-size: 11px;
-  margin: 0 0 8px 8px;
-  padding: 4px 6px;
+.dashboard-timeline-tooltip .hint {
+  font-size: 10px;
+  margin: 3px 0 0;
 }
-
 @media (max-width: 600px) {
   .dashboard-timeline {
     padding: 8px;
@@ -2226,18 +2202,12 @@ html.coach-covered #workspaceScroll {
   .dashboard-timeline-toolbar button {
     min-height: 36px;
   }
-  .dashboard-timeline-choice {
-    min-height: 44px;
-  }
 }
-
 .dashboard-timeline button {
   margin: 0;
 }
 .dashboard-timeline-legend button,
-.dashboard-timeline-toolbar button,
-.dashboard-timeline-close,
-.dashboard-timeline-choice {
+.dashboard-timeline-toolbar button {
   background: var(--panel);
   color: var(--accent);
   border-color: var(--line);
@@ -2245,50 +2215,6 @@ html.coach-covered #workspaceScroll {
 .dashboard-timeline-legend button[aria-pressed="true"] {
   background: var(--accent);
   color: var(--bg);
-}
-
-.dashboard-timeline-choice-snapshot {
-  display: block;
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--muted);
-  margin-top: 4px;
-}
-.dashboard-timeline-inspector[data-mode="preview"] {
-  position: fixed;
-  z-index: 30;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 0;
-  padding: 12px;
-  margin: 0;
-  box-shadow: 0 8px 28px #0009;
-}
-.dashboard-timeline-inspector[data-mode="chooser"] .dashboard-timeline-close {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-}
-.dashboard-timeline-cluster {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  min-width: 44px;
-  padding: 0;
-  font-size: 10px;
-}
-.dashboard-timeline-cluster-colors {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-}
-.dashboard-timeline-cluster-colors .dashboard-timeline-swatch {
-  flex: 1;
-  height: 3px;
-  width: auto;
 }
 
 /* Historical gallery owns paging and lazy photo geometry. */
@@ -2600,7 +2526,7 @@ html.compact-map,
 }
 .compact-map #dashboardMapPane {
   display: grid;
-  /* Fit ordinary controls/track; bound tall controls and choosers so the map
+  /* Fit ordinary controls/track; bound tall controls so the map
      always keeps the remaining majority of the workspace. */
   grid-template-rows: auto fit-content(40%) minmax(0, 1fr);
   gap: 0;

@@ -228,30 +228,8 @@ test(
             `.dashboard-timeline-mark[data-event-id="${events[1]._id}"]`,
           );
           const selectEvent = async () => {
-            if (await mark.isVisible()) await mark.click();
-            else {
-              const clusterIndex = await page
-                .locator(".dashboard-timeline-cluster")
-                .evaluateAll(
-                  (nodes, id) =>
-                    nodes.findIndex((node) =>
-                      JSON.parse(
-                        (node as HTMLElement).dataset.eventIds!,
-                      ).includes(id),
-                    ),
-                  String(events[1]._id),
-                );
-              assert.ok(clusterIndex >= 0);
-              await page
-                .locator(".dashboard-timeline-cluster")
-                .nth(clusterIndex)
-                .click();
-              await page
-                .locator(
-                  `.dashboard-timeline-choice[data-event-id="${events[1]._id}"]`,
-                )
-                .click();
-            }
+            await mark.focus();
+            await page.keyboard.press("Enter");
           };
           await selectEvent();
           assert.match(

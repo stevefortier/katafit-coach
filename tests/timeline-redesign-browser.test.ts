@@ -7,7 +7,7 @@ import { chromium } from "playwright-core";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 
-test("timeline supports dense clusters, real-time zoom, filters, inspectors and related live detail without losing history", async () => {
+test("timeline supports dense individual slices, real-time zoom, filters, tooltips and related live detail without losing history", async () => {
   const home = await mkdtemp("/tmp/coach-timeline-redesign-");
   const member = "aaaaaaaaaaaaaaaaaaaaaaaa",
     peer = "bbbbbbbbbbbbbbbbbbbbbbbb";
@@ -199,7 +199,7 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
         height: n.getBoundingClientRect().height,
         top: n.getBoundingClientRect().top + scrollY,
       }));
-    await page.locator(".dashboard-timeline-cluster").hover();
+    await page.locator(".dashboard-timeline-mark").first().focus();
     const afterHover = await page
       .locator("#dashboardTimeline")
       .evaluate((n) => ({
@@ -212,10 +212,10 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       "hover preview must float without moving the detail/map layout",
     );
     await page
-      .locator(".dashboard-timeline-inspector")
+      .locator(".dashboard-timeline-tooltip")
       .screenshot({ path: `${evidence}/redesign-floating-hover.png` });
     const floating = await page
-      .locator(".dashboard-timeline-inspector")
+      .locator(".dashboard-timeline-tooltip")
       .boundingBox();
     assert.ok(
       floating &&
@@ -224,20 +224,20 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
         floating.y >= 0 &&
         floating.y + floating.height <= 1000,
     );
-    await page.locator(".dashboard-timeline-cluster").click();
     await page.keyboard.press("ArrowRight");
     assert.equal(
       await page
-        .locator(".dashboard-timeline-choice:focus")
+        .locator(".dashboard-timeline-mark:focus")
         .getAttribute("data-event-id"),
       "000000000000000000000002",
-      "arrows navigate individual occurrences inside a cluster",
+      "arrows navigate individual occurrences at identical timestamps",
     );
     await page
       .locator(
-        '.dashboard-timeline-choice[data-event-id="000000000000000000000001"]',
+        '.dashboard-timeline-mark[data-event-id="000000000000000000000001"]',
       )
-      .click();
+      .focus();
+    await page.keyboard.press("Enter");
     // Selecting an activity-backed occurrence automatically reauthorizes live detail, preserving history.
     await page
       .getByText("Current authorized workout", { exact: true })
@@ -284,8 +284,8 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       recordedLeft,
     );
     assert.equal(
-      await page.locator(".dashboard-timeline-cluster").innerText(),
-      "321",
+      await page.locator(".dashboard-timeline-mark:not([hidden])").count(),
+      323,
     );
     await page
       .locator("#dashboardTimeline")
@@ -296,20 +296,18 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       )
       .focus();
     assert.match(
-      await page.locator(".dashboard-timeline-inspector").innerText(),
+      await page.locator(".dashboard-timeline-tooltip").innerText(),
       /Fixture Ada.*workout set completed/s,
     );
     assert.match(
-      await page.locator(".dashboard-timeline-inspector").innerText(),
+      await page.locator(".dashboard-timeline-tooltip").innerText(),
       /Exercise 1 · Set 1/,
     );
     assert.equal(reads, 1, "hover and focus must not read live activities");
-    await page
-      .locator(".dashboard-timeline-inspector")
-      .screenshot({ path: `${evidence}/redesign-floating-focus.png` });
+    await page.screenshot({ path: `${evidence}/redesign-floating-focus.png` });
     await page.keyboard.press("Escape");
     assert.equal(
-      await page.locator(".dashboard-timeline-inspector").isVisible(),
+      await page.locator(".dashboard-timeline-tooltip").isVisible(),
       false,
     );
     await page.keyboard.press("Enter");
@@ -381,28 +379,29 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       await page
         .locator("#dashboardTimeline")
         .screenshot({ path: `${evidence}/redesign-dense-track-${width}.png` });
-      await page.locator(".dashboard-timeline-cluster").tap();
+      await page.locator(".dashboard-timeline-mark").first().focus();
       assert.equal(
-        await page.locator(".dashboard-timeline-choice").count(),
-        322,
+        await page.locator(".dashboard-timeline-mark:not([hidden])").count(),
+        323,
       );
-      assert.equal(
-        await page
-          .locator(
-            '.dashboard-timeline-choice[data-event-id="000000000000000000000141"] .dashboard-timeline-choice-snapshot',
-          )
-          .isVisible(),
-        true,
-        "same-time choices expose snapshot differences without hover",
+      await page
+        .locator(
+          '.dashboard-timeline-mark[data-event-id="000000000000000000000141"]',
+        )
+        .focus();
+      assert.match(
+        await page.locator(".dashboard-timeline-tooltip").innerText(),
+        /future unknown/,
       );
       await page
         .locator("#dashboardTimeline")
         .screenshot({ path: `${evidence}/redesign-chooser-${width}.png` });
       await page
         .locator(
-          '.dashboard-timeline-choice[data-event-id="000000000000000000000141"]',
+          '.dashboard-timeline-mark[data-event-id="000000000000000000000141"]',
         )
-        .click();
+        .focus();
+      await page.keyboard.press("Enter");
       assert.match(
         await page.locator("#dashboardMapSelection").innerText(),
         /future unknown/,
@@ -413,13 +412,13 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       await captureStyle.evaluate((n) => n.remove());
     }
     await page.getByRole("button", { name: "All events", exact: true }).click();
-    await page.locator(".dashboard-timeline-cluster").click();
     liveStatus = 404;
     await page
       .locator(
-        '.dashboard-timeline-choice[data-event-id="000000000000000000000001"]',
+        '.dashboard-timeline-mark[data-event-id="000000000000000000000001"]',
       )
-      .click();
+      .focus();
+    await page.keyboard.press("Enter");
     await page
       .getByText(/Current subject activity unavailable \(404\)/)
       .waitFor();
@@ -428,13 +427,13 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       /Exercise 1 · Set 1/,
     );
     assert.equal(await page.locator(".dashboard-timeline-mark").count(), 323);
-    await page.locator(".dashboard-timeline-cluster").click();
     liveStatus = 403;
     await page
       .locator(
-        '.dashboard-timeline-choice[data-event-id="000000000000000000000001"]',
+        '.dashboard-timeline-mark[data-event-id="000000000000000000000001"]',
       )
-      .click();
+      .focus();
+    await page.keyboard.press("Enter");
     await page.waitForFunction(
       () => document.querySelectorAll(".dashboard-timeline-mark").length === 1,
     );
@@ -443,7 +442,7 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       /Activity access denied \(403\)/,
     );
     assert.equal(
-      await page.locator(".dashboard-timeline-inspector").innerText(),
+      await page.locator(".dashboard-timeline-tooltip").innerText(),
       "",
     );
     assert.equal(await page.locator(".dashboard-timeline-cluster").count(), 0);
@@ -470,25 +469,24 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       .locator("#dashboardTimeline")
       .getByRole("button", { name: "Zoom in", exact: true })
       .click();
-    assert.deepEqual(
-      await page.locator(".dashboard-timeline-cluster").allTextContents(),
-      ["321", "102", "7"],
+    assert.equal(await page.locator(".dashboard-timeline-cluster").count(), 0);
+    assert.equal(
+      await page.locator(".dashboard-timeline-mark:not([hidden])").count(),
+      430,
     );
-    const pills = await page
-      .locator(".dashboard-timeline-cluster")
+    const slices = await page
+      .locator(".dashboard-timeline-mark")
       .evaluateAll((nodes) =>
-        nodes
-          .map((n) => ({
-            left: n.getBoundingClientRect().left,
-            right: n.getBoundingClientRect().right,
-          }))
-          .sort((a, b) => a.left - b.left),
+        nodes.map((n) => ({
+          width: n.getBoundingClientRect().width,
+          left: (n as HTMLElement).style.left,
+        })),
       );
-    for (let i = 1; i < pills.length; i++)
-      assert.ok(
-        pills[i].left >= pills[i - 1].right + 4,
-        "mixed-color count pills cannot overlap adjacent event hit targets",
-      );
+    assert.ok(slices.every((slice) => slice.width <= 2));
+    assert.ok(
+      new Set(slices.map((slice) => slice.left)).size < slices.length,
+      "identical timestamps overlap without invented times",
+    );
     await page
       .locator("#dashboardTimeline")
       .screenshot({ path: `${evidence}/redesign-collision-boundaries.png` });
