@@ -731,7 +731,7 @@ test(
           { kind: "preference", text: "Paired: swims laps on Sundays." },
           "pair:crv:create01",
         );
-        await owner.create(
+        const { item: shoulders } = await owner.create(
           { kind: "fact", text: "Paired: shoulders stiffen after desk work." },
           "pair:crv:create02",
         );
@@ -749,12 +749,14 @@ test(
           await f.turn([u1]);
           assert.match(chat(f).messages[0].content, /swims laps on Sundays/);
           await settle(1500);
-          await owner.update(
+          const edited = await owner.update(
             laps.id,
             { importance: 0.2 },
             1,
             "pair:crv:meta01",
           );
+          assert.equal(edited.item.revision, 2);
+          assert.equal(edited.item.content_revision, laps.content_revision);
           const LEARNED = "Paired: wants shoulder mobility drills.";
           scriptProvider(f, {
             proposals: () => ({
@@ -800,10 +802,40 @@ test(
               timestamp: 3,
             },
           ]);
-          assert.doesNotMatch(
-            chat(f).messages[0].content,
-            /swims laps/,
-            "the edited memory is retained, not re-recalled",
+          // The leading system contains both fresh recall and already-acquired
+          // context. Only the fresh bounded selection changes with the topic.
+          const blocks = [
+            ...chat(f).messages[0].content.matchAll(
+              /<coach_memory\b[^>]*>([\s\S]*?)<\/coach_memory>/g,
+            ),
+          ].map((match: RegExpMatchArray) => match[1]);
+          assert.equal(blocks.length, 2);
+          const [fresh, retained] = blocks;
+          assert.match(fresh, /fetched fresh for this turn/);
+          assert.doesNotMatch(fresh, /swims laps/);
+          assert.match(retained, /Previously acquired context/);
+          assert.match(retained, /NOT a fresh fetch/);
+          const records = (block: string) => {
+            const line = /^memories=(.+)$/m.exec(block);
+            assert.ok(line, "memory block has structured records");
+            return JSON.parse(line[1]);
+          };
+          assert.deepEqual(
+            records(fresh).map((item: any) => [
+              item.id,
+              item.revision,
+              item.text,
+            ]),
+            [[shoulders.id, shoulders.revision, shoulders.text]],
+          );
+          assert.deepEqual(
+            records(retained).map((item: any) => [
+              item.id,
+              item.revision,
+              item.text,
+            ]),
+            [[laps.id, laps.revision, laps.text]],
+            "the original acquired revision remains usable, not freshly recalled",
           );
           await until(
             () =>
@@ -815,6 +847,48 @@ test(
             20000,
           );
           assert.ok(!f.notices.some((n) => n.action === "learning-off"));
+          const [learned, ...duplicates] = await rowText(b, LEARNED);
+          assert.ok(
+            learned,
+            "the actual extraction committed a canonical memory",
+          );
+          assert.deepEqual(duplicates, []);
+          assert.equal(learned.status, "active");
+          assert.equal(learned.content_revision, 1);
+          assert.equal(learned.provenance.type, "derived");
+          assert.equal(learned.provenance.created_by, "model_extraction");
+          const { item: canonical } = await owner.get(String(learned._id));
+          assert.equal(canonical.text, LEARNED);
+          assert.equal(canonical.revision, learned.revision);
+          assert.equal(canonical.content_revision, learned.content_revision);
+          const capture = await b.db
+            .collection("coach_memory_captures")
+            .findOne({
+              _id: new b.ObjectId(learned.provenance.capture_id),
+            });
+          assert.equal(capture.status, "committed");
+          assert.ok(
+            capture.commit.receipt.created.some(
+              (item: any) =>
+                item.id === canonical.id &&
+                item.revision === canonical.revision,
+            ),
+          );
+          assert.deepEqual(
+            capture.memory_dependencies.find(
+              (item: any) => item.id === laps.id,
+            ),
+            {
+              id: laps.id,
+              revision: laps.revision,
+              content_revision: laps.content_revision,
+            },
+            "capture retains the original semantic fence despite the metadata edit",
+          );
+          const { item: persistedLaps } = await owner.get(laps.id);
+          assert.equal(persistedLaps.revision, 2);
+          assert.equal(persistedLaps.content_revision, laps.content_revision);
+          assert.equal(persistedLaps.text, laps.text);
         } finally {
           await f.close();
         }
