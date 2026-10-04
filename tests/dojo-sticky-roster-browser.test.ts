@@ -141,7 +141,7 @@ test("Dojo roster stays above the map and remains selectable while scrolling", a
     );
     assert.equal(
       await page
-        .locator("#dashboardTimeline .dashboard-timeline-count")
+        .locator("#dashboardTimeline .dashboard-timeline-track")
         .count(),
       1,
       "sticky fixture must render the real day-events timeline, not an invalid activities envelope",

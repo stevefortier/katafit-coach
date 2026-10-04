@@ -3,9 +3,83 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { fixture, ledger } from "./helpers/exact-map-fixture.js";
 
-for (const width of [320, 390, 1440]) {
+test("served timeline omits the visible/loaded count row", async () => {
+  await fixture(
+    async (page) => {
+      assert.equal(await page.locator(".dashboard-timeline-mark").count(), 8);
+      assert.equal(await page.locator(".dashboard-timeline-count").count(), 0);
+      assert.doesNotMatch(
+        await page.locator("#dashboardTimeline").innerText(),
+        /visible · .*loaded events/,
+      );
+    },
+    { document: true },
+  );
+});
+
+for (const width of [320, 390, 760, 1440]) {
+  test(`compact track keeps ruler, hit targets and Now in separate bands at ${width}px`, async () => {
+    await fixture(
+      async (page) => {
+        const geometry = await page.evaluate(() => {
+          const track = document
+            .querySelector(".dashboard-timeline-track")!
+            .getBoundingClientRect();
+          const boxes = (selector: string) =>
+            [...document.querySelectorAll<HTMLElement>(selector)]
+              .filter((n) => !n.hidden)
+              .map((n) => n.getBoundingClientRect().toJSON());
+          return {
+            track: track.toJSON(),
+            marks: boxes(
+              ".dashboard-timeline-mark, .dashboard-timeline-cluster",
+            ),
+            ticks: boxes(".dashboard-timeline-tick"),
+            now: boxes(".dashboard-timeline-now > span"),
+            future: boxes(".dashboard-timeline-future"),
+          };
+        });
+        assert.equal(geometry.track.height, 51);
+        for (const mark of geometry.marks) {
+          assert.ok(mark.height >= 28);
+          assert.ok(
+            mark.y >= geometry.track.y && mark.bottom <= geometry.track.bottom,
+          );
+          for (const tick of geometry.ticks)
+            assert.ok(tick.y >= mark.bottom, "ruler below hit targets");
+          for (const label of geometry.now)
+            assert.ok(label.bottom <= mark.y, "Now above hit targets");
+        }
+        for (const tick of geometry.ticks)
+          assert.ok(tick.bottom <= geometry.track.bottom);
+        assert.equal(geometry.now.length, 1);
+        assert.ok(
+          geometry.now[0].width > 15,
+          "Now stays on one line despite its zero-width anchor",
+        );
+        assert.ok(geometry.now[0].height <= 13);
+        assert.ok(
+          geometry.now[0].x >= geometry.track.x &&
+            geometry.now[0].right <= geometry.track.right,
+        );
+        assert.ok(
+          geometry.future[0].y >= geometry.track.y &&
+            geometry.future[0].bottom <= geometry.track.bottom,
+        );
+      },
+      {
+        document: true,
+        viewport: { width, height: 900 },
+        date: "2026-09-28",
+        now: "2026-09-28T12:00:00Z",
+      },
+    );
+  });
+}
+
+for (const width of [320, 390, 760, 1440]) {
   const height = width === 320 ? 568 : width === 390 ? 844 : 900;
-  test(`compact map workspace has equal internal zones at ${width}px`, async () => {
+  test(`compact map workspace sizes the timeline to bounded content at ${width}px`, async () => {
     await fixture(
       async (page) => {
         await page.waitForTimeout(150);
@@ -14,6 +88,7 @@ for (const width of [320, 390, 1440]) {
             document.querySelector(selector)!.getBoundingClientRect().toJSON();
           return {
             timeline: rect("#dashboardTimeline"),
+            track: rect(".dashboard-timeline-track"),
             map: rect(".dashboard-map-layout"),
             rail: rect(".dashboard-member-rail"),
             all: rect(".dashboard-member-all"),
@@ -23,9 +98,22 @@ for (const width of [320, 390, 1440]) {
           };
         });
         assert.ok(
-          Math.abs(boxes.timeline.height - boxes.map.height) <= 2,
+          boxes.map.height > boxes.timeline.height + 10,
           JSON.stringify(boxes),
         );
+        const fit = await page
+          .locator("#dashboardTimeline")
+          .evaluate((n: HTMLElement) => ({
+            client: n.clientHeight,
+            scroll: n.scrollHeight,
+          }));
+        if (width !== 320)
+          assert.equal(
+            fit.client,
+            fit.scroll,
+            "ordinary content needs no vertical scroll or empty equal-half zone",
+          );
+        assert.ok(boxes.timeline.height <= 230, JSON.stringify(boxes));
         assert.ok(
           boxes.timeline.bottom <= boxes.map.y + 1,
           JSON.stringify(boxes),
@@ -240,6 +328,89 @@ for (const width of [320, 390, 1440]) {
               }
             : undefined,
         now: "2026-10-03T12:00:00Z",
+      },
+    );
+  });
+}
+
+test("focused timeline pill does not paint its outline over ruler text", async () => {
+  await fixture(
+    async (page) => {
+      await page.locator(".dashboard-timeline-cluster").first().focus();
+      const paint = await page
+        .locator(".dashboard-timeline-cluster:focus")
+        .evaluate((node: HTMLElement) => {
+          const style = getComputedStyle(node);
+          const extension = Math.max(
+            0,
+            parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset),
+          );
+          return {
+            bottom: node.getBoundingClientRect().bottom + extension,
+            rulerTop: document
+              .querySelector(".dashboard-timeline-tick")!
+              .getBoundingClientRect().top,
+          };
+        });
+      assert.ok(paint.bottom <= paint.rulerTop, JSON.stringify(paint));
+    },
+    { document: true },
+  );
+});
+
+for (const width of [320, 390]) {
+  test(`tall timeline chooser scrolls locally while retaining a usable map at ${width}px`, async () => {
+    const events = Array.from({ length: 80 }, (_, i) => ({
+      ...ledger()[i % 8],
+      id: `e${i.toString(16).padStart(23, "0")}`,
+      occurred_at: ledger()[0].occurred_at,
+    }));
+    await fixture(
+      async (page) => {
+        await page.locator(".dashboard-timeline-cluster").click();
+        assert.equal(
+          await page.locator(".dashboard-timeline-choice").count(),
+          80,
+        );
+        const geometry = await page.evaluate(() => {
+          const timeline = document.getElementById("dashboardTimeline")!;
+          const map = document
+            .getElementById("dashboardMap")!
+            .getBoundingClientRect();
+          return {
+            map: map.toJSON(),
+            timeline: timeline.getBoundingClientRect().toJSON(),
+            overflows: timeline.scrollHeight > timeline.clientHeight,
+            pageOverflow: document.documentElement.scrollHeight > innerHeight,
+          };
+        });
+        assert.ok(geometry.map.height >= 110, JSON.stringify(geometry));
+        assert.ok(geometry.map.height > geometry.timeline.height);
+        assert.equal(geometry.overflows, true);
+        assert.equal(geometry.pageOverflow, false);
+        await page.locator(".dashboard-timeline-choice").last().focus();
+        assert.equal(
+          await page.locator(".dashboard-timeline-choice:focus").count(),
+          1,
+        );
+        await page.keyboard.press("Escape");
+        assert.equal(
+          await page.locator(".dashboard-timeline-inspector").isVisible(),
+          false,
+        );
+        assert.equal(
+          await page.locator(".dashboard-timeline-cluster:focus").count(),
+          1,
+        );
+        assert.ok(
+          (await page.locator("#dashboardMap").boundingBox())!.height >=
+            geometry.map.height,
+        );
+      },
+      {
+        document: true,
+        viewport: { width, height: width === 320 ? 568 : 844 },
+        events,
       },
     );
   });

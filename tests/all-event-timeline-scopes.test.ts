@@ -1,4 +1,5 @@
 import test from "node:test";
+import { timelineCounts } from "./helpers/timeline-counts.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -104,12 +105,7 @@ test("map-independent member filtering clears event selection and fences held ol
       await page.locator(".dashboard-timeline-mark:visible").count(),
       1,
     );
-    assert.equal(
-      await page
-        .locator(".dashboard-timeline-count")
-        .textContent({ timeout: 2000 }),
-      "1 visible · 3 loaded events across all members",
-    );
+    assert.deepEqual(await timelineCounts(page), { represented: 1, loaded: 3 });
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
     await page.locator('[data-event-id="2026-11-01-2"]').click();
     await page.getByRole("button", { name: "Select All", exact: true }).click();

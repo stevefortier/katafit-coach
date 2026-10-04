@@ -1372,8 +1372,6 @@ window.CoachDashboard = (() => {
     let selectedCategory = null,
       zoom = 1,
       inspectorOwner = null;
-    const count = text("div", "", "dashboard-timeline-count");
-    count.setAttribute("role", "status");
     const toolbar = text("div", "", "dashboard-timeline-toolbar");
     const filters = text("div", "", "dashboard-timeline-legend");
     filters.setAttribute("aria-label", "Filter event category");
@@ -1533,7 +1531,6 @@ window.CoachDashboard = (() => {
         highlightEvent(null);
         $("dashboardMapSelection").replaceChildren();
       }
-      count.textContent = `${events.length} visible · ${items.size} loaded events across all members`;
       for (const chip of filters.children)
         chip.setAttribute(
           "aria-pressed",
@@ -1586,7 +1583,7 @@ window.CoachDashboard = (() => {
         mark.dataset.memberId = item.user_id;
         mark.dataset.eventType = item.event_type;
         mark.style.left = `${fraction(Date.parse(item.occurred_at)) * 100}%`;
-        mark.style.top = "34px";
+        mark.style.top = "13px";
         mark.style.backgroundColor =
           activityColors[category(item)] || "#6b7280";
         mark.setAttribute("aria-label", label(item));
@@ -1626,7 +1623,7 @@ window.CoachDashboard = (() => {
           group.items.map((item) => item.id),
         );
         cluster.style.left = `${(group.x / width) * 100}%`;
-        cluster.style.top = "34px";
+        cluster.style.top = "13px";
         cluster.setAttribute(
           "aria-label",
           `${group.items.length} events at ${time(group.items[0])}; choose an occurrence`,
@@ -1766,7 +1763,7 @@ window.CoachDashboard = (() => {
       toolbar.append(button);
     }
     toolbar.append(text("span", "", "dashboard-timeline-zoom-label"));
-    target.append(count, filters, toolbar, scroll, inspector);
+    target.append(filters, toolbar, scroll, inspector);
     target.onkeydown = (event) => {
       if (!interactive()) return;
       if (
