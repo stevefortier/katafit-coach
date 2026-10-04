@@ -21,6 +21,8 @@ export async function typedAcceptance(
   scope: "personal" | "dojo" = "dojo",
 ) {
   const b = await startTaskBackend();
+  if (scope === "personal")
+    b.app.use("/api", b.backendModule("./routes/plans"));
   const home = await mkdtemp(tmpdir() + "/installed-native-typed-");
   let app: Awaited<ReturnType<typeof admin>> | undefined;
   let liveWork: any;
@@ -77,8 +79,30 @@ export async function typedAcceptance(
         )
       )
         return void res.end(answer('{"proposals":[]}'));
+      if (
+        !body.messages.some(
+          (m: any) =>
+            m.role === "tool" && m.tool_call_id === "saved-skill-read",
+        )
+      ) {
+        const system = body.messages
+          .filter((m: any) => m.role === "system")
+          .map((m: any) => m.content)
+          .join("\n");
+        const location = /<location>([^<]*katafit-api[^<]*)<\/location>/.exec(
+          system,
+        )?.[1];
+        assert.ok(location, "actual Pi advertises the saved enabled skill");
+        return void res.end(
+          toolCall("read", { path: location }, "saved-skill-read"),
+        );
+      }
+      assert.match(JSON.stringify(body), /SYNTHETIC_SAVED_SKILL/);
       const results = body.messages
-        .filter((m: any) => m.role === "tool")
+        .filter(
+          (m: any) =>
+            m.role === "tool" && m.tool_call_id !== "saved-skill-read",
+        )
         .map(text);
       const rest = (path: string, id: string) =>
         toolCall("katafit_rest_request", { method: "GET", path }, id);
@@ -143,10 +167,43 @@ export async function typedAcceptance(
             "supported-action",
           ),
         );
-      assert.doesNotMatch(
-        results[7],
-        /tool failed|unknown|denied|error|unavailable|unsupported/i,
-      );
+      if (scope === "personal") {
+        // The negotiated successor supports plans, not legacy quota writes.
+        // Keep the old request as a zero-dispatch denial control, then prove
+        // a real supported action and its canonical readback in this same turn.
+        assert.deepEqual(JSON.parse(results[7]), {
+          error: "INVOCATION_ACTION_UNSUPPORTED",
+          protocol: "coach.invocation-actions.v1",
+          effect_receipt: false,
+          replay_allowed: false,
+        });
+        if (results.length === 8)
+          return void res.end(
+            toolCall(
+              "katafit_rest_request",
+              {
+                method: "POST",
+                path: "/api/plans",
+                body: { title: "Synthetic native typed supported plan" },
+              },
+              "supported-plan",
+            ),
+          );
+        const created = JSON.parse(results[8]);
+        assert.equal(created.observation.status, "response_received");
+        assert.equal(created.observation.effect_receipt, false);
+        assert.equal(created.observation.plane, "task");
+        assert.match(created.response._id, /^[a-f0-9]{24}$/);
+        if (results.length === 9)
+          return void res.end(
+            rest("/api/plans/" + created.response._id, "canonical-plan"),
+          );
+        assert.match(results[9], /Synthetic native typed supported plan/);
+      } else
+        assert.doesNotMatch(
+          results[7],
+          /tool failed|unknown|denied|error|unavailable|unsupported/i,
+        );
       res.end(
         answer(
           JSON.stringify({
@@ -302,7 +359,7 @@ export async function typedAcceptance(
     if (failure) throw failure;
     assert.match(JSON.stringify(bodies[0]), /Native saved persona/);
     assert.match(
-      JSON.stringify(bodies[0]),
+      JSON.stringify(bodies),
       /SYNTHETIC_SAVED_SKILL/,
       "saved enabled skill customization reaches actual provider payload",
     );
@@ -322,32 +379,56 @@ export async function typedAcceptance(
     );
     const canonicalTask = await b.task();
     const occurrences = await b.occurrences();
-    assert.equal(occurrences.length, 1);
-    assert.equal(occurrences[0].status, "succeeded");
     let action: any;
     if (scope === "personal") {
       const user = await b.db.collection("users").findOne({ _id: b.user });
       assert.equal(
         user.rest_days_per_year,
-        24,
-        "supported personal policy action persisted",
+        undefined,
+        "unsupported legacy quota mutation did not persist",
       );
-      const restDays: any = await (
-        await fetch(b.origin + "/api/users/me/rest-days", {
-          headers: { authorization: "Bearer " + token },
+      assert.ok(
+        !b.calls.some((call) =>
+          call.startsWith("PUT /api/users/me/rest-days "),
+        ),
+        "unsupported quota request never dispatched",
+      );
+      assert.equal(occurrences.length, 0, "no legacy action was opened");
+      const plans = await b.db
+        .collection("activity_plans")
+        .find({
+          title: "Synthetic native typed supported plan",
+          user_id: b.user,
         })
-      ).json();
+        .toArray();
       assert.equal(
-        restDays.total,
-        24,
-        "backend-authorized canonical quota readback",
+        plans.length,
+        1,
+        "one actual supported personal plan persisted",
+      );
+      const selected = await b.db
+        .collection("coach_invocation_occurrences")
+        .find({ plane: "task", invocation_id: canonicalTask._id })
+        .toArray();
+      assert.equal(selected.length, 1, "one exact successor occurrence");
+      assert.equal(selected[0].status, "response_received");
+      assert.equal(selected[0].local_effect.kind, "plan_created");
+      assert.equal(
+        selected[0].local_effect.resource_id,
+        String(plans[0]._id),
+        "selected occurrence binds exact canonical plan",
       );
       action = {
-        per_year: restDays.total,
+        kind: "plan_created",
+        resource_id: String(plans[0]._id),
         storageScope: scope,
-        occurrence: occurrences[0],
+        occurrence: selected[0],
+        publication: plans[0],
+        unsupportedQuota: "denied_before_dispatch_no_effect",
       };
     } else {
+      assert.equal(occurrences.length, 1);
+      assert.equal(occurrences[0].status, "succeeded");
       const messages = (
         await b.db.collection("coach_chats").find({ user_id: b.user }).toArray()
       ).flatMap((chat: any) => chat.messages || []);

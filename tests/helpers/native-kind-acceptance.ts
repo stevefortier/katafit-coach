@@ -288,7 +288,7 @@ export async function perKindAcceptance(image: string, onlyKind?: string) {
         savedPersona: true,
         enabledSkills: true,
         denial: true,
-        action: { per_year: 24 },
+        action: { kind: "plan_created", canonicalCount: 1 },
         canonicalTask: await source.row(),
         published,
         providerPayloads: bodies,
