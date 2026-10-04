@@ -374,12 +374,17 @@ test(
         await readFile(`/proc/${pidAfterUpgrade}/cmdline`, "utf8")
       ).split("\0");
       assert.ok(
-        cmdline.some(
-          (arg) =>
-            arg.startsWith(join(home, "versions", newMeta.revision)) &&
-            arg.endsWith("dist/cli.js"),
-        ),
-        "the fresh real child runs the candidate's compiled CLI",
+        cmdline.includes(join(home, "versions", newMeta.revision)),
+        "the actual supervisor loader receives the candidate's installed root",
+      );
+      assert.equal(
+        JSON.parse(
+          await readFile(
+            join(home, "versions", newMeta.revision, "dist/build.json"),
+            "utf8",
+          ),
+        ).revision,
+        newMeta.revision,
       );
       const beforeFresh = providerRuns;
       const fresh = await b.enqueue(mandate.mandate_id, { kind: "reconcile" });

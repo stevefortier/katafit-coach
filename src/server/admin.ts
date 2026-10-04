@@ -333,6 +333,26 @@ export async function admin(
       });
     }
   };
+  let activationResumeTimer: ReturnType<typeof setTimeout> | undefined;
+  const resumeAfterInitialActivation = () => {
+    const deadline = Date.now() + 60000;
+    const observe = () => {
+      activationResumeTimer = undefined;
+      if (closing || !store.autonomySettings().participate) return;
+      if (updates.applying || updates.recovering) {
+        if (Date.now() < deadline) {
+          activationResumeTimer = setTimeout(observe, 250);
+          activationResumeTimer.unref();
+        }
+        return;
+      }
+      // An older stable launcher loads this admin while activation is fenced,
+      // then clears its local update state after ready. Resume once, through
+      // the same admission checks; never poll backend permissions or replay.
+      void startAutonomy();
+    };
+    observe();
+  };
   // An unresolved autonomy write is provable only by its original origin and
   // account: a binding change waits until exact proof settles it.
   const bindingSettled = async () => (
@@ -1951,11 +1971,13 @@ export async function admin(
   await autonomy.init().catch(() => {});
   void autonomy.reconcile().catch(() => {});
   // A participating installation resumes autonomy on (re)start by itself.
-  void startAutonomy();
+  if (updates.applying || updates.recovering) resumeAfterInitialActivation();
+  else void startAutonomy();
   return {
     origin,
     async close() {
       closing = true;
+      clearTimeout(activationResumeTimer);
       preview?.abort();
       await lifecycleDone;
       await previewDone;

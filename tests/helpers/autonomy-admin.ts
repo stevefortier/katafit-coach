@@ -167,9 +167,13 @@ export async function autonomyAdmin(
     keepWork?: boolean;
     origin?: string;
     supported?: boolean;
+    updates?: Updates;
+    participate?: boolean;
   } = {},
 ) {
   const env = await setup(o);
+  if (o.participate !== undefined)
+    await env.store.setAutonomyParticipate(o.participate);
   if (!o.keepWork) env.fake.state.work.delete(env.workId);
   if (o.origin)
     await env.store.save({ ...env.store.publicConfig(), origin: o.origin });
@@ -205,7 +209,8 @@ export async function autonomyAdmin(
       0,
       undefined,
       undefined,
-      new Updates(null, o.supported === false ? null : async () => {}),
+      o.updates ??
+        new Updates(null, o.supported === false ? null : async () => {}),
       options,
     );
   let app = await open();
