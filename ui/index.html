@@ -1332,6 +1332,34 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
       </div>
       <img id="attachmentDialogImage" alt="" />
       <p id="attachmentDialogCaption" class="hint"></p>
+      <nav
+        id="attachmentDialogNavigation"
+        class="attachment-dialog-navigation"
+        aria-label="Image navigation"
+        hidden
+      >
+        <button
+          id="attachmentDialogPrevious"
+          type="button"
+          class="secondary"
+          aria-label="Previous image"
+        >
+          Previous
+        </button>
+        <span
+          id="attachmentDialogPosition"
+          role="status"
+          aria-live="polite"
+        ></span>
+        <button
+          id="attachmentDialogNext"
+          type="button"
+          class="secondary"
+          aria-label="Next image"
+        >
+          Next
+        </button>
+      </nav>
     </dialog>
     <script src="/terminal.js"></script>
     <script src="/backend-performance.js"></script>

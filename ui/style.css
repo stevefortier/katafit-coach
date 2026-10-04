@@ -229,6 +229,25 @@ a.button[aria-disabled="true"] {
   padding: 7px 12px;
   margin: 0;
 }
+.attachment-dialog-navigation {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.attachment-dialog-navigation[hidden] {
+  display: none;
+}
+.attachment-dialog-navigation button {
+  margin: 0;
+  padding: 8px 12px;
+}
+#attachmentDialogPosition {
+  font-size: 12px;
+  text-align: center;
+  min-width: 0;
+}
 #attachmentDialogImage {
   display: block;
   width: min(92vw, 1080px);
@@ -238,6 +257,25 @@ a.button[aria-disabled="true"] {
   margin: auto;
   object-fit: contain;
   background: #0b0b0b;
+}
+/* Let actual wrapped metadata and controls reserve their own height. Only
+   the image shrinks; its full-width box and contained pixels stay intact. */
+#attachmentDialog[open]:has(#attachmentDialogNavigation:not([hidden])) {
+  display: flex;
+  flex-direction: column;
+}
+#attachmentDialog:has(#attachmentDialogNavigation:not([hidden])) > :not(img) {
+  flex-shrink: 0;
+}
+#attachmentDialog:has(#attachmentDialogNavigation:not([hidden]))
+  #attachmentDialogImage {
+  min-height: 0;
+  max-height: none;
+  flex-shrink: 1;
+}
+#attachmentDialog:has(#attachmentDialogNavigation:not([hidden]))
+  #attachmentDialogCaption {
+  margin: 8px 0;
 }
 @media (max-width: 900px) {
   .native-workbench {
