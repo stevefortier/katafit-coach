@@ -159,6 +159,17 @@ test("overlapping timers share one in-flight tick and start() is single-loop", a
     await a;
     assert.equal(
       paths(fake, before).filter((p) => p.endsWith("/work/claim")).length,
+      2, // Strict old fixture rejects work-actions negotiation before claiming.
+    );
+    assert.deepEqual(
+      fake.state.claims.map((c: any) => c.capability_protocols),
+      [
+        ["coach.capability.v1", "coach.work-actions.v1"],
+        ["coach.capability.v1"],
+      ],
+    );
+    assert.equal(
+      paths(fake, before).filter((p) => /\/start$/.test(p)).length,
       1,
     );
     assert.equal(r.cycles.length, 1);

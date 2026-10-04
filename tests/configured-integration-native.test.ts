@@ -303,21 +303,19 @@ for (const mode of ["ok", "lost", "secret", "seal", "task"])
           ...store.publicConfig(),
           token: await b.credential(true),
         });
-        await b.db
-          .collection("users")
-          .updateOne(
-            { _id: b.user },
-            {
-              $set: {
-                user_mcp_servers: [
-                  {
-                    ...remote.registration,
-                    url: remote.registration.url + "/rotated",
-                  },
-                ],
-              },
+        await b.db.collection("users").updateOne(
+          { _id: b.user },
+          {
+            $set: {
+              user_mcp_servers: [
+                {
+                  ...remote.registration,
+                  url: remote.registration.url + "/rotated",
+                },
+              ],
             },
-          );
+          },
+        );
         reopened = true;
         const second = await enqueue("native-integration-post-reopen");
         app = await admin(store, 0);

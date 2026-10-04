@@ -5,12 +5,32 @@ import { chromium } from "playwright-core";
 import { pathToFileURL } from "node:url";
 import { mkdir } from "node:fs/promises";
 import { fixture } from "./helpers/native.js";
+import { answer, toolCall } from "./helpers/continuity.js";
 
 test(
   "served Operator is real isolated Pi terminal, not legacy composer; tool-derived answer",
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 60000 },
   async () => {
-    const f = await fixture();
+    const f = await fixture(
+      (name, result, body) => {
+        if (name !== "provider") return result;
+        const read = body.messages.find(
+          (m: any) =>
+            m.role === "tool" && m.content.includes("Synthetic Alice"),
+        );
+        return read
+          ? answer("Authorized account is Synthetic Alice.")
+          : toolCall(
+              "katafit_rest_request",
+              { method: "GET", path: "/api/users/me" },
+              "served-account-read",
+            );
+      },
+      (url) =>
+        url === "/api/users/me"
+          ? { body: JSON.stringify({ name: "Synthetic Alice" }) }
+          : { status: 404 },
+    );
     const root = process.env.COACH_PACKAGED_ROOT;
     const { admin } = await import(
       root
@@ -53,15 +73,13 @@ test(
       assert.equal(await page.locator("#operatorText").count(), 0);
       assert.equal(await page.locator("#operatorMessages").count(), 0);
       await page.locator(".xterm-helper-textarea").focus();
-      await page.keyboard.type("List the authorized members.");
+      await page.keyboard.type("Read my authorized account profile.");
       await page.keyboard.press("Enter");
       await page.waitForFunction(
         () =>
           document
             .querySelector("#nativeTerminal")
-            ?.textContent?.includes(
-              "Authorized roster contains Synthetic Alice.",
-            ),
+            ?.textContent?.includes("Authorized account is Synthetic Alice."),
         {},
         { timeout: 20000 },
       );
@@ -72,8 +90,8 @@ test(
       assert.ok(
         f.calls.some(
           (c) =>
-            c.body.params?.name === "studio_operator_list_members" &&
-            c.body.params.arguments.session_id === "native-fixture-session",
+            c.path === "/api/users/me" &&
+            c.auth === "Bearer " + f.store.secrets.token,
         ),
       );
       assert.equal(

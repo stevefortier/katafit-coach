@@ -61,3 +61,30 @@ test("memory extraction keeps coaching evidence but never sends backend navigati
   assert.match(context, /A red shirt/);
   assert.match(context, /the image was reviewed/);
 });
+
+test("task extraction preserves material keyed recommendations without forwarding their opaque identities", () => {
+  const id = "a".repeat(24),
+    other = "b".repeat(24);
+  const context = extractionContext(
+    "task",
+    {
+      task_context: { exercises: [{ id }, { id: other }] },
+      task_result: {
+        recommendations: {
+          [id]: { summary: "Start gently.", reference: id },
+          [other]: { summary: "Use a lighter load." },
+        },
+      },
+    },
+    [],
+  );
+  assert.equal(context.includes(id), false);
+  assert.equal(context.includes(other), false);
+  const recommendations =
+    JSON.parse(context).evidence.task_result.recommendations;
+  assert.equal(Object.keys(recommendations).length, 2);
+  assert.deepEqual(
+    Object.values(recommendations).map((r: any) => r.summary),
+    ["Start gently.", "Use a lighter load."],
+  );
+});

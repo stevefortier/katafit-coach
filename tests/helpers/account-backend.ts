@@ -40,6 +40,7 @@ export async function startAccountBackend() {
   const express = require("express");
   const mongo = await MongoMemoryReplSet.create({
     binary: { version: "7.0.14" },
+    instanceOpts: [{ launchTimeout: 30000 }],
     replSet: { count: 1, storageEngine: "wiredTiger" },
   });
   let client: any;

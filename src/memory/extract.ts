@@ -252,18 +252,29 @@ export function providerEvidence<T>(evidence: T): T {
     }
     if (Array.isArray(value))
       return value.map((item) => scrub(item, depth + 1));
-    if (value && typeof value === "object")
+    if (value && typeof value === "object") {
+      const entries = Object.entries(value);
+      const reserved = new Set(entries.map(([key]) => key));
+      let ordinal = 0;
       return Object.fromEntries(
-        Object.entries(value)
-          .filter(
-            ([key]) =>
-              !navigationKey(key) &&
-              !handles.has(key) &&
-              ![...handles].some((handle) => key.includes(handle)) &&
-              !(key.length > 64 && !/\s/.test(key)),
-          )
-          .map(([key, item]) => [key, scrub(item, depth + 1)]),
+        entries.flatMap(([key, item]) => {
+          if (navigationKey(key)) return [];
+          if (
+            handles.has(key) ||
+            [...handles].some((handle) => key.includes(handle)) ||
+            (key.length > 64 && !/\s/.test(key))
+          ) {
+            // A handle-keyed result (e.g. workout recommendations) still contains
+            // real coaching evidence. Replace only its identity, not its value.
+            do {
+              key = `[opaque reference omitted:${++ordinal}]`;
+            } while (reserved.has(key));
+            reserved.add(key);
+          }
+          return [[key, scrub(item, depth + 1)]];
+        }),
       );
+    }
     return value;
   }
   collect(evidence, 0);

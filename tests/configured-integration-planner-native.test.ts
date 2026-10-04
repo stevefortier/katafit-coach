@@ -232,16 +232,14 @@ for (const scenario of [
         });
         const results: any[] = [];
         const cycle = async (key: string) => {
-          await b
-            .backendModule("./core/coachAutonomy")
-            .enqueueWork({
-              mandate_id: saved.mandate.mandate_id,
-              kind: "event",
-              dedupe_key: key,
-              subject_ids: [],
-              source: {},
-              due_at: new Date(Date.now() - 1000),
-            });
+          await b.backendModule("./core/coachAutonomy").enqueueWork({
+            mandate_id: saved.mandate.mandate_id,
+            kind: "event",
+            dedupe_key: key,
+            subject_ids: [],
+            source: {},
+            due_at: new Date(Date.now() - 1000),
+          });
           const backend = new AutonomyBackend(
             b.origin,
             store.secrets.token!,
@@ -300,21 +298,19 @@ for (const scenario of [
             ...store.publicConfig(),
             token: await b.credential(true),
           });
-          await b.db
-            .collection("users")
-            .updateOne(
-              { _id: b.user },
-              {
-                $set: {
-                  user_mcp_servers: [
-                    {
-                      ...remote.registration,
-                      url: remote.registration.url + "/rotated",
-                    },
-                  ],
-                },
+          await b.db.collection("users").updateOne(
+            { _id: b.user },
+            {
+              $set: {
+                user_mcp_servers: [
+                  {
+                    ...remote.registration,
+                    url: remote.registration.url + "/rotated",
+                  },
+                ],
               },
-            );
+            },
+          );
           await cycle("native-integration-reopened");
           assert.equal(remote.calls.length, 1);
           assert.equal(results[1].outcome.blocked_reason, "uncertain_write");

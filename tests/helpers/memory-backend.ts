@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { createServer, type Server } from "node:http";
+import { toolCall } from "./continuity.js";
 
 // Opt-in harness for the REAL regimen backend: actual services, Express MCP
 // router and a disposable MongoDB replica set (synthetic data only). Only the
@@ -86,7 +87,12 @@ export type Backend = Awaited<ReturnType<typeof startBackend>>;
 
 /** Synthetic OpenAI-compatible SSE provider capturing every request body. */
 export async function startProvider(
-  answer: (body: any) => string | Promise<string>,
+  answer: (
+    body: any,
+  ) =>
+    | string
+    | { tool: string; args: unknown; id: string }
+    | Promise<string | { tool: string; args: unknown; id: string }>,
 ) {
   const bodies: any[] = [];
   const server = createServer(async (req, res) => {
@@ -96,6 +102,10 @@ export async function startProvider(
     bodies.push(body);
     const text = await answer(body);
     res.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (typeof text !== "string") {
+      res.end(toolCall(text.tool, text.args, text.id));
+      return;
+    }
     const chunk = (delta: any, finish_reason: string | null = null) => ({
       id: "synthetic-memory",
       object: "chat.completion.chunk",

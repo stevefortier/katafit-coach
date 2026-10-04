@@ -11,7 +11,12 @@ import { admin } from "../src/server/admin.js";
 import { provisionArtifact } from "../src/sandbox/artifact.js";
 import { PI_READY } from "./helpers/native-ready.js";
 import { startAccountMemoryBackend } from "./helpers/account-memory-backend.js";
-import { isExtraction, sseText, systems } from "./helpers/native-memory.js";
+import {
+  isExtraction,
+  sseText,
+  systems,
+  freshRecall,
+} from "./helpers/native-memory.js";
 
 const enabled =
   process.env.NATIVE_DOCKER_TEST === "1" && !!process.env.NATIVE_TEST_IMAGE;
@@ -61,13 +66,18 @@ test(
       const marker = /ACCOUNT_(\w+)_TURN/.exec(human)?.[1] ?? "UNKNOWN";
       // Deterministic grounding: the reply may state the stored preference
       // only when the supplied recall actually contains it.
-      const recall = String(body.messages[0]?.content ?? "");
+      const recall = freshRecall(body);
+      const retained = String(body.messages[0]?.content ?? "").includes(
+        PREFERENCE,
+      );
       res.end(
         sseText(
           `ACCOUNT_${marker}_DONE ` +
             (recall.includes(PREFERENCE)
               ? `RECALLED: ${PREFERENCE}`
-              : "MEMORY_MISSING"),
+              : retained
+                ? `RETAINED_LIVE: ${PREFERENCE}`
+                : "MEMORY_MISSING"),
         ),
       );
     });
@@ -268,12 +278,13 @@ test(
         "THIRD",
       );
       assert.ok(
-        !String(systems(third)[0].content).includes(PREFERENCE),
+        !freshRecall(third).includes(PREFERENCE),
         "fresh recall omits the forgotten memory",
       );
       await waitFor(
-        () => output.includes("ACCOUNT_THIRD_DONE MEMORY_MISSING"),
-        "terminal final states the forgotten memory is missing",
+        () =>
+          output.includes(`ACCOUNT_THIRD_DONE RETAINED_LIVE: ${PREFERENCE}`),
+        "terminal final distinguishes previously acquired context from fresh recall",
       );
       await waitFor(
         () => notices.some((n) => n.action === "learning-off"),

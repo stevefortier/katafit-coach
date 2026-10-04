@@ -225,13 +225,13 @@ type Reply =
 /** Synthetic upstream provider; records complete parsed request bodies. */
 export async function providerStub() {
   const bodies: any[] = [];
-  let reply: (body: any) => Reply = () => undefined;
+  let reply: (body: any) => Reply | Promise<Reply> = () => undefined;
   const server = createServer(async (req: IncomingMessage, res) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     bodies.push(body);
-    const override = reply(body);
+    const override = await reply(body);
     if (override === "destroy") {
       req.socket.destroy();
       return;
@@ -262,7 +262,7 @@ export async function providerStub() {
   return {
     origin: `http://127.0.0.1:${(server.address() as any).port}`,
     bodies,
-    set reply(fn: (body: any) => Reply) {
+    set reply(fn: (body: any) => Reply | Promise<Reply>) {
       reply = fn;
     },
     async close() {

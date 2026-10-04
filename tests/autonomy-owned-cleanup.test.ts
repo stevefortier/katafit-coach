@@ -247,7 +247,22 @@ test("F5: the real host stays unsafe, refuses quiesce and claims nothing more un
     assert.equal(s.local.safeToReplace, false);
     assert.equal(fake.creates().length, 1, "no further container");
     const claims = env.fake.calls.filter((c) => /\/claim/.test(c.path));
-    assert.equal(claims.length, 1, "no further claim while pending");
+    assert.equal(
+      claims.length,
+      2,
+      "one rejected negotiation plus one admitted claim; no further claim while pending",
+    );
+    assert.deepEqual(
+      env.fake.state.claims.map((c: any) => c.capability_protocols),
+      [
+        ["coach.capability.v1", "coach.work-actions.v1"],
+        ["coach.capability.v1"],
+      ],
+    );
+    assert.equal(
+      env.fake.calls.filter((c) => /\/start$/.test(c.path)).length,
+      1,
+    );
     assert.equal(
       (await env.call("GET", "/api/status")).body.safeToReplace,
       false,

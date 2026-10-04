@@ -370,6 +370,62 @@ test(
         status: (await call("/api/autonomy/status")).body,
         update: owner.updates.snapshot(),
       });
+      const cmdline = (
+        await readFile(`/proc/${pidAfterUpgrade}/cmdline`, "utf8")
+      ).split("\0");
+      assert.ok(
+        cmdline.some(
+          (arg) =>
+            arg.startsWith(join(home, "versions", newMeta.revision)) &&
+            arg.endsWith("dist/cli.js"),
+        ),
+        "the fresh real child runs the candidate's compiled CLI",
+      );
+      const beforeFresh = providerRuns;
+      const fresh = await b.enqueue(mandate.mandate_id, { kind: "reconcile" });
+      const freshWork = await until(
+        async () => {
+          const row = await b.db
+            .collection("coach_autonomy_work")
+            .findOne({ _id: fresh._id });
+          return row?.status === "completed" && row;
+        },
+        "post-upgrade fresh child completes a NEW actual native generation",
+        45000,
+      );
+      assert.equal(
+        providerRuns,
+        beforeFresh + 1,
+        "a new provider response, not a cached pre-upgrade assistant message",
+      );
+      assert.equal((await readRecord("service")).runtimePid, pidAfterUpgrade);
+      assert.equal(freshWork.completions.length, 1);
+      const canonical = await b.call(
+        "GET",
+        `/work/${fresh._id}/completions/${freshWork.completions[0].lease_generation}`,
+        token,
+      );
+      assert.equal(canonical.status, 200);
+      assert.equal(canonical.body.state, "committed");
+      assert.equal(canonical.body.receipt.work_id, String(fresh._id));
+      assert.equal(canonical.body.receipt.status_after, "completed");
+      assert.equal(
+        canonical.body.receipt.request_sha256,
+        freshWork.completions[0].request_sha256,
+      );
+      assert.equal(canonical.body.receipt.credential_match, true);
+      await record("post-upgrade-fresh-native-generation-canonical-readback", {
+        revision: newMeta.revision,
+        pidBeforeUpgrade,
+        pidAfterUpgrade,
+        cmdline,
+        providerRunsBefore: beforeFresh,
+        providerRunsAfter: providerRuns,
+        workId: String(fresh._id),
+        canonical: canonical.body,
+        inference:
+          "controlled synthetic provider; actual new child/Docker Pi and authenticated backend receipt, not live-model semantics",
+      });
     } catch (error) {
       await record("failed-phase-diagnostics", {
         error: (error as Error).message,

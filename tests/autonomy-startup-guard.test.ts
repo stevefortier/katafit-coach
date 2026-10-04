@@ -179,7 +179,26 @@ for (const v of VARIANTS) {
         "ledger empty after the resumed cycle",
       );
       const after = traffic(env.fake.calls, mark);
-      assert.equal(after.claims, 1, "exactly one claim after settlement");
+      assert.equal(
+        after.claims,
+        2,
+        "strict negotiation rejection then one admitted claim after settlement",
+      );
+      assert.equal(
+        after.starts,
+        1,
+        "exactly one admitted generation after settlement",
+      );
+      assert.deepEqual(
+        env.fake.calls
+          .slice(mark)
+          .filter((c) => /\/work\/claim$/.test(c.path))
+          .map((c) => JSON.parse(c.body!).capability_protocols),
+        [
+          ["coach.capability.v1", "coach.work-actions.v1"],
+          ["coach.capability.v1"],
+        ],
+      );
       const replays = env.fake.calls.filter(
         (c) =>
           c.method === "POST" &&

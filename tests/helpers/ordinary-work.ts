@@ -122,42 +122,38 @@ export async function seedOrdinaryProposal(t: OrdinaryFixture, kind: string) {
       data,
     },
   ]);
-  await t.b.db
-    .collection("activity_plans")
-    .insertOne({
-      _id: plan,
-      user_id: owner,
-      entries: [
-        {
-          _id: entry,
-          activity_id: template,
-          instruction: metric
-            ? "take_measurements"
-            : workout
-              ? "do_workout_generated_automatically_in_advance"
-              : type === "meal"
-                ? "eat_meal"
-                : "upload_media",
-          ...(metric ? { recurrence_number: 1, recurrence_unit: "weeks" } : {}),
-        },
-      ],
-    });
-  await t.b.db
-    .collection("users")
-    .updateOne(
-      { _id: owner },
+  await t.b.db.collection("activity_plans").insertOne({
+    _id: plan,
+    user_id: owner,
+    entries: [
       {
-        $set: {
-          timezone: "UTC",
-          affiliation: [
-            {
-              activity_plan_id: plan,
-              source: scope === "dojo" || type === "meal" ? "dojo" : "personal",
-            },
-          ],
-        },
+        _id: entry,
+        activity_id: template,
+        instruction: metric
+          ? "take_measurements"
+          : workout
+            ? "do_workout_generated_automatically_in_advance"
+            : type === "meal"
+              ? "eat_meal"
+              : "upload_media",
+        ...(metric ? { recurrence_number: 1, recurrence_unit: "weeks" } : {}),
       },
-    );
+    ],
+  });
+  await t.b.db.collection("users").updateOne(
+    { _id: owner },
+    {
+      $set: {
+        timezone: "UTC",
+        affiliation: [
+          {
+            activity_plan_id: plan,
+            source: scope === "dojo" || type === "meal" ? "dojo" : "personal",
+          },
+        ],
+      },
+    },
+  );
   if (scope === "dojo" || type === "meal")
     await t.b.db
       .collection("dojos")
@@ -215,19 +211,17 @@ export async function seedOrdinaryProposal(t: OrdinaryFixture, kind: string) {
             current_requirements: ["Front view"],
             proposed_requirements: ["Front view", "Side view"],
           };
-  await t.b.db
-    .collection("coach_strategy_proposals")
-    .insertOne({
-      _id: proposal,
-      kind,
-      scope,
-      status: "pending",
-      created_at: new Date(),
-      ...(scope === "dojo"
-        ? { dojo_id: new O(t.mandate.dojo_id) }
-        : { member_id: owner }),
-      ...fields,
-    });
+  await t.b.db.collection("coach_strategy_proposals").insertOne({
+    _id: proposal,
+    kind,
+    scope,
+    status: "pending",
+    created_at: new Date(),
+    ...(scope === "dojo"
+      ? { dojo_id: new O(t.mandate.dojo_id) }
+      : { member_id: owner }),
+    ...fields,
+  });
   return {
     plan,
     entry,

@@ -53,6 +53,24 @@ export async function memoryFixture(
 }
 export const systems = (body: any) =>
   body.messages.filter((m: any) => ["system", "developer"].includes(m.role));
+/** Inspect the first actual host recall block, not the later live-context copy. */
+export const freshRecall = (body: any): string => {
+  for (const m of systems(body)) {
+    const texts =
+      typeof m.content === "string"
+        ? [m.content]
+        : m.content
+            .filter((p: any) => p.type === "text")
+            .map((p: any) => p.text);
+    for (const text of texts) {
+      const block = text.match(
+        /<coach_memory[^>]*>[\s\S]*?<\/coach_memory>/,
+      )?.[0];
+      if (block) return block;
+    }
+  }
+  return "";
+};
 
 /** Synthetic OpenAI-compatible SSE text answer. */
 export const sseText = (text: string) =>

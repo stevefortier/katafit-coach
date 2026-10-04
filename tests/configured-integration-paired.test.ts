@@ -136,17 +136,15 @@ for (const control of [
           "/API/CoAcH/integrations/call",
           "/api/coach/%69ntegrations/call",
         ]) {
-          const rejected = await capability
-            .tools()[0]
-            .execute(
-              "bypass",
-              {
-                method: "POST",
-                path,
-                body: { protocol: "coach.integrations.v1", execution, ...args },
-              },
-              new AbortController().signal,
-            );
+          const rejected = await capability.tools()[0].execute(
+            "bypass",
+            {
+              method: "POST",
+              path,
+              body: { protocol: "coach.integrations.v1", execution, ...args },
+            },
+            new AbortController().signal,
+          );
           assert.match(
             JSON.stringify(rejected),
             path === "/api/coach/integrations/call"
