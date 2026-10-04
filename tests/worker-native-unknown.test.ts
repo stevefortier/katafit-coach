@@ -41,7 +41,7 @@ test(
         const bytes = Buffer.from(await upstream.arrayBuffer());
         if (req.method === "POST" && req.url === "/api/plans") {
           writes++;
-          assert.equal(upstream.status, 200);
+          assert.equal(upstream.status, 201);
           // Deliberate lost response AFTER the real backend mutation committed.
           res.destroy();
           return;

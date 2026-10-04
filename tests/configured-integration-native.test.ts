@@ -119,9 +119,9 @@ for (const mode of ["ok", "lost", "secret", "seal", "task"])
                   "supported-challenge",
                 ),
               );
-            assert.match(
-              got("supported-challenge"),
-              /CAPABILITY_ACTION_UNCERTAIN|INVOCATION_ACTION_UNRESOLVED|unresolved|unknown/i,
+            assert.equal(
+              JSON.parse(got("supported-challenge")).error,
+              "ACTION_UNSUPPORTED",
             );
             return void res.end(
               answer(
@@ -356,6 +356,16 @@ for (const mode of ["ok", "lost", "secret", "seal", "task"])
         );
         assert.equal(remote.calls.length, 1);
         assert.equal(new Actions(store).unresolved(), true);
+        const held = await row(second);
+        assert.equal(
+          held.ordinary_action_protocol,
+          "coach.invocation-actions.v1",
+        );
+        assert.equal(
+          held.legacy_action_state,
+          "held",
+          "the persisted cross-scope uncertainty withholds ordinary mutation admission",
+        );
         assert.ok(
           bodies.some((body) =>
             JSON.stringify(body).includes("supported-challenge"),
