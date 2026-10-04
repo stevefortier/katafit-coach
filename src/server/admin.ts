@@ -1697,6 +1697,21 @@ export async function admin(
           });
         }
         await autonomy.reconcile().catch(() => false);
+        // Exact proof may await HTTP/storage. Main's captured admission scope
+        // must still hold before either lane is synchronously reserved.
+        if (
+          updateQuiesced ||
+          busy ||
+          preview ||
+          updates.recovering ||
+          closing ||
+          worker !== admissionWorker ||
+          admissionScope() !== capturedScope ||
+          (!!worker && worker.state !== "stopped") !== wasRunning
+        ) {
+          await cancelPrepared("OPERATION_IN_PROGRESS");
+          return send(409, { error: "OPERATION_IN_PROGRESS" });
+        }
         if (autonomy.busy) {
           await cancelPrepared("UPDATE_BUSY");
           return send(409, {

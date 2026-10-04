@@ -10,12 +10,74 @@ import {
 import { outcome, ScriptedRuntime } from "./helpers/autonomy-cycle.js";
 import { MEMBER } from "./helpers/autonomy-fake.js";
 import { REPORT_TOOL } from "../src/autonomy/tools.js";
+import { AutonomyHost } from "../src/autonomy/host.js";
 
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => (resolve = r));
   return { promise, resolve };
 }
+
+test(
+  "manual queue rechecks configuration after asynchronous autonomy proof",
+  { timeout: 15000 },
+  async (t) => {
+    const entered = deferred(),
+      release = deferred();
+    let applications = 0;
+    const updates = new Updates(
+      "a".repeat(40),
+      async () => {
+        applications++;
+      },
+      fetch,
+      undefined,
+      async () => {},
+    );
+    updates.latest = "b".repeat(40);
+    updates.checkedAt = Date.now();
+    const env = await autonomyAdmin({ updates });
+    const reconcile = AutonomyHost.prototype.reconcile;
+    let applying: ReturnType<typeof env.call> | undefined;
+    try {
+      t.mock.method(
+        AutonomyHost.prototype,
+        "reconcile",
+        async function (this: AutonomyHost) {
+          entered.resolve();
+          await release.promise;
+          return reconcile.call(this);
+        },
+      );
+      applying = env.call("POST", "/api/update/apply", {
+        confirm: true,
+        sha: updates.latest,
+      });
+      await entered.promise;
+      const config = env.store.publicConfig();
+      const changed = await env.call("POST", "/api/config", {
+        ...config,
+        persona: { ...config.persona, name: "Revised during proof" },
+        expectedRevision: config.revision,
+      });
+      assert.equal(changed.status, 200, JSON.stringify(changed.body));
+      release.resolve();
+      const result = await applying;
+      assert.equal(
+        result.status,
+        409,
+        "a changed configuration must not queue after proof await",
+      );
+      assert.equal(result.body.error, "OPERATION_IN_PROGRESS");
+      assert.equal(applications, 0);
+    } finally {
+      release.resolve();
+      await applying?.catch(() => {});
+      t.mock.restoreAll();
+      await env.close();
+    }
+  },
+);
 
 test(
   "manual apply refuses active autonomy and unknown action before Stop or activation",
