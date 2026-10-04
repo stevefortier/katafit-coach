@@ -2217,14 +2217,7 @@ html.coach-covered #workspaceScroll {
   margin: 0 0 8px 8px;
   padding: 4px 6px;
 }
-.dashboard-timeline-info {
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: 11px;
-}
-.dashboard-timeline-info p {
-  line-height: 1.6;
-}
+
 @media (max-width: 600px) {
   .dashboard-timeline {
     padding: 8px;
@@ -2254,10 +2247,6 @@ html.coach-covered #workspaceScroll {
 .dashboard-timeline-legend button[aria-pressed="true"] {
   background: var(--accent);
   color: var(--bg);
-}
-.dashboard-timeline-info summary {
-  margin: 6px 0;
-  font-size: 11px;
 }
 
 .dashboard-timeline-choice-snapshot {
@@ -2302,11 +2291,6 @@ html.coach-covered #workspaceScroll {
   flex: 1;
   height: 3px;
   width: auto;
-}
-.dashboard-timeline-heading {
-  margin: 0 0 8px;
-  font-size: 13px;
-  font-weight: 600;
 }
 
 /* Historical gallery owns paging and lazy photo geometry. */
