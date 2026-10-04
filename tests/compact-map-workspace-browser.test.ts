@@ -62,6 +62,17 @@ for (const width of [320, 390, 1440]) {
           "calendar label is not clipped",
         );
         assert.equal(await page.locator(".dashboard-map-note").count(), 0);
+        assert.equal(
+          await page
+            .locator("#dashboardTimeline details, #dashboardTimeline h3")
+            .count(),
+          0,
+          "timeline has no explanatory sections or duplicate date heading",
+        );
+        assert.doesNotMatch(
+          await page.locator("#dashboardTimeline").innerText(),
+          /About this timeline|Backend event coverage|Day timeline/,
+        );
         assert.ok(
           await page.evaluate(() =>
             [...document.querySelectorAll<HTMLElement>(".dashboard-event-dot")]
@@ -156,12 +167,14 @@ for (const width of [320, 390, 1440]) {
           ),
           0,
         );
-        if (width < 700)
-          assert.ok(
-            await page
-              .locator("#dashboardTimeline")
-              .evaluate((n: HTMLElement) => n.scrollTop > 0),
-          );
+        const timelineScroll = await page
+          .locator("#dashboardTimeline")
+          .evaluate((n: HTMLElement) => ({
+            top: n.scrollTop,
+            overflows: n.scrollHeight > n.clientHeight,
+          }));
+        if (timelineScroll.overflows) assert.ok(timelineScroll.top > 0);
+        else assert.equal(timelineScroll.top, 0);
         const map = await page.locator("#dashboardMap").boundingBox();
         await page.locator(".dashboard-map-group").first().click();
         await page.locator(".dashboard-map-choice").first().click();
@@ -211,6 +224,21 @@ for (const width of [320, 390, 1440]) {
       {
         document: true,
         viewport: { width, height },
+        override: (url, events) =>
+          url.pathname === "/api/dashboard/timeline"
+            ? {
+                body: {
+                  users: [...new Set(events.map((event) => event.user_id))].map(
+                    (_id) => ({ _id, name: "Fixture member" }),
+                  ),
+                  events,
+                  hasMore: false,
+                  coverage: {
+                    atomic_operations: ["metric.measurements_and_definitions"],
+                  },
+                },
+              }
+            : undefined,
         now: "2026-10-03T12:00:00Z",
       },
     );

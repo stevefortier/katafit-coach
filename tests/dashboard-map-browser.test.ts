@@ -276,9 +276,8 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
       await page.locator("#dashboardMapDate").dispatchEvent("change");
       await page.waitForFunction(
         (day) =>
-          document
-            .querySelector(".dashboard-timeline-heading")
-            ?.textContent?.includes(day) &&
+          document.querySelector<HTMLElement>("#dashboardTimeline")?.dataset
+            .date === day &&
           document.querySelectorAll(".dashboard-timeline-mark").length === 3,
         day,
       );

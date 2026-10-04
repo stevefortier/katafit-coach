@@ -1909,7 +1909,6 @@ window.CoachDashboard = (() => {
     const users = new Map(resume?.users),
       items = resume?.items || new Map();
     let cursor = resume?.cursor,
-      coverage = resume?.coverage,
       pages = 0;
     // Render loaded events; `failure` marks a transiently interrupted partial day.
     const publish = (failure = null) => {
@@ -1920,21 +1919,9 @@ window.CoachDashboard = (() => {
         : cursor
           ? "More events available; partial day. Load more to continue."
           : "Complete loaded pages.";
-      const info = text("details", "", "dashboard-timeline-info");
-      info.append(
-        text("summary", "About this timeline"),
-        text(
-          "p",
-          `All authorized event types · ${date} · device timezone. Occurrence times, not activity duration. Historical aggregate events may not contain individual sets/items; no reconstruction is inferred. Use arrows to navigate, Enter to select, Escape to dismiss. Tap a cluster to choose an event.`,
-        ),
-      );
       status.hidden = !cursor;
-      target.replaceChildren(
-        text("h3", `Day timeline · ${date}`, "dashboard-timeline-heading"),
-        status,
-      );
+      target.replaceChildren(status);
       renderEventTimeline(target, items, users, start, end, adminKey);
-      target.append(info);
       if (cursor) {
         const more = text(
           "button",
@@ -1943,19 +1930,11 @@ window.CoachDashboard = (() => {
         more.type = "button";
         more.onclick = () => {
           more.disabled = true;
-          void loadTimeline(adminKey, { users, items, cursor, coverage });
+          void loadTimeline(adminKey, { users, items, cursor });
         };
         target.append(more);
       }
-      if (coverage && typeof coverage === "object") {
-        const summary = text("details");
-        summary.append(text("summary", "Backend event coverage"));
-        // Coverage is a bounded backend DTO, not raw source activity data.
-        summary.append(
-          text("pre", JSON.stringify(coverage, null, 2).slice(0, 8000)),
-        );
-        target.append(summary);
-      }
+
       filterTimeline();
       syncMap();
     };
@@ -2015,7 +1994,7 @@ window.CoachDashboard = (() => {
           pageIds.add(item.id);
         }
         if (!resume && pages === 0) withheldMembers.clear();
-        coverage = data.coverage || coverage;
+
         for (const user of data.users) users.set(user._id, user);
         const newlyPrivate = new Set();
         for (const item of data.events) {
