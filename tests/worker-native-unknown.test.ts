@@ -155,10 +155,7 @@ test(
       assert.equal((await control("/api/stop")).status, 200);
       assert.equal(writes, 1);
       const selectedOccurrences = () =>
-        b.db
-          .collection("coach_invocation_occurrences")
-          .find({})
-          .toArray();
+        b.db.collection("coach_invocation_occurrences").find({}).toArray();
       const occurrences = await selectedOccurrences();
       assert.equal(occurrences.length, 1);
       assert.equal(occurrences[0].status, "unknown");
