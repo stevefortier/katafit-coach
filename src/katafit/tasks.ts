@@ -4,6 +4,10 @@ import { taskCatalog } from "./taskCatalog.js";
 import { Client } from "./client.js";
 import { assertNoSecrets } from "../config/store.js";
 import {
+  invocationAdmission,
+  INVOCATION_ACTION_PROTOCOL,
+} from "../capability/invocationActions.js";
+import {
   CAPABILITY_PROTOCOL,
   validOccurrence,
   type CapabilityAction,
@@ -53,7 +57,7 @@ export async function discoverTasks(c: Client): Promise<string[]> {
  */
 export async function discoverTaskPlane(
   c: Client,
-): Promise<{ kinds: string[]; capability: boolean }> {
+): Promise<{ kinds: string[]; capability: boolean; invocation?: boolean }> {
   // Capability absence/mismatch never grants task authority or breaks legacy chat.
   try {
     const listed = await c.rpc("tools/list");
@@ -84,7 +88,18 @@ export async function discoverTaskPlane(
           catalog.get(kind),
         ),
     );
-    return { kinds, capability };
+    const claim = listed.tools?.find((t: any) => t.name === "coach_claim_task");
+    const invocation =
+      capability &&
+      claim?.inputSchema?.properties?.capability_protocols?.items?.enum?.includes(
+        INVOCATION_ACTION_PROTOCOL,
+      ) &&
+      [
+        "coach_open_invocation_action",
+        "coach_read_invocation_action",
+        "coach_settle_invocation_action",
+      ].every((n) => listed.tools?.some((t: any) => t.name === n));
+    return { kinds, capability, ...(invocation ? { invocation: true } : {}) };
   } catch {
     return { kinds: [], capability: false };
   }
@@ -139,6 +154,7 @@ export interface TaskAdmission {
   /** The requester, the only member-message recipient of a Dojo task. */
   recipient?: string;
   subjectIsPrincipal: boolean;
+  ordinary?: ReturnType<typeof invocationAdmission>;
 }
 /**
  * Legacy contexts (allowed_tools [], direct_mutations_forbidden) still get the
@@ -163,10 +179,31 @@ export function taskAdmission(task: any, context: any): TaskAdmission {
       ? { recipient: String(task.requester_id).toLowerCase() }
       : {}),
     subjectIsPrincipal: cap.rest.subject_is_principal === true,
+    ...(invocationAdmission(cap, {
+      plane: "task",
+      id: task.id,
+      lease_generation: task.lease_generation,
+      requester_id: task.requester_id,
+    })
+      ? {
+          ordinary: invocationAdmission(cap, {
+            plane: "task",
+            id: task.id,
+            lease_generation: task.lease_generation,
+            requester_id: task.requester_id,
+          }),
+        }
+      : {}),
   };
 }
 function validAdmission(task: any, context: any) {
   const cap = context.capability;
+  const ordinary = invocationAdmission(cap, {
+    plane: "task",
+    id: task.id,
+    lease_generation: task.lease_generation,
+    requester_id: task.requester_id,
+  });
   return (
     exactKeys(context, [
       "task",
@@ -196,13 +233,17 @@ function validAdmission(task: any, context: any) {
     typeof cap.rest?.subject_is_principal === "boolean" &&
     cap.rest?.subject_user_id === task.requester_id &&
     Array.isArray(cap.actions?.supported) &&
-    cap.actions.supported.length <= 2 &&
+    cap.actions.supported.length <= (ordinary ? 3 : 2) &&
     cap.actions.supported.every((a: any) =>
-      ["rest_mutation", "member_message"].includes(a),
+      [
+        "rest_mutation",
+        "member_message",
+        ...(ordinary ? ["proposal_approval"] : []),
+      ].includes(a),
     ) &&
     // A Dojo task never writes as the chief; a personal task never messages.
     (task.owner_type === "dojo"
-      ? !cap.actions.supported.includes("rest_mutation")
+      ? ordinary || !cap.actions.supported.includes("rest_mutation")
       : !cap.actions.supported.includes("member_message")) &&
     context.direct_mutations_forbidden ===
       (cap.actions.supported.length === 0) &&

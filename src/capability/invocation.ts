@@ -18,6 +18,10 @@ import {
 } from "../katafit/restGet.js";
 import { classifyMemoryWrite } from "../memory/native.js";
 import type { WorkActions } from "./workActions.js";
+import {
+  invocationAdmission,
+  type InvocationActions,
+} from "./invocationActions.js";
 
 /**
  * Shared invocation capability (Steve's full-capability addendum). Every
@@ -29,7 +33,10 @@ import type { WorkActions } from "./workActions.js";
  */
 export const CAPABILITY_PROTOCOL = "coach.capability.v1";
 
-export type CapabilityAction = "rest_mutation" | "member_message";
+export type CapabilityAction =
+  | "rest_mutation"
+  | "member_message"
+  | "proposal_approval";
 export interface Occurrence {
   slot: string;
   action: CapabilityAction;
@@ -63,6 +70,11 @@ export interface ActionJournal {
 }
 /** Host-durable fence for planes without a backend journal (Actions-shaped). */
 export interface ActionLedger {
+  snapshot?(): {
+    idempotency_key: string;
+    session_id?: string;
+    status: string;
+  }[];
   unresolved(exceptKey?: string): boolean;
   save(action: {
     session_id: string;
@@ -96,6 +108,8 @@ export interface InvocationOptions {
   ledger?: ActionLedger;
   ledgerSession?: string;
   workActions?: WorkActions;
+  invocationActions?: InvocationActions;
+  invocationNegotiated?: boolean;
   integrations?: {
     execution: IntegrationExecution;
     directory: string;
@@ -216,13 +230,19 @@ export interface RequestAdmission {
   negotiated: boolean;
   actions: CapabilityAction[];
   subjectIsPrincipal: boolean;
+  ordinary?: ReturnType<typeof invocationAdmission>;
 }
 /**
  * Validates a chat-request context's coach.capability.v1 admission. A legacy
  * context keeps the backend's direct-mutation prohibition (reads only).
  */
 export function requestAdmission(
-  request: { requester_id: string; scope: string },
+  request: {
+    requester_id: string;
+    scope: string;
+    id?: string;
+    lease_generation?: number;
+  },
   context: any,
 ): RequestAdmission {
   if (!context || !Object.hasOwn(context, "capability"))
@@ -233,6 +253,12 @@ export function requestAdmission(
     };
   const cap = context.capability;
   const supported = cap?.actions?.supported;
+  const ordinary = invocationAdmission(cap, {
+    plane: "request",
+    id: request.id,
+    lease_generation: request.lease_generation,
+    requester_id: request.requester_id,
+  });
   if (
     !cap ||
     typeof cap !== "object" ||
@@ -246,11 +272,14 @@ export function requestAdmission(
     typeof cap.rest?.subject_is_principal !== "boolean" ||
     String(cap.rest?.subject_user_id) !== String(request.requester_id) ||
     !Array.isArray(supported) ||
-    supported.length > 1 ||
-    !supported.every((a: any) => a === "rest_mutation") ||
+    supported.length > (ordinary ? 2 : 1) ||
+    !supported.every(
+      (a: any) =>
+        a === "rest_mutation" || (ordinary && a === "proposal_approval"),
+    ) ||
     (cap.kind === "setup_test" && supported.length > 0) ||
     // A Dojo reply is itself the communication: never a chief-account write.
-    (request.scope === "dojo" && supported.length > 0) ||
+    (!ordinary && request.scope === "dojo" && supported.length > 0) ||
     context.boundaries?.direct_mutations_forbidden !==
       (supported.length === 0) ||
     !Array.isArray(context.allowed_tools) ||
@@ -267,6 +296,7 @@ export function requestAdmission(
     negotiated: true,
     actions: cap.rest.available ? [...supported] : [],
     subjectIsPrincipal: cap.rest.subject_is_principal,
+    ...(ordinary ? { ordinary } : {}),
   };
 }
 
@@ -665,6 +695,10 @@ export class InvocationCapability {
       return this.o.workActions
         ? this.o.workActions.execute(raw, signal)
         : this.unsupported();
+    if (this.o.invocationNegotiated)
+      return this.o.invocationActions
+        ? this.o.invocationActions.execute(raw, signal)
+        : this.unsupported();
     if (this.o.ledger?.unresolved()) this.uncertain();
     const body = Object.hasOwn(raw, "body") ? raw.body : undefined;
     if (this.o.journal) {
@@ -686,6 +720,18 @@ export class InvocationCapability {
         );
       const ordinal =
         this.known.filter((o) => o.action === "rest_mutation").length + 1;
+      const local =
+        this.o.ledger && this.o.ledgerSession
+          ? {
+              session_id: this.o.ledgerSession,
+              idempotency_key:
+                "legacy:" +
+                digest({ session: this.o.ledgerSession, request_sha256 }),
+              tool_name: "katafit_rest_request",
+              status: "pending" as const,
+            }
+          : undefined;
+      if (local) this.o.ledger!.save(local);
       const opened = await this.open("rest_mutation", {
         slot: `r${ordinal}`,
         action: "rest_mutation",
@@ -728,6 +774,7 @@ export class InvocationCapability {
         "succeeded",
       );
       if (done.status !== "succeeded") this.uncertain();
+      if (local) this.o.ledger!.save({ ...local, status: "completed" });
       return { content: result.content, details: {} };
     }
     if (!this.o.ledger || !this.o.ledgerSession) return this.unsupported();

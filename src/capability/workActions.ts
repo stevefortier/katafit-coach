@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import contract from "./work-action-contract.json" with { type: "json" };
+import successor from "./invocation-action-contract.json" with { type: "json" };
 import { Actions } from "../chat/actions.js";
 import type { WorkItem } from "../autonomy/types.js";
 import { AutonomyBackend, AutonomyFailure } from "../autonomy/backend.js";
@@ -11,7 +12,10 @@ import { restRequest } from "../katafit/restGet.js";
 
 export const WORK_ACTION_PROTOCOL = "coach.work-actions.v1";
 const ajv = new Ajv2020({ strict: false });
-const validOccurrence = ajv.compile(contract.schemas.occurrence);
+const legacyOccurrence = ajv.compile(contract.schemas.occurrence);
+const successorOccurrence = ajv.compile(successor.schemas.work_occurrence);
+const validOccurrence = (value: any) =>
+  legacyOccurrence(value) || successorOccurrence(value);
 const inputs = {
   open: ajv.compile(contract.schemas.open),
   settle: ajv.compile(contract.schemas.settle),
@@ -22,7 +26,9 @@ export function workActionDescriptor(value: any) {
   if (
     !value ||
     typeof value.available !== "boolean" ||
-    !isDeepStrictEqual({ ...value, available: true }, contract.descriptor)
+    ![contract.descriptor, successor.work_descriptor].some((d) =>
+      isDeepStrictEqual({ ...value, available: true }, d),
+    )
   )
     return null;
   return structuredClone(value) as typeof contract.descriptor;
@@ -166,7 +172,9 @@ export class WorkActions {
             (op.path === "/api/plans/:id" &&
               /^\/api\/plans\/[a-f0-9]{24}$/.test(raw.path)) ||
             (op.path === "/api/strategy/proposals/:proposalId/approve" &&
-              proposal)),
+              proposal) ||
+            (op.path === "/api/strategy/:id/review" &&
+              /^\/api\/strategy\/[a-f0-9]{24}\/review$/.test(raw.path))),
       )
     )
       return refusal("WORK_ACTION_UNSUPPORTED");
@@ -190,18 +198,21 @@ export class WorkActions {
         .catch(() => undefined);
       const observation = value?.occurrence;
       if (
-        prior.status === "completed" &&
-        observation?.status === "response_received" &&
-        observation.resolution === "settled" &&
+        ((observation?.status === "response_received" &&
+          observation.resolution === "settled") ||
+          (["not_dispatched", "not_applied"].includes(observation?.status) &&
+            observation.resolution === observation.status)) &&
         observation.request_sha256 === request_sha256 &&
         observation.method === request.method &&
         observation.path === request.path
-      )
+      ) {
+        this.o.actions.save({ ...record, status: "completed" });
         return output({
           observation,
           recovered: true,
           note: "Prior transport observation; no request was repeated. Read canonical state separately.",
         });
+      }
       this.uncertain = true;
       this.o.onUnknown();
       this.o.actions.save({ ...record, status: "unknown" });
@@ -285,6 +296,31 @@ export class WorkActions {
           status: "unknown",
         })
         .catch(() => undefined);
+      // Retirement can conflict with a terminal settle. Exact read-only service
+      // evidence is the only clearance; never repeat the dispatch or infer from HTTP.
+      const retired = await this.o.backend
+        .readWorkOccurrence(work.id, slot)
+        .catch(() => undefined);
+      if (
+        retired?.occurrence?.request_sha256 === request_sha256 &&
+        retired.occurrence.method === request.method &&
+        retired.occurrence.path === request.path &&
+        ((["not_dispatched", "not_applied"].includes(
+          retired.occurrence.status,
+        ) &&
+          retired.occurrence.resolution === retired.occurrence.status) ||
+          (retired.occurrence.status === "response_received" &&
+            retired.occurrence.resolution === "settled"))
+      ) {
+        this.uncertain = false;
+        this.o.actions.save({ ...record, status: "completed" });
+        return output({
+          observation: retired.occurrence,
+          recovered: true,
+          replay_allowed: false,
+          effect_receipt: false,
+        });
+      }
       return output({
         error: "WORK_ACTION_UNRESOLVED",
         protocol: WORK_ACTION_PROTOCOL,

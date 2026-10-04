@@ -23,6 +23,7 @@ export async function uncertaintyFixture(
     path: string;
     body?: any;
     workBinding?: any;
+    invocationBinding?: any;
   }[] = [];
   let failure: unknown;
   let lose = false;
@@ -55,6 +56,13 @@ export async function uncertaintyFixture(
       path: req.url!,
       body: raw ? JSON.parse(raw) : undefined,
       ...(header ? { workBinding: JSON.parse(String(header)) } : {}),
+      ...(req.headers["x-coach-invocation-action"]
+        ? {
+            invocationBinding: JSON.parse(
+              String(req.headers["x-coach-invocation-action"]),
+            ),
+          }
+        : {}),
     });
     if (
       lose &&

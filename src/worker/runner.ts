@@ -59,6 +59,10 @@ import {
   type ActionLedger,
 } from "../capability/invocation.js";
 import { ToolFailure } from "../katafit/client.js";
+import {
+  InvocationActions,
+  INVOCATION_ACTION_PROTOCOL,
+} from "../capability/invocationActions.js";
 export async function bounded<T>(
   action: () => Promise<T>,
   signal: AbortSignal,
@@ -706,6 +710,9 @@ export class Worker {
           taskKinds,
           ref,
           taskPlane.capability,
+          taskPlane.invocation === true &&
+            !!this.options.actionLedger?.snapshot &&
+            !!this.options.integrationDirectory,
         );
         if (!handled) taskAttempt = false;
         return handled;
@@ -731,10 +738,27 @@ export class Worker {
       if (this.unresolvedRequests.size) return;
       // No separate request-plane advertisement exists: the task plane's
       // coach.capability.v1 advertisement is the same backend's opt-in.
+      const ordinaryNegotiation =
+        taskPlane.invocation &&
+        !!this.options.actionLedger?.snapshot &&
+        !!this.options.integrationDirectory;
       const { request } = await c.call("coach_claim_request", {
         lease_seconds: 120,
         ...(taskPlane.capability
-          ? { capability_protocols: [CAPABILITY_PROTOCOL] }
+          ? {
+              capability_protocols: [
+                CAPABILITY_PROTOCOL,
+                ...(ordinaryNegotiation ? [INVOCATION_ACTION_PROTOCOL] : []),
+              ],
+              ...(ordinaryNegotiation
+                ? {
+                    legacy_action_state:
+                      !this.options.actionLedger!.unresolved()
+                        ? "drained"
+                        : "held",
+                  }
+                : {}),
+            }
           : {}),
       });
       if (!request) {
@@ -846,6 +870,18 @@ export class Worker {
           !this.controller.signal.aborted &&
           Date.now() < requestDeadline,
         actions: this.options.actionLedger ? admission.actions : [],
+        ...(admission.ordinary
+          ? {
+              invocationNegotiated: true,
+              invocationActions: this.invocationActions(
+                admission.ordinary,
+                () =>
+                  !inferenceSignal.aborted &&
+                  !this.controller.signal.aborted &&
+                  Date.now() < requestDeadline,
+              ),
+            }
+          : {}),
         ...(this.options.integrationDirectory &&
         integrationAdmitted(context.capability, "request")
           ? {
@@ -1111,17 +1147,53 @@ export class Worker {
       this.update("task-result-unverified");
     }
   }
+  private invocationActions(
+    admission: ConstructorParameters<typeof InvocationActions>[0]["admission"],
+    current: () => boolean,
+  ) {
+    if (
+      !this.options.actionLedger?.snapshot ||
+      !this.options.integrationDirectory
+    )
+      return undefined;
+    return new InvocationActions({
+      origin: this.options.origin,
+      token: this.options.token,
+      secrets: this.options.secrets ?? [],
+      directory: this.options.integrationDirectory,
+      admission,
+      ledger: this.options.actionLedger,
+      current,
+    });
+  }
   private async pollTask(
     c: Client,
     kinds: string[],
     ref: string,
     negotiate = false,
+    ordinary = false,
   ) {
     const { task } = await c.call("coach_claim_task", {
       protocol: TASK_PROTOCOL,
       kinds,
       lease_seconds: 60,
-      ...(negotiate ? { capability_protocols: [CAPABILITY_PROTOCOL] } : {}),
+      ...(negotiate
+        ? {
+            capability_protocols: [
+              CAPABILITY_PROTOCOL,
+              ...(ordinary ? [INVOCATION_ACTION_PROTOCOL] : []),
+            ],
+            ...(ordinary
+              ? {
+                  legacy_action_state:
+                    this.options.actionLedger?.snapshot &&
+                    !this.options.actionLedger.unresolved()
+                      ? "drained"
+                      : "held",
+                }
+              : {}),
+          }
+        : {}),
     });
     if (!task) return false;
     validateTask(task, kinds);
@@ -1176,6 +1248,18 @@ export class Worker {
         actions: admission.actions,
         occurrences: admission.occurrences,
         ledger: this.options.actionLedger,
+        ...(admission.ordinary
+          ? {
+              invocationNegotiated: true,
+              invocationActions: this.invocationActions(
+                admission.ordinary,
+                () =>
+                  !signal.aborted &&
+                  !this.controller.signal.aborted &&
+                  Date.now() < deadline,
+              ),
+            }
+          : {}),
         ...(this.options.integrationDirectory &&
         integrationAdmitted(context.capability, "task")
           ? {

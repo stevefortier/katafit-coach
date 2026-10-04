@@ -278,7 +278,8 @@ export async function admin(
         actionLedger: (() => {
           const actions = new Actions(store, (event) => logs.record(event));
           return {
-            unresolved: () => actions.unresolved(),
+            unresolved: (except?: string) => actions.unresolved(except),
+            snapshot: () => actions.snapshot(),
             save: (action) => actions.save(action),
           };
         })(),

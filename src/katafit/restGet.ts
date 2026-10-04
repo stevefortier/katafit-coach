@@ -1,4 +1,5 @@
 import { assertNoSecrets } from "../config/store.js";
+import { validInvocationBinding } from "../capability/invocationActions.js";
 import { SafeError } from "../runtime/errors.js";
 import { prepareModelImage } from "./providerImage.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
@@ -181,9 +182,24 @@ export async function restRequest(
     mandate_revision: number;
     request_sha256: string;
   },
+  invocationBinding?: {
+    plane: "request" | "task";
+    invocation_id: string;
+    slot: string;
+    lease_generation: number;
+    delegation_revision: number;
+    request_sha256: string;
+  },
 ) {
   const { path, method, body } = restRequestArgs(args);
   if (workBinding && (method === "GET" || !validWorkBinding(workBinding)))
+    throw new Error("REST_REQUEST_REJECTED");
+  if (
+    invocationBinding &&
+    (workBinding ||
+      method === "GET" ||
+      !validInvocationBinding(invocationBinding))
+  )
     throw new Error("REST_REQUEST_REJECTED");
   assertNoSecrets(args, [...secrets, bearer]);
   if (!bearer || bearer.length > 4096 || /[\u0000-\u001f\u007f]/.test(bearer))
@@ -218,6 +234,9 @@ export async function restRequest(
         Accept: "application/json, image/jpeg, image/png, image/webp",
         ...(workBinding
           ? { "X-Coach-Work-Action": JSON.stringify(workBinding) }
+          : {}),
+        ...(invocationBinding
+          ? { "X-Coach-Invocation-Action": JSON.stringify(invocationBinding) }
           : {}),
       },
       signal: wireSignal,

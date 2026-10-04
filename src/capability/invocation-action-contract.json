@@ -1,0 +1,606 @@
+{
+  "protocol": "coach.invocation-actions.v1",
+  "backend_sha": "1b82f504f7abc475a0d2d57d3f862d0522d721ca",
+  "backend_tree": "f3c19e45b5212654af7f0a94d4e476bde49ba683",
+  "descriptor": {
+    "protocol": "coach.invocation-actions.v1",
+    "available": true,
+    "header": "X-Coach-Invocation-Action",
+    "limits": {
+      "occurrences_per_work": 64,
+      "request_bytes": 65536
+    },
+    "occurrence_root": "/api/coach/invocations/{plane}/{invocation_id}/occurrences/{slot}",
+    "supported_operations": [
+      {
+        "method": "POST",
+        "path": "/api/plans"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/plans/:id"
+      },
+      {
+        "method": "POST",
+        "path": "/api/strategy/:id/review",
+        "requires_delegation": "rest_mutation",
+        "asynchronous": true,
+        "receipt": "accepted_pending"
+      },
+      {
+        "method": "POST",
+        "path": "/api/strategy/proposals/:proposalId/approve",
+        "kinds": [
+          "metric_cadence_adjustment",
+          "nutrition_target_adjustment",
+          "member_workout_plan_adjustment",
+          "dojo_workout_plan_adjustment",
+          "media_requirements_adjustment"
+        ],
+        "requires_delegation": "proposal_approval"
+      }
+    ],
+    "durable_before_send": true,
+    "recovery_resolution": "unknown_no_replay",
+    "settlement": "worker_observed_transport",
+    "effect_receipt": false,
+    "legacy_uncertainty": "worker_attested_drained_or_continued_hold_required"
+  },
+  "work_descriptor": {
+    "protocol": "coach.work-actions.v1",
+    "available": true,
+    "header": "X-Coach-Work-Action",
+    "limits": {
+      "occurrences_per_work": 64,
+      "request_bytes": 65536
+    },
+    "occurrence_root": "/api/coach/autonomy/work/{work_id}/occurrences/{slot}",
+    "supported_operations": [
+      {
+        "method": "POST",
+        "path": "/api/plans"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/plans/:id"
+      },
+      {
+        "method": "POST",
+        "path": "/api/strategy/:id/review",
+        "requires_delegation": "rest_mutation",
+        "asynchronous": true,
+        "receipt": "accepted_pending"
+      },
+      {
+        "method": "POST",
+        "path": "/api/strategy/proposals/:proposalId/approve",
+        "kinds": [
+          "metric_cadence_adjustment",
+          "nutrition_target_adjustment",
+          "member_workout_plan_adjustment",
+          "dojo_workout_plan_adjustment",
+          "media_requirements_adjustment"
+        ],
+        "requires_delegation": "proposal_approval"
+      }
+    ],
+    "durable_before_send": true,
+    "recovery_resolution": "unknown_no_replay",
+    "settlement": "worker_observed_transport",
+    "effect_receipt": false
+  },
+  "schemas": {
+    "dispatch_header_json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "plane": {
+          "type": "string",
+          "enum": [
+            "request",
+            "task"
+          ]
+        },
+        "invocation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "delegation_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "plane",
+        "invocation_id",
+        "slot",
+        "lease_generation",
+        "delegation_revision",
+        "request_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "open": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "delegation_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "action": {
+          "type": "string",
+          "const": "rest_mutation"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "POST",
+            "PUT"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "lease_generation",
+        "delegation_revision",
+        "action",
+        "method",
+        "path",
+        "request_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "settle": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "delegation_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "response_received",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "lease_generation",
+        "delegation_revision",
+        "request_sha256",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "work_occurrence": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "coach.work-actions.v1"
+        },
+        "work_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "action": {
+          "type": "string",
+          "const": "rest_mutation"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "opened_lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "dispatch_lease_generation": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "unknown",
+            "response_received",
+            "not_dispatched",
+            "not_applied"
+          ]
+        },
+        "effect_receipt": {
+          "type": "boolean",
+          "const": false
+        },
+        "replay_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "execute_once",
+            "unknown_no_replay",
+            "settled",
+            "not_dispatched",
+            "not_applied"
+          ]
+        },
+        "accepted_receipt": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "accepted_pending"
+            },
+            "job_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "active_strategy_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "http_status": {
+              "type": "number",
+              "const": 202
+            }
+          },
+          "required": [
+            "status",
+            "job_id",
+            "active_strategy_id",
+            "request_sha256",
+            "http_status"
+          ],
+          "additionalProperties": false
+        },
+        "completion_receipt": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "completed"
+            },
+            "job_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "strategy_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "proposal_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{24}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "completed_proposal",
+                "completed_no_proposal"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "job_id",
+            "strategy_id",
+            "proposal_id",
+            "outcome"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "work_id",
+        "slot",
+        "action",
+        "method",
+        "path",
+        "request_sha256",
+        "opened_lease_generation",
+        "dispatch_lease_generation",
+        "status",
+        "effect_receipt",
+        "replay_allowed",
+        "resolution"
+      ],
+      "additionalProperties": false
+    },
+    "occurrence": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "coach.invocation-actions.v1"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "POST",
+            "PUT"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "opened_lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "dispatch_lease_generation": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "unknown",
+            "response_received",
+            "not_dispatched",
+            "not_applied"
+          ]
+        },
+        "effect_receipt": {
+          "type": "boolean",
+          "const": false
+        },
+        "replay_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "execute_once",
+            "unknown_no_replay",
+            "settled",
+            "not_dispatched",
+            "not_applied"
+          ]
+        },
+        "accepted_receipt": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "accepted_pending"
+            },
+            "job_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "active_strategy_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "http_status": {
+              "type": "number",
+              "const": 202
+            }
+          },
+          "required": [
+            "status",
+            "job_id",
+            "active_strategy_id",
+            "request_sha256",
+            "http_status"
+          ],
+          "additionalProperties": false
+        },
+        "completion_receipt": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "completed"
+            },
+            "job_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "strategy_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "proposal_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{24}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "completed_proposal",
+                "completed_no_proposal"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "job_id",
+            "strategy_id",
+            "proposal_id",
+            "outcome"
+          ],
+          "additionalProperties": false
+        },
+        "plane": {
+          "enum": [
+            "request",
+            "task"
+          ]
+        },
+        "invocation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "principal_user_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "subject_user_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "delegation_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "local_effect": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "plan_created",
+                "plan_updated",
+                "proposal_approved"
+              ]
+            },
+            "resource_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            }
+          },
+          "required": [
+            "kind",
+            "resource_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "slot",
+        "method",
+        "path",
+        "request_sha256",
+        "opened_lease_generation",
+        "dispatch_lease_generation",
+        "status",
+        "effect_receipt",
+        "replay_allowed",
+        "resolution",
+        "plane",
+        "invocation_id",
+        "principal_user_id",
+        "subject_user_id",
+        "delegation_revision"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
