@@ -374,7 +374,6 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           ),
         [
           ["BUTTON", "Dojo"],
-          ["BUTTON", "Activity"],
           ["BUTTON", "Server Settings"],
           ["BUTTON", "Coach Settings"],
         ],
@@ -388,14 +387,14 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       const primaryGeometry = await page
         .locator(".studio-tabs")
         .evaluate((nav) => {
-          const [dashboard, activity, serverSettings, settings] = Array.from(
+          const [dashboard, serverSettings, settings] = Array.from(
             nav.children,
           ).map((el) => el.getBoundingClientRect());
           const row = nav.getBoundingClientRect();
           return {
             rowLeft: row.left,
-            activityLeft: activity.left,
-            activityRight: activity.right,
+            serverSettingsLeft: serverSettings.left,
+            serverSettingsRight: serverSettings.right,
             dashboardLeft: dashboard.left,
             dashboardRight: dashboard.right,
             settingsLeft: settings.left,
@@ -407,9 +406,11 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
         Math.abs(primaryGeometry.dashboardLeft - primaryGeometry.rowLeft) <= 2,
         "Dojo starts the navigation",
       );
-      assert.ok(primaryGeometry.dashboardRight <= primaryGeometry.activityLeft);
       assert.ok(
-        primaryGeometry.settingsLeft - primaryGeometry.activityRight >=
+        primaryGeometry.dashboardRight <= primaryGeometry.serverSettingsLeft,
+      );
+      assert.ok(
+        primaryGeometry.serverSettingsLeft - primaryGeometry.dashboardRight >=
           (width <= 760 ? 4 : 12),
         "operations stay left and Settings is separated on the right",
       );
@@ -554,25 +555,31 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       await page.locator("#token").fill("unsaved-synthetic-secret");
       for (const [key, name] of [
         ["ArrowRight", "Models"],
-        ["End", "Updates"],
+        ["ArrowRight", "Updates"],
+        ["End", "Log"],
         ["ArrowRight", "Kata.fit"],
-        ["ArrowLeft", "Updates"],
+        ["ArrowLeft", "Log"],
         ["Home", "Kata.fit"],
       ] as const) {
         await page.evaluate(() => scrollTo(0, 0));
-        const selected = page.getByRole("tab", { selected: true });
+        const selected = page
+          .locator("#serverSettingsTabs, #coachSettingsTabs")
+          .getByRole("tab", { selected: true });
         await selected.focus();
         await selected.press(key);
-        const next = page.getByRole("tab", { selected: true });
+        const next = page
+          .locator("#serverSettingsTabs, #coachSettingsTabs")
+          .getByRole("tab", { selected: true });
         assert.equal(await next.innerText(), name);
         assert.ok(await next.evaluate((el) => el === document.activeElement));
         assert.equal(
-          await page
-            .locator('#settingsPanel .settings-tabs [tabindex="0"]')
-            .count(),
+          await page.locator('#serverSettingsTabs [tabindex="0"]').count(),
           1,
         );
-        assert.equal(await page.getByRole("tabpanel").count(), 1);
+        assert.equal(
+          await page.getByRole("tabpanel").count(),
+          name === "Log" ? 2 : 1,
+        );
         assert.equal(
           await page.evaluate(() => scrollY),
           0,
@@ -605,36 +612,28 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       await page.keyboard.press("Tab");
       assert.ok(
         await page
-          .locator("#diagnosticsTab")
+          .locator("#settingsTab")
           .evaluate((el) => el === document.activeElement),
-        "Activity follows Dojo in keyboard order",
+        "Server Settings follows Dojo in keyboard order",
       );
       await page.keyboard.press("Enter");
+      await page.locator("#settings-log-tab").click();
       await capture("diagnostics");
-      assert.equal(
-        await page.locator("#diagnostics h2").innerText(),
-        "Activity",
-      );
+      assert.equal(await page.locator("#diagnostics h2").innerText(), "Log");
       assert.equal(
         await page.locator("#diagnostics-logs-tab").innerText(),
         "Logs",
       );
       assert.equal(
         await page.locator("#logRows").getAttribute("aria-label"),
-        "Activity entries",
+        "Log entries",
       );
-      assert.equal(new URL(page.url()).pathname, "/diagnostics");
+      assert.equal(new URL(page.url()).pathname, "/settings");
       assert.equal(
-        await page.locator("#diagnosticsTab").getAttribute("aria-pressed"),
+        await page.locator("#settingsTab").getAttribute("aria-pressed"),
         "true",
       );
-      await page.keyboard.press("Tab");
-      assert.ok(
-        await page
-          .locator("#settingsTab")
-          .evaluate((el) => el === document.activeElement),
-        "keyboard order follows DOM order",
-      );
+      await page.locator("#settingsTab").focus();
       await page.keyboard.press("Tab");
       assert.ok(
         await page

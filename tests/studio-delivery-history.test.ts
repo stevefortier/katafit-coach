@@ -198,7 +198,8 @@ test(
       await settingsTab(page, "Persona");
       await page.locator("#name").fill("Unsaved delivery-history draft");
       await page.locator("#coachPaneCollapse").click();
-      await page.locator("#diagnosticsTab").click();
+      await page.locator("#settingsTab").click();
+      await page.locator("#settings-log-tab").click();
       await page.locator("#coachSettingsTab").click();
       await settingsTab(page, "Persona");
       assert.equal(

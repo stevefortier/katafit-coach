@@ -310,7 +310,8 @@ try {
   page.on("request", (r) => {
     if (r.url().endsWith("/api/logs")) logRequests++;
   });
-  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await page.locator("#settingsTab").click();
+  await page.locator("#settings-log-tab").click();
   assert.equal(await page.locator("#logLevel").inputValue(), "info");
   await page.locator("#logLevel").selectOption("all");
   await page.waitForFunction(() =>
@@ -446,6 +447,7 @@ try {
   await page.waitForTimeout(100);
   await page.waitForTimeout(100);
   await page.locator("#settingsTab").click();
+  await settingsTab(page, "Models");
   const closedCount = logRequests;
   await page.waitForTimeout(2200);
   assert.equal(logRequests, closedCount);
@@ -467,7 +469,8 @@ try {
   await settingsTab(page, "Models");
   await entry("vision").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/data-vision-mobile.png" });
-  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await page.locator("#settingsTab").click();
+  await page.locator("#settings-log-tab").click();
   await page.locator("#logsView").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/studio-logs-mobile.png" });
   assert.equal(

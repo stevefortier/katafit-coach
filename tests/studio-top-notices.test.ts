@@ -633,7 +633,8 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       assert.equal(state.severity, "warning");
       assertAboveNav(state);
       assert.ok(state.hitsNotice);
-      await page.locator("#diagnosticsTab").click();
+      await page.locator("#settingsTab").click();
+      await page.locator("#settings-log-tab").click();
       await page.locator("#logCopy").click();
       const copied =
         "Diagnostic JSON copied. Model-visible health and meal text may remain even after screening; inspect and redact before sharing.";
@@ -642,7 +643,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       assertShown(state, "warning", "Warning", copied);
       assertAboveNav(state);
       assert.equal(state.active, "logCopy");
-      assert.match(state.route, /^\/diagnostics/);
+      assert.match(state.route, /^\/settings\?section=log/);
 
       // Clearing removes the colored surface completely.
       await page.evaluate(() => notice(""));

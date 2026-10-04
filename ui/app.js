@@ -1452,7 +1452,7 @@ let logData = { entries: [] },
   logTimer,
   logController;
 const settingsGroups = {
-  settings: ["katafit", "models", "updates"],
+  settings: ["katafit", "models", "updates", "log"],
   coachSettings: ["persona", "preview", "skills", "memories", "worker"],
 };
 const settingsSections = Object.values(settingsGroups).flat();
@@ -1463,9 +1463,17 @@ let settingsSection = "katafit";
 function settingsPath() {
   return settingsSection === "katafit"
     ? "/settings"
-    : "/settings?section=" + settingsSection;
+    : "/settings?section=" +
+        settingsSection +
+        (settingsSection === "log" && diagnosticsSection === "performance"
+          ? "&view=performance"
+          : "");
 }
-function selectSettingsSection(section, navigate = true) {
+function selectSettingsSection(
+  section,
+  navigate = true,
+  refreshVisibility = true,
+) {
   // The former Connection section's links open its Kata.fit successor.
   if (section === "connection") section = "katafit";
   settingsSection = settingsSections.includes(section) ? section : "katafit";
@@ -1476,12 +1484,14 @@ function selectSettingsSection(section, navigate = true) {
     settingsGroup(settingsSection) !== "coachSettings";
   for (const name of settingsSections) {
     const selected = name === settingsSection;
-    $(name).hidden = !selected;
+    $(name === "log" ? "diagnostics" : name).hidden = !selected;
     const tab = $("settings-" + name + "-tab");
     tab.setAttribute("aria-selected", String(selected));
     tab.tabIndex = selected ? 0 : -1;
     tab.classList.toggle("secondary", !selected);
   }
+  $("settingsSaveActions").hidden = settingsSection === "log";
+  $("settingsSaveHint").hidden = settingsSection === "log";
   if (navigate) navigateStudio(settingsPath());
   if (settingsSection === "skills" && key && !skillsData)
     void loadSkills().catch((error) => {
@@ -1490,7 +1500,7 @@ function selectSettingsSection(section, navigate = true) {
   if (settingsSection === "memories" && key) void loadMemories();
   if (historyVisible()) void loadPersonaHistory();
   if (skillHistoryVisible()) void loadSkillHistory();
-  logVisibility();
+  if (refreshVisibility) logVisibility();
   updateRouteEntry();
 }
 for (const section of settingsSections) {
@@ -1530,7 +1540,7 @@ function selectDiagnosticsSection(section, navigate = true) {
     tab.tabIndex = selected ? 0 : -1;
     tab.classList.toggle("secondary", !selected);
   }
-  if (navigate) navigateStudio("/diagnostics?section=" + diagnosticsSection);
+  if (navigate) navigateStudio(settingsPath());
 }
 for (const [index, section] of diagnosticsSections.entries()) {
   const tab = $("diagnostics-" + section + "-tab");
@@ -2385,7 +2395,6 @@ const paneStateKey = "katafit-coach-pane",
   pageMin = 480,
   tabLabels = {
     dashboard: "Dojo",
-    diagnostics: "Activity",
     settings: "Server Settings",
     coachSettings: "Coach Settings",
   };
@@ -2657,25 +2666,27 @@ function studioRoute() {
     return { tab: studioTab || "dashboard", chat: true };
   if (path === "/diagnostics")
     return {
-      tab: "diagnostics",
-      section: new URLSearchParams(location.search).get("section"),
+      tab: "settings",
+      section: "log",
+      view: new URLSearchParams(location.search).get("section"),
+      legacy: true,
     };
   if (path === "/settings") {
     const section =
       new URLSearchParams(location.search).get("section") ??
       (location.hash === "#logsView" ? "diagnostics" : location.hash.slice(1));
     return section === "diagnostics"
-      ? { tab: "diagnostics", legacy: true }
-      : { tab: settingsGroup(section), section };
+      ? { tab: "settings", section: "log", legacy: true }
+      : {
+          tab: settingsGroup(section),
+          section,
+          view: new URLSearchParams(location.search).get("view"),
+        };
   }
   return { tab: "dashboard" };
 }
 function studioPath(tab) {
-  return tab === "dashboard"
-    ? "/dashboard"
-    : tab === "diagnostics"
-      ? "/diagnostics?section=" + diagnosticsSection
-      : settingsPath();
+  return tab === "dashboard" ? "/dashboard" : settingsPath();
 }
 function navigateStudio(path) {
   if (location.pathname + location.search + location.hash !== path)
@@ -2687,14 +2698,22 @@ function restoreStudioRoute(restartDiagnostics = false) {
     // Expand before selecting so a covered Dojo defers its reads.
     paneOpen = paneExpanded = true;
     history.replaceState(null, "", studioPath(route.tab));
-  } else if (route.legacy) history.replaceState(null, "", "/diagnostics");
-  if (route.tab === "diagnostics" && !route.chat)
-    selectDiagnosticsSection(route.section, false);
+  }
+  if (route.section === "log" && !route.chat)
+    selectDiagnosticsSection(route.view, false);
+  if (route.legacy)
+    history.replaceState(
+      null,
+      "",
+      "/settings?section=log" +
+        (diagnosticsSection === "performance" ? "&view=performance" : ""),
+    );
   if (
     (route.chat ? studioTab !== route.tab : true) &&
     (restartDiagnostics ||
-      route.tab !== "diagnostics" ||
-      $("diagnostics").hidden)
+      route.section !== "log" ||
+      settingsSection !== "log" ||
+      $("settingsPanel").hidden)
   )
     selectStudioTab(route.tab, false, route.chat ? undefined : route.section);
   if (route.chat) openPane(true);
@@ -2717,17 +2736,15 @@ function selectStudioTab(
 ) {
   const dashboard = tab === "dashboard";
   if (tab === "settings" || tab === "coachSettings")
-    selectSettingsSection(section, false);
+    selectSettingsSection(section, false, false);
   studioTab = tab;
   $("dashboardPanel").hidden = !dashboard;
   $("settingsPanel").hidden = tab !== "settings" && tab !== "coachSettings";
-  $("diagnostics").hidden = tab !== "diagnostics";
   if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
     ["dashboardTab", dashboard],
     ["settingsTab", tab === "settings"],
     ["coachSettingsTab", tab === "coachSettings"],
-    ["diagnosticsTab", tab === "diagnostics"],
   ]) {
     $(id).setAttribute("aria-pressed", String(active));
     $(id).classList.toggle("secondary", !active);
@@ -2758,9 +2775,12 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", () => CoachDashboard.clear());
 $("settingsTab").onclick = () => selectStudioTab("settings");
 $("coachSettingsTab").onclick = () => selectStudioTab("coachSettings");
-$("diagnosticsTab").onclick = () => selectStudioTab("diagnostics");
 const logActive = () =>
-  key && !$("diagnostics").hidden && !document.hidden && !pageCovered();
+  key &&
+  !$("settingsPanel").hidden &&
+  !$("diagnostics").hidden &&
+  !document.hidden &&
+  !pageCovered();
 function filteredLogs() {
   return logData.entries.filter(
     (e) =>
@@ -2782,10 +2802,10 @@ const performanceRate = BackendPerformance.rate;
 function logReadStatus() {
   if (!performanceData)
     return logLoading
-      ? "Loading activity snapshot…"
+      ? "Loading log snapshot…"
       : logReadError
-        ? "Unable to load activity snapshot. Use Refresh to retry."
-        : "Activity snapshot not loaded. Use Refresh to load.";
+        ? "Unable to load log snapshot. Use Refresh to retry."
+        : "Log snapshot not loaded. Use Refresh to load.";
   return logLoading
     ? "Last loaded snapshot · Refreshing…"
     : logReadError
