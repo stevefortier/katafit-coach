@@ -28,25 +28,9 @@ for (const fault of ["invalid-event", "invalid-cursor"] as const)
               requestAnimationFrame(() => requestAnimationFrame(r)),
             ),
         );
-        const index = await page
-          .locator(".dashboard-timeline-cluster")
-          .evaluateAll(
-            (nodes: HTMLElement[], id: string) =>
-              nodes.findIndex((n) =>
-                JSON.parse(n.dataset.eventIds!).includes(id),
-              ),
-            ev(1),
-          );
-        if (index >= 0) {
-          await page.locator(".dashboard-timeline-cluster").nth(index).focus();
-          await page.keyboard.press("Enter");
-          await page
-            .locator(`.dashboard-timeline-choice[data-event-id="${ev(1)}"]`)
-            .focus();
-        } else
-          await page
-            .locator(`.dashboard-timeline-mark[data-event-id="${ev(1)}"]`)
-            .focus();
+        await page
+          .locator(`.dashboard-timeline-mark[data-event-id="${ev(1)}"]`)
+          .focus();
         await page.keyboard.press("Enter");
         await page.waitForFunction(() =>
           document

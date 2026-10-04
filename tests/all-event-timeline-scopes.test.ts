@@ -91,10 +91,10 @@ test("map-independent member filtering clears event selection and fences held ol
     await page
       .locator('[data-event-id="2026-11-01-2"]')
       .waitFor({ state: "attached" });
-    await page.locator(".dashboard-timeline-cluster").click();
     await page
-      .locator('.dashboard-timeline-choice[data-event-id="2026-11-01-0"]')
-      .click();
+      .locator('.dashboard-timeline-mark[data-event-id="2026-11-01-0"]')
+      .focus();
+    await page.keyboard.press("Enter");
     await page
       .locator(
         `#dashboardMemberCards .dashboard-member-portrait[data-member-id="${bob}"]`,

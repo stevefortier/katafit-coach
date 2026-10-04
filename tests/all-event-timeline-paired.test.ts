@@ -310,33 +310,8 @@ test(
             const mark = page.locator(
               `.dashboard-timeline-mark[data-event-id="${row._id}"]`,
             );
-            if (await mark.isVisible()) await mark.click();
-            else {
-              const clusterIndex = await page
-                .locator(".dashboard-timeline-cluster")
-                .evaluateAll(
-                  (nodes, id) =>
-                    nodes.findIndex((node) =>
-                      JSON.parse(
-                        (node as HTMLElement).dataset.eventIds!,
-                      ).includes(id),
-                    ),
-                  String(row._id),
-                );
-              assert.ok(
-                clusterIndex >= 0,
-                "every persisted event belongs to an accessible collision cluster",
-              );
-              await page
-                .locator(".dashboard-timeline-cluster")
-                .nth(clusterIndex)
-                .click();
-              await page
-                .locator(
-                  `.dashboard-timeline-choice[data-event-id="${row._id}"]`,
-                )
-                .click();
-            }
+            await mark.focus();
+            await page.keyboard.press("Enter");
             const detailText = await page
               .locator("#dashboardMapSelection")
               .innerText();
@@ -420,7 +395,7 @@ test(
             })(),
           }));
           assert.ok(
-            geometry.timeline.top >= geometry.map.bottom - 1,
+            geometry.timeline.bottom <= geometry.map.top + 1,
             JSON.stringify(geometry),
           );
           if (width >= 1000) {
@@ -435,7 +410,9 @@ test(
             );
           } else
             assert.ok(
-              geometry.detail.top >= geometry.map.bottom - 1,
+              geometry.detail.top >= geometry.map.top - 1 &&
+                geometry.detail.bottom <= geometry.map.bottom + 1 &&
+                geometry.detail.right <= width + 1,
               JSON.stringify(geometry),
             );
           assert.ok(

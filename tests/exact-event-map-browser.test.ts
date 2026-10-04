@@ -596,19 +596,8 @@ async function selectFromTimeline(page: any, eventId: string) {
   const mark = page.locator(
     `.dashboard-timeline-mark[data-event-id="${eventId}"]`,
   );
-  if (await mark.isVisible()) await mark.click();
-  else {
-    await page
-      .locator(".dashboard-timeline-cluster")
-      .evaluateAll((nodes: any[], target: string) => {
-        nodes
-          .find((node) => JSON.parse(node.dataset.eventIds).includes(target))
-          .click();
-      }, eventId);
-    await page
-      .locator(`.dashboard-timeline-choice[data-event-id="${eventId}"]`)
-      .click();
-  }
+  await mark.focus();
+  await page.keyboard.press("Enter");
   await page.waitForFunction(() =>
     document
       .querySelector("#dashboardMapSelection")
@@ -1436,25 +1425,9 @@ test("a failed same-date reload keeps a Position withdrawal: retained rows never
             requestAnimationFrame(() => requestAnimationFrame(r)),
           ),
       );
-      const cluster = await page
-        .locator(".dashboard-timeline-cluster")
-        .evaluateAll(
-          (nodes: any[], target: string) =>
-            nodes.findIndex((n) =>
-              JSON.parse(n.dataset.eventIds).includes(target),
-            ),
-          ev(6),
-        );
-      if (cluster >= 0) {
-        await page.locator(".dashboard-timeline-cluster").nth(cluster).focus();
-        await page.keyboard.press("Enter");
-        await page
-          .locator(`.dashboard-timeline-choice[data-event-id="${ev(6)}"]`)
-          .focus();
-      } else
-        await page
-          .locator(`.dashboard-timeline-mark[data-event-id="${ev(6)}"]`)
-          .focus();
+      await page
+        .locator(`.dashboard-timeline-mark[data-event-id="${ev(6)}"]`)
+        .focus();
       await page.keyboard.press("Enter");
       while (
         !requests.slice(before).some((r) => r.includes(`event_id=${ev(6)}`))
