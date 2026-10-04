@@ -1,5 +1,50 @@
 # Ordinary automatic work actions (bounded client candidate)
 
+## Invocation successor (bounded current client candidate)
+
+Request and typed-task callers additionally negotiate `coach.invocation-actions.v1`
+from immutable backend `1b82f504f7abc475a0d2d57d3f862d0522d721ca` / tree
+`f3c19e45b5212654af7f0a94d4e476bde49ba683`. The descriptor and strict schemas
+are vendored in `src/capability/invocation-action-contract.json`; the historical
+work-action pin below is not relabelled. Backend successor
+`8f975ed33beead8d60aa81bc508bfecb868af668` changes tests/docs and one comment,
+not this consumed runtime/contract. Qualification lives in the client1740
+handoff, not in this document's existence.
+
+`Worker` claims the advertised protocol and `InvocationCapability` routes the
+actual request/task caller through `InvocationActions`. The authenticated
+credential principal remains distinct from the request subject. Dojo authority
+requires human-configured per-plane `invocation_delegation`; neither autonomy
+delegation nor an acquired source grants ordinary write permission. Older
+capability-only contexts retain their existing canonical task/member-message
+path. Setup probes remain action-free.
+
+The host saves local pending before occurrence open. Only a first `execute_once`
+can dispatch. It constructs the exact canonical method/path/body digest and
+`X-Coach-Invocation-Action`; this header is mutually exclusive with
+`X-Coach-Work-Action`. Model-supplied headers/identity fields are rejected.
+Recovered pending/unknown/not-dispatched slots never redispatch. Read-only exact
+occurrence GET, including after safe-retirement settle denial, can reconcile a
+service observation; it cannot replay the effect route. A negative HTTP response
+alone is not a proof of non-application. `response_received` is transport
+observation, not a universal effect receipt; invocation settle has no HTTP-status
+input. An exact service `local_effect` supports read-only reconciliation only.
+
+Pending/unknown is shared with the installation Actions ledger. New request,
+task, autonomy and configured-integration dispatch remains held across scope and
+credential changes. Legacy unmapped uncertainty stays blocking: an empty backend
+journal cannot import, map or clear it. Acquired reads/memory remain usable without
+host permission-refresh polling; authority is fenced by the service at decisive
+mutation boundaries.
+
+An ordinary review dispatches one POST, returns truthful `accepted_pending`,
+`job_id` and `active_strategy_id`, and observes the job through GET only. Lost202
+or replacement recovers occurrence and job without re-enqueueing or repeating the
+planner. Proposals are reported only from a canonical completed job; neutral
+completion is `completed_no_proposal`, not a fabricated proposal. The private
+planner and separate no-tools public/member composer remain unchanged. Controlled
+native SSE tests qualify mechanics, not configured live-model semantics.
+
 The client consumes `coach.work-actions.v1` from backend
 `a40429f4c8b61942c9c660b9d5b8bb2e5f111098` / tree
 `cd73d47c2a5100dfc525319cc564d147f0cdab2f`. The parent schema bundle digest is

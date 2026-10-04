@@ -127,17 +127,12 @@ for (const plane of ["request", "task"] as const)
                 );
               const completed = JSON.parse(got("job"));
               assert.equal(completed.status, "completed");
-              assert.equal(
-                completed.completion_receipt.outcome,
-                "completed_proposal",
-              );
+              assert.equal(completed.result.outcome, "completed_proposal");
               if (!pending) {
                 pending = await t.b.db
                   .collection("coach_strategy_proposals")
                   .findOne({
-                    _id: new t.b.ObjectId(
-                      completed.completion_receipt.proposal_id,
-                    ),
+                    _id: new t.b.ObjectId(completed.result.proposal_id),
                   });
                 assert.ok(pending.memory_proofs?.length);
                 originalCapture = await t.b.db

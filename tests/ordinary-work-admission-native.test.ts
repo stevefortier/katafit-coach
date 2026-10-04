@@ -54,12 +54,18 @@ for (const control of [
           selected = true;
           return toolCall("katafit_rest_request", input, "denied");
         }
-        assert.match(
-          got("denied"),
-          control === "stale-after-open" || control === "integration-first"
-            ? /WORK_ACTION_UNRESOLVED/
-            : /ACTION_UNSUPPORTED|NOT_DELEGATED/,
-        );
+        if (control === "stale-after-open") {
+          const recovered = JSON.parse(got("denied"));
+          assert.equal(recovered.observation.status, "not_dispatched");
+          assert.equal(recovered.observation.resolution, "not_dispatched");
+          assert.equal(recovered.effect_receipt, false);
+        } else
+          assert.match(
+            got("denied"),
+            control === "stale-after-open" || control === "integration-first"
+              ? /WORK_ACTION_UNRESOLVED/
+              : /ACTION_UNSUPPORTED|NOT_DELEGATED/,
+          );
         finished = true;
         return emptyOutcome();
       });
@@ -112,7 +118,7 @@ for (const control of [
             await host.stop();
           }
           assert.ok(tripped);
-          assert.ok(new Actions(t.store).unresolved());
+          assert.equal(new Actions(t.store).unresolved(), false);
         } else {
           const cycle = await ordinaryCycle(t, "native-admission-" + control);
           assert.equal(

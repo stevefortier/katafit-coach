@@ -1,5 +1,16 @@
 # Automatic-plane capability inventory and remaining contract gate
 
+Current invocation successor: immutable backend1b82, vendored
+`coach.invocation-actions.v1`, and real Worker request/task lifecycle wiring.
+See the successor section in `ordinary-work-actions.md`. Per-plane human
+delegation is optional for legacy mandate DTOs but strict when present; it is
+never auto-copied from autonomy. The installation-wide pending/unknown fence,
+acquired-read policy and separate no-tools composer apply unchanged. Local
+client1740 receipts must name their exact source/image; older pins and receipts
+below are historical, not substitute qualification. Backend1705's comment-only
+runtime diff does not change the consumed1b82 protocol. Production/provider
+acceptance and independent parent review remain outside this client slice.
+
 This is an independent implementation inventory, not release/full-capability approval. The corrective continuation consumes parent-supplied immutable backend `bf5cd2d08c09523af0b8b336cdee74787dfbc17b` and `coach.integrations.v1` repair2153. Historical d7 read/photo receipts remain pinned to `3e4b9bccc4bb17eb0ee2a4b4b84791d0138eeff0`; they are not reassigned to bf5. See `configured-integration-capability.md` for exact dependency and qualification limits.
 
 ## Actual profiles and admission

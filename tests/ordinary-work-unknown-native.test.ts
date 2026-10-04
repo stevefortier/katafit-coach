@@ -69,6 +69,16 @@ for (const fault of ["lost", "seal", "malformed"])
         await ordinaryPolicy(t);
         let tripped = false;
         t.setWireFault(async (meta, up) => {
+          // Lost seal ACK is reconcilable by exact GET; exercise ambiguity
+          // by also losing that read, not by assuming the old pending DTO.
+          if (
+            fault !== "lost" &&
+            tripped &&
+            !cold &&
+            meta.method === "GET" &&
+            meta.path.includes("/occurrences/")
+          )
+            return "drop";
           if (tripped || cold) return;
           if (
             (fault === "lost" &&

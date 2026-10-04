@@ -171,6 +171,11 @@ for (const control of [
                 "readonly recovery leaves foreign ambiguity intact",
               );
             }
+          } else if (control === "recovered-pending") {
+            assert.equal(result.observation.status, "not_dispatched");
+            assert.equal(result.observation.resolution, "not_dispatched");
+            assert.equal(result.recovered, true);
+            assert.equal(actions.unresolved(), false);
           } else {
             assert.match(
               result.error,
@@ -200,9 +205,9 @@ for (const control of [
         );
         if (control === "recovered-pending") {
           const value = await backend.readWorkOccurrence(work.id, slot);
-          assert.equal(value.occurrence.status, "pending");
-          assert.equal(value.occurrence.resolution, "unknown_no_replay");
-          assert.equal(actions.unresolved(), true);
+          assert.equal(value.occurrence.status, "not_dispatched");
+          assert.equal(value.occurrence.resolution, "not_dispatched");
+          assert.equal(actions.unresolved(), false);
         }
       } finally {
         await t.close();

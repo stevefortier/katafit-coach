@@ -505,6 +505,17 @@ const mandateFields = {
     uniqueItems: true,
     items: { enum: DELEGATED_ACTION_TYPES },
   },
+  // 1b82 optional human-configured per-plane grants; never derive from work delegation.
+  invocation_delegation: object({
+    request: {
+      ...list({ enum: ["rest_mutation", "proposal_approval"] }, 2),
+      uniqueItems: true,
+    },
+    task: {
+      ...list({ enum: ["rest_mutation", "proposal_approval"] }, 2),
+      uniqueItems: true,
+    },
+  }),
   instructions: { type: "string", maxLength: 4000 },
 };
 const mandateProperties = {
@@ -520,8 +531,8 @@ const mandateProperties = {
   updated_by: { enum: [null, "account_owner_session", "external_coach"] },
 };
 export const schemas = {
-  mandateFields: object(mandateFields),
-  mandate: object(mandateProperties),
+  mandateFields: object(mandateFields, ["invocation_delegation"]),
+  mandate: object(mandateProperties, ["invocation_delegation"]),
   actionReceipt,
   workItem,
   workPage: page(workItem),
@@ -661,41 +672,44 @@ export const schemas = {
   putMandate: object({
     idempotency_key: { type: "string", pattern: KEY_PATTERN.source },
     expected_revision: int(0, Number.MAX_SAFE_INTEGER),
-    mandate: object(mandateFields),
+    mandate: object(mandateFields, ["invocation_delegation"]),
   }),
   putMandateResult: envelope({
-    mandate: object(mandateProperties),
+    mandate: object(mandateProperties, ["invocation_delegation"]),
     idempotent: { type: "boolean" },
   }),
-  mandateView: object({
-    ...mandateProperties,
-    capabilities: object(
-      {
-        action_types: {
-          type: "array",
-          maxItems: DELEGATED_ACTION_TYPES.length,
-          uniqueItems: true,
-          items: { enum: DELEGATED_ACTION_TYPES },
+  mandateView: object(
+    {
+      ...mandateProperties,
+      capabilities: object(
+        {
+          action_types: {
+            type: "array",
+            maxItems: DELEGATED_ACTION_TYPES.length,
+            uniqueItems: true,
+            items: { enum: DELEGATED_ACTION_TYPES },
+          },
+          scopes: { type: "array", maxItems: 4, items: { const: "dojo" } },
+          max_lease_seconds: int(15, 300),
+          blocked_reasons: {
+            type: "array",
+            maxItems: 32,
+            uniqueItems: true,
+            items: { type: "string", pattern: "^[a-z_]{1,64}$" },
+          },
+          configured_integrations: object({
+            protocol: { const: "coach.integrations.v1" },
+            delegation: { const: "configured_integration" },
+            dispatch_mode: { const: "message" },
+            discover_path: { const: "/api/coach/integrations/discover" },
+            dispatch_path: { const: "/api/coach/integrations/call" },
+          }),
         },
-        scopes: { type: "array", maxItems: 4, items: { const: "dojo" } },
-        max_lease_seconds: int(15, 300),
-        blocked_reasons: {
-          type: "array",
-          maxItems: 32,
-          uniqueItems: true,
-          items: { type: "string", pattern: "^[a-z_]{1,64}$" },
-        },
-        configured_integrations: object({
-          protocol: { const: "coach.integrations.v1" },
-          delegation: { const: "configured_integration" },
-          dispatch_mode: { const: "message" },
-          discover_path: { const: "/api/coach/integrations/discover" },
-          dispatch_path: { const: "/api/coach/integrations/call" },
-        }),
-      },
-      ["blocked_reasons", "configured_integrations"],
-    ),
-  }),
+        ["blocked_reasons", "configured_integrations"],
+      ),
+    },
+    ["invocation_delegation"],
+  ),
 };
 
 export interface MandateFields {
@@ -728,6 +742,10 @@ export interface MandateFields {
     max_attempts: number;
   };
   delegated_actions: (typeof DELEGATED_ACTION_TYPES)[number][];
+  invocation_delegation?: {
+    request: ("rest_mutation" | "proposal_approval")[];
+    task: ("rest_mutation" | "proposal_approval")[];
+  };
   instructions: string;
 }
 export interface Mandate extends MandateFields {

@@ -21,6 +21,7 @@ export async function perKindAcceptance(image: string, onlyKind?: string) {
   let kinds = onlyKind ? [onlyKind] : undefined;
   for (let index = 0; !kinds || index < kinds.length; index++) {
     const b = await startTaskBackend();
+    b.app.use("/api", b.backendModule("./routes/plans"));
     const home = await mkdtemp(tmpdir() + "/installed-native-kind-");
     let app: Awaited<ReturnType<typeof admin>> | undefined;
     const bodies: any[] = [];
@@ -110,9 +111,9 @@ export async function perKindAcceptance(image: string, onlyKind?: string) {
             toolCall(
               "katafit_rest_request",
               {
-                method: "PUT",
-                path: "/api/users/me/rest-days",
-                body: { per_year: 24 },
+                method: "POST",
+                path: "/api/plans",
+                body: { title: "Synthetic per-kind supported plan" },
               },
               "supported-action",
             ),
@@ -262,14 +263,20 @@ export async function perKindAcceptance(image: string, onlyKind?: string) {
       for (const body of bodies)
         assert.ok(!JSON.stringify(body).includes(token));
       assert.equal(
-        (await b.db.collection("users").findOne({ _id: b.user }))
-          .rest_days_per_year,
-        24,
+        await b.db.collection("activity_plans").countDocuments({
+          title: "Synthetic per-kind supported plan",
+          user_id: b.user,
+        }),
+        1,
       );
       if (kind !== "main_member_reply") {
-        const actions = await b.occurrences();
+        const actions = await b.db
+          .collection("coach_invocation_occurrences")
+          .find({ plane: "task" })
+          .toArray();
         assert.equal(actions.length, 1);
-        assert.equal(actions[0].status, "succeeded");
+        assert.equal(actions[0].status, "response_received");
+        assert.equal(actions[0].local_effect.kind, "plan_created");
       }
       const receipt = {
         kind,

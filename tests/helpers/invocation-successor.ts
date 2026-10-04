@@ -50,6 +50,7 @@ export async function claimedInvocation(
   t: Fixture,
   plane: "request" | "task",
   state: "drained" | "held" = "drained",
+  requester = String(t.b.user),
 ) {
   const b = t.b,
     c = new Client(
@@ -64,7 +65,7 @@ export async function claimedInvocation(
     const { request: r } = await b
       .backendModule("./core/personalExternalCoach")
       .enqueueExternalCoachRequest(
-        String(b.user),
+        requester,
         "Synthetic explicitly requested plan change",
         [],
         { client_request_id: "invocation-request-" + Date.now() },

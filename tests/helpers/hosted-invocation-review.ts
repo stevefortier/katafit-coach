@@ -5,6 +5,7 @@ import type { Fixture } from "./invocation-successor.js";
 export async function hostedReviewFixture(
   t: Fixture,
   kind = "nutrition_target_adjustment",
+  options: { beforePlanner?: () => Promise<void>; neutral?: boolean } = {},
 ) {
   const b = t.b;
   let plan: any,
@@ -227,10 +228,11 @@ export async function hostedReviewFixture(
       assert.equal(params.tool_choice, "none");
       assert.ok(!wire.includes(memory.id) && !wire.includes(memory.text));
       assert.deepEqual(JSON.parse(params.messages[1].content).selected_kinds, [
-        kind,
+        ...(options.neutral ? [] : [kind]),
       ]);
     } else {
       assert.ok(wire.includes(memory.id) && wire.includes(memory.text));
+      await options.beforePlanner?.();
     }
     let out: any;
     if (strategy) {
@@ -295,7 +297,12 @@ export async function hostedReviewFixture(
           ],
         };
     }
-    if (!composer) out.memory_citations = { [kind]: [memory.id] };
+    if (options.neutral) {
+      out.recommendation = "continue";
+      out.adjustments = [];
+      delete out.updated_nutrition_plan;
+      delete out.updated_workout_plan;
+    } else if (!composer) out.memory_citations = { [kind]: [memory.id] };
     return {
       choices: [
         { finish_reason: "stop", message: { content: JSON.stringify(out) } },
