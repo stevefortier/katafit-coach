@@ -380,8 +380,12 @@ test(
           );
           assert.deepEqual(
             backendCalls.filter((url) => url !== "/api/agents/coach/mcp"),
-            [path],
-            "optional initial legacy memory denial never gates ordinary nonchief REST; follow-up above makes zero requests",
+            [
+              "/api/coach/memory?status=active&pinned=true&limit=8",
+              "/api/coach/memory/settings",
+              path,
+            ],
+            "bounded initial legacy memory acquisition never gates ordinary nonchief REST; follow-up above makes zero requests",
           );
         }
       } finally {
