@@ -239,6 +239,8 @@ export class ConfiguredIntegrations {
       this.sent = true;
     }
     try {
+      // No await between shared-ledger admission/save and this dispatch check.
+      // mutationHeld is the independent plane fence, not our own pending row.
       if (write && this.o.mutationHeld?.())
         return refused("INTEGRATION_UNRESOLVED");
       if (!this.o.current() || signal?.aborted)

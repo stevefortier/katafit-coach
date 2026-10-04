@@ -459,9 +459,11 @@ export class Actions {
     return actions;
   }
   /** Any uncertain mutation or delivery fences new side effects. */
-  unresolved() {
-    return this.snapshot().some((a) =>
-      ["pending", "unknown"].includes(a.status),
+  unresolved(exceptKey?: string) {
+    return this.snapshot().some(
+      (a) =>
+        a.idempotency_key !== exceptKey &&
+        ["pending", "unknown"].includes(a.status),
     );
   }
   memberDeliveries(): MemberDelivery[] {

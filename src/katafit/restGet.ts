@@ -1,6 +1,11 @@
 import { assertNoSecrets } from "../config/store.js";
 import { SafeError } from "../runtime/errors.js";
 import { prepareModelImage } from "./providerImage.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import workContract from "../capability/work-action-contract.json" with { type: "json" };
+const validWorkBinding = new Ajv2020().compile(
+  workContract.schemas.dispatch_header_json,
+);
 
 export const restGetTool = {
   name: "katafit_rest_get",
@@ -168,8 +173,18 @@ export async function restRequest(
   args: unknown,
   signal: AbortSignal,
   secrets: string[],
+  /** Host-only binding, never read from model arguments or caller headers. */
+  workBinding?: {
+    work_id: string;
+    slot: string;
+    lease_generation: number;
+    mandate_revision: number;
+    request_sha256: string;
+  },
 ) {
   const { path, method, body } = restRequestArgs(args);
+  if (workBinding && (method === "GET" || !validWorkBinding(workBinding)))
+    throw new Error("REST_REQUEST_REJECTED");
   assertNoSecrets(args, [...secrets, bearer]);
   if (!bearer || bearer.length > 4096 || /[\u0000-\u001f\u007f]/.test(bearer))
     throw new Error("REST_UNAVAILABLE");
@@ -201,6 +216,9 @@ export async function restRequest(
         Authorization: `Bearer ${bearer}`,
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         Accept: "application/json, image/jpeg, image/png, image/webp",
+        ...(workBinding
+          ? { "X-Coach-Work-Action": JSON.stringify(workBinding) }
+          : {}),
       },
       signal: wireSignal,
     });

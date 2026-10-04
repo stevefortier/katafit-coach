@@ -14,7 +14,7 @@ const listen = async (server: Server) => {
  * feature gate, websocket fan-out) are stubbed. Every Coach-bearer REST call
  * is logged server-side as "METHOD /path STATUS".
  */
-export async function startTaskBackend() {
+export async function startTaskBackend(options: { localCache?: boolean } = {}) {
   const dir = backendRoot;
   if (!dir) throw new Error("COACH_BACKEND_ROOT is required for this gate");
   const require = createRequire(dir + "/package.json");
@@ -30,13 +30,15 @@ export async function startTaskBackend() {
   const { MongoMemoryReplSet } = require("mongodb-memory-server");
   const { MongoClient, ObjectId } = require("mongodb");
   const express = require("express");
-  const mongo = await MongoMemoryReplSet.create({
+  const mongo = new MongoMemoryReplSet({
     binary: { version: "7.0.14" },
+    instanceOpts: [{ launchTimeout: 30_000 }],
     replSet: { count: 1, storageEngine: "wiredTiger" },
   });
   let client: any;
   let server: Server | undefined;
   try {
+    await mongo.start();
     client = await MongoClient.connect(mongo.getUri());
     const db = client.db("coach-task-pairing");
     const connect: any = async () => db;
@@ -51,12 +53,13 @@ export async function startTaskBackend() {
       } as any;
     };
     inject("./config/db", connect);
-    inject("./core/cache", {
-      CACHE_KEYS: {},
-      getCache: async () => null,
-      setCache: async () => {},
-      deleteCache: async () => {},
-    });
+    if (!options.localCache)
+      inject("./core/cache", {
+        CACHE_KEYS: {},
+        getCache: async () => null,
+        setCache: async () => {},
+        deleteCache: async () => {},
+      });
     inject("@clerk/express", {
       verifyToken: async () => null,
       clerkClient: {},

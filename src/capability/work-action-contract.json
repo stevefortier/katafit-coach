@@ -1,0 +1,295 @@
+{
+  "protocol": "coach.work-actions.v1",
+  "backend_sha": "a40429f4c8b61942c9c660b9d5b8bb2e5f111098",
+  "backend_tree": "cd73d47c2a5100dfc525319cc564d147f0cdab2f",
+  "descriptor": {
+    "protocol": "coach.work-actions.v1",
+    "available": true,
+    "header": "X-Coach-Work-Action",
+    "limits": {
+      "occurrences_per_work": 64,
+      "request_bytes": 65536
+    },
+    "occurrence_root": "/api/coach/autonomy/work/{work_id}/occurrences/{slot}",
+    "supported_operations": [
+      {
+        "method": "POST",
+        "path": "/api/plans"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/plans/:id"
+      },
+      {
+        "method": "POST",
+        "path": "/api/strategy/proposals/:proposalId/approve",
+        "kinds": [
+          "metric_cadence_adjustment",
+          "nutrition_target_adjustment",
+          "member_workout_plan_adjustment",
+          "dojo_workout_plan_adjustment",
+          "media_requirements_adjustment"
+        ],
+        "requires_delegation": "proposal_approval"
+      }
+    ],
+    "durable_before_send": true,
+    "recovery_resolution": "unknown_no_replay",
+    "settlement": "worker_observed_transport",
+    "effect_receipt": false
+  },
+  "digest": {
+    "algorithm": "sha256-rfc8785",
+    "domain": "{method: UPPERCASE, path: exact originalUrl, body: exact JSON request body}",
+    "unicode": "unpaired UTF-16 surrogates rejected"
+  },
+  "http": {
+    "open": {
+      "method": "PUT",
+      "path": "/api/coach/autonomy/work/{work_id}/occurrences/{slot}",
+      "first_status": 201,
+      "recovered_status": 200
+    },
+    "read": {
+      "method": "GET",
+      "path": "/api/coach/autonomy/work/{work_id}/occurrences/{slot}"
+    },
+    "settle": {
+      "method": "POST",
+      "path": "/api/coach/autonomy/work/{work_id}/occurrences/{slot}/settle"
+    },
+    "error_envelopes": {
+      "journal_protocol": "coach.autonomy.v1",
+      "header_protocol": "coach.work-actions.v1",
+      "ordinary_auth_or_route": "existing route HTTP errors; do not interpret as a cleared occurrence"
+    }
+  },
+  "negotiation": {
+    "capability_protocols": [
+      "coach.capability.v1",
+      "coach.work-actions.v1"
+    ],
+    "delegation": "rest_mutation",
+    "proposal_delegation": "proposal_approval",
+    "modes": [
+      "message"
+    ]
+  },
+  "schemas": {
+    "open": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mandate_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "action": {
+          "type": "string",
+          "const": "rest_mutation"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "lease_generation",
+        "mandate_revision",
+        "action",
+        "method",
+        "path",
+        "request_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "dispatch_header_json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mandate_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "work_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "lease_generation",
+        "mandate_revision",
+        "work_id",
+        "slot",
+        "request_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "settle": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "mandate_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "response_received",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "lease_generation",
+        "mandate_revision",
+        "request_sha256",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "occurrence": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "coach.work-actions.v1"
+        },
+        "work_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "action": {
+          "type": "string",
+          "const": "rest_mutation"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "opened_lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "dispatch_lease_generation": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "unknown",
+            "response_received"
+          ]
+        },
+        "effect_receipt": {
+          "type": "boolean",
+          "const": false
+        },
+        "replay_allowed": {
+          "type": "boolean",
+          "const": false
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "execute_once",
+            "unknown_no_replay",
+            "settled"
+          ]
+        }
+      },
+      "required": [
+        "protocol",
+        "work_id",
+        "slot",
+        "action",
+        "method",
+        "path",
+        "request_sha256",
+        "opened_lease_generation",
+        "dispatch_lease_generation",
+        "status",
+        "effect_receipt",
+        "replay_allowed",
+        "resolution"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "source_schema_sha256": "4bbeec6567399c619612203ba7bc1aa8e466a214af17e7c4ccec402d31242f59"
+}

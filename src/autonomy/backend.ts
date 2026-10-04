@@ -50,6 +50,11 @@ import {
   type WorkKind,
 } from "./types.js";
 import type { LedgerOp } from "./ledger.js";
+import {
+  WORK_ACTION_PROTOCOL,
+  workOccurrenceEnvelope,
+  validWorkInput,
+} from "../capability/workActions.js";
 
 /** Fixed code only; never carries backend text, member prose or credentials. */
 export class AutonomyFailure extends Error {
@@ -248,6 +253,10 @@ export class AutonomyBackend {
   /** Effect uncertainty, not lease/permission authority. */
   get mutationHeld(): boolean {
     return false;
+  }
+  /** Finite WAL only; ordinary adapter separately excludes its exact shared key. */
+  get finiteMutationHeld(): boolean {
+    return this.mutationHeld;
   }
   constructor(
     readonly origin: string,
@@ -500,7 +509,11 @@ export class AutonomyBackend {
     ).work;
   }
 
-  private negotiation: "unknown" | "supported" | "unsupported" = "unknown";
+  private negotiation:
+    | "unknown"
+    | "supported"
+    | "capability_only"
+    | "unsupported" = "unknown";
   /**
    * Claim with coach.capability.v1 negotiation. The claim body is strictly
    * validated before any state change, so an older backend's AUTONOMY_INVALID
@@ -515,24 +528,72 @@ export class AutonomyBackend {
       try {
         value = await this.request("POST", `${AUTONOMY_ROOT}/work/claim`, {
           ...input,
-          capability_protocols: [AUTONOMY_CAPABILITY_PROTOCOL],
+          capability_protocols:
+            this.negotiation === "capability_only"
+              ? [AUTONOMY_CAPABILITY_PROTOCOL]
+              : [AUTONOMY_CAPABILITY_PROTOCOL, WORK_ACTION_PROTOCOL],
         });
       } catch (error) {
         if (
           this.negotiation === "unknown" &&
           error instanceof AutonomyFailure &&
           error.code === "AUTONOMY_INVALID"
-        )
-          this.negotiation = "unsupported";
-        else throw error;
+        ) {
+          this.negotiation = "capability_only";
+          try {
+            value = await this.request("POST", `${AUTONOMY_ROOT}/work/claim`, {
+              ...input,
+              capability_protocols: [AUTONOMY_CAPABILITY_PROTOCOL],
+            });
+          } catch (fallback) {
+            if (
+              fallback instanceof AutonomyFailure &&
+              fallback.code === "AUTONOMY_INVALID"
+            )
+              this.negotiation = "unsupported";
+            else throw fallback;
+          }
+        } else throw error;
       }
       if (this.negotiation !== "unsupported") {
-        this.negotiation = "supported";
+        if (this.negotiation !== "capability_only")
+          this.negotiation = "supported";
         return negotiatedClaim(value);
       }
     }
     const work = await this.claim(input);
     return work ? { work, capability: null } : null;
+  }
+
+  private occurrencePath(workId: string, slot: string) {
+    if (!isId(workId) || !isSlot(slot)) fail("AUTONOMY_INVALID");
+    return `${AUTONOMY_ROOT}/work/${workId}/occurrences/${slot}`;
+  }
+  async openWorkOccurrence(workId: string, slot: string, input: unknown) {
+    if (!validWorkInput("open", input)) fail("AUTONOMY_INVALID");
+    return workOccurrenceEnvelope(
+      await this.request("PUT", this.occurrencePath(workId, slot), input),
+      { work_id: workId, slot },
+      true,
+    );
+  }
+  async readWorkOccurrence(workId: string, slot: string) {
+    return workOccurrenceEnvelope(
+      await this.request("GET", this.occurrencePath(workId, slot)),
+      { work_id: workId, slot },
+    );
+  }
+  async settleWorkOccurrence(workId: string, slot: string, input: unknown) {
+    if (!validWorkInput("settle", input)) fail("AUTONOMY_INVALID");
+    return workOccurrenceEnvelope(
+      await this.request(
+        "POST",
+        this.occurrencePath(workId, slot) + "/settle",
+        input,
+      ),
+      { work_id: workId, slot },
+      true,
+    );
   }
 
   async start(id: string, lease_generation: number): Promise<WorkItem> {

@@ -1,8 +1,10 @@
 import {
   ACTION_TYPES,
+  DELEGATED_ACTION_TYPES,
   type ActionType,
   type WorkItem,
 } from "../autonomy/types.js";
+import { workActionDescriptor } from "./workActions.js";
 
 export const AUTONOMY_CAPABILITY_PROTOCOL = "coach.capability.v1";
 
@@ -15,6 +17,7 @@ export interface AutonomyCapability {
   actions: ActionType[];
   /** REST reads (discovery, domain reads, memory search) are available. */
   rest: boolean;
+  ordinary?: NonNullable<ReturnType<typeof workActionDescriptor>>;
 }
 
 /**
@@ -27,6 +30,10 @@ export function autonomyCapability(
 ): AutonomyCapability {
   const cap = value?.capability;
   const supported = cap?.actions?.supported;
+  const ordinary =
+    cap?.actions?.ordinary_rest === undefined
+      ? undefined
+      : workActionDescriptor(cap.actions.ordinary_rest);
   if (
     !cap ||
     typeof cap !== "object" ||
@@ -37,13 +44,25 @@ export function autonomyCapability(
     cap.tools_during_generation !== true ||
     cap.final_result !== "cycle_outcome" ||
     cap.structured_result_correction?.replay_actions !== false ||
+    cap.structured_result_correction?.tools_retained !== true ||
     typeof cap.rest?.available !== "boolean" ||
-    cap.rest?.generic_mutations !== false ||
+    typeof cap.rest?.generic_mutations !== "boolean" ||
+    (cap.rest.generic_mutations &&
+      (!ordinary ||
+        !ordinary.available ||
+        !cap.rest.available ||
+        !supported?.includes("rest_mutation"))) ||
+    (supported?.includes("rest_mutation") &&
+      (!ordinary || !cap.rest.generic_mutations)) ||
+    (supported?.includes("proposal_approval") &&
+      (!ordinary || !supported?.includes("rest_mutation"))) ||
+    (cap.actions?.ordinary_rest !== undefined &&
+      (!ordinary || ordinary.available !== cap.rest.generic_mutations)) ||
     !Array.isArray(supported) ||
-    supported.length > ACTION_TYPES.length ||
+    supported.length > DELEGATED_ACTION_TYPES.length ||
     new Set(supported).size !== supported.length ||
     !supported.every((a: any) =>
-      (ACTION_TYPES as readonly string[]).includes(a),
+      (DELEGATED_ACTION_TYPES as readonly string[]).includes(a),
     ) ||
     !Array.isArray(value.allowed_tools) ||
     value.allowed_tools.length > 16 ||
@@ -59,7 +78,10 @@ export function autonomyCapability(
     descriptor: cap,
     allowed_tools: [...value.allowed_tools],
     guidance: value.capability_guidance,
-    actions: [...supported],
+    actions: supported.filter((a: any) =>
+      (ACTION_TYPES as readonly string[]).includes(a),
+    ),
     rest: cap.rest.available,
+    ...(ordinary ? { ordinary } : {}),
   };
 }

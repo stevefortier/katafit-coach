@@ -13,13 +13,26 @@ import { answer } from "./continuity.js";
 
 export async function uncertaintyFixture(
   script: (body: any) => Promise<string> | string,
+  options: { localCache?: boolean } = {},
 ) {
-  const b = await startTaskBackend();
+  const b = await startTaskBackend(options);
   const home = await mkdtemp(tmpdir() + "/native-cross-uncertainty-");
   const bodies: any[] = [];
-  const requests: { method: string; path: string }[] = [];
+  const requests: {
+    method: string;
+    path: string;
+    body?: any;
+    workBinding?: any;
+  }[] = [];
   let failure: unknown;
   let lose = false;
+  type WireMeta = { method: string; path: string; body: any; binding?: any };
+  let wireFault:
+    | ((
+        meta: WireMeta,
+        upstream: { status: number; body: string },
+      ) => Promise<"drop" | "malformed" | void>)
+    | undefined;
   const provider = createServer(async (req, res) => {
     let raw = "";
     for await (const c of req) raw += c;
@@ -36,7 +49,13 @@ export async function uncertaintyFixture(
   const hop = createServer(async (req, res) => {
     let raw = "";
     for await (const c of req) raw += c;
-    requests.push({ method: req.method!, path: req.url! });
+    const header = req.headers["x-coach-work-action"];
+    requests.push({
+      method: req.method!,
+      path: req.url!,
+      body: raw ? JSON.parse(raw) : undefined,
+      ...(header ? { workBinding: JSON.parse(String(header)) } : {}),
+    });
     if (
       lose &&
       raw &&
@@ -61,6 +80,26 @@ export async function uncertaintyFixture(
         ...(raw && req.method !== "GET" ? { body: raw } : {}),
       });
       const bytes = Buffer.from(await upstream.arrayBuffer());
+      const fault = await wireFault?.(
+        {
+          method: req.method!,
+          path: req.url!,
+          body: raw ? JSON.parse(raw) : undefined,
+          binding: req.headers["x-coach-work-action"]
+            ? JSON.parse(String(req.headers["x-coach-work-action"]))
+            : undefined,
+        },
+        { status: upstream.status, body: bytes.toString() },
+      );
+      if (fault === "drop") {
+        res.destroy();
+        return;
+      }
+      if (fault === "malformed") {
+        res.writeHead(upstream.status, { "content-type": "application/json" });
+        res.end("{corrupted-wire");
+        return;
+      }
       if (
         lose &&
         req.method === "PUT" &&
@@ -192,6 +231,9 @@ export async function uncertaintyFixture(
       setLoss: (value: boolean) => {
         lose = value;
       },
+      setWireFault: (value: typeof wireFault) => {
+        wireFault = value;
+      },
       check: () => {
         if (failure) throw failure;
       },
@@ -231,7 +273,7 @@ export const emptyOutcome = () =>
         members_considered: 1,
         members_read: 1,
         partial: true,
-        unobserved: ["bounded uncertainty control"],
+        unobserved: ["pages_truncated"],
       },
       decisions: [],
       uncertainty: [],

@@ -1,6 +1,7 @@
 import type { AutonomyCapability } from "../capability/autonomy.js";
 import { InvocationCapability } from "../capability/invocation.js";
 import { integrationAdmitted } from "../capability/integrations.js";
+import { WorkActions } from "../capability/workActions.js";
 import { Actions } from "../chat/actions.js";
 import { compileAutonomy, type Store } from "../config/store.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
@@ -398,10 +399,37 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       maxImages: mandate.budgets.images_per_cycle,
       maxReads: mandate.budgets.tool_calls,
       current: () => !signal.aborted,
-      mutationHeld: () => uncertain || backend.mutationHeld,
-      actions: [],
+      mutationHeld: () => uncertain || backend.finiteMutationHeld,
+      actions: capability?.ordinary?.available ? ["rest_mutation"] : [],
+      ...(capability?.ordinary
+        ? {
+            workActions: new WorkActions({
+              backend,
+              work,
+              actions: sharedActions,
+              descriptor: capability.ordinary,
+              origin: backend.origin,
+              token: options.store.secrets.token!,
+              secrets,
+              directory: options.store.dir,
+              dispatch:
+                mandate.mode === "message" &&
+                mandate.delegated_actions.includes("rest_mutation"),
+              proposalApproval:
+                mandate.delegated_actions.includes("proposal_approval"),
+              current: () => !signal.aborted,
+              held: () => uncertain || backend.finiteMutationHeld,
+              onUnknown: () => {
+                uncertain = true;
+              },
+              onObserved: (slot: string) => {
+                slots.add(slot);
+              },
+            }),
+          }
+        : {}),
       ledger: {
-        unresolved: () => sharedActions.unresolved(),
+        unresolved: (exceptKey) => sharedActions.unresolved(exceptKey),
         save: (action) => sharedActions.save(action),
       },
       ...(integrationAdmitted(capability?.descriptor, "autonomy")

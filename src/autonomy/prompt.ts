@@ -60,9 +60,18 @@ export function plannerMessage(input: {
     actions: input.work.actions.map((a) => ({
       slot: a.slot,
       type: a.type,
-      recipient_id: a.recipient_id,
-      text_sha256: a.text_sha256,
-      committed_at: a.committed_at,
+      status: a.status,
+      ...(a.type === "rest_mutation"
+        ? {
+            effect_receipt: false,
+            request_sha256: a.request_sha256,
+            observed_at: a.observed_at,
+          }
+        : {
+            recipient_id: a.recipient_id,
+            text_sha256: a.text_sha256,
+            committed_at: a.committed_at,
+          }),
     })),
     follow_ups: input.work.follow_ups,
     ...(input.work.intents?.length ? { intents: input.work.intents } : {}),
@@ -87,7 +96,7 @@ export function plannerMessage(input: {
     }`,
     ...(prior.actions.length || prior.follow_ups.length || prior.intents
       ? [
-          `Already committed for this work item by an earlier attempt (backend receipts; cite them in decisions, never repeat them): ${JSON.stringify(prior)}`,
+          `Already committed audience receipts (where present); separately labelled transport observations are NOT committed effect authority. Never repeat these prior work records: ${JSON.stringify(prior)}`,
         ]
       : []),
     ...(input.followUps?.length

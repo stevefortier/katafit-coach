@@ -17,6 +17,7 @@ import {
   restRequestTool,
 } from "../katafit/restGet.js";
 import { classifyMemoryWrite } from "../memory/native.js";
+import type { WorkActions } from "./workActions.js";
 
 /**
  * Shared invocation capability (Steve's full-capability addendum). Every
@@ -62,7 +63,7 @@ export interface ActionJournal {
 }
 /** Host-durable fence for planes without a backend journal (Actions-shaped). */
 export interface ActionLedger {
-  unresolved(): boolean;
+  unresolved(exceptKey?: string): boolean;
   save(action: {
     session_id: string;
     idempotency_key: string;
@@ -94,6 +95,7 @@ export interface InvocationOptions {
   occurrences?: Occurrence[];
   ledger?: ActionLedger;
   ledgerSession?: string;
+  workActions?: WorkActions;
   integrations?: {
     execution: IntegrationExecution;
     directory: string;
@@ -658,6 +660,10 @@ export class InvocationCapability {
     signal?: AbortSignal,
   ) {
     if (!this.o.actions.includes("rest_mutation")) return this.unsupported();
+    if (this.o.plane === "autonomy")
+      return this.o.workActions
+        ? this.o.workActions.execute(raw, signal)
+        : this.unsupported();
     if (this.o.ledger?.unresolved()) this.uncertain();
     const body = Object.hasOwn(raw, "body") ? raw.body : undefined;
     if (this.o.journal) {

@@ -92,7 +92,7 @@ export class AcquisitionLedger {
   constructor(private readonly work: WorkItem) {
     for (const e of work.source.events ?? []) this.events.set(e.ledger_id, e);
     this.subjects = new Set(work.subject_ids);
-    for (const r of work.actions) this.receipt(r);
+    for (const r of work.actions) if (r.type !== "rest_mutation") this.receipt(r);
   }
 
   receipt(r: ActionReceipt, text?: string) {

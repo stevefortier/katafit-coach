@@ -104,9 +104,11 @@ class TrackedBackend extends AutonomyBackend {
     super(origin, token, signal, secrets);
   }
   override get mutationHeld(): boolean {
+    return this.sharedHeld() || this.finiteMutationHeld;
+  }
+  override get finiteMutationHeld(): boolean {
     return (
       !this.ledger.healthy ||
-      this.sharedHeld() ||
       this.ledger.unresolved.some(
         (record) =>
           record.state === "unknown" || !this.dispatched.has(record.id),

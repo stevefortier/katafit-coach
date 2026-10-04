@@ -33,7 +33,7 @@ test("claim: negotiates coach.capability.v1 and returns a validated autonomy cap
     assert.ok(claimed);
     assert.deepEqual(env.fake.state.claims[0], {
       lease_seconds: 120,
-      capability_protocols: ["coach.capability.v1"],
+      capability_protocols: ["coach.capability.v1", "coach.work-actions.v1"],
     });
     assert.equal(claimed.capability?.descriptor.plane, "autonomy");
     assert.deepEqual(claimed.capability?.actions, [
@@ -47,7 +47,7 @@ test("claim: negotiates coach.capability.v1 and returns a validated autonomy cap
   }
 });
 
-test("claim: an older strict backend is probed once, then claimed without negotiation", async () => {
+test("claim: an older strict backend tries work journal then capability-only, then caches no negotiation", async () => {
   const env = await setup({ negotiates: false });
   try {
     const first = await env.backend.claimCycle({ lease_seconds: 120 });
@@ -63,7 +63,7 @@ test("claim: an older strict backend is probed once, then claimed without negoti
     assert.ok(second);
     assert.deepEqual(
       env.fake.state.claims.map((c: any) => "capability_protocols" in c),
-      [true, false, false],
+      [true, true, false, false],
     );
   } finally {
     await env.close();
@@ -78,6 +78,8 @@ test("claim: a malformed or over-granting autonomy capability is rejected", asyn
     (v: any) => (v.capability.final_result = "reply"),
     (v: any) =>
       (v.capability.structured_result_correction.replay_actions = true),
+    (v: any) =>
+      (v.capability.structured_result_correction.tools_retained = false),
     (v: any) => (v.allowed_tools = "everything"),
     (v: any) => (v.capability.kind = "digest"),
   ]) {

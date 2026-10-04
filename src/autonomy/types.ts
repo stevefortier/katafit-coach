@@ -21,6 +21,7 @@ export const BACKEND_CODES = [
   "ACTION_LIMITED",
   "ACTION_UNSUPPORTED",
   "ACTION_NOT_FOUND",
+  "ACTION_UNRESOLVED",
   "RECIPIENT_NOT_MEMBER",
   "AUTONOMY_UNAVAILABLE",
   // [v2] praise and explicit-commitment evidence
@@ -70,6 +71,8 @@ export const ACTION_TYPES = [
 export const DELEGATED_ACTION_TYPES = [
   ...ACTION_TYPES,
   "configured_integration",
+  "rest_mutation",
+  "proposal_approval",
 ] as const;
 export const WORK_KINDS = [
   "event",
@@ -352,7 +355,23 @@ const workItem = object(
     lease_expires_at: nullable(iso),
     // Contract amendment 1: null until the current attempt is claimed.
     timeout_at: nullable(iso),
-    actions: list(actionReceipt, 64),
+    actions: list(
+      {
+        anyOf: [
+          actionReceipt,
+          object({
+            slot,
+            type: { const: "rest_mutation" },
+            status: { const: "response_received" },
+            request_sha256: digest,
+            opened_lease_generation: generation,
+            effect_receipt: { const: false },
+            observed_at: iso,
+          }),
+        ],
+      },
+      64,
+    ),
     // [AC1] Pinned in §2.2; tolerated as absent until the backend ships B11.
     intents: list(workIntent, 64),
     follow_ups: list(id, 64),
@@ -654,9 +673,9 @@ export const schemas = {
       {
         action_types: {
           type: "array",
-          maxItems: ACTION_TYPES.length,
+          maxItems: DELEGATED_ACTION_TYPES.length,
           uniqueItems: true,
-          items: { enum: ACTION_TYPES },
+          items: { enum: DELEGATED_ACTION_TYPES },
         },
         scopes: { type: "array", maxItems: 4, items: { const: "dojo" } },
         max_lease_seconds: int(15, 300),
@@ -734,6 +753,16 @@ export interface ActionReceipt {
   subject_user_id?: string;
   text_sha256: string;
   committed_at: string;
+}
+/** A worker transport observation, never a canonical delivery/effect receipt. */
+export interface WorkActionObservation {
+  slot: string;
+  type: "rest_mutation";
+  status: "response_received";
+  request_sha256: string;
+  opened_lease_generation: number;
+  effect_receipt: false;
+  observed_at: string;
 }
 export interface CompletionReceipt {
   work_id: string;
@@ -835,7 +864,7 @@ export interface WorkItem {
   lease_generation: number;
   lease_expires_at: string | null;
   timeout_at: string | null;
-  actions: ActionReceipt[];
+  actions: (ActionReceipt | WorkActionObservation)[];
   intents?: WorkIntent[];
   follow_ups: string[];
   blocked_reason: string | null;
@@ -972,7 +1001,7 @@ export interface PutMandate {
 }
 export interface MandateView extends Mandate {
   capabilities: {
-    action_types: ActionType[];
+    action_types: (typeof DELEGATED_ACTION_TYPES)[number][];
     scopes: "dojo"[];
     max_lease_seconds: number;
     blocked_reasons?: string[];
