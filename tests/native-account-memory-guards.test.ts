@@ -42,7 +42,17 @@ const HANDLES = {
 test("observed tool request and result are redacted as whole structures before bounding, through the actual relay, capture and extraction request", async () => {
   const f = await memoryFixture();
   try {
+    const opaqueKey = "h".repeat(65);
     const big = {
+      // No navigation-labelled copy: identity must be collected from the key.
+      recommendations: {
+        [opaqueKey]: { summary: "Start gently.", echo: opaqueKey },
+      },
+      serializedRecommendations: JSON.stringify({
+        recommendations: {
+          [opaqueKey]: { summary: "Use a lighter load.", echo: opaqueKey },
+        },
+      }),
       member_ref: HANDLES.member,
       workouts: Array.from({ length: 60 }, (_, i) => ({
         title: "Back squat session " + i,
@@ -127,6 +137,12 @@ test("observed tool request and result are redacted as whole structures before b
     assert.ok(capture, "delivered final reply was captured");
     const wire = JSON.stringify(extraction);
     const captured = JSON.stringify(capture.body);
+    assert.ok(!captured.includes(opaqueKey), "capture leaks unlabelled key");
+    assert.ok(!wire.includes(opaqueKey), "extraction leaks unlabelled key");
+    assert.match(captured, /Start gently\./);
+    assert.match(wire, /Start gently\./);
+    assert.match(captured, /Use a lighter load\./);
+    assert.match(wire, /Use a lighter load\./);
     for (const [label, handle] of Object.entries(HANDLES)) {
       assert.ok(!wire.includes(handle), "extraction leaks " + label);
       assert.ok(!captured.includes(handle), "capture leaks " + label);

@@ -231,6 +231,7 @@ export function providerEvidence<T>(evidence: T): T {
       for (const item of value) collect(item, depth + 1);
     } else if (value && typeof value === "object") {
       for (const [key, item] of Object.entries(value)) {
+        if (key.length > 64 && !/\s/.test(key)) add(key);
         if (navigationKey(key)) leaves(item, depth + 1);
         collect(item, depth + 1);
       }

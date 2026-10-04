@@ -339,7 +339,10 @@ export async function admin(
     const observe = () => {
       activationResumeTimer = undefined;
       if (closing || !store.autonomySettings().participate) return;
-      if (updates.applying || updates.recovering) {
+      // Retain the initial intent while an admitted admin transition owns
+      // stop/apply. A startup admitted before busy was set is joined by stop;
+      // one admitted after it clears sees only the confirmed saved binding.
+      if (updates.applying || updates.recovering || busy) {
         if (Date.now() < deadline) {
           activationResumeTimer = setTimeout(observe, 250);
           activationResumeTimer.unref();
