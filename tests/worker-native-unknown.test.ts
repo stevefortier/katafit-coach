@@ -156,7 +156,7 @@ test(
       assert.equal(writes, 1);
       const selectedOccurrences = () =>
         b.db
-          .collection("coach_invocation_action_occurrences")
+          .collection("coach_invocation_occurrences")
           .find({})
           .toArray();
       const occurrences = await selectedOccurrences();
