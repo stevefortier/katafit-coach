@@ -27,6 +27,7 @@ for (const mode of ["ok", "lost", "secret", "seal", "task"])
     async () => {
       const b = await startTaskBackend();
       if (!b) return;
+      b.app.use("/api", b.backendModule("./routes/plans"));
       const remote = await configuredRemote(b);
       remote.setMode(mode);
       let seals = 0;
@@ -99,9 +100,28 @@ for (const mode of ["ok", "lost", "secret", "seal", "task"])
                   "challenge-write",
                 ),
               );
+            assert.equal(
+              JSON.parse(got("challenge-write")).error,
+              "ACTION_UNSUPPORTED",
+            );
+            if (!got("supported-challenge"))
+              return void res.end(
+                toolCall(
+                  "katafit_rest_request",
+                  {
+                    method: "POST",
+                    path: "/api/plans",
+                    body: {
+                      title: "Native integration uncertainty challenge",
+                      workouts: [],
+                    },
+                  },
+                  "supported-challenge",
+                ),
+              );
             assert.match(
-              got("challenge-write"),
-              /CAPABILITY_ACTION_UNCERTAIN|unresolved|unknown/i,
+              got("supported-challenge"),
+              /CAPABILITY_ACTION_UNCERTAIN|INVOCATION_ACTION_UNRESOLVED|unresolved|unknown/i,
             );
             return void res.end(
               answer(
@@ -336,6 +356,22 @@ for (const mode of ["ok", "lost", "secret", "seal", "task"])
         );
         assert.equal(remote.calls.length, 1);
         assert.equal(new Actions(store).unresolved(), true);
+        assert.ok(
+          bodies.some((body) =>
+            JSON.stringify(body).includes("supported-challenge"),
+          ),
+          "an actually supported write challenges the reopened uncertainty fence",
+        );
+        assert.equal(
+          b.calls.filter((call) => call.startsWith("POST /api/plans ")).length,
+          0,
+        );
+        assert.equal(
+          await b.db
+            .collection("activity_plans")
+            .countDocuments({ user_id: b.user }),
+          0,
+        );
         if (process.env.NATIVE_ACCEPTANCE_EVIDENCE) {
           await mkdir(process.env.NATIVE_ACCEPTANCE_EVIDENCE, {
             recursive: true,

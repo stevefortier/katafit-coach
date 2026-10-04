@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
+import { Actions } from "../src/chat/actions.js";
 import { admin } from "../src/server/admin.js";
 import { provisionArtifact } from "../src/sandbox/artifact.js";
 import { startTaskBackend } from "./helpers/task-backend.js";
@@ -17,6 +18,7 @@ test(
   { skip: !enabled, timeout: 120000 },
   async () => {
     const b = await startTaskBackend();
+    b.app.use("/api", b.backendModule("./routes/plans"));
     const home = await mkdtemp(tmpdir() + "/native-worker-unknown-");
     let app: Awaited<ReturnType<typeof admin>> | undefined;
     let writes = 0,
@@ -37,7 +39,7 @@ test(
           body: raw && req.method !== "GET" ? raw : undefined,
         });
         const bytes = Buffer.from(await upstream.arrayBuffer());
-        if (req.method === "PUT" && req.url === "/api/users/me/rest-days") {
+        if (req.method === "POST" && req.url === "/api/plans") {
           writes++;
           assert.equal(upstream.status, 200);
           // Deliberate lost response AFTER the real backend mutation committed.
@@ -78,9 +80,9 @@ test(
             toolCall(
               "katafit_rest_request",
               {
-                method: "PUT",
-                path: "/api/users/me/rest-days",
-                body: { per_year: 24 },
+                method: "POST",
+                path: "/api/plans",
+                body: { title: "Native lost response plan", workouts: [] },
               },
               results.length ? "unsafe-retry" : "lost-response",
             ),
@@ -152,14 +154,27 @@ test(
       );
       assert.equal((await control("/api/stop")).status, 200);
       assert.equal(writes, 1);
-      const occurrences = await b.occurrences();
+      const selectedOccurrences = () =>
+        b.db
+          .collection("coach_invocation_action_occurrences")
+          .find({})
+          .toArray();
+      const occurrences = await selectedOccurrences();
       assert.equal(occurrences.length, 1);
       assert.equal(occurrences[0].status, "unknown");
+      assert.equal(occurrences[0].local_effect.kind, "plan_created");
+      assert.equal((await b.occurrences()).length, 0);
+      const plans = await b.db
+        .collection("activity_plans")
+        .find({ user_id: b.user })
+        .toArray();
+      assert.equal(plans.length, 1);
+      assert.equal(plans[0].title, "Native lost response plan");
       assert.equal(
-        (await b.db.collection("users").findOne({ _id: b.user }))
-          .rest_days_per_year,
-        24,
+        occurrences[0].local_effect.resource_id,
+        String(plans[0]._id),
       );
+      assert.equal(new Actions(store).unresolved(), true);
       assert.equal((await b.published()).length, 0);
       if ((await b.task()).status === "completed")
         assert.match(JSON.stringify((await b.task()).result), /unconfirmed/);
@@ -173,7 +188,14 @@ test(
         1,
         "unknown action cannot be replayed by reopening installed Worker",
       );
-      assert.equal((await b.occurrences())[0].status, "unknown");
+      assert.equal((await selectedOccurrences())[0].status, "unknown");
+      assert.equal(new Actions(store).unresolved(), true);
+      assert.equal(
+        await b.db
+          .collection("activity_plans")
+          .countDocuments({ user_id: b.user }),
+        1,
+      );
       assert.equal((await b.published()).length, 0);
       if (failure) throw failure;
       if (process.env.AUTONOMY_EVIDENCE_DIR) {
@@ -183,7 +205,11 @@ test(
           JSON.stringify(
             {
               writes,
-              occurrences: await b.occurrences(),
+              occurrences: await selectedOccurrences(),
+              canonicalPlans: await b.db
+                .collection("activity_plans")
+                .find({ user_id: b.user })
+                .toArray(),
               task: await b.task(),
               providerPayloads: bodies,
               publicationCount: 0,

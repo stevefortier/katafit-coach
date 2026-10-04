@@ -125,6 +125,7 @@ test(
                   inferences: [
                     {
                       result: {
+                        subject_count: 1,
                         _session: { file_ids: [String(file)] },
                         estimated_body_fat_range: {
                           lower_bound: 0.19 - i * 0.005,
@@ -174,6 +175,29 @@ test(
       const dto: any = await response.json();
       assert.equal(dto.history.weight.length, 5);
       assert.equal(dto.history.bodyFat.length, 5);
+      // Unknown subject-count evidence remains in storage but is ineligible for
+      // body estimates. Do not restore the old unsafe implicit-single default.
+      const photo = {
+        user_id: member,
+        type: "media",
+        created_at: new Date("2026-09-10T12:00:00Z"),
+      };
+      const subjectPath = "data.files.0.inferences.0.result.subject_count";
+      await b.db
+        .collection("activities")
+        .updateOne(photo, { $unset: { [subjectPath]: "" } });
+      const unverifiedResponse = await fetch(
+        server.origin + `/api/dashboard/stats?user_id=${member}`,
+        { headers },
+      );
+      assert.equal(unverifiedResponse.status, 200);
+      const unverified: any = await unverifiedResponse.json();
+      assert.equal(unverified.history.bodyFat.length, 4);
+      assert.equal(unverified.history.musculature.length, 4);
+      assert.equal(unverified.history.weight.length, 5);
+      await b.db
+        .collection("activities")
+        .updateOne(photo, { $set: { [subjectPath]: 1 } });
       assert.equal(dto.history.nutritionHistory.calories[0].target, 2200);
       assert.equal(dto.history.weeklyVolume[0].value > 0, true);
       assert.equal(dto.version, 1);
