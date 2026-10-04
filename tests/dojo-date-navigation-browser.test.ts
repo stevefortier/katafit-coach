@@ -77,6 +77,7 @@ async function fixture(
     await page.route("https://tile.openstreetmap.org/**", (route) =>
       route.abort(),
     );
+    await page.clock.setFixedTime(new Date("2126-12-01T12:00:00Z"));
     await page.goto(app.origin + "/dashboard");
     await setup?.(page);
     await page.evaluate(async (key) => {
@@ -191,7 +192,7 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
     const failures: string[] = [];
     for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.getByRole("button", { name: "Today", exact: true }).focus();
+      await page.getByRole("button", { name: "Next day", exact: true }).focus();
       await pin.scrollIntoViewIfNeeded();
       // Both date entry and the smaller exact event dot fit the viewport;
       // avoid measuring native focus auto-scroll as a layout displacement.
@@ -227,9 +228,9 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
         "native entry is not horizontally clipped",
       );
       assert.ok(
-        overlay.y >= focused.strip.y &&
-          overlay.y + overlay.height <= focused.strip.y + focused.strip.height,
-        "fallback floats within the existing date strip",
+        overlay.y >= focused.strip.y + focused.strip.height - 1 &&
+          overlay.y + overlay.height <= focused.map.y,
+        "fallback floats below date controls, clear of tabs and map, without moving geometry",
       );
       assert.equal(
         await page.evaluate(
@@ -305,169 +306,39 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
   });
 });
 
-test("served Dojo year/month/day selectors retain and clamp civil day", async () => {
+test("served compact calendar retains civil month lengths and full date label", async () => {
   await fixture(async (page) => {
-    await setDay(page, "2024-01-31");
-    await page.getByLabel("Month", { exact: true }).selectOption("2");
-    assert.equal(
-      await page.locator("#dashboardMapDate").inputValue(),
-      "2024-02-29",
-    );
-    await page.getByLabel("Year", { exact: true }).selectOption("2023");
-    assert.equal(
-      await page.locator("#dashboardMapDate").inputValue(),
-      "2023-02-28",
-    );
-    await setDay(page, "1899-12-31");
-    assert.equal(
-      await page.getByLabel("Year", { exact: true }).inputValue(),
-      "1899",
-    );
-    for (const [month, length] of [
-      [1, 31],
-      [2, 28],
-      [3, 31],
-      [4, 30],
-      [5, 31],
-      [6, 30],
-      [7, 31],
-      [8, 31],
-      [9, 30],
-      [10, 31],
-      [11, 30],
-      [12, 31],
+    for (const [value, length] of [
+      ["2024-02-29", 29],
+      ["2023-02-28", 28],
+      ["1899-12-31", 31],
+      ["2026-04-30", 30],
     ]) {
-      await page
-        .getByLabel("Month", { exact: true })
-        .selectOption(String(month));
+      await setDay(page, String(value));
+      await page.locator("#dashboardCalendarButton").click();
+      assert.equal(await page.locator("[data-calendar-date]").count(), length);
       assert.equal(
-        await page.locator("#dashboardMapDay option").count(),
-        length,
+        await page
+          .locator(`[data-calendar-date="${value}"]`)
+          .getAttribute("aria-pressed"),
+        "true",
       );
+      await page.keyboard.press("Escape");
     }
     await setDay(page, "2026-09-01");
-    await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
-    // DejaVu Sans models the wider Linux hosted system-ui fallback; local
-    // Chrome can otherwise pass with narrower Noto Sans metrics.
-    for (const font of [null, '"DejaVu Sans", sans-serif']) {
-      await page.locator(".dashboard-date-selects").evaluate((node, font) => {
-        (node as HTMLElement).style.fontFamily = font || "";
-      }, font);
-      for (const width of [1280, 390, 320]) {
-        await page.setViewportSize({ width, height: 1000 });
-        const bounds = await page.evaluate(() => {
-          const strip = document
-            .querySelector(".dashboard-map-date")!
-            .getBoundingClientRect();
-          const controls = document
-            .querySelector(".dashboard-date-selects")!
-            .getBoundingClientRect();
-          return {
-            stripCenter: (strip.left + strip.right) / 2,
-            center: (controls.left + controls.right) / 2,
-            overflow: document.documentElement.scrollWidth > innerWidth,
-          };
-        });
-        const fields = await page
-          .locator(".dashboard-date-selects select")
-          .evaluateAll((nodes) => nodes.map((node) => node.id));
-        assert.deepEqual(fields, [
-          "dashboardMapYear",
-          "dashboardMapMonth",
-          "dashboardMapDay",
-        ]);
-        assert.equal(await page.locator('input[type="range"]').count(), 0);
-        assert.equal(
-          await page.locator("#dashboardSelectedDate").innerText(),
-          "Tuesday",
-        );
-        const boxes = await page
-          .locator(
-            ".dashboard-day-navigation button, .dashboard-date-selects select",
-          )
-          .evaluateAll((nodes) =>
-            nodes.map((node) => node.getBoundingClientRect().toJSON()),
-          );
-        assert.ok(
-          boxes.every((box, i) => !i || box.left >= boxes[i - 1].right),
-          JSON.stringify(boxes),
-        );
-        assert.ok(
-          Math.abs(bounds.center - bounds.stripCenter) < 2,
-          JSON.stringify({ width, ...bounds }),
-        );
-        assert.equal(bounds.overflow, false);
-        const labelFits = await page
-          .locator(".dashboard-date-selects select")
-          .evaluateAll((nodes) =>
-            nodes.map((node) => {
-              const select = node as HTMLSelectElement;
-              const style = getComputedStyle(select);
-              const context = document
-                .createElement("canvas")
-                .getContext("2d")!;
-              context.font = `${style.fontSize} ${style.fontFamily}`;
-              return {
-                id: select.id,
-                fits:
-                  context.measureText(select.selectedOptions[0].textContent!)
-                    .width +
-                    parseFloat(style.paddingLeft) +
-                    parseFloat(style.paddingRight) +
-                    20 <=
-                  select.clientWidth,
-              };
-            }),
-          );
-        assert.ok(
-          labelFits.every((field) => field.fits),
-          JSON.stringify({ width, font, labelFits }),
-        );
-        assert.equal(
-          await page.locator("#dashboardMapMonth").evaluate((node) => {
-            const select = node as HTMLSelectElement;
-            const canvas = document.createElement("canvas");
-            const context = canvas.getContext("2d")!;
-            const style = getComputedStyle(select);
-            context.font = `${style.fontSize} ${style.fontFamily}`;
-            return (
-              context.measureText(select.selectedOptions[0].textContent!)
-                .width +
-                30 <=
-              select.clientWidth
-            );
-          }),
-          true,
-          "long selected month label fits beside native arrow",
-        );
-        if (process.env.DATE_NAV_SCREENSHOT_DIR) {
-          await mkdir(process.env.DATE_NAV_SCREENSHOT_DIR, { recursive: true });
-          await page.evaluate(() => window.scrollTo(0, 0));
-          await page.screenshot({
-            path: `${process.env.DATE_NAV_SCREENSHOT_DIR}/synthetic-dashboard-${width}.png`,
-          });
-          const strip = (await page
-            .locator(".dashboard-map-date")
-            .boundingBox())!;
-          const navigation = (await page
-            .locator(".dashboard-day-navigation")
-            .boundingBox())!;
-          const left = Math.min(strip.x, navigation.x);
-          const right = Math.max(
-            strip.x + strip.width,
-            navigation.x + navigation.width,
-          );
-          await page.screenshot({
-            clip: {
-              x: left,
-              y: strip.y,
-              width: right - left,
-              height: strip.height,
-            },
-            path: `${process.env.DATE_NAV_SCREENSHOT_DIR}/synthetic-date-strip-${font ? "linux-" : ""}${width}.png`,
-          });
-        }
-      }
+    for (const width of [1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 1000 });
+      await page.waitForTimeout(50);
+      assert.match(
+        await page.locator("#dashboardCalendarButton").innerText(),
+        /Tuesday.*Sep 1.*2026/,
+      );
+      assert.equal(await page.locator(".dashboard-date-selects").count(), 0);
+      assert.ok(
+        await page
+          .locator("#dashboardCalendarButton")
+          .evaluate((n) => n.clientWidth >= n.scrollWidth),
+      );
     }
   });
 });
@@ -505,19 +376,17 @@ test("native arrows, day select and Today share civil-date reads without storms"
       await page.locator("#dashboardMapDate").inputValue(),
       "2026-03-08",
     );
-    const day = page.getByLabel("Day of month", { exact: true });
-    await day.selectOption("31");
+    await page.locator("#dashboardCalendarButton").click();
+    await page.locator('[data-calendar-date="2026-03-31"]').click();
     assert.equal(
       await page.locator("#dashboardMapDate").inputValue(),
       "2026-03-31",
     );
-    await day.focus();
-    await day.press("Home");
-    await day.press("Enter");
-    assert.equal(await day.inputValue(), "1");
     await page.waitForTimeout(100);
     const before = reads.length;
-    await day.selectOption("19");
+    await page.locator("#dashboardCalendarButton").click();
+    await page.locator('[data-calendar-date="2026-03-19"]').focus();
+    await page.keyboard.press("Enter");
     assert.equal(
       await page.locator("#dashboardMapDate").inputValue(),
       "2026-03-19",
@@ -527,6 +396,7 @@ test("native arrows, day select and Today share civil-date reads without storms"
     assert.equal(reads.length - before, 1);
     await page.clock.install({ time: new Date("2026-03-10T03:59:00Z") });
     await page.clock.setFixedTime(new Date("2026-03-10T04:01:00Z"));
+    await page.locator("#dashboardCalendarButton").click();
     await page.getByRole("button", { name: "Today", exact: true }).click();
     assert.equal(
       await page.locator("#dashboardMapDate").inputValue(),
@@ -534,6 +404,7 @@ test("native arrows, day select and Today share civil-date reads without storms"
     );
     await page.waitForTimeout(100);
     const todayReads = reads.length;
+    await page.locator("#dashboardCalendarButton").click();
     await page.getByRole("button", { name: "Today", exact: true }).click();
     await page.waitForTimeout(100);
     assert.equal(reads.length, todayReads);
@@ -583,7 +454,8 @@ test("day select fences held dates, retains member and removes old-key handlers 
         "the shared map/timeline old-date stream is really held",
       );
       const beforeRelease = reads.length;
-      await page.getByLabel("Day of month", { exact: true }).selectOption("22");
+      await page.locator("#dashboardCalendarButton").click();
+      await page.locator('[data-calendar-date="2026-03-22"]').click();
       assert.equal(
         await page.locator("#dashboardMapDate").inputValue(),
         "2026-03-22",
@@ -624,7 +496,7 @@ test("day select fences held dates, retains member and removes old-key handlers 
       await page.evaluate(() => {
         (window as any).retainedDateHandler();
         document.getElementById("dashboardMapToday")!.click();
-        const range = document.getElementById("dashboardMapDay")!;
+        const range = document.getElementById("dashboardMapDate")!;
         range.dispatchEvent(new Event("input"));
         range.dispatchEvent(new Event("change"));
       });
@@ -645,7 +517,9 @@ test("day select fences held dates, retains member and removes old-key handlers 
         await page.locator("#dashboardMapDate").inputValue(),
         reloadedDate,
       );
-      await page.getByRole("button", { name: "Next day", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Previous day", exact: true })
+        .click();
       assert.notEqual(
         await page.locator("#dashboardMapDate").inputValue(),
         reloadedDate,
@@ -664,10 +538,12 @@ test("civil navigation preserves leap-century and DST day boundaries in actual m
       ["2024-02-29", "29"],
     ]) {
       await setDay(page, date);
+      await page.locator("#dashboardCalendarButton").click();
       assert.equal(
-        String(await page.locator("#dashboardMapDay option").count()),
+        String(await page.locator("[data-calendar-date]").count()),
         length,
       );
+      await page.keyboard.press("Escape");
     }
     for (const [day, expectedHours] of [
       ["2026-03-08", 23],
@@ -825,7 +701,7 @@ for (const status of [401, 403]) {
           /Partial dashboard/,
         );
         await page
-          .getByRole("button", { name: "Next day", exact: true })
+          .getByRole("button", { name: "Previous day", exact: true })
           .click();
         await page.waitForTimeout(100);
         assert.equal(await page.locator(".dashboard-member-card").count(), 0);
@@ -930,10 +806,10 @@ for (const heldPath of ["members", "avatar"]) {
           for (let i = 0; i < 100 && !held; i++) await page.waitForTimeout(10);
           assert.equal(held, true);
           await page
-            .getByRole("button", { name: "Next day", exact: true })
+            .getByRole("button", { name: "Previous day", exact: true })
             .click();
           await page
-            .getByRole("button", { name: "Next day", exact: true })
+            .getByRole("button", { name: "Previous day", exact: true })
             .click();
           release();
           await page.waitForFunction(
@@ -956,7 +832,7 @@ for (const heldPath of ["members", "avatar"]) {
             );
             (window as any).savedUrl = (window as any).savedImage.src;
           });
-          for (const action of ["Next day", "Previous day"]) {
+          for (const action of ["Previous day", "Next day"]) {
             const response = page.waitForResponse(
               /\/api\/dashboard\/timeline\?/,
             );

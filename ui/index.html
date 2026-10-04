@@ -27,21 +27,38 @@
             <span id="coachLauncherName">Coach</span
             ><span id="coachLauncherIndicator" class="coach-new-output" hidden
               ><span class="native-sr-only">New output</span></span
-            ></button
-          ><span class="pill" id="state" data-tone="neutral">LOCKED</span>
+            >
+          </button>
+          <div
+            id="noticeBar"
+            tabindex="0"
+            role="button"
+            aria-label="Read full status message"
+            aria-haspopup="dialog"
+            aria-controls="noticeDetails"
+          >
+            <div
+              id="noticeRegion"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <span id="noticeIcon" aria-hidden="true"></span
+              ><strong id="noticeLabel" hidden></strong>
+              <p id="notice"></p>
+            </div>
+          </div>
+          <span class="pill" id="state" data-tone="neutral">LOCKED</span>
           <button id="lockStudio" class="secondary" hidden>Lock studio</button>
         </header>
-        <div id="noticeBar">
-          <div
-            id="noticeRegion"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            <span id="noticeIcon" aria-hidden="true"></span
-            ><strong id="noticeLabel" hidden></strong>
-            <p id="notice"></p>
-          </div>
+        <div
+          id="noticeDetails"
+          popover="auto"
+          role="dialog"
+          aria-label="Full status message"
+        >
+          <button id="noticeDetailsClose" type="button">Close</button>
+          <p id="noticeDetailsText"></p>
         </div>
         <section id="login" class="card">
           <h2>Unlock Coach</h2>
@@ -61,14 +78,6 @@
               aria-pressed="true"
             >
               Dojo
-            </button>
-            <button
-              id="diagnosticsTab"
-              class="secondary"
-              aria-controls="diagnostics"
-              aria-pressed="false"
-            >
-              Activity
             </button>
             <button
               id="settingsTab"
@@ -111,7 +120,75 @@
               role="group"
               aria-label="Member filters"
             ></div>
+            <nav
+              id="dashboardSubtabs"
+              class="dashboard-subtabs"
+              role="tablist"
+              aria-label="Dojo sections"
+            >
+              <button
+                id="dashboard-map-tab"
+                type="button"
+                role="tab"
+                aria-controls="dashboardMapPane"
+                aria-selected="true"
+                tabindex="0"
+              >
+                Map &amp; events
+              </button>
+              <button
+                id="dashboard-trends-tab"
+                type="button"
+                role="tab"
+                aria-controls="dashboardTrendsPane"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Activity trends
+              </button>
+              <button
+                id="dashboard-gallery-tab"
+                type="button"
+                role="tab"
+                aria-controls="dashboardGallery"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Gallery
+              </button>
+              <button
+                id="dashboard-stats-tab"
+                type="button"
+                role="tab"
+                aria-controls="dashboardStatsPane"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Stats
+              </button>
+            </nav>
             <section
+              id="dashboardStatsPane"
+              role="tabpanel"
+              aria-labelledby="dashboard-stats-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Stats</h2>
+              <p class="muted">
+                Canonical per-member history. Missing or private sources are
+                unavailable, never zero.
+              </p>
+              <div id="dashboardStats"></div>
+            </section>
+            <section
+              id="dashboardMapPane"
+              role="tabpanel"
+              aria-labelledby="dashboard-map-tab"
+              tabindex="0"
               class="dashboard-map-section"
               aria-label="Shared activity map"
             >
@@ -124,26 +201,15 @@
                   >
                     ←
                   </button>
-                  <div class="dashboard-date-selects">
-                    <label
-                      >Year<select
-                        id="dashboardMapYear"
-                        aria-label="Year"
-                      ></select
-                    ></label>
-                    <label
-                      >Month<select
-                        id="dashboardMapMonth"
-                        aria-label="Month"
-                      ></select
-                    ></label>
-                    <label
-                      >Day<select
-                        id="dashboardMapDay"
-                        aria-label="Day of month"
-                      ></select
-                    ></label>
-                  </div>
+                  <button
+                    id="dashboardCalendarButton"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                    aria-controls="dashboardCalendar"
+                  >
+                    Choose date
+                  </button>
                   <button
                     id="dashboardMapNext"
                     type="button"
@@ -152,12 +218,40 @@
                     →
                   </button>
                 </div>
-                <output
-                  id="dashboardSelectedDate"
-                  aria-live="polite"
-                  aria-label="Selected weekday"
-                ></output>
-                <button id="dashboardMapToday" type="button">Today</button>
+                <div
+                  id="dashboardCalendar"
+                  popover="auto"
+                  role="dialog"
+                  aria-label="Choose event day"
+                >
+                  <div class="dashboard-calendar-navigation">
+                    <button
+                      id="dashboardCalendarPrevious"
+                      type="button"
+                      aria-label="Previous month"
+                    >
+                      ←
+                    </button>
+                    <strong
+                      id="dashboardCalendarMonth"
+                      aria-live="polite"
+                    ></strong>
+                    <button
+                      id="dashboardCalendarNext"
+                      type="button"
+                      aria-label="Next month"
+                    >
+                      →
+                    </button>
+                  </div>
+                  <div
+                    id="dashboardCalendarDays"
+                    class="dashboard-calendar-days"
+                    role="group"
+                    aria-label="Days of month"
+                  ></div>
+                  <button id="dashboardMapToday" type="button">Today</button>
+                </div>
                 <label for="dashboardMapDate" class="dashboard-date-fallback">
                   <span class="dashboard-assistive"
                     >Event occurrence day (device timezone; map and
@@ -172,6 +266,12 @@
                 role="status"
                 aria-live="polite"
               ></p>
+
+              <section
+                id="dashboardTimeline"
+                class="dashboard-timeline"
+                aria-label="Day activity timeline"
+              ></section>
               <div class="dashboard-map-layout">
                 <div class="dashboard-map-column">
                   <div
@@ -179,12 +279,15 @@
                     class="dashboard-map"
                     aria-label="Interactive OpenStreetMap activity map"
                   ></div>
-                  <section
-                    id="dashboardTimeline"
-                    class="dashboard-timeline"
-                    aria-label="Day activity timeline"
-                  ></section>
                 </div>
+                <button
+                  id="dashboardInspectorClose"
+                  type="button"
+                  aria-label="Close event detail"
+                  hidden
+                >
+                  ×
+                </button>
                 <aside
                   id="dashboardMapSelection"
                   class="dashboard-map-selection"
@@ -193,8 +296,22 @@
                 ></aside>
               </div>
             </section>
-            <div id="dashboardCharts"></div>
-            <section id="dashboardGallery" aria-label="Gallery"></section>
+            <div
+              id="dashboardTrendsPane"
+              role="tabpanel"
+              aria-labelledby="dashboard-trends-tab"
+              tabindex="0"
+              hidden
+            >
+              <div id="dashboardCharts"></div>
+            </div>
+            <section
+              id="dashboardGallery"
+              role="tabpanel"
+              aria-labelledby="dashboard-gallery-tab"
+              tabindex="0"
+              hidden
+            ></section>
           </section>
           <section id="settingsPanel" hidden>
             <div
@@ -235,6 +352,17 @@
                 class="secondary"
               >
                 Updates
+              </button>
+              <button
+                type="button"
+                id="settings-log-tab"
+                role="tab"
+                aria-controls="diagnostics"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Log
               </button>
             </div>
             <div
@@ -1086,11 +1214,15 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               </div>
               <p class="hint">
                 Confirming an upgrade stops Coach safely and restarts it if it
-                was running. A stopped Coach stays stopped. Finish or cancel
-                previews and native Pi first if you need their drafts. Native
-                sessions close during the upgrade; in-progress turns and unsent
-                drafts may be lost. Actions are never replayed.
+                was running. A stopped Coach stays stopped. Accepted worker work
+                finishes before installation; new claims wait. Native sessions
+                must finish and close before installation; upgrades never abort
+                an in-progress Pi turn. Actions are never replayed.
               </p>
+              <p id="updateQueueStatus" role="status" hidden></p>
+              <button id="updateQueueCancel" class="secondary" hidden>
+                Cancel queued upgrade
+              </button>
               <div id="updateConfirm" class="update-confirm" hidden>
                 <h3>Install this source revision?</h3>
                 <code id="updateTarget"></code>
@@ -1098,13 +1230,17 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
                   This downloads and builds code from the official repository,
                   then briefly restarts Studio. Coach is stopped safely and
                   restarted only if it was running; a stopped Coach stays
-                  stopped. Native sessions close; an in-progress Pi turn or
-                  unsent draft may be lost. Actions are never replayed. Only
-                  continue if you trust this source. The launcher completes the
-                  operation even if this tab closes. A disconnect is not proof
-                  of success.
+                  stopped. Accepted work drains first. Finish and close native
+                  Pi to let installation proceed; no turn is interrupted. You
+                  can cancel while waiting, before safe worker Stop begins.
+                  Waiting intent survives tab closure but not service restart;
+                  it is process-local until the launcher durably accepts the
+                  installation. Actions are never replayed. Only continue if you
+                  trust this source. A disconnect is not proof of success.
                 </p>
-                <button id="updateConfirmApply">Install and restart</button>
+                <button id="updateConfirmApply">
+                  Queue install and restart
+                </button>
                 <button id="updateCancel" class="secondary">Not now</button>
               </div>
             </section>
@@ -1128,142 +1264,138 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
                 ><button id="stop" class="secondary">Stop worker</button>
               </div>
             </section>
-            <div class="actions">
+            <div class="actions" id="settingsSaveActions">
               <button id="save">Save new revision</button
               ><button id="export" class="secondary">
                 Export nonsecret configuration</button
               ><span id="revision"></span>
             </div>
-            <p class="hint">
+            <p class="hint" id="settingsSaveHint">
               Save applies Kata.fit, Models and Persona drafts across tabs.
               Preview and worker use saved settings.
             </p>
-          </section>
-          <section
-            class="card diagnostics"
-            id="diagnostics"
-            role="region"
-            aria-labelledby="diagnosticsTab"
-            tabindex="0"
-            hidden
-          >
-            <h2>Activity</h2>
-            <p id="lastError" role="status">No retained error.</p>
-            <div
-              class="settings-tabs"
-              role="tablist"
-              aria-label="Activity sections"
-            >
-              <button
-                id="diagnostics-performance-tab"
-                class="secondary"
-                role="tab"
-                aria-selected="false"
-                aria-controls="backendPerformance"
-                tabindex="-1"
-              >
-                Performance
-              </button>
-              <button
-                id="diagnostics-logs-tab"
-                role="tab"
-                aria-selected="true"
-                aria-controls="logsView"
-                tabindex="0"
-              >
-                Logs
-              </button>
-            </div>
-            <div class="log-controls">
-              <button id="logRefresh" class="secondary">Refresh</button>
-              <button id="logPause" class="secondary" aria-pressed="false">
-                Pause live
-              </button>
-            </div>
             <section
-              id="backendPerformance"
+              class="card diagnostics"
+              id="diagnostics"
               role="tabpanel"
-              aria-labelledby="diagnostics-performance-tab"
+              aria-labelledby="settings-log-tab"
               tabindex="0"
               hidden
             >
-              <h3 id="performanceHeading">Backend performance</h3>
-              <p class="hint">
-                All retained backend receipts, independent of log level.
-                Cumulative request time is not wallclock time: overlapping
-                requests add together. This is not lifetime usage; the
-                20,000-entry window also includes other logs.
-              </p>
-              <p id="performanceWindow"></p>
-              <div class="log-controls">
-                <label
-                  >Sort descending<select id="performanceSort">
-                    <option value="totalMs">Cumulative time</option>
-                    <option value="calls">Calls</option>
-                    <option value="p95Ms">p95 duration</option>
-                    <option value="timeouts">Timeouts</option>
-                  </select></label
+              <h2>Log</h2>
+              <p id="lastError" role="status">No retained error.</p>
+              <div class="settings-tabs" role="tablist" aria-label="Log views">
+                <button
+                  id="diagnostics-performance-tab"
+                  class="secondary"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="backendPerformance"
+                  tabindex="-1"
                 >
-                <button id="performanceExport" class="secondary" disabled>
-                  Export aggregate JSON
+                  Performance
+                </button>
+                <button
+                  id="diagnostics-logs-tab"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="logsView"
+                  tabindex="0"
+                >
+                  Logs
                 </button>
               </div>
-              <details>
-                <summary>How metrics are calculated</summary>
-                <p class="hint">
-                  Durations use measured calls only; missing durations are not
-                  zero. p95 uses nearest rank (small samples under 20 can
-                  mislead); median uses the midpoint. Outcome rates use all
-                  calls, including unknown outcomes. Failed time includes
-                  timeouts and other failures, not cancellations.
-                </p>
-              </details>
-              <p class="hint">
-                Select a call to inspect receipts. Scroll the breakdown for more
-                calls.
-              </p>
-              <div
-                id="performanceRows"
+              <div class="log-controls">
+                <button id="logRefresh" class="secondary">Refresh</button>
+                <button id="logPause" class="secondary" aria-pressed="false">
+                  Pause live
+                </button>
+              </div>
+              <section
+                id="backendPerformance"
+                role="tabpanel"
+                aria-labelledby="diagnostics-performance-tab"
                 tabindex="0"
-                role="region"
-                aria-label="Backend call breakdown"
-              ></div>
-            </section>
-            <div
-              id="logsView"
-              role="tabpanel"
-              aria-labelledby="diagnostics-logs-tab"
-              tabindex="0"
-            >
-              <h3>Activity logs</h3>
-              <p id="performanceSelection" role="status"></p>
-              <button id="performanceClear" class="secondary" hidden>
-                Clear call selection
-              </button>
-              <p class="hint">
-                Logs may contain health or meal details. Inspect and redact
-                copied or downloaded JSON before sharing it.
-              </p>
-              <div class="log-controls">
-                <label
-                  >Level<select id="logLevel">
-                    <option value="all">All levels</option>
-                    <option value="verbose">Verbose</option>
-                    <option value="info" selected>Info</option>
-                    <option value="warn">Warnings</option>
-                    <option value="error">Errors</option>
-                  </select></label
-                >
-                <button id="logCopy" class="secondary">Copy JSON</button>
-                <button id="logDownload" class="secondary">
-                  Download JSON
+                hidden
+              >
+                <h3 id="performanceHeading">Backend performance</h3>
+                <p class="hint">
+                  All retained backend receipts, independent of log level.
+                  Cumulative request time is not wallclock time: overlapping
+                  requests add together. This is not lifetime usage; the
+                  20,000-entry window also includes other logs.
+                </p>
+                <p id="performanceWindow"></p>
+                <div class="log-controls">
+                  <label
+                    >Sort descending<select id="performanceSort">
+                      <option value="totalMs">Cumulative time</option>
+                      <option value="calls">Calls</option>
+                      <option value="p95Ms">p95 duration</option>
+                      <option value="timeouts">Timeouts</option>
+                    </select></label
+                  >
+                  <button id="performanceExport" class="secondary" disabled>
+                    Export aggregate JSON
+                  </button>
+                </div>
+                <details>
+                  <summary>How metrics are calculated</summary>
+                  <p class="hint">
+                    Durations use measured calls only; missing durations are not
+                    zero. p95 uses nearest rank (small samples under 20 can
+                    mislead); median uses the midpoint. Outcome rates use all
+                    calls, including unknown outcomes. Failed time includes
+                    timeouts and other failures, not cancellations.
+                  </p>
+                </details>
+                <p class="hint">
+                  Select a call to inspect receipts. Scroll the breakdown for
+                  more calls.
+                </p>
+                <div
+                  id="performanceRows"
+                  tabindex="0"
+                  role="region"
+                  aria-label="Backend call breakdown"
+                ></div>
+              </section>
+              <div
+                id="logsView"
+                role="tabpanel"
+                aria-labelledby="diagnostics-logs-tab"
+                tabindex="0"
+              >
+                <h3>Log entries</h3>
+                <p id="performanceSelection" role="status"></p>
+                <button id="performanceClear" class="secondary" hidden>
+                  Clear call selection
                 </button>
+                <p class="hint">
+                  Logs may contain health or meal details. Inspect and redact
+                  copied or downloaded JSON before sharing it.
+                </p>
+                <div class="log-controls">
+                  <label
+                    >Level<select id="logLevel">
+                      <option value="all">All levels</option>
+                      <option value="verbose">Verbose</option>
+                      <option value="info" selected>Info</option>
+                      <option value="warn">Warnings</option>
+                      <option value="error">Errors</option>
+                    </select></label
+                  >
+                  <button id="logCopy" class="secondary">Copy JSON</button>
+                  <button id="logDownload" class="secondary">
+                    Download JSON
+                  </button>
+                </div>
+                <p id="logStatus" role="status">
+                  Logs load only while Log is active and the tab is visible.
+                </p>
+                <div id="logRows" aria-label="Log entries"></div>
               </div>
-              <p id="logStatus" role="status">
-                Logs load only while Activity is active and the tab is visible.
-              </p>
-              <div id="logRows" aria-label="Activity entries"></div>
-            </div>
+            </section>
           </section>
         </div>
         <p id="restartStatus" role="status" aria-live="polite"></p>
@@ -1385,10 +1517,39 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
       </div>
       <img id="attachmentDialogImage" alt="" />
       <p id="attachmentDialogCaption" class="hint"></p>
+      <nav
+        id="attachmentDialogNavigation"
+        class="attachment-dialog-navigation"
+        aria-label="Image navigation"
+        hidden
+      >
+        <button
+          id="attachmentDialogPrevious"
+          type="button"
+          class="secondary"
+          aria-label="Previous image"
+        >
+          Previous
+        </button>
+        <span
+          id="attachmentDialogPosition"
+          role="status"
+          aria-live="polite"
+        ></span>
+        <button
+          id="attachmentDialogNext"
+          type="button"
+          class="secondary"
+          aria-label="Next image"
+        >
+          Next
+        </button>
+      </nav>
     </dialog>
     <script src="/terminal.js"></script>
     <script src="/backend-performance.js"></script>
     <script src="/leaflet.js"></script>
+    <script src="/stats.js"></script>
     <script src="/dashboard.js"></script>
     <script src="/app.js"></script>
   </body>

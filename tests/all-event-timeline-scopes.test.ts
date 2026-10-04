@@ -1,4 +1,5 @@
 import test from "node:test";
+import { timelineCounts } from "./helpers/timeline-counts.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -74,6 +75,7 @@ test("map-independent member filtering clears event selection and fences held ol
   });
   try {
     const page = await browser.newPage({ timezoneId: "UTC" });
+    await page.clock.setFixedTime(new Date("2026-12-01T12:00:00Z"));
     await page.goto(app.origin + "/dashboard");
     await page.evaluate(async (key) => {
       document.getElementById("studio")!.hidden = false;
@@ -89,10 +91,10 @@ test("map-independent member filtering clears event selection and fences held ol
     await page
       .locator('[data-event-id="2026-11-01-2"]')
       .waitFor({ state: "attached" });
-    await page.locator(".dashboard-timeline-cluster").click();
     await page
-      .locator('.dashboard-timeline-choice[data-event-id="2026-11-01-0"]')
-      .click();
+      .locator('.dashboard-timeline-mark[data-event-id="2026-11-01-0"]')
+      .focus();
+    await page.keyboard.press("Enter");
     await page
       .locator(
         `#dashboardMemberCards .dashboard-member-portrait[data-member-id="${bob}"]`,
@@ -103,17 +105,10 @@ test("map-independent member filtering clears event selection and fences held ol
       await page.locator(".dashboard-timeline-mark:visible").count(),
       1,
     );
-    assert.equal(
-      await page
-        .locator(".dashboard-timeline-count")
-        .textContent({ timeout: 2000 }),
-      "1 visible · 3 loaded events across all members",
-    );
+    assert.deepEqual(await timelineCounts(page), { represented: 1, loaded: 3 });
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
     await page.locator('[data-event-id="2026-11-01-2"]').click();
-    await page
-      .getByRole("button", { name: "All members", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Select All", exact: true }).click();
     assert.equal(await page.locator(".dashboard-timeline-mark").count(), 3);
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
     await change("2026-11-02");

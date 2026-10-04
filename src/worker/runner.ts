@@ -185,6 +185,51 @@ export class Worker {
   private controller = new AbortController();
   private active?: Promise<void>;
   private updateQuiesced = false;
+  private statsPollPauses = 0;
+  private deferredPresence?: () => void;
+  /** Process-local read admission, independent of update/Stop ownership. Reserve
+   * before awaiting the displayed-idle poll: it can still be touching credential
+   * authority or returning an accepted claim. Never abort/replay that execution.
+   * Heartbeats and accepted work keep their existing lease/presence contracts. */
+  async withIdlePollingPaused<T>(signal: AbortSignal, read: () => Promise<T>) {
+    signal.throwIfAborted();
+    const stopped = this.stopping;
+    const invalid = () =>
+      this.updateQuiesced ||
+      this.reconciling ||
+      this.stopping !== stopped ||
+      (stopped && !this.stopConfirmed);
+    if (invalid()) throw new SafeError("CANCELLED");
+    this.statsPollPauses++;
+    const running = this.state !== "stopped";
+    const scope = running
+      ? AbortSignal.any([signal, this.controller.signal])
+      : signal;
+    try {
+      await bounded(async () => {
+        await this.startup;
+        await stopped;
+        await this.active?.catch(() => {});
+        // Accepted work keeps its heartbeats while draining. Once idle, no new
+        // periodic presence is admitted; settle the last independent RPC too.
+        await this.presenceCall;
+      }, scope);
+      scope.throwIfAborted();
+      if (invalid()) throw new SafeError("CANCELLED");
+      const result = await read();
+      scope.throwIfAborted();
+      if (invalid()) throw new SafeError("CANCELLED");
+      return result;
+    } finally {
+      this.statsPollPauses--;
+      if (!this.statsPollPauses) {
+        const resume = this.deferredPresence;
+        this.deferredPresence = undefined;
+        resume?.();
+      }
+    }
+  }
+
   quiesceForUpdate(): boolean {
     if (
       this.state !== "idle" ||
@@ -197,6 +242,18 @@ export class Worker {
       return false;
     this.updateQuiesced = true;
     return true;
+  }
+  /** Reserve synchronously, including an already-dispatched poll/claim. Do not
+   * abort that claim: its accepted execution and receipt must finish normally. */
+  reserveForManualUpdate(): boolean {
+    if (this.stopping || this.updateQuiesced || this.reconciling) return false;
+    this.updateQuiesced = true;
+    return true;
+  }
+  async drainForUpdate() {
+    if (!this.updateQuiesced) throw new SafeError("CANCELLED");
+    // A failed poll is settled work too; publication ledgers remain authoritative.
+    await this.active?.catch(() => {});
   }
   releaseUpdateQuiesce() {
     this.updateQuiesced = false;
@@ -214,7 +271,8 @@ export class Worker {
   reconcilePublications(idle = false): Promise<void> {
     if (this.reconciling) return this.reconciling;
     if (
-      (this.state !== "stopped" && !(idle && this.state === "idle")) ||
+      (this.state !== "stopped" &&
+        !(idle && (this.state === "idle" || this.updateQuiesced))) ||
       this.active ||
       (this.state !== "stopped" && this.stopping)
     )
@@ -392,6 +450,8 @@ export class Worker {
   }
   pollOnce() {
     if (this.updateQuiesced) return Promise.reject(new Error("CANCELLED"));
+    // Skip a scheduler tick, not queue/replay a claim on read completion.
+    if (this.statsPollPauses) return Promise.resolve();
     if (!this.active)
       this.active = this.poll().finally(() => {
         this.active = undefined;
@@ -690,7 +750,13 @@ export class Worker {
       }
       let triedTasks = false;
       const tryTasks = async () => {
-        if (triedTasks || !taskKinds.length) return false;
+        if (
+          this.updateQuiesced ||
+          this.statsPollPauses ||
+          triedTasks ||
+          !taskKinds.length
+        )
+          return false;
         triedTasks = true;
         // Flip before work so provider/task errors cannot starve main chat.
         this.preferTask = false;
@@ -735,7 +801,12 @@ export class Worker {
       const instructions = await fetchInstructions(c);
       // Never reclaim/replay an ambiguously published request, even under a new lease.
       // Typed tasks can still progress; main publication resumes after reconciliation.
-      if (this.unresolvedRequests.size) return;
+      if (
+        this.updateQuiesced ||
+        this.statsPollPauses ||
+        this.unresolvedRequests.size
+      )
+        return;
       // No separate request-plane advertisement exists: the task plane's
       // coach.capability.v1 advertisement is the same backend's opt-in.
       const ordinaryNegotiation =
@@ -1173,6 +1244,7 @@ export class Worker {
     negotiate = false,
     ordinary = false,
   ) {
+    if (this.updateQuiesced || this.statsPollPauses) return false;
     const { task } = await c.call("coach_claim_task", {
       protocol: TASK_PROTOCOL,
       kinds,
@@ -1543,8 +1615,15 @@ export class Worker {
         this.update("connecting");
         this.loop = this.run();
         if (this.presence === "reported") {
-          this.presenceTimer = setInterval(() => {
+          const tick = () => {
             if (this.controller.signal.aborted || this.presenceCall) return;
+            if (this.statsPollPauses > 0 && !this.active) {
+              // Coalesce missed idle ticks. Release promptly in finally rather
+              // than starving presence under consecutive eight-second reads.
+              this.deferredPresence = tick;
+              return;
+            }
+            this.deferredPresence = undefined;
             this.presenceCall = this.report("running")
               .then(() => {
                 this.presence = "reported";
@@ -1555,7 +1634,11 @@ export class Worker {
               .finally(() => {
                 this.presenceCall = undefined;
               });
-          }, this.options.presenceMs ?? 10000);
+          };
+          this.presenceTimer = setInterval(
+            tick,
+            this.options.presenceMs ?? 10000,
+          );
         }
         return this.presence;
       } catch (error) {

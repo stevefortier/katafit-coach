@@ -3,6 +3,80 @@ window.CoachImageViewer = (() => {
   const $ = (id) => document.getElementById(id);
   const dialog = $("attachmentDialog");
   let current;
+  const collection = () =>
+    current?.getEntries?.() || (current ? [current] : []);
+  function controls(message = current?.message || "") {
+    if (current) current.message = message;
+    const entries = collection();
+    const index = entries.findIndex((entry) => entry.key === current?.key);
+    const navigation = $("attachmentDialogNavigation");
+    const previous = $("attachmentDialogPrevious");
+    const next = $("attachmentDialogNext");
+    const hidden = entries.length < 2;
+    const previousDisabled = index <= 0;
+    const nextDisabled = index < 0 || index >= entries.length - 1;
+    const focused = document.activeElement;
+    // Move focus before disabling its button; native blur otherwise leaves
+    // BODY focused and genuine arrow keys no longer reach the modal.
+    if (
+      dialog.open &&
+      navigation.contains(focused) &&
+      (hidden ||
+        (focused === previous && previousDisabled) ||
+        (focused === next && nextDisabled))
+    ) {
+      const target =
+        !hidden && !previousDisabled
+          ? previous
+          : !hidden && !nextDisabled
+            ? next
+            : $("attachmentDialogClose");
+      target.disabled = false;
+      target.focus({ preventScroll: true });
+    }
+    navigation.hidden = hidden;
+    previous.disabled = previousDisabled;
+    next.disabled = nextDisabled;
+    $("attachmentDialogPosition").textContent =
+      message || `${index + 1} of ${entries.length}`;
+  }
+  function paint(entry) {
+    current.shown = entry;
+    current.onSelect?.(entry.key);
+    $("attachmentDialogTitle").textContent = entry.filename;
+    $("attachmentDialogCaption").textContent = entry.caption || "";
+    const image = $("attachmentDialogImage");
+    image.alt = entry.caption || entry.filename;
+    image.src = entry.url;
+    const download = $("attachmentDialogDownload");
+    download.href = entry.url;
+    download.download = entry.filename;
+  }
+  async function navigate(delta) {
+    const state = current;
+    if (!state || !dialog.open) return;
+    const entries = collection();
+    const index = entries.findIndex((entry) => entry.key === state.key);
+    const entry = entries[index + delta];
+    if (index < 0 || !entry) return;
+    state.key = entry.key;
+    const request = (state.request = (state.request || 0) + 1);
+    controls("Loading image…");
+    try {
+      const url = entry.url || (await state.acquire?.(entry.key));
+      if (current !== state || state.request !== request || !dialog.open)
+        return;
+      const admitted = collection().find((item) => item.key === entry.key);
+      if (!url || !admitted) throw new Error("Image unavailable. Try again.");
+      paint({ ...admitted, url });
+      controls("");
+    } catch {
+      if (current !== state || state.request !== request || !dialog.open)
+        return;
+      state.key = state.shown.key;
+      controls("Image unavailable. Try again.");
+    }
+  }
   function clean() {
     const trigger = current?.trigger;
     current = undefined;
@@ -18,18 +92,22 @@ window.CoachImageViewer = (() => {
   function open(entry) {
     if (!dialog || !entry.url) return;
     current = { ...entry, trigger: entry.trigger || document.activeElement };
-    $("attachmentDialogTitle").textContent = entry.filename;
-    $("attachmentDialogCaption").textContent = entry.caption || "";
-    const image = $("attachmentDialogImage");
-    image.alt = entry.caption || entry.filename;
-    image.src = entry.url;
-    const download = $("attachmentDialogDownload");
-    download.href = entry.url;
-    download.download = entry.filename;
+    paint(entry);
+    controls();
     if (!dialog.open) dialog.showModal();
     $("attachmentDialogClose").focus();
   }
   if (dialog) {
+    $("attachmentDialogPrevious").onclick = () => void navigate(-1);
+    $("attachmentDialogNext").onclick = () => void navigate(1);
+    dialog.addEventListener("keydown", (event) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+        return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        void navigate(event.key === "ArrowLeft" ? -1 : 1);
+      }
+    });
     $("attachmentDialogClose").onclick = () => close();
     dialog.addEventListener("click", (event) => {
       if (event.target === dialog) close();
@@ -38,7 +116,21 @@ window.CoachImageViewer = (() => {
       if (!dialog.open) clean();
     });
   }
-  return { open, close };
+  return {
+    open,
+    close,
+    contains: (owner, key) =>
+      current?.owner === owner && current.shown?.key === key,
+    refresh: (owner) => {
+      if (current?.owner !== owner) return;
+      if (!collection().some((entry) => entry.key === current.key)) {
+        current.request = (current.request || 0) + 1;
+        current.key = current.shown.key;
+        current.message = "";
+      }
+      controls();
+    },
+  };
 })();
 // One terminal for the page: its session outlives pane layout, collapse and
 // Studio navigation. `active` means the session is wanted; `visible` means the
@@ -476,6 +568,7 @@ function operatorAttachments($, fetchAttachment) {
     );
   }
   function render() {
+    window.CoachImageViewer.refresh("pi");
     $("nativeAttachmentsEmpty").hidden = items.size > 0;
     $("nativeAttachmentCount").textContent = items.size
       ? "(" + items.size + ")"
@@ -532,7 +625,7 @@ function operatorAttachments($, fetchAttachment) {
   }
   function remove(key, entry) {
     entry.controller.abort();
-    if (dialogEntry === entry) closeDialog();
+    if (window.CoachImageViewer.contains("pi", entry)) closeDialog();
     if (entry.url) URL.revokeObjectURL(entry.url);
     entry.node.remove();
     items.delete(key);
@@ -761,10 +854,22 @@ function operatorAttachments($, fetchAttachment) {
     if (!entry.url) return;
     dialogEntry = entry;
     window.CoachImageViewer.open({
+      key: entry,
       owner: "pi",
       url: entry.url,
       filename: entry.item.filename,
       caption: entry.item.caption,
+      getEntries: () =>
+        Array.from(list.children)
+          .map((node) => items.get(node.dataset.attachmentId))
+          .filter((item) => item?.item.preview === "image")
+          .map((item) => ({
+            key: item,
+            url: item.url,
+            filename: item.item.filename,
+            caption: item.item.caption,
+          })),
+      acquire: load,
     });
   }
   function closeDialog() {

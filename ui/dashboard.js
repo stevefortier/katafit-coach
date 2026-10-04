@@ -1,6 +1,114 @@
 /* Standalone Coach Dashboard; all values arrive from an authorized snapshot. */
 window.CoachDashboard = (() => {
   const $ = (id) => document.getElementById(id);
+  // Presentation-only switches: retain the dashboard's authorized scope and DOM.
+  const subtabs = [
+    ...($("dashboardSubtabs")?.querySelectorAll('[role="tab"]') || []),
+  ];
+  let stats = null;
+  // Scope the viewport lock to the visible map pane, never Gallery/Settings.
+  const mapPane = $("dashboardMapPane");
+  if (mapPane) {
+    let frame;
+    const layout = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const active = mapPane.getClientRects().length > 0;
+        const root = document.documentElement;
+        const changed = active !== root.classList.contains("compact-map");
+        root.classList.toggle("compact-map", active);
+        if (changed && active) {
+          window.scrollTo(0, 0);
+          $("workspaceScroll")?.scrollTo(0, 0);
+        }
+        const height = (selector) =>
+          document.querySelector(selector)?.getBoundingClientRect().height || 0;
+        root.style.setProperty("--header-offset", height("header") + "px");
+        root.style.setProperty(
+          "--primary-tabs-height",
+          height(".studio-tabs") + "px",
+        );
+        root.style.setProperty(
+          "--roster-height",
+          height("#dashboardMemberCards") + "px",
+        );
+        if (active)
+          mapPane.style.height =
+            Math.max(0, innerHeight - mapPane.getBoundingClientRect().top - 8) +
+            "px";
+      });
+    };
+    const observer = new ResizeObserver(layout);
+    for (const node of [
+      document.querySelector("header"),
+      document.querySelector(".studio-tabs"),
+      $("dashboardMemberCards"),
+      $("dashboardSubtabs"),
+    ])
+      if (node) observer.observe(node);
+    new MutationObserver(layout).observe($("workspaceScroll"), {
+      attributes: true,
+      attributeFilter: ["hidden"],
+      subtree: true,
+    });
+    addEventListener("resize", layout);
+    layout();
+    const inspector = $("dashboardMapSelection"),
+      close = $("dashboardInspectorClose");
+    const dismiss = () => {
+      selectionEpoch++;
+      inspector.replaceChildren();
+      close.hidden = true;
+      $("dashboardMap")
+        ?.querySelector('[aria-pressed="true"]')
+        ?.focus({ preventScroll: true });
+    };
+    if (close) {
+      close.onclick = dismiss;
+      close.onkeydown = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dismiss();
+        }
+      };
+      inspector.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dismiss();
+        }
+      });
+      new MutationObserver(() => {
+        close.hidden = !inspector.childNodes.length;
+      }).observe(inspector, { childList: true });
+    }
+  }
+  function selectPane(tab, focus = false) {
+    for (const item of subtabs) {
+      const selected = item === tab;
+      item.setAttribute("aria-selected", String(selected));
+      item.tabIndex = selected ? 0 : -1;
+      item.classList.toggle("secondary", !selected);
+      $(item.getAttribute("aria-controls")).hidden = !selected;
+    }
+    closeMemberTooltip();
+    if (tab.id === "dashboard-stats-tab") stats?.select();
+    if (focus) tab.focus();
+  }
+  for (const tab of subtabs) {
+    tab.addEventListener("click", () => selectPane(tab));
+    tab.addEventListener("keydown", (event) => {
+      const index = subtabs.indexOf(tab);
+      const next = {
+        ArrowRight: (index + 1) % subtabs.length,
+        ArrowLeft: (index + subtabs.length - 1) % subtabs.length,
+        Home: 0,
+        End: subtabs.length - 1,
+      }[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      selectPane(subtabs[next], true);
+    });
+  }
   const svgNS = "http://www.w3.org/2000/svg";
   const isPhoto = (f) =>
     f &&
@@ -114,6 +222,7 @@ window.CoachDashboard = (() => {
   // this ledger generation; only a new page-one load can restore their GPS.
   const withheldMembers = new Set();
   let selectedEventId = null;
+  let previewEventId = null;
   let syncMap = () => {};
   let refreshMap = () => {};
   let revealEvent = () => {};
@@ -141,150 +250,210 @@ window.CoachDashboard = (() => {
     return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   }
   function bindDateNavigation(adminKey) {
-    const input = $("dashboardMapDate");
-    const month = $("dashboardMapMonth")?.options
-        ? $("dashboardMapMonth")
-        : null,
-      year = $("dashboardMapYear")?.options ? $("dashboardMapYear") : null;
-    const day = $("dashboardMapDay");
-    const output = $("dashboardSelectedDate");
+    const input = $("dashboardMapDate"),
+      button = $("dashboardCalendarButton"),
+      calendar = $("dashboardCalendar");
     const previous = $("dashboardMapPrevious"),
       next = $("dashboardMapNext"),
       today = $("dashboardMapToday");
-    let committedDate = input.value;
     const loadId = epoch;
+    let committedDate = input.value,
+      displayedMonth = input.value.slice(0, 7);
     const live = () => loadId === epoch;
-    function parts() {
-      return input.value.split("-").map(Number);
-    }
+    const localToday = () => dateValue(new Date());
+    const close = () => {
+      if (calendar?.matches(":popover-open")) calendar.hidePopover();
+      button?.setAttribute("aria-expanded", "false");
+    };
     function sync() {
-      const [y, m, d] = parts();
-      if (!y || !m || !d) return;
-      const length = civilDate(y, m + 1, 0).getDate();
-      if (month) month.value = String(m);
-      if (
-        year &&
-        ![...year.options].some((option) => option.value === String(y))
-      ) {
-        const years = new Set(
-          [...year.options].map((option) => Number(option.value)),
-        );
-        for (let n = Math.max(1, y - 10); n <= Math.min(9999, y + 10); n++)
-          years.add(n);
-        year.replaceChildren(
-          ...[...years]
-            .sort((a, b) => a - b)
-            .map((n) => {
-              const option = text("option", String(n));
-              option.value = String(n);
-              return option;
-            }),
-        );
-      }
-      if (year) year.value = String(y);
-      if (day?.options) {
-        if (day.options.length !== length)
-          day.replaceChildren(
-            ...Array.from({ length }, (_, i) => {
-              const option = text("option", String(i + 1));
-              option.value = String(i + 1);
-              return option;
-            }),
-          );
-        day.value = String(d);
-      }
-      if (output)
-        output.textContent = civilDate(y, m, d).toLocaleDateString(undefined, {
+      input.max = localToday();
+      if (next) next.disabled = input.value >= input.max;
+      if (button) {
+        const [y, m, d] = input.value.split("-").map(Number);
+        button.textContent = civilDate(y, m, d).toLocaleDateString(undefined, {
           weekday: "long",
+          month: "short",
+          day: "numeric",
+          year: "numeric",
         });
+      }
     }
-    function commit(force = false) {
+    function commit(value, force = false) {
       if (!live()) return;
+      // Native entry, calendar, arrows and Today all share this admission fence.
+      if (!validDay(value) || value > localToday()) {
+        input.value = committedDate;
+        sync();
+        return;
+      }
+      input.value = value;
       sync();
-      if (!force && input.value === committedDate) return;
-      committedDate = input.value;
+      if (!force && value === committedDate) return;
+      committedDate = value;
       void loadMap(adminKey);
     }
     function stepDay(amount) {
-      if (!live()) return;
-      const [y, m, d] = parts();
+      const [y, m, d] = input.value.split("-").map(Number);
       const date = civilDate(y, m, d);
       date.setDate(date.getDate() + amount);
       if (date.getFullYear() < 1 || date.getFullYear() > 9999) return;
-      input.value = dateValue(date);
-      commit();
+      commit(dateValue(date));
     }
-    function changePeriod() {
-      if (!live()) return;
-      const [y, m, d] = parts();
-      const nextYear = Number(year?.value || y),
-        nextMonth = Number(month?.value || m);
-      input.value = dateValue(
-        civilDate(
-          nextYear,
-          nextMonth,
-          Math.min(d, civilDate(nextYear, nextMonth + 1, 0).getDate()),
-        ),
+    function renderCalendar(focusDate = input.value) {
+      if (!calendar || !live()) return;
+      const [y, m] = displayedMonth.split("-").map(Number);
+      const first = civilDate(y, m, 1),
+        length = civilDate(y, m + 1, 0).getDate();
+      $("dashboardCalendarMonth").textContent = first.toLocaleDateString(
+        undefined,
+        { month: "long", year: "numeric" },
       );
-      commit();
-    }
-    if (month) {
-      month.replaceChildren(
-        ...Array.from({ length: 12 }, (_, i) => {
-          const option = text(
-            "option",
-            civilDate(2000, i + 1, 1).toLocaleDateString(undefined, {
-              month: "long",
-            }),
-          );
-          option.value = String(i + 1);
-          return option;
-        }),
-      );
-      month.onchange = changePeriod;
-    }
-    if (year) {
-      year.replaceChildren();
-      const current = new Date().getFullYear();
-      for (
-        let y = Math.max(1, current - 100);
-        y <= Math.min(9999, current + 10);
-        y++
-      ) {
-        const option = text("option", String(y));
-        option.value = String(y);
-        year.append(option);
+      $("dashboardCalendarNext").disabled =
+        displayedMonth >= localToday().slice(0, 7);
+      $("dashboardCalendarPrevious").disabled = y === 1 && m === 1;
+      const days = $("dashboardCalendarDays");
+      days.replaceChildren();
+      for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"])
+        days.append(text("span", name));
+      for (let i = 0; i < first.getDay(); i++) days.append(text("span", ""));
+      for (let d = 1; d <= length; d++) {
+        const date = civilDate(y, m, d),
+          value = dateValue(date),
+          day = text("button", String(d));
+        day.type = "button";
+        day.dataset.calendarDate = value;
+        day.disabled = value > localToday();
+        day.setAttribute(
+          "aria-label",
+          date.toLocaleDateString(undefined, {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          }),
+        );
+        day.setAttribute("aria-pressed", String(value === input.value));
+        if (value === localToday()) day.setAttribute("aria-current", "date");
+        day.onclick = () => {
+          commit(value);
+          close();
+          button.focus({ preventScroll: true });
+        };
+        day.onkeydown = (event) => {
+          const amount = {
+            ArrowLeft: -1,
+            ArrowRight: 1,
+            ArrowUp: -7,
+            ArrowDown: 7,
+            Home: -date.getDay(),
+            End: 6 - date.getDay(),
+          }[event.key];
+          if (amount === undefined) return;
+          event.preventDefault();
+          const target = civilDate(y, m, d + amount),
+            targetValue = dateValue(target);
+          if (targetValue > localToday() || target.getFullYear() < 1) return;
+          displayedMonth = targetValue.slice(0, 7);
+          renderCalendar(targetValue);
+          days.querySelector(`[data-calendar-date="${targetValue}"]`)?.focus();
+        };
+        days.append(day);
       }
-      year.onchange = changePeriod;
+      if (calendar.matches(":popover-open")) {
+        const anchor = button.getBoundingClientRect();
+        calendar.style.left =
+          Math.max(
+            4,
+            Math.min(anchor.left, innerWidth - calendar.offsetWidth - 4),
+          ) + "px";
+        calendar.style.top =
+          Math.max(
+            4,
+            Math.min(
+              anchor.bottom + 4,
+              innerHeight - calendar.offsetHeight - 4,
+            ),
+          ) + "px";
+      }
+      if (focusDate)
+        days
+          .querySelector(`[data-calendar-date="${focusDate}"]`)
+          ?.focus({ preventScroll: true });
+    }
+    function moveMonth(amount) {
+      const [y, m] = displayedMonth.split("-").map(Number);
+      const date = civilDate(y, m + amount, 1),
+        value = dateValue(date);
+      if (
+        date.getFullYear() < 1 ||
+        date.getFullYear() > 9999 ||
+        value.slice(0, 7) > localToday().slice(0, 7)
+      )
+        return;
+      displayedMonth = value.slice(0, 7);
+      renderCalendar(null);
+    }
+    if (button)
+      button.onclick = () => {
+        if (!live()) return;
+        if (calendar.matches(":popover-open")) {
+          close();
+          return;
+        }
+        displayedMonth = input.value.slice(0, 7);
+        calendar.showPopover();
+        button.setAttribute("aria-expanded", "true");
+        renderCalendar();
+      };
+    if (calendar) {
+      calendar.ontoggle = () =>
+        button.setAttribute(
+          "aria-expanded",
+          String(calendar.matches(":popover-open")),
+        );
+      calendar.onkeydown = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close();
+          button.focus({ preventScroll: true });
+        }
+      };
+      $("dashboardCalendarPrevious").onclick = () => moveMonth(-1);
+      $("dashboardCalendarNext").onclick = () => moveMonth(1);
     }
     if (previous) previous.onclick = () => stepDay(-1);
     if (next) next.onclick = () => stepDay(1);
     if (today)
       today.onclick = () => {
-        if (!live()) return;
-        input.value = dateValue(new Date());
-        commit();
+        commit(localToday());
+        close();
+        button?.focus({ preventScroll: true });
       };
-    if (day)
-      day.onchange = () => {
-        if (!live()) return;
-        const [y, m] = parts();
-        input.value = dateValue(civilDate(y, m, Number(day.value)));
-        commit();
-      };
-    // Preserve the native date fallback's explicit same-date Reload semantics.
-    input.onchange = () => commit(true);
+    input.onchange = () => commit(input.value, true);
     clearDateNavigation = () => {
+      close();
       input.onchange = null;
-      if (month) month.onchange = null;
-      if (year) year.onchange = null;
-      for (const button of [previous, next, today])
-        if (button) button.onclick = null;
-      if (day) day.onchange = null;
+      for (const control of [
+        previous,
+        next,
+        today,
+        button,
+        $("dashboardCalendarPrevious"),
+        $("dashboardCalendarNext"),
+      ])
+        if (control) control.onclick = null;
+      if (calendar) {
+        calendar.onkeydown = null;
+        calendar.ontoggle = null;
+        $("dashboardCalendarDays").replaceChildren();
+      }
     };
     sync();
   }
+
   function clear() {
+    stats?.clear();
+    stats = null;
     clearGallery();
     clearGallery = () => {};
     filterGallery = () => {};
@@ -399,7 +568,7 @@ window.CoachDashboard = (() => {
       button.setAttribute("aria-pressed", String(selectedMember === id));
       const entry = all ? null : text("div", "", "dashboard-member-entry");
       entry?.append(button);
-      const name = all ? "All members" : user.display_name || "Member";
+      const name = all ? "Select\nAll" : user.display_name || "Member";
       const nameNode = text("strong", name);
       nameNode.title = name;
       button.append(nameNode);
@@ -547,7 +716,7 @@ window.CoachDashboard = (() => {
         filterFeed();
         filterTimeline();
       });
-      (all ? target : rail).append(entry || button);
+      rail.append(entry || button);
     };
     makeCard(null, {}, true);
     target.append(rail);
@@ -555,6 +724,7 @@ window.CoachDashboard = (() => {
     // Keep the selected offscreen member in view across selection/cache renders;
     // the browser clamps naturally if an authorization denial shrinks the rail.
     rail.scrollLeft = rosterScrollLeft;
+    stats?.select();
   }
   function svg(tag, attributes) {
     const node = document.createElementNS(svgNS, tag);
@@ -845,28 +1015,14 @@ window.CoachDashboard = (() => {
         "aria-pressed",
         String(!!eventId && node.dataset.eventId === eventId),
       );
-    for (const cluster of document.querySelectorAll(
-      ".dashboard-timeline-cluster",
-    ))
-      cluster.setAttribute(
-        "aria-pressed",
-        String(
-          !!eventId && JSON.parse(cluster.dataset.eventIds).includes(eventId),
-        ),
-      );
     refreshMap();
   }
-  // Scroll the selected occurrence, or the cluster that owns it, into view.
+  // Scroll the selected individual occurrence into view.
   function revealTimelineEvent(eventId) {
     const mark = [
       ...document.querySelectorAll(".dashboard-timeline-mark"),
     ].find((node) => node.dataset.eventId === eventId);
-    const owner = mark?.hidden
-      ? [...document.querySelectorAll(".dashboard-timeline-cluster")].find(
-          (node) => JSON.parse(node.dataset.eventIds).includes(eventId),
-        )
-      : mark;
-    owner?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    mark?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   // A confirmed 401/403 removes everything loaded for that member at once.
   function denyMember(memberId) {
@@ -1202,9 +1358,8 @@ window.CoachDashboard = (() => {
       `${name(item)} · ${eventLabel(item.event_type)} · ${time(item)}`;
     let selectedCategory = null,
       zoom = 1,
-      inspectorOwner = null;
-    const count = text("div", "", "dashboard-timeline-count");
-    count.setAttribute("role", "status");
+      gesture = null,
+      suppressPointerClick = false;
     const toolbar = text("div", "", "dashboard-timeline-toolbar");
     const filters = text("div", "", "dashboard-timeline-legend");
     filters.setAttribute("aria-label", "Filter event category");
@@ -1212,42 +1367,128 @@ window.CoachDashboard = (() => {
     scroll.tabIndex = 0;
     scroll.setAttribute(
       "aria-label",
-      "Day event timeline; scroll horizontally to pan",
+      "Day event timeline; drag events to scrub, drag time labels to pan",
     );
     const track = text("div", "", "dashboard-timeline-track");
     scroll.append(track);
     const interactive = () =>
       renderEpoch === timelineEpoch && !timelinePending && scroll.isConnected;
-    const inspector = text("div", "", "dashboard-timeline-inspector");
-    inspector.hidden = true;
-    inspector.setAttribute("aria-label", "Event inspector");
-    let dismissTimer,
-      restoringFocus = false;
+    const tooltip = text("div", "", "dashboard-timeline-tooltip");
+    tooltip.hidden = true;
+    tooltip.setAttribute("role", "tooltip");
+    tooltip.id = "dashboardTimelineTooltip";
+    const highlightPreviewSlice = (eventId) => {
+      for (const mark of track.querySelectorAll(".dashboard-timeline-mark"))
+        mark.dataset.preview = String(mark.dataset.eventId === eventId);
+    };
     const dismiss = () => {
-      clearTimeout(dismissTimer);
-      inspector.replaceChildren();
-      inspector.hidden = true;
-      inspectorOwner = null;
-      inspector.style.cssText = "";
+      highlightPreviewSlice(null);
+      tooltip.replaceChildren();
+      tooltip.hidden = true;
+      tooltip.removeAttribute("data-event-id");
+      previewEventId = null;
+      refreshMap();
     };
-    const dismissAndRestoreFocus = () => {
-      const owner = inspectorOwner;
+    const preview = (item, x, y) => {
+      if (!interactive() || !item) return;
+      tooltip.dataset.eventId = item.id;
+      highlightPreviewSlice(item.id);
+      const snapshot = eventSnapshot(item, name(item));
+      tooltip.replaceChildren(
+        text("div", label(item)),
+        text("div", (snapshot[4]?.textContent || "").slice(0, 120), "hint"),
+      );
+      tooltip.hidden = false;
+      tooltip.style.width = `${Math.min(280, innerWidth - 24)}px`;
+      const card = tooltip.getBoundingClientRect();
+      tooltip.style.left = `${Math.max(12, Math.min(innerWidth - card.width - 12, x - card.width / 2))}px`;
+      tooltip.style.top = `${Math.max(12, Math.min(innerHeight - card.height - 12, y + 16))}px`;
+      previewEventId = eventPosition(item) ? item.id : null;
+      refreshMap();
+      if (previewEventId) revealEvent(item);
+    };
+    const previewMark = (item, mark) => {
+      const rect = mark.getBoundingClientRect();
+      preview(item, rect.left + rect.width / 2, rect.bottom);
+    };
+    const nearest = (x) => {
+      const rect = track.getBoundingClientRect();
+      const stamp =
+        +start +
+        Math.max(0, Math.min(1, (x - rect.left) / rect.width)) *
+          (+end - +start);
+      return visibleItems().reduce(
+        (best, item) =>
+          !best ||
+          Math.abs(Date.parse(item.occurred_at) - stamp) <
+            Math.abs(Date.parse(best.occurred_at) - stamp)
+            ? item
+            : best,
+        null,
+      );
+    };
+    const cancelGesture = () => {
+      const old = gesture;
+      gesture = null;
+      if (old && track.hasPointerCapture(old.id))
+        track.releasePointerCapture(old.id);
       dismiss();
-      if (!interactive() || !owner?.isConnected) return;
-      restoringFocus = true;
-      try {
-        owner.focus({ preventScroll: true });
-      } finally {
-        restoringFocus = false;
+    };
+    // The event band scrubs. The time-label band pans at every zoom level;
+    // toolbar pan buttons and native horizontal scrolling remain available.
+    track.onpointerdown = (event) => {
+      if (!interactive()) return;
+      if (event.pointerType !== "touch") {
+        suppressPointerClick = false;
+        return;
       }
+      suppressPointerClick = true;
+      gesture = {
+        id: event.pointerId,
+        mode:
+          event.clientY - track.getBoundingClientRect().top >= 41
+            ? "pan"
+            : "scrub",
+        x: event.clientX,
+        left: scroll.scrollLeft,
+      };
+      track.setPointerCapture(event.pointerId);
+      if (gesture.mode === "scrub")
+        preview(nearest(event.clientX), event.clientX, event.clientY);
+      else dismiss();
+      event.preventDefault();
     };
-    const scheduleDismiss = () => {
-      clearTimeout(dismissTimer);
-      if (interactive() && inspector.dataset.mode === "preview")
-        dismissTimer = setTimeout(dismiss, 180);
+    track.onpointermove = (event) => {
+      if (!interactive()) return;
+      if (gesture?.id === event.pointerId) {
+        if (gesture.mode === "pan")
+          scroll.scrollLeft = gesture.left + gesture.x - event.clientX;
+        else preview(nearest(event.clientX), event.clientX, event.clientY);
+      } else if (event.pointerType !== "touch")
+        preview(nearest(event.clientX), event.clientX, event.clientY);
     };
-    inspector.onpointerenter = () => clearTimeout(dismissTimer);
-    inspector.onpointerleave = scheduleDismiss;
+    track.onpointerup = (event) => {
+      if (gesture?.id !== event.pointerId) return;
+      const item = gesture.mode === "scrub" ? nearest(event.clientX) : null;
+      cancelGesture();
+      if (item) select(item);
+    };
+    track.onpointercancel = () => {
+      if (interactive()) cancelGesture();
+    };
+    track.onlostpointercapture = () => {
+      if (interactive() && gesture) cancelGesture();
+    };
+    track.onclick = (event) => {
+      if (event.detail > 0 && !suppressPointerClick)
+        select(nearest(event.clientX));
+    };
+    track.onpointerleave = () => {
+      if (interactive() && !gesture) dismiss();
+    };
+    scroll.onscroll = () => {
+      if (interactive()) dismiss();
+    };
     const visibleItems = () =>
       [...items.values()]
         .filter(
@@ -1262,94 +1503,17 @@ window.CoachDashboard = (() => {
             a.id.localeCompare(b.id),
         );
     const select = (item) => {
-      if (!interactive()) return;
+      if (!interactive() || !item) return;
       if (!visibleItems().some((event) => event.id === item.id)) return;
       void selectEvent(item, adminKey, true, name(item));
-      dismissAndRestoreFocus();
-    };
-    const preview = (group, owner, choose = false) => {
-      if (!interactive() || !owner.isConnected) return;
       dismiss();
-      inspectorOwner = owner;
-      inspector.hidden = false;
-      inspector.dataset.mode = choose ? "chooser" : "preview";
-      const close = text(
-        "button",
-        "Close inspector",
-        "dashboard-timeline-close",
-      );
-      close.type = "button";
-      close.onclick = dismissAndRestoreFocus;
-      inspector.append(close);
-      if (group.length === 1) {
-        const rows = eventSnapshot(group[0], name(group[0]));
-        inspector.append(rows[0], rows[1], rows[2], ...rows.slice(4, -1));
-        const pick = text(
-          "button",
-          "Select event",
-          "dashboard-timeline-choice",
-        );
-        pick.type = "button";
-        pick.dataset.eventId = group[0].id;
-        pick.onclick = () => select(group[0]);
-        inspector.append(pick);
-      } else {
-        inspector.append(
-          text(
-            "h3",
-            `${group.length} events · ${time(group[0])}${group.at(-1).occurred_at !== group[0].occurred_at ? ` – ${time(group.at(-1))}` : ""}`,
-          ),
-        );
-        inspector.append(
-          text(
-            "p",
-            "Separate occurrences at their recorded times. Choose an event; zoom can separate nearby times.",
-            "hint",
-          ),
-        );
-        for (const item of group) {
-          const choice = text(
-            "button",
-            label(item),
-            "dashboard-timeline-choice",
-          );
-          choice.type = "button";
-          choice.dataset.eventId = item.id;
-          choice.style.borderLeftColor =
-            activityColors[category(item)] || "#6b7280";
-          const snapshot = eventSnapshot(item, name(item));
-          const detail = text(
-            "span",
-            [
-              snapshot[2].textContent,
-              ...snapshot.slice(4, -1).map((row) => row.textContent),
-            ].join(" · "),
-            "dashboard-timeline-choice-snapshot",
-          );
-          choice.append(detail);
-          choice.onclick = () => select(item);
-          inspector.append(choice);
-        }
-      }
-      inspector.scrollTop = 0;
-      if (!choose) {
-        const rect = owner.getBoundingClientRect();
-        inspector.style.width = `${Math.min(380, innerWidth - 24)}px`;
-        inspector.style.maxHeight = `${Math.min(300, innerHeight - 24)}px`;
-        const card = inspector.getBoundingClientRect();
-        inspector.style.left = `${Math.max(12, Math.min(innerWidth - card.width - 12, rect.left + rect.width / 2 - card.width / 2))}px`;
-        inspector.style.top = `${Math.max(12, Math.min(innerHeight - card.height - 12, rect.bottom + 10 + card.height <= innerHeight - 12 ? rect.bottom + 10 : rect.top - card.height - 10))}px`;
-      }
-      if (choose)
-        inspector
-          .querySelector(".dashboard-timeline-choice")
-          ?.focus({ preventScroll: true });
     };
     const draw = () => {
-      dismiss();
+      cancelGesture();
       for (const [id, item] of items)
         if (suppressedMembers.has(item.user_id)) items.delete(id);
       const events = visibleItems();
+      const visibleIds = new Set(events.map((item) => item.id));
       const selected = $("dashboardMapSelection").querySelector(
         ".dashboard-event-detail",
       );
@@ -1364,7 +1528,6 @@ window.CoachDashboard = (() => {
         highlightEvent(null);
         $("dashboardMapSelection").replaceChildren();
       }
-      count.textContent = `${events.length} visible · ${items.size} loaded events across all members`;
       for (const chip of filters.children)
         chip.setAttribute(
           "aria-pressed",
@@ -1395,21 +1558,12 @@ window.CoachDashboard = (() => {
         );
         track.append(marker);
       }
-      const groups = [];
-      for (const item of events) {
-        const x = fraction(Date.parse(item.occurred_at)) * width;
-        const last = groups.at(-1);
-        // Bound each cluster around its first recorded timestamp, not an invented duration.
-        if (last && x - last.x < 48) last.items.push(item);
-        else groups.push({ x, items: [item] });
-      }
-      const singles = new Set(
-        groups
-          .filter((group) => group.items.length === 1)
-          .map((group) => group.items[0].id),
-      );
       // Keep one unique, inspectable occurrence node for every loaded authorized event.
-      for (const item of items.values()) {
+      for (const item of [...items.values()].sort(
+        (a, b) =>
+          Date.parse(a.occurred_at) - Date.parse(b.occurred_at) ||
+          a.id.localeCompare(b.id),
+      )) {
         const mark = text("button", "", "dashboard-timeline-mark");
         mark.type = "button";
         mark.dataset.eventId = item.id;
@@ -1417,7 +1571,7 @@ window.CoachDashboard = (() => {
         mark.dataset.memberId = item.user_id;
         mark.dataset.eventType = item.event_type;
         mark.style.left = `${fraction(Date.parse(item.occurred_at)) * 100}%`;
-        mark.style.top = "34px";
+        mark.style.top = "13px";
         mark.style.backgroundColor =
           activityColors[category(item)] || "#6b7280";
         mark.setAttribute("aria-label", label(item));
@@ -1426,66 +1580,18 @@ window.CoachDashboard = (() => {
           "dashboard-timeline-future-event",
           now >= +start && now < +end && Date.parse(item.occurred_at) > now,
         );
-        mark.hidden = !singles.has(item.id);
-        mark.onpointerenter = (event) => {
-          if (event.pointerType !== "touch") preview([item], mark);
-        };
-        mark.onpointerleave = scheduleDismiss;
+        mark.hidden = !visibleIds.has(item.id);
+        mark.setAttribute("aria-describedby", tooltip.id);
         mark.onfocus = () => {
-          if (!restoringFocus) preview([item], mark);
+          if (mark.isConnected) previewMark(item, mark);
+        };
+        mark.onblur = () => {
+          if (mark.isConnected && interactive()) dismiss();
         };
         mark.onclick = (event) => {
-          if (event.pointerType === "touch") preview([item], mark, true);
-          else select(item);
+          if (event.detail === 0 && mark.isConnected) select(item);
         };
         track.append(mark);
-      }
-      for (const group of groups.filter((group) => group.items.length > 1)) {
-        const cluster = text(
-          "button",
-          String(group.items.length),
-          "dashboard-timeline-cluster",
-        );
-        cluster.type = "button";
-        cluster.classList.toggle(
-          "dashboard-timeline-future-event",
-          now >= +start &&
-            now < +end &&
-            group.items.every((item) => Date.parse(item.occurred_at) > now),
-        );
-        cluster.dataset.eventIds = JSON.stringify(
-          group.items.map((item) => item.id),
-        );
-        cluster.style.left = `${(group.x / width) * 100}%`;
-        cluster.style.top = "34px";
-        cluster.setAttribute(
-          "aria-label",
-          `${group.items.length} events at ${time(group.items[0])}; choose an occurrence`,
-        );
-        cluster.setAttribute(
-          "aria-pressed",
-          String(group.items.some((item) => item.id === selectedEventId)),
-        );
-        cluster.onpointerenter = (event) => {
-          if (event.pointerType !== "touch") preview(group.items, cluster);
-        };
-        cluster.onpointerleave = scheduleDismiss;
-        cluster.onfocus = () => {
-          if (!restoringFocus) preview(group.items, cluster);
-        };
-        cluster.onclick = () => preview(group.items, cluster, true);
-        const swatches = text("span", "", "dashboard-timeline-cluster-colors");
-        for (const type of [...new Set(group.items.map(category))].slice(
-          0,
-          4,
-        )) {
-          const swatch = text("i", "", "dashboard-timeline-swatch");
-          swatch.style.backgroundColor = activityColors[type] || "#6b7280";
-          swatch.setAttribute("aria-hidden", "true");
-          swatches.append(swatch);
-        }
-        cluster.append(swatches);
-        track.append(cluster);
       }
       const step =
         Math.max(
@@ -1550,6 +1656,8 @@ window.CoachDashboard = (() => {
       filters.append(chip);
     }
     for (const action of [
+      "Previous event",
+      "Next event",
       "Pan earlier",
       "Zoom out",
       "Zoom in",
@@ -1559,6 +1667,9 @@ window.CoachDashboard = (() => {
       const button = text(
         "button",
         {
+          "Previous event": "‹",
+          "Next event": "›",
+          "Full day": "↺",
           "Pan earlier": "←",
           "Zoom out": "−",
           "Zoom in": "+",
@@ -1570,6 +1681,22 @@ window.CoachDashboard = (() => {
       button.setAttribute("aria-label", action);
       button.onclick = () => {
         if (!interactive()) return;
+        if (action === "Previous event" || action === "Next event") {
+          const events = visibleItems();
+          const index = events.findIndex((item) => item.id === selectedEventId);
+          const next =
+            index < 0
+              ? action === "Next event"
+                ? 0
+                : events.length - 1
+              : index + (action === "Next event" ? 1 : -1);
+          const item = events[next];
+          if (item) {
+            select(item);
+            revealTimelineEvent(item.id);
+          }
+          return;
+        }
         if (action.startsWith("Pan")) {
           scroll.scrollBy({
             left:
@@ -1597,33 +1724,11 @@ window.CoachDashboard = (() => {
       toolbar.append(button);
     }
     toolbar.append(text("span", "", "dashboard-timeline-zoom-label"));
-    target.append(count, filters, toolbar, scroll, inspector);
+    target.append(filters, toolbar, scroll, tooltip);
     target.onkeydown = (event) => {
       if (!interactive()) return;
-      if (
-        (event.key === "ArrowRight" || event.key === "ArrowLeft") &&
-        event.target.closest(".dashboard-timeline-choice")
-      ) {
-        const choices = [
-          ...inspector.querySelectorAll(".dashboard-timeline-choice"),
-        ];
-        const index = choices.indexOf(
-          event.target.closest(".dashboard-timeline-choice"),
-        );
-        choices[
-          Math.max(
-            0,
-            Math.min(
-              choices.length - 1,
-              index + (event.key === "ArrowRight" ? 1 : -1),
-            ),
-          )
-        ]?.focus();
-        event.preventDefault();
-        return;
-      }
       if (event.key === "Escape") {
-        dismissAndRestoreFocus();
+        dismiss();
         event.preventDefault();
       } else if (
         (event.key === "ArrowRight" || event.key === "ArrowLeft") &&
@@ -1667,14 +1772,14 @@ window.CoachDashboard = (() => {
       }
     };
     draw();
-    // Recompute collision distances after viewport changes, with no leaked observers.
+    // Recompute the time scale after viewport changes, without leaked observers.
     timelineResize?.disconnect();
     timelineResize = new ResizeObserver(() => {
       if (scroll.isConnected) draw();
     });
     timelineResize.observe(scroll);
     timelineInteraction = (enabled) => {
-      dismiss();
+      cancelGesture();
       for (const region of [scroll, filters, toolbar]) region.inert = !enabled;
       if (enabled && scroll.isConnected) {
         // A transient read failure deliberately restores this retained
@@ -1711,11 +1816,11 @@ window.CoachDashboard = (() => {
     for (const old of target.querySelectorAll(":scope > p, :scope > button"))
       old.remove();
     timelineResize?.disconnect();
-    for (const inspector of target.querySelectorAll(
-      ".dashboard-timeline-inspector",
+    for (const tooltip of target.querySelectorAll(
+      ".dashboard-timeline-tooltip",
     )) {
-      inspector.replaceChildren();
-      inspector.hidden = true;
+      tooltip.replaceChildren();
+      tooltip.hidden = true;
     }
     if (!resume) {
       // A new page-one read never mixes with an older inventory or geometry.
@@ -1740,7 +1845,6 @@ window.CoachDashboard = (() => {
     const users = new Map(resume?.users),
       items = resume?.items || new Map();
     let cursor = resume?.cursor,
-      coverage = resume?.coverage,
       pages = 0;
     // Render loaded events; `failure` marks a transiently interrupted partial day.
     const publish = (failure = null) => {
@@ -1751,21 +1855,9 @@ window.CoachDashboard = (() => {
         : cursor
           ? "More events available; partial day. Load more to continue."
           : "Complete loaded pages.";
-      const info = text("details", "", "dashboard-timeline-info");
-      info.append(
-        text("summary", "About this timeline"),
-        text(
-          "p",
-          `All authorized event types · ${date} · device timezone. Occurrence times, not activity duration. Historical aggregate events may not contain individual sets/items; no reconstruction is inferred. Use arrows to navigate, Enter to select, Escape to dismiss. Tap a cluster to choose an event.`,
-        ),
-      );
       status.hidden = !cursor;
-      target.replaceChildren(
-        text("h3", `Day timeline · ${date}`, "dashboard-timeline-heading"),
-        status,
-      );
+      target.replaceChildren(status);
       renderEventTimeline(target, items, users, start, end, adminKey);
-      target.append(info);
       if (cursor) {
         const more = text(
           "button",
@@ -1774,19 +1866,11 @@ window.CoachDashboard = (() => {
         more.type = "button";
         more.onclick = () => {
           more.disabled = true;
-          void loadTimeline(adminKey, { users, items, cursor, coverage });
+          void loadTimeline(adminKey, { users, items, cursor });
         };
         target.append(more);
       }
-      if (coverage && typeof coverage === "object") {
-        const summary = text("details");
-        summary.append(text("summary", "Backend event coverage"));
-        // Coverage is a bounded backend DTO, not raw source activity data.
-        summary.append(
-          text("pre", JSON.stringify(coverage, null, 2).slice(0, 8000)),
-        );
-        target.append(summary);
-      }
+
       filterTimeline();
       syncMap();
     };
@@ -1846,7 +1930,7 @@ window.CoachDashboard = (() => {
           pageIds.add(item.id);
         }
         if (!resume && pages === 0) withheldMembers.clear();
-        coverage = data.coverage || coverage;
+
         for (const user of data.users) users.set(user._id, user);
         const newlyPrivate = new Set();
         for (const item of data.events) {
@@ -2078,12 +2162,7 @@ window.CoachDashboard = (() => {
     chooser.hidden = true;
     chooser.setAttribute("role", "group");
     chooser.setAttribute("aria-label", "Events at this recorded location");
-    const note = text(
-      "p",
-      `Recorded event locations—not live tracking. Dashed straight connections show each member's event order, not a travelled route; gaps over ${GAP_HOURS} hours or events without a recorded shared location break connections.`,
-      "dashboard-map-note",
-    );
-    map.after(chooser, note);
+    map.after(chooser);
     const closeChooser = (restore = true) => {
       chooser.hidden = true;
       chooser.replaceChildren();
@@ -2097,7 +2176,6 @@ window.CoachDashboard = (() => {
       () => {
         closeChooser(false);
         chooser.remove();
-        note.remove();
       },
       { once: true },
     );
@@ -2361,10 +2439,11 @@ window.CoachDashboard = (() => {
           "aria-label",
           `${active.length} events at this recorded location; choose an event`,
         );
-        // The selected event keeps its own exact dot above the count badge.
+        // Selected and previewed events keep their exact dots above the location badge.
         if (active.length > 1)
           for (const { item, marker } of active)
-            if (item.id !== selectedEventId) marker.hidden = true;
+            if (item.id !== selectedEventId && item.id !== previewEventId)
+              marker.hidden = true;
       }
     };
     // A selected event emphasizes its member's sequence and dims, never hides,
@@ -2376,6 +2455,8 @@ window.CoachDashboard = (() => {
       for (const { item, marker } of dots) {
         marker.classList.toggle("dashboard-filtered", !visible({ item }));
         marker.classList.toggle("dashboard-map-dim", dim(item.user_id));
+        marker.dataset.preview = String(item.id === previewEventId);
+        marker.style.zIndex = item.id === previewEventId ? "6" : "";
         marker.setAttribute(
           "aria-pressed",
           String(item.id === selectedEventId),
@@ -2431,7 +2512,8 @@ window.CoachDashboard = (() => {
             i + 1 < longitudes.length ? longitudes[i + 1] : longitudes[0] + 360;
           if (next - longitudes[i] > largestGap) {
             largestGap = next - longitudes[i];
-            arcStart = next % 360;
+            // Avoid rounding endpoint + 360 back past the endpoint.
+            arcStart = longitudes[(i + 1) % longitudes.length];
           }
         }
       }
@@ -2445,18 +2527,81 @@ window.CoachDashboard = (() => {
         });
       else
         instance.fitBounds(L.latLngBounds(coords), {
-          padding: [48, 48],
+          padding: [
+            Math.min(48, map.clientWidth / 4),
+            Math.min(48, map.clientHeight / 4),
+          ],
           maxZoom: 16,
           animate: false,
         });
     };
+    let userViewChanged = false;
+    instance.on("dragstart", () => {
+      userViewChanged = true;
+    });
+    const markUserView = () => {
+      userViewChanged = true;
+    };
+    map.addEventListener(
+      "keydown",
+      (event) => {
+        if (
+          [
+            "+",
+            "-",
+            "=",
+            "_",
+            "ArrowLeft",
+            "ArrowRight",
+            "ArrowUp",
+            "ArrowDown",
+          ].includes(event.key)
+        )
+          markUserView();
+      },
+      { capture: true, signal },
+    );
+    map.addEventListener("dblclick", markUserView, { capture: true, signal });
+    map.addEventListener(
+      "touchstart",
+      (event) => {
+        if (event.touches.length > 1) markUserView();
+      },
+      { passive: true, signal },
+    );
+    map.addEventListener(
+      "touchmove",
+      (event) => {
+        if (event.touches.length > 1) markUserView();
+      },
+      { passive: true, signal },
+    );
+    map.addEventListener(
+      "wheel",
+      () => {
+        userViewChanged = true;
+      },
+      { passive: true },
+    );
+    map
+      .querySelector(".leaflet-control-zoom")
+      ?.addEventListener("click", () => {
+        userViewChanged = true;
+      });
     mapResizeObserver = new ResizeObserver(() => {
+      if (!map.getClientRects().length) return;
       instance.invalidateSize();
       placePins();
       const shown = dots.filter(visible);
       // A desktop fit may leave every event offscreen when the map narrows.
       // Refit only then, preserving deliberate user panning when one is visible.
-      if (shown.length && shown.every(({ marker }) => marker.hidden)) {
+      if (
+        shown.length &&
+        (!userViewChanged ||
+          shown.every(({ fix }) =>
+            offscreen(project(fix, instance.getCenter().lng)),
+          ))
+      ) {
         fitPins(shown);
         if (!selectedMember)
           initialView = {
@@ -2479,6 +2624,7 @@ window.CoachDashboard = (() => {
     more.type = "button";
     const sentinel = text("div", "", "dashboard-gallery-sentinel");
     host.replaceChildren(text("h3", "Gallery"), status, grid, more, sentinel);
+    const paneVisible = () => host.getClientRects().length > 0;
     const entries = new Map();
     const frames = new WeakMap();
     const seenCursors = new Set();
@@ -2497,7 +2643,7 @@ window.CoachDashboard = (() => {
     const imageObserver = new IntersectionObserver(
       (changes) => {
         for (const change of changes)
-          if (change.isIntersecting) {
+          if (change.isIntersecting && paneVisible()) {
             const frame = frames.get(change.target);
             if (frame) {
               if (visible(frame.entry)) void loadFrame(frame);
@@ -2511,12 +2657,17 @@ window.CoachDashboard = (() => {
     );
     const pageObserver = new IntersectionObserver(
       (changes) => {
-        if (changes.some((change) => change.isIntersecting) && !failed)
+        if (
+          paneVisible() &&
+          changes.some((change) => change.isIntersecting) &&
+          !failed
+        )
           void page();
       },
       { rootMargin: "300px" },
     );
     function settleImages() {
+      window.CoachImageViewer?.refresh("gallery");
       const error = [...entries.values()]
         .filter(visible)
         .flatMap((entry) => [
@@ -2603,7 +2754,23 @@ window.CoachDashboard = (() => {
         }
       }
     }
-    async function loadFrame(frame) {
+    const viewerEntry = (frame) => ({
+      key: frame,
+      url: frame.url,
+      filename: frame.photo.name || "Progress photo",
+      caption: frame.caption,
+    });
+    const viewerEntries = () =>
+      [...entries.values()]
+        .filter((entry) => visible(entry) && entry.node.isConnected)
+        .flatMap((entry) => (entry.frames || []).map(viewerEntry));
+    function loadFrame(frame) {
+      if (frame.loading) return frame.loading;
+      const pending = readFrame(frame);
+      if (frame.loading) frame.loading = pending;
+      return pending;
+    }
+    async function readFrame(frame) {
       const { entry } = frame;
       if (
         !live() ||
@@ -2643,11 +2810,14 @@ window.CoachDashboard = (() => {
         frame.button.onclick = () => {
           if (live() && visible(entry))
             window.CoachImageViewer?.open({
+              ...viewerEntry(frame),
               owner: "gallery",
-              url: frame.url,
-              filename: frame.photo.name || "Progress photo",
-              caption: frame.caption,
               trigger: frame.button,
+              getEntries: viewerEntries,
+              acquire: async (target) => {
+                await loadFrame(target);
+                return live() && visible(target.entry) ? target.url : "";
+              },
             });
         };
         imageObserver.unobserve(frame.button);
@@ -2761,8 +2931,8 @@ window.CoachDashboard = (() => {
       } finally {
         loading = false;
         more.disabled = false;
-        if (live() && generation !== scope) void page();
-        else if (live() && !stopped && !failed) {
+        if (live() && paneVisible() && generation !== scope) void page();
+        else if (live() && paneVisible() && !stopped && !failed) {
           const rect = sentinel.getBoundingClientRect();
           if (rect.top < innerHeight + 300 && rect.bottom > -300) void page();
         }
@@ -2820,6 +2990,20 @@ window.CoachDashboard = (() => {
   async function load(_api, adminKey) {
     clear();
     controller = new AbortController();
+    stats = window.CoachStats?.attach({
+      host: $("dashboardStats"),
+      request: (path, signal) =>
+        dashboardFetch(path, {
+          headers: { Authorization: "Bearer " + adminKey },
+          signal,
+          cache: "no-store",
+          redirect: "error",
+        }),
+      getMembers: () =>
+        [...mapMembers.values()].filter((m) => !suppressedMembers.has(m._id)),
+      getSelected: () => selectedMember,
+      onDenial: (id) => forgetMember(id),
+    });
     loadRoster(adminKey);
     if ($("dashboardMapDate")?.type === "date") {
       const dateInput = $("dashboardMapDate");

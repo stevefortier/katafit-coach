@@ -189,6 +189,7 @@ export async function fixture(
     failureMismatch?: "code" | "generation";
     leaseMs?: number;
     discoveryDelayMs?: number;
+    holdClaim?: () => Promise<void>;
     memoryDenial?: { code: string; after: number };
   } = {},
 ) {
@@ -393,6 +394,7 @@ export async function fixture(
           value = { request: current };
       }
     }
+    if (msg.params?.name === "coach_claim_request") await options.holdClaim?.();
     if (options.dropReply && msg.params?.name === "coach_respond") {
       req.socket.destroy();
       return;
@@ -1090,5 +1092,305 @@ test("worker inference waits for the shared admission slot held by autonomy", as
     assert.equal(admission.busy, false);
   } finally {
     await f.close();
+  }
+});
+function upgradeGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+test("manual reservation drains a backend-accepted claim still reported idle without replay", async () => {
+  const claimed = upgradeGate(),
+    release = upgradeGate();
+  const f = await fixture({
+    holdClaim: async () => {
+      claimed.resolve();
+      await release.promise;
+    },
+  });
+  const worker = new Worker({
+    origin: f.origin,
+    token: "synthetic-token",
+    system: "Coach",
+    complete: async () => "One accepted reply",
+  });
+  try {
+    await worker.pollOnce();
+    assert.equal(worker.state, "idle");
+    f.enqueue("Accepted before admission");
+    const poll = worker.pollOnce();
+    await claimed.promise;
+    assert.equal(worker.state, "idle");
+    assert.equal(f.current.status, "claimed");
+    assert.equal(worker.reserveForManualUpdate(), true);
+    const drain = worker.drainForUpdate();
+    await assert.rejects(worker.pollOnce(), /CANCELLED/);
+    assert.equal(f.publications, 0);
+    release.resolve();
+    await drain;
+    await poll;
+    assert.equal(f.publications, 1);
+    assert.equal(f.current.status, "completed");
+    assert.equal(f.calls.filter((c) => c === "coach_claim_request").length, 1);
+    assert.equal(worker.safeToReplace, true);
+    assert.equal(worker.lastError, null);
+  } finally {
+    release.resolve();
+    worker.releaseUpdateQuiesce();
+    await worker.stop();
+    await f.close();
+  }
+});
+
+for (const cancel of [false, true])
+  test(`busy manual queue ${cancel ? "cancels without aborting accepted work and resumes claims" : "drains accepted work before one installation"}`, async () => {
+    const { Updates } = await import("../src/update/updates.js");
+    const f = await fixture();
+    const home = await mkdtemp(tmpdir() + "/coach-busy-manual-queue-");
+    const store = new Store(home);
+    await store.init();
+    await store.save({
+      ...store.publicConfig(),
+      origin: f.origin,
+      token: "synthetic-token",
+      apiKey: "synthetic-key",
+    });
+    const entered = upgradeGate(),
+      release = upgradeGate(),
+      installed = upgradeGate();
+    let applications = 0,
+      inferences = 0;
+    const updates = new Updates(
+      "a".repeat(40),
+      async () => {
+        applications++;
+        installed.resolve();
+      },
+      fetch,
+      undefined,
+      async () => {},
+    );
+    updates.latest = "b".repeat(40);
+    updates.checkedAt = Date.now();
+    updates.manualRestartSupported = true;
+    const app = await admin(
+      store,
+      0,
+      async (_provider, _system, _context, signal) => {
+        if (++inferences === 1) {
+          entered.resolve();
+          await release.promise;
+          assert.equal(signal.aborted, false);
+        }
+        return "Synthetic accepted reply";
+      },
+      undefined,
+      updates,
+    );
+    const headers = {
+      Authorization: "Bearer " + store.secrets.admin,
+      Origin: app.origin,
+      "Content-Type": "application/json",
+    };
+    const post = (path: string, body: unknown) =>
+      fetch(app.origin + path, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+    try {
+      f.enqueue("Accepted work");
+      assert.equal((await post("/api/run", {})).status, 200);
+      await entered.promise;
+      const queued = await post("/api/update/apply", {
+        sha: updates.latest,
+        confirm: true,
+      });
+      assert.equal(queued.status, 202);
+      const admission = await queued.json();
+      assert.equal(applications, 0);
+      assert.equal(f.publications, 0);
+      const duplicate = await post("/api/update/apply", {
+        sha: updates.latest,
+        confirm: true,
+      });
+      assert.equal(duplicate.status, 202);
+      assert.equal((await duplicate.json()).id, admission.id);
+      assert.equal(
+        (await post("/api/update/check", {})).status,
+        409,
+        "queued pin cannot be replaced by a fresh source check",
+      );
+      const refreshed = await (
+        await fetch(app.origin + "/api/update", { headers })
+      ).json();
+      assert.equal(refreshed.manualQueue.id, admission.id);
+      assert.equal(refreshed.manualQueue.phase, "waiting-worker");
+      if (cancel) {
+        assert.equal(
+          (await post("/api/update/cancel", { id: "wrong" })).status,
+          409,
+        );
+        const cancelled = await post("/api/update/cancel", {
+          id: admission.id,
+        });
+        assert.equal(cancelled.status, 200);
+        assert.equal((await cancelled.json()).manualQueue.phase, "cancelled");
+      }
+      release.resolve();
+      const until = Date.now() + 7000;
+      while (Number(f.publications) !== 1 && Date.now() < until)
+        await new Promise((r) => setTimeout(r, 10));
+      assert.equal(f.publications, 1);
+      if (!cancel) {
+        await Promise.race([
+          installed.promise,
+          new Promise((_, reject) => {
+            const t = setTimeout(
+              () => reject(new Error("drain timeout")),
+              2000,
+            );
+            t.unref();
+          }),
+        ]);
+        assert.equal(applications, 1);
+        assert.equal(inferences, 1);
+        assert.equal(
+          f.calls.filter((c) => c === "coach_claim_request").length,
+          1,
+        );
+      } else {
+        assert.equal(applications, 0);
+        f.enqueue("New work after cancellation");
+        const until = Date.now() + 7000;
+        while (f.publications !== 2 && Date.now() < until)
+          await new Promise((r) => setTimeout(r, 10));
+        assert.equal(f.publications, 2);
+        assert.equal(inferences, 2);
+      }
+    } finally {
+      release.resolve();
+      await app.close();
+      await f.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+test("lost manual POST is observed as the same queue without replaying confirmation or work", async () => {
+  const { Updates } = await import("../src/update/updates.js");
+  const f = await fixture();
+  const home = await mkdtemp(tmpdir() + "/coach-lost-manual-queue-");
+  const store = new Store(home);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-key",
+  });
+  const entered = upgradeGate(),
+    release = upgradeGate(),
+    preparing = upgradeGate(),
+    prepared = upgradeGate(),
+    installed = upgradeGate();
+  let applications = 0,
+    preparations = 0;
+  const updates = new Updates(
+    "a".repeat(40),
+    async () => {
+      applications++;
+      installed.resolve();
+    },
+    fetch,
+    undefined,
+    async () => {
+      preparations++;
+      preparing.resolve();
+      await prepared.promise;
+    },
+  );
+  updates.latest = "b".repeat(40);
+  updates.checkedAt = Date.now();
+  updates.manualRestartSupported = true;
+  const app = await admin(
+    store,
+    0,
+    async (_provider, _system, _context, signal) => {
+      entered.resolve();
+      await release.promise;
+      assert.equal(signal.aborted, false);
+      return "One accepted reply";
+    },
+    undefined,
+    updates,
+  );
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  try {
+    f.enqueue("Accepted before lost POST");
+    assert.equal(
+      (
+        await fetch(app.origin + "/api/run", {
+          method: "POST",
+          headers,
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    await entered.promise;
+    const transport = new AbortController();
+    const posting = fetch(app.origin + "/api/update/apply", {
+      method: "POST",
+      headers,
+      signal: transport.signal,
+      body: JSON.stringify({ sha: updates.latest, confirm: true }),
+    });
+    await preparing.promise;
+    transport.abort();
+    await assert.rejects(posting, /abort/i);
+    prepared.resolve();
+    let queue;
+    for (let i = 0; i < 100; i++) {
+      queue = (
+        await (await fetch(app.origin + "/api/update", { headers })).json()
+      ).manualQueue;
+      if (queue) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(queue.phase, "waiting-worker");
+    assert.equal(queue.persistence, "process-local");
+    assert.equal(preparations, 1);
+    assert.equal(applications, 0);
+    const reread = (
+      await (await fetch(app.origin + "/api/update", { headers })).json()
+    ).manualQueue;
+    assert.equal(reread.id, queue.id);
+    assert.equal(reread.sha, updates.latest);
+    release.resolve();
+    await Promise.race([
+      installed.promise,
+      new Promise((_, reject) => {
+        const t = setTimeout(
+          () => reject(new Error("lost response drain timeout")),
+          3000,
+        );
+        t.unref();
+      }),
+    ]);
+    assert.equal(applications, 1);
+    assert.equal(preparations, 1);
+    assert.equal(f.publications, 1);
+    assert.equal(f.calls.filter((c) => c === "coach_claim_request").length, 1);
+  } finally {
+    prepared.resolve();
+    release.resolve();
+    await app.close();
+    await f.close();
+    await rm(home, { recursive: true, force: true });
   }
 });

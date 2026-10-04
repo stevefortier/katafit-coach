@@ -88,14 +88,16 @@ async function noticeState(page: Page) {
       live: bar?.querySelector("[aria-live]")?.getAttribute("aria-live"),
       atomic: bar?.querySelector("[aria-live]")?.getAttribute("aria-atomic"),
       liveText:
-        (bar?.querySelector("[aria-live]") as HTMLElement | null)?.innerText ??
-        "",
-      label: label && label.offsetParent !== null ? label.innerText : "",
+        (bar?.querySelector("[aria-live]") as HTMLElement | null)
+          ?.textContent ?? "",
+      label: label?.textContent ?? "",
       top: box?.top ?? NaN,
       bottom: box?.bottom ?? NaN,
       left: box?.left ?? NaN,
       right: box?.right ?? NaN,
       height: box?.height ?? NaN,
+      messageTop: message?.getBoundingClientRect().top ?? NaN,
+      messageBottom: message?.getBoundingClientRect().bottom ?? NaN,
       hitsNotice: !!centre && !!bar?.contains(centre),
       scrollOverflow: bar ? bar.scrollWidth - bar.clientWidth : NaN,
       background: style?.backgroundColor ?? "",
@@ -141,14 +143,21 @@ function assertShown(
     detail,
   );
   assert.equal(state.atomic, "true", detail);
-  assert.match(state.liveText, new RegExp("^" + label), detail);
+  assert.ok(state.liveText.includes(label), detail);
   assert.ok(state.height > 0, detail);
+  assert.ok(
+    state.messageTop >= state.top && state.messageBottom <= state.bottom,
+    "single-line text stays within topbar slot " + detail,
+  );
   assert.ok(state.hitsNotice, "notice is visible and uncovered " + detail);
   assert.equal(state.radius, "0px", "square-edged " + detail);
   assert.ok(state.left >= 0 && state.right <= state.viewportWidth, detail);
   assert.ok(state.scrollOverflow <= 0, "no clipped overflow " + detail);
   assert.ok(state.pageWidth <= state.viewportWidth, "no page overflow");
-  assert.ok(state.top >= state.headerBottom - 0.5, "below header " + detail);
+  assert.ok(
+    state.top < state.headerBottom && state.bottom <= state.headerBottom,
+    "inside topbar " + detail,
+  );
   assert.ok(state.bottom <= state.viewportHeight, "in viewport " + detail);
   assert.ok(state.height <= state.viewportHeight * 0.5, "bounded " + detail);
   assert.equal(state.afterHeader, true, detail);
@@ -179,7 +188,10 @@ function assertCleared(state: NoticeState) {
   assert.equal(state.text, "", detail);
   assert.equal(state.severity, null, detail);
   assert.equal(state.label, "", detail);
-  assert.equal(state.height, 0, "empty notice reserves no gap " + detail);
+  assert.ok(
+    state.height <= 32,
+    "empty notice retains the same header slot " + detail,
+  );
 }
 
 test("Studio shared notices sit above the primary tabs with explicit semantic severity", async () => {
@@ -219,7 +231,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
   const evidence = process.env.COACH_EVIDENCE_DIR;
   if (evidence) await mkdir(evidence, { recursive: true });
   try {
-    for (const width of [320, 390, 1440]) {
+    for (const width of [320, 390, 760, 1440]) {
       const context = await browser.newContext({
         viewport: { width, height: 640 },
         isMobile: width < 600,
@@ -398,6 +410,24 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       await waitText(literal);
       state = await noticeState(page);
       assertShown(state, "success", "Success", literal);
+      const headerHeight = await page
+        .locator("header")
+        .evaluate((n) => n.getBoundingClientRect().height);
+      await page.locator("#noticeBar").focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await page.locator("#noticeDetails").isVisible(), true);
+      assert.equal(
+        await page.locator("#noticeDetailsText").textContent(),
+        `Success: ${literal}`,
+      );
+      await page.keyboard.press("Escape");
+      assert.equal(
+        await page
+          .locator("header")
+          .evaluate((n) => n.getBoundingClientRect().height),
+        headerHeight,
+      );
+      await page.locator("#connect").focus();
       assert.equal(await page.evaluate(() => "__noticeXss" in window), false);
       assert.equal(
         await page.locator("#noticeBar img, #noticeBar b").count(),
@@ -475,7 +505,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       );
       assert.ok(state.scrollY > 150, "no jump to top " + JSON.stringify(state));
       assert.ok(
-        Math.abs(state.top - state.headerBottom) <= 1,
+        state.bottom <= state.headerBottom && state.top < state.headerBottom,
         "sticks directly beneath the dynamic header " + JSON.stringify(state),
       );
       // Pre-existing: Save is disabled while its lifecycle request runs, so
@@ -506,7 +536,9 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       state = await noticeState(page);
       assertShown(state, "error", "Error", conflict);
       assert.ok(state.scrollY > 150);
-      assert.ok(Math.abs(state.top - state.headerBottom) <= 1);
+      assert.ok(
+        state.bottom <= state.headerBottom && state.top < state.headerBottom,
+      );
       assert.ok(["save", ""].includes(state.active), JSON.stringify(state));
       assert.equal(
         await page.locator("#name").inputValue(),
@@ -601,7 +633,8 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       assert.equal(state.severity, "warning");
       assertAboveNav(state);
       assert.ok(state.hitsNotice);
-      await page.locator("#diagnosticsTab").click();
+      await page.locator("#settingsTab").click();
+      await page.locator("#settings-log-tab").click();
       await page.locator("#logCopy").click();
       const copied =
         "Diagnostic JSON copied. Model-visible health and meal text may remain even after screening; inspect and redact before sharing.";
@@ -610,7 +643,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       assertShown(state, "warning", "Warning", copied);
       assertAboveNav(state);
       assert.equal(state.active, "logCopy");
-      assert.match(state.route, /^\/diagnostics/);
+      assert.match(state.route, /^\/settings\?section=log/);
 
       // Clearing removes the colored surface completely.
       await page.evaluate(() => notice(""));

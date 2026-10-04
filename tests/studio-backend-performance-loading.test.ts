@@ -68,8 +68,15 @@ test("Diagnostics tabs default to Logs and retain one pending snapshot across ke
     ["ArrowLeft", "logs"],
   ]) {
     await page.keyboard.press(key);
-    await page.waitForURL((url) => url.search === "?section=" + section);
-    assert.equal(new URL(page.url()).search, "?section=" + section);
+    await page.waitForURL(
+      (url) =>
+        url.search ===
+        "?section=log" + (section === "performance" ? "&view=performance" : ""),
+    );
+    assert.equal(
+      new URL(page.url()).search,
+      "?section=log" + (section === "performance" ? "&view=performance" : ""),
+    );
     assert.equal(
       await page
         .locator("#diagnostics-" + section + "-tab")
@@ -93,7 +100,7 @@ test("Diagnostics tabs default to Logs and retain one pending snapshot across ke
   assert.equal(await page.locator("#backendPerformance").isVisible(), true);
   assert.equal(
     await page.locator("#performanceWindow").innerText(),
-    "Loading activity snapshot…",
+    "Loading log snapshot…",
   );
   assert.equal(
     await page.evaluate(() => (window as any).pendingLogs.length),
@@ -131,7 +138,7 @@ test("performance drilldown opens Logs across levels and preserves filters and p
   const { page } = await setup(t);
   await settle(page, snapshot);
   await page.locator("#performanceRows button").click();
-  assert.equal(new URL(page.url()).search, "?section=logs");
+  assert.equal(new URL(page.url()).search, "?section=log");
   assert.equal(await page.locator("#logsView").isVisible(), true);
   assert.equal(await page.locator("#performanceClear").isVisible(), true);
   assert.equal(
@@ -168,7 +175,7 @@ test("invalid Diagnostics section falls back to Logs and locked Performance deep
   await page.waitForFunction(() => (window as any).pendingLogs.length === 1);
   assert.equal(await page.locator("#backendPerformance").isVisible(), true);
   assert.equal(await page.locator("#logsView").isVisible(), false);
-  assert.equal(new URL(page.url()).search, "?section=performance");
+  assert.equal(new URL(page.url()).search, "?section=log&view=performance");
 });
 
 for (const section of ["performance", "logs"]) {
@@ -314,9 +321,10 @@ test("loaded refresh retains and labels the last snapshot through failure and ca
     1,
   );
   await page.locator("#logRefresh").click();
-  await page.locator("#settingsTab").click();
+  await page.locator("#settings-katafit-tab").click();
   await settle(page, { entries: [] });
-  await page.locator("#diagnosticsTab").click();
+  await page.locator("#settingsTab").click();
+  await page.locator("#settings-log-tab").click();
   assert.match(
     await page.locator("#performanceWindow").innerText(),
     /Last loaded snapshot.*1 receipts/,
@@ -369,7 +377,8 @@ test("pause, hidden view and lock fence late reads and reset snapshot eligibilit
   assert.equal(await page.locator("#performanceRows").textContent(), "");
   await page.locator("#adminKey").fill(adminKey);
   await page.locator("#unlock").click();
-  await page.locator("#diagnosticsTab").click();
+  await page.locator("#settingsTab").click();
+  await page.locator("#settings-log-tab").click();
   await controls(page);
   await blocked(page);
   await page.locator("#logRefresh").click();

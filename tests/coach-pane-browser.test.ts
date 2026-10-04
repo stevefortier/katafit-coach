@@ -304,7 +304,8 @@ test(
       });
       assert.equal(chrome.headerTop, 0, "workspace header remains sticky");
       assert.ok(
-        chrome.noticeTop >= chrome.headerBottom && chrome.noticeBottom < 200,
+        chrome.noticeTop < chrome.headerBottom &&
+          chrome.noticeBottom <= chrome.headerBottom,
         "notice sticks beneath header",
       );
       await page
@@ -569,7 +570,6 @@ test(
       assert.equal(await page.locator("#coachTab").count(), 0);
       assert.deepEqual(await primaryNav(page), [
         "Dojo",
-        "Activity",
         "Server Settings",
         "Coach Settings",
       ]);
@@ -586,7 +586,8 @@ test(
       );
       assert.equal(await launcher.getAttribute("aria-expanded"), "false");
       await page.locator("#settingsTab").click();
-      await page.locator("#diagnosticsTab").click();
+      await page.locator("#settingsTab").click();
+      await page.locator("#settings-log-tab").click();
       await page.waitForTimeout(600);
       assert.equal(h.counts.tickets, 0, "unlock and navigation never start Pi");
       assert.equal(await paneMode(page), "closed");
@@ -608,7 +609,7 @@ test(
         "native session status is not the worker pill",
       );
       assert.equal(h.counts.tickets, 1);
-      assert.equal(new URL(page.url()).pathname, "/diagnostics");
+      assert.equal(new URL(page.url()).pathname, "/settings");
       assert.deepEqual(h.errors, []);
     } finally {
       await h.close();
@@ -664,7 +665,8 @@ test(
       for (const tab of [
         "#settingsTab",
         "#coachSettingsTab",
-        "#diagnosticsTab",
+        "#settingsTab",
+        "#settings-log-tab",
         "#dashboardTab",
       ]) {
         await page.locator(tab).click();
@@ -790,7 +792,8 @@ test(
       for (const tab of [
         "#settingsTab",
         "#coachSettingsTab",
-        "#diagnosticsTab",
+        "#settingsTab",
+        "#settings-log-tab",
         "#dashboardTab",
       ])
         await page.locator(tab).click();
@@ -972,7 +975,8 @@ test(
         await page.locator("#name").inputValue(),
         "Unsaved pane draft",
       );
-      await page.locator("#diagnosticsTab").click();
+      await page.locator("#settingsTab").click();
+      await page.locator("#settings-log-tab").click();
       await page.locator("#coachPaneExpand").click();
       await page.waitForTimeout(300);
       const hidden = h.counts.logs;
@@ -1063,7 +1067,9 @@ test(
       await page.locator("#settingsTab").click();
       await settingsTab(page, "Persona");
       await page.locator("#name").fill("History draft");
-      await page.locator("#diagnosticsTab").click();
+      await page.locator("#settingsTab").click();
+      await page.locator("#settings-log-tab").click();
+      await page.goBack();
       await page.goBack();
       await page
         .getByRole("tabpanel", { name: "Persona", exact: true })
@@ -1071,14 +1077,15 @@ test(
       assert.equal(await page.locator("#name").inputValue(), "History draft");
       assert.equal(await paneMode(page), "docked");
       await page.goForward();
-      await page.waitForURL("**/diagnostics**");
+      await page.goForward();
+      await page.waitForURL("**/settings?section=log**");
       const members = h.counts.members;
       await page.evaluate(() =>
         history.pushState(null, "", "/chat/member/legacy-forward"),
       );
       await page.goBack();
       await page.goForward();
-      await page.waitForURL("**/diagnostics**");
+      await page.waitForURL("**/settings?section=log**");
       assert.equal(await paneMode(page), "expanded");
       assert.equal(h.counts.members, members);
       assert.equal(h.counts.tickets, 1, "history navigation keeps the session");
@@ -1208,7 +1215,8 @@ test(
       for (const tab of [
         "#settingsTab",
         "#coachSettingsTab",
-        "#diagnosticsTab",
+        "#settingsTab",
+        "#settings-log-tab",
         "#dashboardTab",
       ])
         await page.locator(tab).click();

@@ -17,7 +17,7 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
       const response = await fetch(app.origin + path);
       assert.equal(response.status, 200);
       assert.match(response.headers.get("content-type")!, /text\/html/);
-      assert.match(await response.text(), /id="diagnosticsTab"/);
+      assert.match(await response.text(), /id="serverSettingsTabs"/);
     }
     browser = await chromium.launch({
       executablePath: process.env.CHROME_PATH || "/usr/bin/google-chrome",
@@ -35,14 +35,28 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
     await page.locator("#unlock").click();
     await loaded;
     await page.locator("#logRefresh").waitFor({ state: "visible" });
+    assert.equal(
+      await page.locator("#diagnosticsTab").count(),
+      0,
+      "Activity is not a primary tab",
+    );
+    assert.equal(await page.locator(".studio-tabs > button").count(), 3);
+    assert.equal(
+      await page.locator("#serverSettingsTabs #settings-log-tab").innerText(),
+      "Log",
+    );
+    assert.equal(await page.locator("#settingsPanel #diagnostics").count(), 1);
+    assert.equal(await page.locator("#diagnostics h2").textContent(), "Log");
+    assert.equal(
+      await page.locator("#settingsTab").getAttribute("aria-pressed"),
+      "true",
+    );
+    assert.equal(
+      await page.locator("#settings-log-tab").getAttribute("aria-selected"),
+      "true",
+    );
     assert.equal(await page.locator("#logsView > summary").count(), 0);
-    for (const id of [
-      "settingsPanel",
-      "save",
-      "export",
-      "revision",
-      "coachPanel",
-    ])
+    for (const id of ["save", "export", "revision", "coachPanel"])
       assert.equal(await page.locator("#" + id).isVisible(), false);
     await page.reload();
     await page.locator("#logRefresh").waitFor({ state: "visible" });
@@ -53,18 +67,40 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
     ]) {
       await page.goto(app.origin + legacy);
       await page.locator("#logRefresh").waitFor({ state: "visible" });
-      assert.equal(new URL(page.url()).pathname, "/diagnostics");
-      assert.equal(new URL(page.url()).search + new URL(page.url()).hash, "");
+      assert.equal(new URL(page.url()).pathname, "/settings");
+      assert.equal(
+        new URL(page.url()).search + new URL(page.url()).hash,
+        "?section=log",
+      );
+    }
+    for (const view of ["logs", "performance"]) {
+      await page.goto(app.origin + "/diagnostics?section=" + view);
+      await page.locator("#logRefresh").waitFor({ state: "visible" });
+      assert.equal(new URL(page.url()).pathname, "/settings");
+      assert.equal(
+        new URL(page.url()).search,
+        "?section=log" + (view === "performance" ? "&view=performance" : ""),
+      );
+      assert.equal(
+        await page
+          .locator("#diagnostics-" + view + "-tab")
+          .getAttribute("aria-selected"),
+        "true",
+      );
     }
     await page.goto(app.origin + "/settings?section=persona#logsView");
     await page.locator("#name").waitFor({ state: "visible" });
     await page.locator("#name").fill("Unsaved diagnostic detour");
-    await page.locator("#diagnosticsTab").click();
+    await page.locator("#settingsTab").click();
+    await page.locator("#settings-log-tab").click();
     await page.goBack();
+    await page.goBack();
+    await page.locator("#name").waitFor({ state: "visible" });
     assert.equal(
       await page.locator("#name").inputValue(),
       "Unsaved diagnostic detour",
     );
+    await page.goForward();
     await page.goForward();
     await page.locator("#logRefresh").waitFor({ state: "visible" });
     const evidence =
@@ -83,7 +119,8 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
         "coachLauncher",
         "dashboardTab",
         "settingsTab",
-        "diagnosticsTab",
+        "coachSettingsTab",
+        "settings-log-tab",
         "logRefresh",
         "logPause",
         "logCopy",
@@ -91,36 +128,45 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
       ]) {
         const box = await page.locator("#" + id).boundingBox();
         assert.ok(
-          box && box.x >= 0 && box.x + box.width <= width && box.height >= 44,
+          box &&
+            box.x >= 0 &&
+            box.x + box.width <= width &&
+            box.height >= (id === "coachLauncher" && width <= 700 ? 36 : 44),
           id,
         );
       }
       await page.screenshot({
-        path: `${evidence}/synthetic-diagnostics-${width}.png`,
+        path: `${evidence}/synthetic-settings-log-${width}.png`,
         fullPage: true,
       });
     }
     await page.setViewportSize({ width: 1280, height: 900 });
-    // A docked Coach pane leaves Activity visible, so polling continues.
+    // A docked Coach pane leaves Log visible, so polling continues.
     await page.locator("#coachLauncher").click();
     const docked = requests;
     await page.waitForTimeout(2200);
-    assert.ok(requests > docked, "docked Coach keeps Activity polling");
-    for (const target of ["#settingsTab", "#coachPaneExpand", "#lockStudio"]) {
+    assert.ok(requests > docked, "docked Coach keeps Log polling");
+    for (const target of [
+      "#settings-katafit-tab",
+      "#coachPaneExpand",
+      "#lockStudio",
+    ]) {
       await page.locator(target).click();
       const stopped = requests;
       await page.waitForTimeout(2200);
       assert.equal(requests, stopped, target + " stops polling");
       if (target === "#coachPaneExpand")
         await page.locator("#coachPaneExpand").click();
-      if (target !== "#lockStudio")
-        await page.locator("#diagnosticsTab").click();
+      if (target !== "#lockStudio") {
+        await page.locator("#settingsTab").click();
+        await page.locator("#settings-log-tab").click();
+      }
     }
     await page.goto(
       app.origin + "/settings?section=diagnostics#" + store.secrets.admin,
     );
     await page.locator("#logRefresh").waitFor({ state: "visible" });
-    assert.equal(new URL(page.url()).pathname, "/diagnostics");
+    assert.equal(new URL(page.url()).pathname, "/settings");
     assert.equal(new URL(page.url()).hash, "");
     // Hold a real browser fetch to prove abort and late-result fencing on hide.
     await page.evaluate(() => {
@@ -137,8 +183,9 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
         return original(input, init);
       };
     });
+    await page.locator("#settings-katafit-tab").click();
     await page.locator("#settingsTab").click();
-    await page.locator("#diagnosticsTab").click();
+    await page.locator("#settings-log-tab").click();
     await page.evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,

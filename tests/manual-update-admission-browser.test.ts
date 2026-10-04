@@ -10,7 +10,7 @@ import { Updates } from "../src/update/updates.js";
 import { settingsTab } from "./helpers/settings-navigation.js";
 
 test(
-  "delayed preparation preserves pending and exposes actual idle-poll admission rejection",
+  "delayed preparation preserves pending and exposes cancellable idle-poll queue",
   { timeout: 15000 },
   async () => {
     const home = await mkdtemp(tmpdir() + "/coach-admission-browser-");
@@ -131,26 +131,34 @@ test(
         timeout: 3000,
       });
       releasePreparation!();
-      assert.equal((await response).status(), 409);
+      assert.equal((await response).status(), 202);
       await page.waitForFunction(() =>
         document
-          .querySelector("#updateOutcome")
-          ?.textContent?.includes("UPDATE_BUSY"),
+          .querySelector("#updateQueueStatus")
+          ?.textContent?.includes("Waiting for accepted worker work"),
       );
       const data = await (
         await fetch(app.origin + "/api/update", { headers })
       ).json();
-      assert.equal(data.lastAdmission.reason, "UPDATE_BUSY");
-      assert.equal(data.lastAdmission.state, "rejected");
+      assert.equal(data.manualQueue.phase, "waiting-worker");
+      assert.equal(data.manualQueue.persistence, "process-local");
       assert.equal(data.preparing, false);
-      assert.doesNotMatch(data.guidance, /Preparing and validating/);
       assert.equal(applications, 0);
-      assert.equal(cancellations, 1);
-      assert.equal(
-        (await (await fetch(app.origin + "/api/status", { headers })).json())
-          .state,
-        "idle",
+      assert.equal(cancellations, 0);
+      assert.equal(await page.locator("#updateApply").isDisabled(), true);
+      await page.reload();
+      await page.locator("#studio").waitFor({ state: "visible" });
+      await page.locator("#settingsTab").click();
+      await settingsTab(page, "Updates");
+      await page.locator("#updateQueueCancel").waitFor({ state: "visible" });
+      await page.locator("#updateQueueCancel").click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#updateQueueStatus")
+          ?.textContent?.includes("Cancelled"),
       );
+      assert.equal(cancellations, 1);
+      assert.equal(applications, 0);
       assert.equal(await page.locator("#updateApply").isEnabled(), true);
     } finally {
       releasePreparation?.();

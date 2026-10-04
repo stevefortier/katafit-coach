@@ -123,22 +123,41 @@ function notice(message, severity) {
   $("noticeLabel").textContent = tone ? noticeLabels[tone] : "";
   $("noticeLabel").hidden = !tone;
   $("notice").textContent = tone ? message : "";
+  $("noticeDetailsText").textContent = tone
+    ? `${noticeLabels[tone]}: ${message}`
+    : "";
+  $("noticeBar").tabIndex = tone ? 0 : -1;
+  $("noticeBar").setAttribute(
+    "aria-label",
+    tone
+      ? `${noticeLabels[tone]}: ${message}. Read full status message`
+      : "Status messages",
+  );
+  if (!tone && $("noticeDetails").matches(":popover-open"))
+    $("noticeDetails").hidePopover();
   syncStickyOffsets();
 }
-// The header wraps on narrow screens; the notice sticks directly beneath it
-// and anchored scrolling clears both.
+$("noticeBar").onclick = () => {
+  if ($("noticeBar").dataset.severity) $("noticeDetails").showPopover();
+};
+$("noticeBar").onkeydown = (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    $("noticeBar").click();
+  }
+};
+$("noticeDetailsClose").onclick = () => {
+  $("noticeDetails").hidePopover();
+  $("noticeBar").focus();
+};
+// The notice shares the fixed-height header; it owns no extra offset.
 function syncStickyOffsets() {
   const root = document.documentElement.style;
   root.setProperty(
     "--header-offset",
     document.querySelector("header").offsetHeight + "px",
   );
-  root.setProperty(
-    "--notice-offset",
-    $("noticeBar").dataset.severity
-      ? $("noticeBar").offsetHeight + 8 + "px"
-      : "0px",
-  );
+  root.setProperty("--notice-offset", "0px");
 }
 if (typeof ResizeObserver === "function") {
   const stickyObserver = new ResizeObserver(syncStickyOffsets);
@@ -1433,7 +1452,7 @@ let logData = { entries: [] },
   logTimer,
   logController;
 const settingsGroups = {
-  settings: ["katafit", "models", "updates"],
+  settings: ["katafit", "models", "updates", "log"],
   coachSettings: [
     "persona",
     "preview",
@@ -1451,9 +1470,17 @@ let settingsSection = "katafit";
 function settingsPath() {
   return settingsSection === "katafit"
     ? "/settings"
-    : "/settings?section=" + settingsSection;
+    : "/settings?section=" +
+        settingsSection +
+        (settingsSection === "log" && diagnosticsSection === "performance"
+          ? "&view=performance"
+          : "");
 }
-function selectSettingsSection(section, navigate = true) {
+function selectSettingsSection(
+  section,
+  navigate = true,
+  refreshVisibility = true,
+) {
   // The former Connection section's links open its Kata.fit successor.
   if (section === "connection") section = "katafit";
   settingsSection = settingsSections.includes(section) ? section : "katafit";
@@ -1464,12 +1491,14 @@ function selectSettingsSection(section, navigate = true) {
     settingsGroup(settingsSection) !== "coachSettings";
   for (const name of settingsSections) {
     const selected = name === settingsSection;
-    $(name).hidden = !selected;
+    $(name === "log" ? "diagnostics" : name).hidden = !selected;
     const tab = $("settings-" + name + "-tab");
     tab.setAttribute("aria-selected", String(selected));
     tab.tabIndex = selected ? 0 : -1;
     tab.classList.toggle("secondary", !selected);
   }
+  $("settingsSaveActions").hidden = settingsSection === "log";
+  $("settingsSaveHint").hidden = settingsSection === "log";
   if (navigate) navigateStudio(settingsPath());
   if (settingsSection === "skills" && key && !skillsData)
     void loadSkills().catch((error) => {
@@ -1479,7 +1508,7 @@ function selectSettingsSection(section, navigate = true) {
   if (settingsSection === "autonomy" && key) void loadAutonomy(true);
   if (historyVisible()) void loadPersonaHistory();
   if (skillHistoryVisible()) void loadSkillHistory();
-  logVisibility();
+  if (refreshVisibility) logVisibility();
   updateRouteEntry();
 }
 for (const section of settingsSections) {
@@ -1816,7 +1845,7 @@ function selectDiagnosticsSection(section, navigate = true) {
     tab.tabIndex = selected ? 0 : -1;
     tab.classList.toggle("secondary", !selected);
   }
-  if (navigate) navigateStudio("/diagnostics?section=" + diagnosticsSection);
+  if (navigate) navigateStudio(settingsPath());
 }
 for (const [index, section] of diagnosticsSections.entries()) {
   const tab = $("diagnostics-" + section + "-tab");
@@ -2671,7 +2700,6 @@ const paneStateKey = "katafit-coach-pane",
   pageMin = 480,
   tabLabels = {
     dashboard: "Dojo",
-    diagnostics: "Activity",
     settings: "Server Settings",
     coachSettings: "Coach Settings",
   };
@@ -2943,25 +2971,27 @@ function studioRoute() {
     return { tab: studioTab || "dashboard", chat: true };
   if (path === "/diagnostics")
     return {
-      tab: "diagnostics",
-      section: new URLSearchParams(location.search).get("section"),
+      tab: "settings",
+      section: "log",
+      view: new URLSearchParams(location.search).get("section"),
+      legacy: true,
     };
   if (path === "/settings") {
     const section =
       new URLSearchParams(location.search).get("section") ??
       (location.hash === "#logsView" ? "diagnostics" : location.hash.slice(1));
     return section === "diagnostics"
-      ? { tab: "diagnostics", legacy: true }
-      : { tab: settingsGroup(section), section };
+      ? { tab: "settings", section: "log", legacy: true }
+      : {
+          tab: settingsGroup(section),
+          section,
+          view: new URLSearchParams(location.search).get("view"),
+        };
   }
   return { tab: "dashboard" };
 }
 function studioPath(tab) {
-  return tab === "dashboard"
-    ? "/dashboard"
-    : tab === "diagnostics"
-      ? "/diagnostics?section=" + diagnosticsSection
-      : settingsPath();
+  return tab === "dashboard" ? "/dashboard" : settingsPath();
 }
 function navigateStudio(path) {
   if (location.pathname + location.search + location.hash !== path)
@@ -2973,14 +3003,22 @@ function restoreStudioRoute(restartDiagnostics = false) {
     // Expand before selecting so a covered Dojo defers its reads.
     paneOpen = paneExpanded = true;
     history.replaceState(null, "", studioPath(route.tab));
-  } else if (route.legacy) history.replaceState(null, "", "/diagnostics");
-  if (route.tab === "diagnostics" && !route.chat)
-    selectDiagnosticsSection(route.section, false);
+  }
+  if (route.section === "log" && !route.chat)
+    selectDiagnosticsSection(route.view, false);
+  if (route.legacy)
+    history.replaceState(
+      null,
+      "",
+      "/settings?section=log" +
+        (diagnosticsSection === "performance" ? "&view=performance" : ""),
+    );
   if (
     (route.chat ? studioTab !== route.tab : true) &&
     (restartDiagnostics ||
-      route.tab !== "diagnostics" ||
-      $("diagnostics").hidden)
+      route.section !== "log" ||
+      settingsSection !== "log" ||
+      $("settingsPanel").hidden)
   )
     selectStudioTab(route.tab, false, route.chat ? undefined : route.section);
   if (route.chat) openPane(true);
@@ -3003,17 +3041,15 @@ function selectStudioTab(
 ) {
   const dashboard = tab === "dashboard";
   if (tab === "settings" || tab === "coachSettings")
-    selectSettingsSection(section, false);
+    selectSettingsSection(section, false, false);
   studioTab = tab;
   $("dashboardPanel").hidden = !dashboard;
   $("settingsPanel").hidden = tab !== "settings" && tab !== "coachSettings";
-  $("diagnostics").hidden = tab !== "diagnostics";
   if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
     ["dashboardTab", dashboard],
     ["settingsTab", tab === "settings"],
     ["coachSettingsTab", tab === "coachSettings"],
-    ["diagnosticsTab", tab === "diagnostics"],
   ]) {
     $(id).setAttribute("aria-pressed", String(active));
     $(id).classList.toggle("secondary", !active);
@@ -3044,9 +3080,12 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", () => CoachDashboard.clear());
 $("settingsTab").onclick = () => selectStudioTab("settings");
 $("coachSettingsTab").onclick = () => selectStudioTab("coachSettings");
-$("diagnosticsTab").onclick = () => selectStudioTab("diagnostics");
 const logActive = () =>
-  key && !$("diagnostics").hidden && !document.hidden && !pageCovered();
+  key &&
+  !$("settingsPanel").hidden &&
+  !$("diagnostics").hidden &&
+  !document.hidden &&
+  !pageCovered();
 function filteredLogs() {
   return logData.entries.filter(
     (e) =>
@@ -3068,10 +3107,10 @@ const performanceRate = BackendPerformance.rate;
 function logReadStatus() {
   if (!performanceData)
     return logLoading
-      ? "Loading activity snapshot…"
+      ? "Loading log snapshot…"
       : logReadError
-        ? "Unable to load activity snapshot. Use Refresh to retry."
-        : "Activity snapshot not loaded. Use Refresh to load.";
+        ? "Unable to load log snapshot. Use Refresh to retry."
+        : "Log snapshot not loaded. Use Refresh to load.";
   return logLoading
     ? "Last loaded snapshot · Refreshing…"
     : logReadError
@@ -3471,9 +3510,42 @@ function safeUpdateOperation(outcome) {
       : {}),
   };
 }
+function manualUpdateQueue(data = updateData) {
+  const queue = data?.manualQueue;
+  return queue &&
+    sourceSha(queue.sha) &&
+    typeof queue.id === "string" &&
+    queue.id.length <= 100 &&
+    [
+      "waiting-worker",
+      "waiting-publication",
+      "waiting-native",
+      "stopping",
+      "installing",
+      "accepted",
+      "cancelled",
+      "failed",
+    ].includes(queue.phase)
+    ? queue
+    : undefined;
+}
+function manualUpdateWaiting(data = updateData) {
+  return manualUpdateQueue(data)?.phase.startsWith("waiting-") === true;
+}
+function manualUpdateActive(data = updateData) {
+  const queue = manualUpdateQueue(data);
+  return (
+    !!queue &&
+    (queue.phase.startsWith("waiting-") ||
+      ["stopping", "installing"].includes(queue.phase))
+  );
+}
 function renderHeaderStatus() {
   if (!key || $("studio").hidden) return;
-  if (lifecycleBusy || lifecycleUncertain || serverTransition) {
+  if (manualUpdateWaiting()) {
+    $("state").textContent = "QUEUED";
+    $("state").dataset.tone = "busy";
+  } else if (lifecycleBusy || lifecycleUncertain || serverTransition) {
     $("state").textContent = "APPLYING";
     $("state").dataset.tone = "busy";
   } else if (
@@ -3518,7 +3590,31 @@ function renderUpdate() {
     historyBusy || updatePending || data?.applying === true;
   if (!data) return;
 
+  const queue = manualUpdateQueue(data);
+  const queueLabels = {
+    "waiting-worker": "Waiting for accepted worker work to finish.",
+    "waiting-publication":
+      "Waiting for authoritative publication receipts; nothing will be discarded or replayed.",
+    "waiting-native":
+      "Waiting for native Pi to finish and close. Finish the turn, then use Close / Stop Pi.",
+    stopping:
+      "Confirming safe worker Stop. Installation can no longer be cancelled.",
+    installing: "Submitting the prepared installation to the launcher.",
+    accepted:
+      "Launcher accepted the installation. Verify installed revision and restart status.",
+    cancelled:
+      "Cancelled queued upgrade. New worker claims may resume; accepted work was not aborted.",
+    failed:
+      "Queued upgrade could not be admitted. Verify worker safety and launcher status before retrying.",
+  };
+  $("updateQueueStatus").hidden = !queue;
+  $("updateQueueStatus").textContent = queue
+    ? `${queueLabels[queue.phase]} Target ${queue.sha.slice(0, 12)}. Waiting intent is process-local and does not survive service restart.`
+    : "";
+  $("updateQueueCancel").hidden = !manualUpdateWaiting(data);
+  $("updateQueueCancel").disabled = updateRequest;
   const locked =
+    manualUpdateActive(data) ||
     updatePending ||
     data.applying ||
     data.recovering ||
@@ -3663,18 +3759,25 @@ async function refreshUpdate(check = false) {
   updateController = controller;
   renderUpdate();
   try {
-    const data = await api(
-      check ? "update/check" : "update",
-      check ? {} : undefined,
-      AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
-    );
+    const signal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(15000),
+    ]);
+    // Observe an existing queued pin before asking for source discovery. A
+    // reload/lost POST never submits apply again or overwrites the queued target.
+    let data = await api("update", undefined, signal);
+    if (check && !manualUpdateActive(data) && !data.preparing && !data.applying)
+      data = await api("update/check", {}, signal);
     if (controller.signal.aborted || generation !== authGeneration) return;
     if (updateInitialRevision === undefined)
       updateInitialRevision = data.installed;
     updateData = data;
 
     updatePending =
-      updateApplyRequest || data.preparing === true || data.applying === true;
+      updateApplyRequest ||
+      manualUpdateActive(data) ||
+      data.preparing === true ||
+      data.applying === true;
     updateError = "";
   } catch {
     if (!controller.signal.aborted && generation === authGeneration)
@@ -3714,6 +3817,17 @@ async function refreshUpdate(check = false) {
       );
   }
 }
+action("updateQueueCancel", async () => {
+  const queue = manualUpdateQueue();
+  if (!queue || !manualUpdateWaiting()) return;
+  try {
+    await api("update/cancel", { id: queue.id });
+  } catch (error) {
+    notice(error.message, "error");
+  }
+  await status();
+  await refreshUpdate();
+});
 action("updateCheck", async () => {
   $("updateConfirm").hidden = true;
   await refreshUpdate(true);
@@ -3741,7 +3855,7 @@ action("updateApply", async () => {
   }
   if (updateWorkerBlocked) {
     notice(
-      "Finish or cancel preview and stop native Pi before upgrading. Coach will be restarted automatically after confirmation.",
+      "Finish or cancel preview before queuing an upgrade. Accepted worker work drains first; native Pi must finish and close before installation.",
       "warning",
     );
     return;

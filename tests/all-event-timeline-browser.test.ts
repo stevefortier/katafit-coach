@@ -1,4 +1,5 @@
 import test from "node:test";
+import { timelineCounts } from "./helpers/timeline-counts.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
@@ -295,18 +296,21 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
       );
     assert.equal(new Set(geometry.map((g) => g.x)).size, 1);
     assert.equal(new Set(geometry.map((g) => g.y)).size, 1);
-    assert.equal(await page.locator(".dashboard-timeline-cluster").count(), 1);
+    assert.equal(await page.locator(".dashboard-timeline-cluster").count(), 0);
     const selectEvent = async (id: string) => {
       const mark = page.locator(
         `.dashboard-timeline-mark[data-event-id="${id}"]`,
       );
-      if (await mark.isVisible()) await mark.click();
-      else {
-        await page.locator(".dashboard-timeline-cluster").click();
-        await page
-          .locator(`.dashboard-timeline-choice[data-event-id="${id}"]`)
-          .click();
-      }
+      await mark.focus();
+      await page.keyboard.press("Enter");
+      await page.waitForFunction(() => {
+        const body =
+          document.querySelector("#dashboardMapSelection")?.textContent || "";
+        return (
+          /Event access (rechecked|could not be rechecked)/.test(body) &&
+          !body.includes("Checking current subject activity")
+        );
+      });
     };
     for (const kind of [
       "workout.set_completed",
@@ -359,10 +363,10 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
       4,
     );
     assert.equal(await page.locator("#dashboardMapSelection img").count(), 0);
-    assert.match(
-      await page.locator("#dashboardTimeline").innerText(),
-      /82.*events/,
-    );
+    assert.deepEqual(await timelineCounts(page), {
+      represented: 82,
+      loaded: 82,
+    });
     // Explicit captures may persist; default output belongs to this fixture's
     // temporary home and is removed by finally, including on CI runners.
     const evidence = process.env.EVENT_TIMELINE_EVIDENCE || `${home}/evidence`;
@@ -407,10 +411,8 @@ test("served timeline retains every occurrence and preserves deleted/nonactivity
     status = 200;
     await page.getByRole("button", { name: "Retry timeline" }).click();
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".dashboard-timeline-count")
-        ?.textContent?.includes("82 loaded events"),
+    await page.waitForFunction(
+      () => document.querySelectorAll(".dashboard-timeline-mark").length === 82,
     );
     paged = true;
     await page.locator("#dashboardMapDate").dispatchEvent("change");

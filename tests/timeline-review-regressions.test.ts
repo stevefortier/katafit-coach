@@ -77,7 +77,7 @@ async function fixture(cluster = false) {
 for (const cluster of [false, true])
   for (const path of ["retry", "more"] as const)
     for (const status of [403, 500]) {
-      test(`R3 ${cluster ? "cluster" : "single"} pending ${path} fences retained interaction; ${status} ${status === 403 ? "purges" : "recovers stale inventory"}`, async () => {
+      test(`R3 ${cluster ? "equal-time" : "single"} pending ${path} fences retained interaction; ${status} ${status === 403 ? "purges" : "recovers stale inventory"}`, async () => {
         const { page, browser } = await fixture(cluster);
         try {
           await page.evaluate(async (path) => {
@@ -118,14 +118,14 @@ for (const cluster of [false, true])
               ),
           );
           const owner = page.locator(
-            cluster || path === "more"
-              ? ".dashboard-timeline-cluster"
-              : '.dashboard-timeline-mark[data-event-id="a"]',
+            '.dashboard-timeline-mark[data-event-id="a"]',
           );
           await owner.focus();
           await page.evaluate(() => {
             const w = window as any;
-            w.oldChoice = document.querySelector(".dashboard-timeline-choice");
+            w.oldChoice = document.querySelector(
+              '.dashboard-timeline-mark[data-event-id="later"]',
+            );
             w.oldOwner = document.activeElement;
             w.fetch = (url: string) => {
               if (!url.startsWith("/api/dashboard/timeline?")) {
@@ -163,11 +163,11 @@ for (const cluster of [false, true])
           });
           await page.evaluate(() => (window as any).oldChoice.click());
           assert.equal(
-            await page.locator(".dashboard-timeline-inspector").isVisible(),
+            await page.locator(".dashboard-timeline-tooltip").isVisible(),
             false,
           );
           assert.equal(
-            await page.locator(".dashboard-timeline-inspector").textContent(),
+            await page.locator(".dashboard-timeline-tooltip").textContent(),
             "",
           );
           assert.equal(
@@ -212,19 +212,46 @@ for (const cluster of [false, true])
               /stale|partial day/i,
             );
             // Recovery reattaches the real ResizeObserver; settle its initial
-            // layout notification before deliberate focus opens the inspector.
+            // layout notification before deliberate focus opens the tooltip.
             await page.evaluate(
               () =>
                 new Promise((resolve) =>
                   requestAnimationFrame(() => requestAnimationFrame(resolve)),
                 ),
             );
+            const restoredReads = await page.evaluate(
+              () => (window as any).liveReads,
+            );
+            await owner.focus();
+            const previewId = await page
+              .locator(".dashboard-timeline-tooltip")
+              .getAttribute("data-event-id");
+            await page.evaluate(() => {
+              (window as any).oldChoice.onfocus();
+              (window as any).oldOwner.onblur();
+            });
+            assert.equal(
+              await page
+                .locator(".dashboard-timeline-tooltip")
+                .getAttribute("data-event-id"),
+              previewId,
+              "detached focus/blur cannot replace or dismiss current preview",
+            );
+            await page.evaluate(() => {
+              (window as any).oldOwner.click();
+              (window as any).oldChoice.click();
+            });
+            assert.equal(
+              await page.evaluate(() => (window as any).liveReads),
+              restoredReads,
+              "detached handlers remain inert after transient recovery",
+            );
             await owner.focus();
             assert.equal(
-              await page.locator(".dashboard-timeline-inspector").isVisible(),
+              await page.locator(".dashboard-timeline-tooltip").isVisible(),
               true,
             );
-            await page.locator(".dashboard-timeline-choice").first().click();
+            await page.keyboard.press("Enter");
             assert.match(
               await page.locator("#dashboardMapSelection").innerText(),
               /historical event snapshot/i,
@@ -251,7 +278,7 @@ for (const cluster of [false, true])
                 ),
             );
             // Recovery reattaches the real ResizeObserver; settle its initial
-            // layout notification before deliberate focus opens the inspector.
+            // layout notification before deliberate focus opens the tooltip.
             await page.evaluate(
               () =>
                 new Promise((resolve) =>
@@ -260,7 +287,7 @@ for (const cluster of [false, true])
             );
             await owner.focus();
             assert.equal(
-              await page.locator(".dashboard-timeline-inspector").isVisible(),
+              await page.locator(".dashboard-timeline-tooltip").isVisible(),
               true,
             );
           }
@@ -273,7 +300,7 @@ for (const cluster of [false, true])
 test("R3 late success cannot resurrect inventory after a superseding denial", async () => {
   const { page, browser } = await fixture(true);
   try {
-    await page.locator(".dashboard-timeline-cluster").focus();
+    await page.locator('.dashboard-timeline-mark[data-event-id="a"]').focus();
     await page.keyboard.press("Enter");
     await page.evaluate(() => {
       const w = window as any;
@@ -282,7 +309,7 @@ test("R3 late success cannot resurrect inventory after a superseding denial", as
       w.firstLoad = w.CoachDashboard.loadTimeline("fixture");
     });
     assert.equal(
-      await page.locator(".dashboard-timeline-inspector").isVisible(),
+      await page.locator(".dashboard-timeline-tooltip").isVisible(),
       false,
     );
     await page.evaluate(() => {
@@ -307,7 +334,7 @@ test("R3 late success cannot resurrect inventory after a superseding denial", as
     assert.equal(
       await page
         .locator(
-          ".dashboard-timeline-mark, .dashboard-timeline-cluster, .dashboard-timeline-inspector",
+          ".dashboard-timeline-mark, .dashboard-timeline-cluster, .dashboard-timeline-tooltip",
         )
         .count(),
       0,
@@ -326,7 +353,7 @@ test("R3 late success cannot resurrect inventory after a superseding denial", as
 });
 
 for (const transition of ["date", "lock"] as const) {
-  test(`R3 ${transition} discards inspector ownership and timers while late reload succeeds`, async () => {
+  test(`R3 ${transition} discards preview ownership while late reload succeeds`, async () => {
     const { page, browser } = await fixture();
     try {
       const owner = page.locator('.dashboard-timeline-mark[data-event-id="a"]');
@@ -376,11 +403,11 @@ for (const transition of ["date", "lock"] as const) {
         await w.pending;
         await w.next;
       });
-      await page.waitForTimeout(220); // Beyond the actual 180ms dismissal timer.
+      await page.waitForTimeout(220); // Beyond the actual previous delayed dismissal boundary.
       assert.equal(
         await page
           .locator(
-            ".dashboard-timeline-inspector, .dashboard-timeline-mark, .dashboard-timeline-cluster",
+            ".dashboard-timeline-tooltip, .dashboard-timeline-mark, .dashboard-timeline-cluster",
           )
           .count(),
         0,
@@ -405,123 +432,92 @@ for (const transition of ["date", "lock"] as const) {
   });
 }
 
-for (const mode of ["keyboard", "pointer", "single"] as const) {
-  test(`R2 ${mode} selection restores owner focus and continued arrow navigation`, async () => {
-    const { page, browser } = await fixture(mode !== "single");
+for (const equalTime of [false, true]) {
+  test(`individual ${equalTime ? "equal-time" : "single"} selection preserves native focus and continued navigation`, async () => {
+    const { page, browser } = await fixture(equalTime);
     try {
-      const owner = page.locator(
-        mode === "single"
-          ? '.dashboard-timeline-mark[data-event-id="a"]'
-          : ".dashboard-timeline-cluster",
-      );
-      if (mode === "pointer") await owner.hover();
-      else await owner.focus();
-      if (mode === "keyboard") {
-        await page.keyboard.press("Enter");
-        await page.keyboard.press("ArrowRight");
-        await page.keyboard.press("Enter");
-      } else await page.locator(".dashboard-timeline-choice").first().click();
+      const owner = page.locator('.dashboard-timeline-mark[data-event-id="a"]');
+      await owner.focus();
+      if (equalTime) await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("Enter");
       assert.match(
         await page.locator("#dashboardMapSelection").innerText(),
         /historical event snapshot/i,
       );
-      if (mode === "keyboard")
+      if (equalTime)
         assert.match(
           await page.locator("#dashboardMapSelection").innerText(),
           /set index: 1/,
         );
       assert.equal(
-        await owner.evaluate(
-          (el) => el === document.activeElement && el.isConnected,
-        ),
-        true,
+        await page.locator(".dashboard-timeline-tooltip").isVisible(),
+        false,
       );
       assert.equal(
-        await page.locator(".dashboard-timeline-inspector").isVisible(),
-        false,
+        await page
+          .locator(".dashboard-timeline-mark:focus")
+          .getAttribute("data-event-id"),
+        equalTime ? "b" : "a",
       );
       await page.keyboard.press("ArrowRight");
       assert.equal(
         await page
-          .locator('.dashboard-timeline-mark[data-event-id="later"]')
-          .evaluate((el) => el === document.activeElement),
-        true,
+          .locator(".dashboard-timeline-mark:focus")
+          .getAttribute("data-event-id"),
+        "later",
       );
     } finally {
       await browser.close();
     }
   });
-}
-
-for (const cluster of [false, true])
-  for (const open of ["focus", "pointer", "chooser"] as const)
-    for (const close of ["click", "keyboard", "escape"] as const) {
-      test(`R1 ${cluster ? "cluster" : "single"} ${open} preview ${close} close restores native focus without reopening`, async () => {
-        const { page, browser } = await fixture(cluster);
-        try {
-          const owner = page.locator(
-            cluster
-              ? ".dashboard-timeline-cluster"
-              : '.dashboard-timeline-mark[data-event-id="a"]',
-          );
-          if (open === "pointer") await owner.hover();
-          else {
-            await owner.focus();
-            if (open === "chooser") {
-              if (cluster) await page.keyboard.press("Enter");
-              else
-                await owner.evaluate((el) =>
-                  el.dispatchEvent(
-                    new PointerEvent("click", {
-                      pointerType: "touch",
-                      bubbles: true,
-                    }),
-                  ),
-                );
-            }
-          }
-          assert.equal(
-            await page.locator(".dashboard-timeline-inspector").isVisible(),
-            true,
-          );
-          if (close === "escape") {
-            await page.locator(".dashboard-timeline-close").focus();
-            await page.keyboard.press("Escape");
-          } else if (close === "click")
-            await page.locator(".dashboard-timeline-close").click();
-          else {
-            await page.locator(".dashboard-timeline-close").focus();
-            await page.keyboard.press("Enter");
-          }
-          assert.equal(
-            await page.locator(".dashboard-timeline-inspector").isVisible(),
-            false,
-          );
-          assert.equal(
-            await page.locator(".dashboard-timeline-inspector").textContent(),
-            "",
-          );
-          assert.equal(
-            await owner.evaluate(
-              (el) => el === document.activeElement && el.isConnected,
-            ),
-            true,
-          );
-          await page.locator("#outside").focus();
-          await owner.focus();
-          assert.equal(
-            await page.locator(".dashboard-timeline-inspector").isVisible(),
-            true,
-          );
-          await page.keyboard.press("Escape");
-          await page.locator("#outside").hover();
-          await owner.hover();
-          assert.equal(
-            await page.locator(".dashboard-timeline-inspector").isVisible(),
-            true,
-          );
-        } finally {
-          await browser.close();
+  for (const open of ["focus", "pointer"] as const) {
+    test(`individual ${equalTime ? "equal-time" : "single"} ${open} tooltip dismisses and can reopen without replacing focus`, async () => {
+      const { page, browser } = await fixture(equalTime);
+      try {
+        const owner = page.locator(
+          '.dashboard-timeline-mark[data-event-id="a"]',
+        );
+        if (open === "focus") await owner.focus();
+        else {
+          const box = (await owner.boundingBox())!;
+          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
         }
-      });
-    }
+        assert.equal(
+          await page.locator(".dashboard-timeline-tooltip").isVisible(),
+          true,
+        );
+        if (open === "focus") await page.keyboard.press("Escape");
+        else await page.locator("#outside").hover();
+        assert.equal(
+          await page.locator(".dashboard-timeline-tooltip").isVisible(),
+          false,
+        );
+        assert.equal(
+          await page.locator(".dashboard-timeline-tooltip").textContent(),
+          "",
+        );
+        if (open === "focus")
+          assert.equal(
+            await owner.evaluate((el) => el === document.activeElement),
+            true,
+          );
+        await page.locator("#outside").focus();
+        await owner.focus();
+        assert.equal(
+          await page.locator(".dashboard-timeline-tooltip").isVisible(),
+          true,
+        );
+        await page.keyboard.press("Escape");
+        await page.locator("#outside").hover();
+        const box = (await owner.boundingBox())!;
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        assert.equal(
+          await page.locator(".dashboard-timeline-tooltip").isVisible(),
+          true,
+        );
+      } finally {
+        await browser.close();
+      }
+    });
+  }
+}

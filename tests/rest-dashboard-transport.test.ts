@@ -9,6 +9,52 @@ import { restRequest } from "../src/katafit/restGet.js";
 const timeline =
   "/api/dashboard/timeline?date=2026-10-02&start=2026-10-02T04%3A00%3A00.000Z&end=2026-10-03T04%3A00%3A00.000Z";
 
+test("Stats admission is exclusive across members even without a running Worker", async (t) => {
+  await dashboard(t, async ({ request, upstream }) => {
+    let entered!: () => void, release!: () => void;
+    const admitted = new Promise<void>((r) => (entered = r));
+    const body = new Promise<void>((r) => (release = r));
+    let reads = 0;
+    upstream(async () => {
+      reads++;
+      return new Response(
+        new ReadableStream({
+          async start(controller) {
+            entered();
+            await body;
+            controller.enqueue(new TextEncoder().encode("{}"));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    });
+    const first = request("/api/dashboard/stats?user_id=" + "a".repeat(24));
+    try {
+      await admitted;
+      for (const id of ["a", "b"]) {
+        const response = await request(
+          "/api/dashboard/stats?user_id=" + id.repeat(24),
+        );
+        assert.equal(response.status, 429);
+        assert.equal((await response.json()).error, "OPERATION_IN_PROGRESS");
+      }
+      assert.equal(reads, 1);
+      release();
+      assert.equal((await first).status, 200);
+      assert.equal(
+        (await request("/api/dashboard/stats?user_id=" + "b".repeat(24)))
+          .status,
+        200,
+      );
+      assert.equal(reads, 2);
+    } finally {
+      release();
+      await first;
+    }
+  });
+});
+
 // Real authenticated admin HTTP + REST transport. Only upstream fetch and the
 // deadline clock are controlled; no eight-second sleep or live backend.
 async function dashboard(
@@ -63,7 +109,38 @@ async function dashboard(
   }
 }
 
-for (const path of ["/api/dashboard/members", timeline]) {
+test("Stats BFF bounded history budget accepts exact 2MiB, rejects overflow and leaves ordinary reads bounded", async (t) => {
+  await dashboard(t, async ({ request, upstream }) => {
+    for (const size of [300000, 2 * 1024 * 1024, 2 * 1024 * 1024 + 1]) {
+      const text = JSON.stringify({ padding: "x".repeat(size - 14) });
+      assert.equal(Buffer.byteLength(text), size);
+      upstream(
+        async () =>
+          new Response(text, {
+            headers: { "content-type": "application/json" },
+          }),
+      );
+      const response = await request(
+        "/api/dashboard/stats?user_id=" + "a".repeat(24),
+      );
+      assert.equal(response.status, size > 2 * 1024 * 1024 ? 400 : 200);
+      await response.text();
+    }
+    upstream(
+      async () =>
+        new Response(JSON.stringify({ padding: "x".repeat(300000) }), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    assert.equal((await request("/api/dashboard/members")).status, 400);
+  });
+});
+
+for (const path of [
+  "/api/dashboard/members",
+  timeline,
+  "/api/dashboard/stats?user_id=" + "a".repeat(24),
+]) {
   for (const phase of ["headers", "body"]) {
     test(`dashboard REST deadline during ${phase} returns 504: ${path.split("?")[0]}`, async (t) => {
       await dashboard(t, async ({ request, upstream }) => {
@@ -79,7 +156,9 @@ for (const path of ["/api/dashboard/members", timeline]) {
             url.pathname,
             path === "/api/dashboard/members"
               ? "/api/friends/dojo/dashboard-members"
-              : "/api/friends/dojo/day-events",
+              : path.includes("/stats?")
+                ? "/api/friends/dojo/member-stats"
+                : "/api/friends/dojo/day-events",
           );
           if (url.pathname.endsWith("day-events")) {
             assert.equal(url.searchParams.get("limit"), "100");
@@ -91,7 +170,9 @@ for (const path of ["/api/dashboard/members", timeline]) {
               url.searchParams.get("end"),
               "2026-10-03T04:00:00.000Z",
             );
-          } else assert.equal(url.search, "");
+          } else if (path.includes("/stats?"))
+            assert.equal(url.searchParams.get("user_id"), "a".repeat(24));
+          else assert.equal(url.search, "");
           if (phase === "body")
             return new Response(
               new ReadableStream({
@@ -128,6 +209,53 @@ for (const path of ["/api/dashboard/members", timeline]) {
     });
   }
 }
+
+test("Stats enlarged budget is host-only finite allowlisted and exact-route scoped", async (t) => {
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    reads++;
+    return new Response("{}", {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  for (const max of [NaN, Infinity, 0, 300000, 2097153])
+    await assert.rejects(
+      restRequest(
+        "https://backend.example.test",
+        "synthetic-token",
+        {
+          method: "GET",
+          path: "/api/friends/dojo/member-stats?user_id=" + "a".repeat(24),
+        },
+        new AbortController().signal,
+        [],
+        undefined,
+        undefined,
+        max as any,
+      ),
+      /REST_REQUEST_REJECTED/,
+    );
+  for (const path of [
+    "/api/friends/dojo/dashboard-members",
+    "/api/friends/dojo/member-stats",
+    "/api/friends/dojo/member-stats?user_id=" + "a".repeat(24) + "&extra=1",
+  ])
+    await assert.rejects(
+      restRequest(
+        "https://backend.example.test",
+        "synthetic-token",
+        { method: "GET", path },
+        new AbortController().signal,
+        [],
+        undefined,
+        undefined,
+        2097152,
+      ),
+      /REST_REQUEST_REJECTED/,
+    );
+  assert.equal(reads, 0);
+  t.mock.restoreAll();
+});
 
 test("dashboard REST network failure returns sanitized 503", async (t) => {
   await dashboard(t, async ({ request, upstream }) => {

@@ -28,25 +28,9 @@ for (const fault of ["invalid-event", "invalid-cursor"] as const)
               requestAnimationFrame(() => requestAnimationFrame(r)),
             ),
         );
-        const index = await page
-          .locator(".dashboard-timeline-cluster")
-          .evaluateAll(
-            (nodes: HTMLElement[], id: string) =>
-              nodes.findIndex((n) =>
-                JSON.parse(n.dataset.eventIds!).includes(id),
-              ),
-            ev(1),
-          );
-        if (index >= 0) {
-          await page.locator(".dashboard-timeline-cluster").nth(index).focus();
-          await page.keyboard.press("Enter");
-          await page
-            .locator(`.dashboard-timeline-choice[data-event-id="${ev(1)}"]`)
-            .focus();
-        } else
-          await page
-            .locator(`.dashboard-timeline-mark[data-event-id="${ev(1)}"]`)
-            .focus();
+        await page
+          .locator(`.dashboard-timeline-mark[data-event-id="${ev(1)}"]`)
+          .focus();
         await page.keyboard.press("Enter");
         await page.waitForFunction(() =>
           document
@@ -193,6 +177,13 @@ for (const denial of [401, 403])
             .querySelector("#dashboardMapStatus")
             ?.textContent?.includes("roster unavailable (503)"),
         );
+        // Roster failure can be reported while the independently authorized
+        // timeline is still loading; assert only after that read publishes.
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("complete day"),
+        );
         assert.equal(rosterReads(), initialReads + 1);
         assert.doesNotMatch(
           await page.locator("#dashboardMemberCards").innerText(),
@@ -229,6 +220,11 @@ for (const denial of [401, 403])
               .querySelector("#dashboardMapStatus")
               ?.textContent?.includes(`roster access denied (${status})`),
           denial,
+        );
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("complete day"),
         );
         assert.equal(rosterReads(), initialReads + 3);
         assert.equal(await page.locator(".dashboard-member-pin").count(), 0);

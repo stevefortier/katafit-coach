@@ -158,6 +158,7 @@ export async function restGet(
   args: unknown,
   signal: AbortSignal,
   secrets: string[],
+  maxJsonBytes: 262144 | 2097152 = 262144,
 ) {
   return restRequest(
     origin,
@@ -165,6 +166,9 @@ export async function restGet(
     { method: "GET", path: restPath(args) },
     signal,
     secrets,
+    undefined,
+    undefined,
+    maxJsonBytes,
   );
 }
 
@@ -190,6 +194,7 @@ export async function restRequest(
     delegation_revision: number;
     request_sha256: string;
   },
+  maxJsonBytes: 262144 | 2097152 = 262144,
 ) {
   const { path, method, body } = restRequestArgs(args);
   if (workBinding && (method === "GET" || !validWorkBinding(workBinding)))
@@ -199,6 +204,15 @@ export async function restRequest(
     (workBinding ||
       method === "GET" ||
       !validInvocationBinding(invocationBinding))
+  )
+    throw new Error("REST_REQUEST_REJECTED");
+  if (
+    ![262144, 2097152].includes(maxJsonBytes) ||
+    (maxJsonBytes !== 262144 &&
+      (method !== "GET" ||
+        !/^\/api\/friends\/dojo\/member-stats\?user_id=[a-f0-9]{24}$/.test(
+          path,
+        )))
   )
     throw new Error("REST_REQUEST_REJECTED");
   assertNoSecrets(args, [...secrets, bearer]);
@@ -261,7 +275,7 @@ export async function restRequest(
     );
     if (!image && mime !== "application/json")
       throw new Error("REST_TYPE_REJECTED");
-    const limit = image ? 4 * 1024 * 1024 : 256 * 1024;
+    const limit = image ? 4 * 1024 * 1024 : maxJsonBytes;
     const length = Number(response.headers.get("content-length"));
     if (length > limit) throw new Error("REST_RESULT_TOO_LARGE");
     const chunks: Buffer[] = [];

@@ -327,6 +327,19 @@ export class AutonomyHost {
     );
   }
 
+  /** Synchronous idle reservation: never interrupt an admitted active cycle. */
+  reserveForManualUpdate() {
+    if (!this.safeToReplace) return false;
+    // pause fences synchronously, including a cycle waiting for the shared
+    // slot but not yet admitted to its backend claim.
+    void this.scheduler?.pause().catch(() => {});
+    return true;
+  }
+
+  releaseUpdateQuiesce() {
+    this.scheduler?.resume();
+  }
+
   snapshot() {
     const unresolved = this.ledger?.unresolved ?? [];
     return {

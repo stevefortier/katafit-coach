@@ -144,10 +144,8 @@ test("roster cards and timeline remain independent when Leaflet is unavailable",
         3,
       );
       assert.equal(await page.locator(".dashboard-timeline-mark").count(), 8);
-      await page.locator(".dashboard-timeline-cluster").first().focus();
-      await page.keyboard.press("Enter");
       await page
-        .locator(`.dashboard-timeline-choice[data-event-id="${ev(1)}"]`)
+        .locator(`.dashboard-timeline-mark[data-event-id="${ev(1)}"]`)
         .focus();
       await page.keyboard.press("Enter");
       await page.waitForFunction(() =>
@@ -284,6 +282,7 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
       timezoneId: "America/New_York",
       viewport: { width: 1440, height: 900 },
     });
+    await page.clock.setFixedTime(new Date("2026-12-01T12:00:00Z"));
     await page.goto(app.origin + "/dashboard");
     await page.evaluate(async (key) => {
       document.getElementById("studio")!.hidden = false;
@@ -315,9 +314,8 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
       await page.locator("#dashboardMapDate").dispatchEvent("change");
       await page.waitForFunction(
         (day) =>
-          document
-            .querySelector(".dashboard-timeline-heading")
-            ?.textContent?.includes(day) &&
+          document.querySelector<HTMLElement>("#dashboardTimeline")?.dataset
+            .date === day &&
           document.querySelectorAll(".dashboard-timeline-mark").length === 3,
         day,
       );
@@ -338,8 +336,8 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
         );
       assert.equal(new Set(geometry.map((g) => g.top)).size, 1);
       assert.equal(
-        await page.locator(".dashboard-timeline-cluster").textContent(),
-        "3",
+        await page.locator(".dashboard-timeline-mark:not([hidden])").count(),
+        3,
       );
       assert.ok(
         Math.abs(parseFloat(geometry[0].left) - (2.5 / hours) * 100) < 0.001,
@@ -361,10 +359,10 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
           rects[i].left >= rects[i - 1].right,
           "tick labels do not overlap",
         );
-      await page.locator(".dashboard-timeline-cluster").click();
       await page
-        .locator(`.dashboard-timeline-choice[data-event-id="${ev(1)}"]`)
-        .click();
+        .locator(`.dashboard-timeline-mark[data-event-id="${ev(1)}"]`)
+        .focus();
+      await page.keyboard.press("Enter");
       await page.waitForFunction(() =>
         document
           .querySelector("#dashboardMapSelection")

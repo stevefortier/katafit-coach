@@ -76,6 +76,8 @@ export async function fixture(
   options: {
     events?: Event[];
     date?: string;
+    now?: string;
+    document?: boolean;
     timezone?: string;
     leaflet?: boolean;
     viewport?: { width: number; height: number };
@@ -105,6 +107,17 @@ export async function fixture(
       res.end(JSON.stringify(custom.body ?? {}));
     } else if (url.pathname === "/") {
       res.setHeader("content-type", "text/html");
+      if (options.document) {
+        const html = await readFile(
+          new URL("../../ui/index.html", import.meta.url),
+          "utf8",
+        );
+        res.end(
+          html.replace(/<script[\s\S]*?<\/script>/g, "") +
+            '<script src="/leaflet.js"></script><script>const original=L.map;L.map=(...args)=>window.fixtureMap=original(...args)</script><script src="/dashboard.js"></script>',
+        );
+        return;
+      }
       res.end(
         `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/leaflet.css"><section id="dashboardPanel"><input id="dashboardMapDate" type="date"><p id="dashboardMapStatus" role="status"></p><div class="dashboard-map-layout"><div class="dashboard-map-column"><div id="dashboardMap" class="dashboard-map"></div><section id="dashboardTimeline" class="dashboard-timeline"></section></div><aside id="dashboardMapSelection" class="dashboard-map-selection"></aside></div><h3 id="dashboardMemberHeading"></h3><div id="dashboardMemberCards"></div><p id="dashboardStatus"></p><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div></section>${options.leaflet === false ? "" : '<script src="/leaflet.js"></script><script>const original=L.map;L.map=(...args)=>window.fixtureMap=original(...args)</script>'}<script src="/dashboard.js"></script>`,
       );
@@ -185,6 +198,10 @@ export async function fixture(
       viewport: options.viewport || { width: 1440, height: 1000 },
       timezoneId: options.timezone || "UTC",
     });
+    await page.addInitScript("window.__name = (value) => value");
+    await page.clock.setFixedTime(
+      new Date(options.now || "2026-12-01T12:00:00Z"),
+    );
     const errors: string[] = [];
     page.on("pageerror", (error: Error) => errors.push(error.message));
     await page.route("https://tile.openstreetmap.org/**", (r: any) =>
@@ -198,6 +215,10 @@ export async function fixture(
     );
     await page.goto(`http://127.0.0.1:${(server.address() as any).port}`);
     await page.evaluate(async (date: string) => {
+      if (document.getElementById("studio")) {
+        document.getElementById("studio")!.hidden = false;
+        document.getElementById("login")!.hidden = true;
+      }
       await (window as any).CoachDashboard.load(null, "synthetic");
       const input =
         document.querySelector<HTMLInputElement>("#dashboardMapDate")!;

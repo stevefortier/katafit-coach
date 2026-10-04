@@ -166,7 +166,8 @@ try {
   assert.equal(await page.locator("#settingsPanel").isVisible(), false);
   await page.locator("#settingsTab").click();
   assert.equal(await page.locator("#katafit").isVisible(), true);
-  await page.getByRole("button", { name: "Activity", exact: true }).click();
+  await page.locator("#settingsTab").click();
+  await page.locator("#settings-log-tab").click();
   await page.waitForTimeout(200);
   await openCoach();
   await page.locator("#coachPaneExpand").click();
