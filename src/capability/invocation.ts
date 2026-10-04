@@ -248,6 +248,7 @@ export function requestAdmission(
     !Array.isArray(supported) ||
     supported.length > 1 ||
     !supported.every((a: any) => a === "rest_mutation") ||
+    (cap.kind === "setup_test" && supported.length > 0) ||
     // A Dojo reply is itself the communication: never a chief-account write.
     (request.scope === "dojo" && supported.length > 0) ||
     context.boundaries?.direct_mutations_forbidden !==

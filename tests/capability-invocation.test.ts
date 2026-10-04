@@ -881,6 +881,7 @@ test("negotiated chat request without REST access offers no writes", async () =>
 });
 
 for (const [label, patch] of [
+  ["setup write-admitting", (c: any) => ({ ...c, kind: "setup_test" })],
   ["wrong plane", (c: any) => ({ ...c, plane: "task" })],
   [
     "foreign subject",
