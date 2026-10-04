@@ -2041,12 +2041,6 @@ html.coach-covered #workspaceScroll {
   margin: 0 0 8px;
   font-size: 11px;
 }
-.dashboard-timeline-count {
-  font-variant-numeric: tabular-nums;
-  margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 11px;
-}
 .dashboard-timeline-legend,
 .dashboard-timeline-toolbar {
   display: flex;
@@ -2092,13 +2086,13 @@ html.coach-covered #workspaceScroll {
 }
 .dashboard-timeline-track {
   position: relative;
-  height: 102px;
+  height: 51px;
   min-width: 0;
 }
 .dashboard-timeline-track::before {
   content: "";
   position: absolute;
-  top: 47px;
+  top: 27px;
   left: 0;
   right: 0;
   height: 1px;
@@ -2134,21 +2128,23 @@ html.coach-covered #workspaceScroll {
 }
 .dashboard-timeline-mark[aria-pressed="true"],
 .dashboard-timeline-cluster[aria-pressed="true"],
+.dashboard-timeline-mark:focus-visible,
+.dashboard-timeline-cluster:focus-visible {
+  outline: 2px solid white;
+  /* Keep the focus/selection ring inside the hit target, off the compact ruler. */
+  outline-offset: -2px;
+}
 .dashboard-event-dot[aria-pressed="true"] {
   outline: 2px solid white;
   outline-offset: 2px;
 }
-.dashboard-timeline-mark:focus-visible,
-.dashboard-timeline-cluster:focus-visible {
-  outline: 2px solid white;
-  outline-offset: 3px;
-}
 .dashboard-timeline-tick {
   position: absolute;
-  top: 72px;
+  top: 41px;
   white-space: nowrap;
   border-left: 1px solid var(--line);
-  padding: 5px 0 0 3px;
+  padding: 0 0 0 3px;
+  line-height: 10px;
   font-size: 10px;
   color: var(--muted);
 }
@@ -2166,8 +2162,8 @@ html.coach-covered #workspaceScroll {
 .dashboard-timeline-future {
   position: absolute;
   right: 0;
-  top: 30px;
-  height: 36px;
+  top: 13px;
+  height: 28px;
   background: rgba(255, 255, 255, 0.025);
 }
 .dashboard-timeline-future-event {
@@ -2175,8 +2171,10 @@ html.coach-covered #workspaceScroll {
 }
 .dashboard-timeline-now {
   position: absolute;
-  top: 9px;
-  bottom: 32px;
+  top: 0;
+  bottom: 10px;
+  line-height: 12px;
+  white-space: nowrap;
   border-left: 1px dashed var(--muted);
   font-size: 10px;
   color: var(--muted);
@@ -2602,7 +2600,9 @@ html.compact-map,
 }
 .compact-map #dashboardMapPane {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  /* Fit ordinary controls/track; bound tall controls and choosers so the map
+     always keeps the remaining majority of the workspace. */
+  grid-template-rows: auto fit-content(40%) minmax(0, 1fr);
   gap: 0;
   margin: 0;
   min-height: 0;
@@ -2672,9 +2672,6 @@ html.compact-map,
 .compact-map .dashboard-timeline-legend {
   gap: 3px;
   margin: 2px 0;
-}
-.compact-map .dashboard-timeline-count {
-  margin-bottom: 3px;
 }
 .compact-map .dashboard-timeline-legend button,
 .compact-map .dashboard-timeline-toolbar button {

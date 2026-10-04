@@ -1,4 +1,5 @@
 import test from "node:test";
+import { timelineCounts } from "./helpers/timeline-counts.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
@@ -163,10 +164,9 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
 
       await (window as any).CoachDashboard.load(null, key);
     }, store.secrets.admin);
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".dashboard-timeline-count")
-        ?.textContent?.includes("323 loaded"),
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".dashboard-timeline-mark").length === 323,
     );
     await page.setViewportSize({ width: 320, height: 900 });
     await page.waitForTimeout(100);
@@ -323,10 +323,10 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       "",
       "category filtering clears hidden selection",
     );
-    assert.match(
-      await page.locator(".dashboard-timeline-count").innerText(),
-      /1 visible · 323 loaded/,
-    );
+    assert.deepEqual(await timelineCounts(page), {
+      represented: 1,
+      loaded: 323,
+    });
     await page
       .locator("#dashboardTimeline")
       .screenshot({ path: `${evidence}/redesign-category-filter.png` });
@@ -339,15 +339,15 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
         ),
       })
       .click();
-    assert.match(
-      await page.locator(".dashboard-timeline-count").innerText(),
-      /1 visible · 323 loaded/,
-    );
+    assert.deepEqual(await timelineCounts(page), {
+      represented: 1,
+      loaded: 323,
+    });
     await page.getByRole("button", { name: "Select All", exact: true }).click();
-    assert.match(
-      await page.locator(".dashboard-timeline-count").innerText(),
-      /323 visible · 323 loaded/,
-    );
+    assert.deepEqual(await timelineCounts(page), {
+      represented: 323,
+      loaded: 323,
+    });
     await page.getByRole("button", { name: "Full day", exact: true }).click();
     assert.equal(
       await page.locator(".dashboard-timeline-zoom-label").innerText(),
@@ -452,10 +452,7 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       await page.locator("#dashboardTimeline").innerText(),
       /Fixture Ada|Exercise/,
     );
-    assert.match(
-      await page.locator(".dashboard-timeline-count").innerText(),
-      /1 visible · 1 loaded/,
-    );
+    assert.deepEqual(await timelineCounts(page), { represented: 1, loaded: 1 });
     await page
       .locator("#dashboardTimeline")
       .screenshot({ path: `${evidence}/redesign-after-denial.png` });
@@ -465,10 +462,9 @@ test("timeline supports dense clusters, real-time zoom, filters, inspectors and 
       (window as any).CoachDashboard.clear();
       await (window as any).CoachDashboard.load(null, key);
     }, store.secrets.admin);
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".dashboard-timeline-count")
-        ?.textContent?.includes("430 loaded"),
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".dashboard-timeline-mark").length === 430,
     );
     await page
       .locator("#dashboardTimeline")

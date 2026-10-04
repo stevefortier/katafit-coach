@@ -1,4 +1,5 @@
 import test from "node:test";
+import { timelineCounts } from "./helpers/timeline-counts.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -123,10 +124,7 @@ test("late live-map detail denial purges a newer selected event snapshot of the 
     );
     assert.equal(await page.locator("#dashboardMapSelection").innerText(), "");
     assert.equal(await page.locator(".dashboard-event-dot").count(), 0);
-    assert.equal(
-      await page.locator(".dashboard-timeline-count").textContent(),
-      "0 visible · 0 loaded events across all members",
-    );
+    assert.deepEqual(await timelineCounts(page), { represented: 0, loaded: 0 });
   } finally {
     release();
     await browser.close();
