@@ -182,8 +182,55 @@ test("served Gallery independently pages historical inventories, lazily decodes 
       calls.filter((x) => x.startsWith("/api/media/")).length,
       count,
     );
+    const previous = page.getByRole("button", {
+      name: "Previous image",
+      exact: true,
+    });
+    const next = page.getByRole("button", { name: "Next image", exact: true });
+    assert.equal(await previous.isDisabled(), true);
+    await next.click();
+    assert.match(
+      await page.locator("#attachmentDialogCaption").innerText(),
+      /Photo 2 of 4/,
+    );
+    assert.equal(
+      await page.locator("#attachmentDialogDownload").getAttribute("href"),
+      await page.locator("#dashboardGallery img").nth(1).getAttribute("src"),
+    );
+    await page.keyboard.press("ArrowLeft");
+    assert.equal(await previous.isDisabled(), true);
     const evidence = process.env.GALLERY_BROWSER_EVIDENCE || home + "/evidence";
     await mkdir(evidence, { recursive: true });
+    for (const [width, height] of [
+      [320, 568],
+      [390, 844],
+      [1280, 800],
+    ]) {
+      await page.setViewportSize({ width, height });
+      const geometry = await page.evaluate(() => {
+        const img = document
+          .getElementById("attachmentDialogImage")!
+          .getBoundingClientRect();
+        const nav = document
+          .getElementById("attachmentDialogNavigation")!
+          .getBoundingClientRect();
+        return {
+          imageBottom: img.bottom,
+          imageWidth: img.width,
+          navTop: nav.top,
+          navBottom: nav.bottom,
+        };
+      });
+      assert.ok(geometry.navTop >= geometry.imageBottom);
+      assert.ok(
+        geometry.navBottom < height - 8,
+        JSON.stringify({ width, height, ...geometry }),
+      );
+      if (width < 600) assert.ok(geometry.imageWidth > width * 0.85);
+      await page.screenshot({
+        path: `${evidence}/gallery-viewer-${width}.png`,
+      });
+    }
     await page.screenshot({
       path: evidence + "/gallery-desktop-fullscreen.png",
     });
@@ -215,6 +262,29 @@ test("served Gallery independently pages historical inventories, lazily decodes 
     await image.click();
     await page.evaluate(() => (window as any).CoachDashboard.clear());
     assert.equal(await page.locator("#dashboardGallery img").count(), 0);
+    const holds = new Map<
+      string,
+      { ready: Promise<void>; release: () => void }
+    >();
+    for (const id of ["f35", "f36", "f37", "f40"]) {
+      let release!: () => void;
+      holds.set(id, {
+        ready: new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+        release: () => release(),
+      });
+    }
+    const held: string[] = [];
+    await page.route("**/api/dashboard/photo?**", async (route) => {
+      const id = new URL(route.request().url()).searchParams.get("file_id")!;
+      const gate = holds.get(id);
+      if (gate) {
+        held.push(id);
+        await gate.ready;
+      }
+      await route.continue().catch(() => {});
+    });
     photoCount = 40;
     const previousBytes = calls.filter((x) =>
       x.startsWith("/api/media/"),
@@ -235,6 +305,74 @@ test("served Gallery independently pages historical inventories, lazily decodes 
         20,
       "large full inventories must not frontload offscreen image bytes",
     );
+    const waitHeld = async (id: string) => {
+      const deadline = Date.now() + 5000;
+      while (!held.includes(id)) {
+        assert.ok(
+          Date.now() < deadline,
+          `missing held ${id}; caption=${await page.locator("#attachmentDialogCaption").innerText()}; calls=${calls.slice(-5)}`,
+        );
+        await page.waitForTimeout(10);
+      }
+    };
+    await image.click();
+    for (let i = 0; i < 34; i++) await page.keyboard.press("ArrowRight");
+    await waitHeld("f35");
+    assert.ok(
+      held.includes("f35"),
+      "navigation lazily uses the original loader for unacquired frames",
+    );
+    assert.ok(await page.locator("#attachmentDialogImage").getAttribute("src"));
+    assert.doesNotMatch(
+      await page.locator("#attachmentDialogCaption").innerText(),
+      /^Photo 35 of 40/,
+    );
+    await page.keyboard.press("ArrowLeft"); // newer selection wins while f35 is pending
+    await page.waitForFunction(() =>
+      document
+        .getElementById("attachmentDialogCaption")!
+        .textContent?.startsWith("Photo 34 of 40"),
+    );
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Escape");
+    holds.get("f35")!.release();
+    await page.waitForFunction(
+      () => document.querySelectorAll("#dashboardGallery img").length >= 35,
+    );
+    assert.equal(await page.locator("#attachmentDialog").isVisible(), false);
+    assert.equal(
+      await page.locator("#attachmentDialogImage").getAttribute("src"),
+      null,
+    );
+    await image.click();
+    for (let i = 0; i < 35; i++) await page.keyboard.press("ArrowRight");
+    await waitHeld("f36");
+    assert.ok(held.includes("f36"));
+    await page.evaluate(() =>
+      (
+        document.querySelector(".dashboard-member-card") as HTMLButtonElement
+      ).click(),
+    );
+    holds.get("f36")!.release();
+    await page.waitForTimeout(100);
+    assert.equal(
+      await page.locator("#attachmentDialogImage").getAttribute("src"),
+      null,
+      "filter closes and fences a pending viewer read",
+    );
+    await image.click();
+    for (let i = 0; i < 36; i++) await page.keyboard.press("ArrowRight");
+    await waitHeld("f37");
+    assert.ok(held.includes("f37"));
+    await page.evaluate(() => (window as any).lockSession());
+    for (const gate of holds.values()) gate.release();
+    await page.waitForTimeout(100);
+    assert.equal(
+      await page.locator("#attachmentDialogImage").getAttribute("src"),
+      null,
+      "lock cannot resurrect pending images",
+    );
+    assert.equal(await page.locator("#dashboardGallery img").count(), 0);
   } finally {
     await browser?.close();
     await server.close();

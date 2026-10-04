@@ -193,6 +193,13 @@ for (const denial of [401, 403])
             .querySelector("#dashboardMapStatus")
             ?.textContent?.includes("roster unavailable (503)"),
         );
+        // Roster failure can be reported while the independently authorized
+        // timeline is still loading; assert only after that read publishes.
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("complete day"),
+        );
         assert.equal(rosterReads(), initialReads + 1);
         assert.doesNotMatch(
           await page.locator("#dashboardMemberCards").innerText(),
@@ -229,6 +236,11 @@ for (const denial of [401, 403])
               .querySelector("#dashboardMapStatus")
               ?.textContent?.includes(`roster access denied (${status})`),
           denial,
+        );
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("complete day"),
         );
         assert.equal(rosterReads(), initialReads + 3);
         assert.equal(await page.locator(".dashboard-member-pin").count(), 0);

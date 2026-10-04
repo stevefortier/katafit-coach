@@ -2749,6 +2749,7 @@ window.CoachDashboard = (() => {
       { rootMargin: "300px" },
     );
     function settleImages() {
+      window.CoachImageViewer?.refresh("gallery");
       const error = [...entries.values()]
         .filter(visible)
         .flatMap((entry) => [
@@ -2835,7 +2836,23 @@ window.CoachDashboard = (() => {
         }
       }
     }
-    async function loadFrame(frame) {
+    const viewerEntry = (frame) => ({
+      key: frame,
+      url: frame.url,
+      filename: frame.photo.name || "Progress photo",
+      caption: frame.caption,
+    });
+    const viewerEntries = () =>
+      [...entries.values()]
+        .filter((entry) => visible(entry) && entry.node.isConnected)
+        .flatMap((entry) => (entry.frames || []).map(viewerEntry));
+    function loadFrame(frame) {
+      if (frame.loading) return frame.loading;
+      const pending = readFrame(frame);
+      if (frame.loading) frame.loading = pending;
+      return pending;
+    }
+    async function readFrame(frame) {
       const { entry } = frame;
       if (
         !live() ||
@@ -2875,11 +2892,14 @@ window.CoachDashboard = (() => {
         frame.button.onclick = () => {
           if (live() && visible(entry))
             window.CoachImageViewer?.open({
+              ...viewerEntry(frame),
               owner: "gallery",
-              url: frame.url,
-              filename: frame.photo.name || "Progress photo",
-              caption: frame.caption,
               trigger: frame.button,
+              getEntries: viewerEntries,
+              acquire: async (target) => {
+                await loadFrame(target);
+                return live() && visible(target.entry) ? target.url : "";
+              },
             });
         };
         imageObserver.unobserve(frame.button);
