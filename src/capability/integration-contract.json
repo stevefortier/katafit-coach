@@ -1,0 +1,509 @@
+{
+  "protocol": "coach.integrations.v1",
+  "schemas": {
+    "coach_discover_integrations": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "coach.integrations.v1"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "operator"
+                },
+                "invocation_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+                }
+              },
+              "required": ["plane", "invocation_id"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "request"
+                },
+                "request_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["plane", "request_id", "lease_generation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "task"
+                },
+                "task_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["plane", "task_id", "lease_generation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "autonomy"
+                },
+                "work_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "mandate_revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "plane",
+                "work_id",
+                "lease_generation",
+                "mandate_revision"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": ["protocol", "execution"],
+      "additionalProperties": false
+    },
+    "coach_call_integration": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "coach.integrations.v1"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "operator"
+                },
+                "invocation_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+                }
+              },
+              "required": ["plane", "invocation_id"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "request"
+                },
+                "request_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["plane", "request_id", "lease_generation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "task"
+                },
+                "task_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["plane", "task_id", "lease_generation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "autonomy"
+                },
+                "work_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "mandate_revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "plane",
+                "work_id",
+                "lease_generation",
+                "mandate_revision"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^custom_mcp__[A-Za-z0-9_-]{1,80}__[A-Za-z0-9_.-]{1,80}$"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+        },
+        "arguments": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/__schema0"
+          }
+        }
+      },
+      "required": ["protocol", "execution", "tool", "slot", "arguments"],
+      "additionalProperties": false,
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/__schema0"
+              }
+            },
+            {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "coach_read_integration_occurrence": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "const": "coach.integrations.v1"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "operator"
+                },
+                "invocation_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+                }
+              },
+              "required": ["plane", "invocation_id"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "request"
+                },
+                "request_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["plane", "request_id", "lease_generation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "task"
+                },
+                "task_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": ["plane", "task_id", "lease_generation"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "plane": {
+                  "type": "string",
+                  "const": "autonomy"
+                },
+                "work_id": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{24}$"
+                },
+                "lease_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "mandate_revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "plane",
+                "work_id",
+                "lease_generation",
+                "mandate_revision"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+        }
+      },
+      "required": ["protocol", "execution", "slot"],
+      "additionalProperties": false
+    }
+  },
+  "call_result_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "protocol": {
+        "type": "string",
+        "const": "coach.integrations.v1"
+      },
+      "slot": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+      },
+      "tool": {
+        "type": "string",
+        "pattern": "^custom_mcp__[A-Za-z0-9_-]{1,80}__[A-Za-z0-9_.-]{1,80}$"
+      },
+      "outcome": {
+        "type": "string",
+        "enum": ["unknown", "response_received", "response_error"]
+      },
+      "request_sha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "replay_allowed": {
+        "type": "boolean",
+        "const": false
+      },
+      "result": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "text"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["type", "text"],
+                  "additionalProperties": false
+                }
+              },
+              "structured_content": {
+                "$ref": "#/$defs/__schema0"
+              }
+            },
+            "required": ["content"],
+            "additionalProperties": false
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "code": {
+        "anyOf": [
+          {
+            "type": "string",
+            "enum": [
+              "INTEGRATION_INVALID",
+              "INTEGRATION_NOT_AUTHORIZED",
+              "INTEGRATION_UNAVAILABLE",
+              "INTEGRATION_LIMIT",
+              "INTEGRATION_CHANGED",
+              "INTEGRATION_CONFLICT",
+              "INTEGRATION_UNRESOLVED",
+              "INTEGRATION_NOT_FOUND",
+              "INTEGRATION_TIMED_OUT",
+              "INTEGRATION_CANCELLED",
+              "LEASE_LOST",
+              "CREDENTIAL_REVOKED",
+              "CREDENTIAL_EXPIRED",
+              "SCOPE_DENIED",
+              "SCOPE_CHANGED",
+              "REQUESTER_SCOPE_CHANGED",
+              "CONVERSATION_CLEARED",
+              "TASK_CAPABILITY_REQUIRED",
+              "TASK_ROUTING_CHANGED",
+              "AUTONOMY_NOT_AUTHORIZED",
+              "AUTONOMY_NOT_FOUND",
+              "AUTONOMY_DISABLED",
+              "AUTONOMY_SCOPE_CHANGED",
+              "AUTONOMY_MANDATE_CHANGED",
+              "INTEGRATION_REMOTE_ERROR"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "protocol",
+      "slot",
+      "tool",
+      "outcome",
+      "request_sha256",
+      "replay_allowed",
+      "result",
+      "code"
+    ],
+    "additionalProperties": false,
+    "$defs": {
+      "__schema0": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/__schema0"
+            }
+          },
+          {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "$ref": "#/$defs/__schema0"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "parent_backend_sha": "bf5cd2d08c09523af0b8b336cdee74787dfbc17b",
+  "source_contract_sha256": "4476c2176ea6d6bff1eacfea3467919765408ade254b269d4f6e9affab8ce4eb"
+}

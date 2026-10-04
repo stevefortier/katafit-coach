@@ -35,7 +35,10 @@ import {
   openMemberMessages,
 } from "../katafit/memberMessages.js";
 import { NativeSelections } from "./selections.js";
-import { classifySecretRequest } from "../capability/invocation.js";
+import {
+  InvocationCapability,
+  classifySecretRequest,
+} from "../capability/invocation.js";
 import type { ActionType } from "../autonomy/types.js";
 import {
   PROVIDER_TEXT_LIMIT,
@@ -1125,7 +1128,9 @@ export interface ProfileGatewayOptions {
     body?: unknown;
   }) => void;
   budgets?: ProfileBudgets;
-  onExhausted?: (reason: "tool_calls" | "provider_tokens") => void;
+  onExhausted?: (
+    reason: "tool_calls" | "provider_tokens" | "images" | "rest_reads",
+  ) => void;
   /** Exact provider wire bytes, for audience-separation probes. */
   onProviderRequest?: (wire: string) => void;
   /** Each admitted provider response body (planner transcript spans). */
@@ -1282,9 +1287,29 @@ export async function openProfileGateway(
       ...(body !== undefined ? { body } : {}),
     });
   };
-  const visible = (value: unknown) => ({
-    content: [{ type: "text" as const, text: JSON.stringify(value) }],
-  });
+  // Legacy GET is only a name adapter over the caller's acquisition instance.
+  // Standalone planner gateways also use the same quota/cache implementation.
+  const plannerRead = planner
+    ? (workerTools.find((t) => t.name === restRequestTool.name) ??
+      new InvocationCapability({
+        plane: "autonomy",
+        origin: config.origin,
+        token: secrets.token ?? "",
+        secrets: secretValues,
+        vision: config.provider.vision === true,
+        maxImages: budgets.images_per_cycle,
+        maxReads: budgets.tool_calls,
+        actions: [],
+        current,
+        onExhausted: (reason) => options.onExhausted?.(reason),
+        onRead: (path, result) =>
+          readResult(
+            path,
+            result.ok ? "ok" : result.denied ? "denied" : "failed",
+            result.body,
+          ),
+      }).tools()[0])
+    : undefined;
 
   async function tool(request: any, requestSignal: AbortSignal) {
     if ((!planner && !worker) || !tools.some((t) => t.name === request.name))
@@ -1333,54 +1358,15 @@ export async function openProfileGateway(
         throw new NativeFailure("NATIVE_REQUEST_REJECTED");
       }
       used.tool_calls++;
-      if (classifySecretRequest("GET", path))
-        return visible({
-          error: "SECRET_ENDPOINT_DENIED",
-          note: "Credential and account-security endpoints are interactive-only and never available to autonomy.",
-        });
-      let result: any;
-      try {
-        result = await restRequest(
-          config.origin,
-          secrets.token!,
-          { method: "GET", path },
-          requestSignal,
-          secretValues,
-        );
-      } catch (error) {
-        if (error instanceof NativeFailure) throw error;
-        const code = (error as Error).message;
-        if (code === "REST_REQUEST_REJECTED")
-          throw new NativeFailure("NATIVE_REQUEST_REJECTED");
-        if (requestSignal.aborted) throw error;
-        check();
-        readResult(path, "failed");
-        return visible({
-          error: /^[A-Z_]{3,64}$/.test(code) ? code : "REST_READ_UNAVAILABLE",
-          note: "This read did not complete. Report the fact as unavailable; do not invent it.",
-        });
-      }
+      const result = await plannerRead!.execute(
+        request.toolCallId,
+        { method: "GET", path },
+        requestSignal,
+      );
+      assertNoSecrets(result, secretValues);
+      if (nativeToolResultTooLarge(result))
+        throw new NativeFailure("NATIVE_RESULT_TOO_LARGE");
       check();
-      if (result.restReadError) {
-        const status = result.restReadError.status;
-        const denied = status === 401 || status === 403;
-        readResult(path, denied ? "denied" : "failed");
-        return visible({
-          error: denied
-            ? "REST_READ_DENIED"
-            : status === 404
-              ? "REST_READ_MISSING"
-              : "REST_READ_UNAVAILABLE",
-          status,
-          note: "This fact is unavailable to this cycle. Record it as partial coverage; do not invent it.",
-        });
-      }
-      let body: unknown;
-      if (result.content?.length === 1 && result.content[0].type === "text")
-        try {
-          body = JSON.parse(result.content[0].text);
-        } catch {}
-      readResult(path, "ok", body);
       return result;
     }
     if (!plannerArgs(request.name, request.args))

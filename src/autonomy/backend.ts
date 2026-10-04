@@ -245,6 +245,10 @@ export const reportDigest = (report: {
   );
 
 export class AutonomyBackend {
+  /** Effect uncertainty, not lease/permission authority. */
+  get mutationHeld(): boolean {
+    return false;
+  }
   constructor(
     readonly origin: string,
     private readonly bearer: string,

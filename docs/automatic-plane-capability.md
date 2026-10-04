@@ -1,6 +1,6 @@
 # Automatic-plane capability inventory and remaining contract gate
 
-This is an independent implementation inventory, not release/full-capability approval. The paired backend is immutable `3e4b9bccc4bb17eb0ee2a4b4b84791d0138eeff0`. The superseded integration READY does not authorize consuming its source or schema. Parent must explicitly provide the repaired committed contract and immutable export.
+This is an independent implementation inventory, not release/full-capability approval. The corrective continuation consumes parent-supplied immutable backend `bf5cd2d08c09523af0b8b336cdee74787dfbc17b` and `coach.integrations.v1` repair2153. Historical d7 read/photo receipts remain pinned to `3e4b9bccc4bb17eb0ee2a4b4b84791d0138eeff0`; they are not reassigned to bf5. See `configured-integration-capability.md` for exact dependency and qualification limits.
 
 ## Actual profiles and admission
 
@@ -12,7 +12,7 @@ This is an independent implementation inventory, not release/full-capability app
 
 ## Independent client closure
 
-`src/autonomy/runner.ts` now offers the same `katafit_rest_request` transport used by Worker to every admitted automatic planner. No profile/trigger switch suppresses dynamic discovery, populated credential-account memory search, nutrition reads or authorized image reads. `katafit_rest_get` is retained for compatibility. Shared read acquisition is cached once per exact path during the cycle, including correction attempts; failed/denied reads remain explicit and cached. A refused unsupported write does not invalidate acquired context.
+`src/autonomy/runner.ts` offers the same `katafit_rest_request` transport used by Worker to every admitted automatic planner. No profile/trigger switch suppresses dynamic discovery, populated credential-account memory search, nutrition reads or authorized image reads. `katafit_rest_get` is now only a GET name adapter over that same acquisition instance, not a separate REST transport. Both advertised names share vision/quota admission and exact-path success/failure retention across sharing changes. Successful acquisition bodies, not envelopes, enter the audience evidence ledger. A refused unsupported write does not invalidate acquired context.
 
 The shared transport's optional image/read quotas are bound to the validated mandate, with global gateway tool/provider budgets still enforced. Vision requires explicit provider support and positive image quota. Model image preparation validates decoded pixels and limits transient input to at most 1 MP even for tiny compressed high-resolution images; originals are neither overwritten nor persisted. New reads after media-file revocation use the real backend authorization and fail; previously acquired model pixels are retained without periodic re-fetch, re-authorization or re-render.
 
@@ -22,9 +22,9 @@ Caller tools are accepted for planner and worker only, AJV-validated and bound t
 
 ## Explicit incomplete contracts: not client read-wiring gaps
 
-The current automatic descriptor grants `rest.reads=true`, advertises `rest.writes=true`, but specifies `generic_mutations=false`. Supported actions are finite mandate action types intersected with mode, delegation and backend support. `src/capability/autonomy.ts` still validates this finite contract. Neither that validator nor the runner has integrated a repaired generic automatic-write/configured-integration contract. This remaining limitation is recorded, not presented as full parity or silently relaxed.
+The automatic descriptor still specifies `generic_mutations=false`. Supported ordinary actions remain finite mandate action types intersected with mode, delegation and backend support. This is the supplied contract, not a permanent trigger-based ban. The separately supplied configured-integration contract is now implemented for Worker task/request and private planner; discovery is available in observe, dispatch requires message plus explicit configured_integration delegation. Generic ordinary automatic REST actions remain backend0015-owned and require a separately supplied contract. No authority or effect receipt is fabricated.
 
-Before implementing automatic generic writes or integration dispatch, the backend/parent handoff must provide:
+Before implementing ordinary automatic generic writes, the backend/parent handoff must provide the remaining authority/occurrence contract. The following original requirements distinguish that missing contract from the configured-integration contract now consumed:
 
 1. Exact committed protocol/JSON schemas for both worker and automatic planner discovery and execution. Real callable names, input/result schemas and dispatch endpoints must be included; `integrations.source=worker_configured` metadata alone is not executable availability.
 2. Explicit authority for ordinary supported automatic writes: configured principal, work ID, lease generation, mandate revision, observe/delegation rules, action classification and audience. Backend must acquire current authority at actual send, not only at discovery/preparation. Trainee/public free text cannot bypass AC1; any new audience-bearing mutation needs a specified declassification/composition contract, not raw private planner body forwarding.
@@ -32,10 +32,10 @@ Before implementing automatic generic writes or integration dispatch, the backen
 4. Durable exact occurrence open/settle/reconcile schemas for automatic and worker integration/REST effects: stable host keys, exact payload/target binding, proven-not-committed gates, committed receipt readback, cancellation/release boundedness, and unknown/no-replay outcomes across retry/restart/upgrade. A generic success-shaped receipt is not proof.
 5. Parent-authorized exact repaired immutable export and committed READY/results after backend F1–F4 review repairs. No adoption from file existence or the older READY.
 
-The existing executable readiness RED performs live hosted MCP discovery/call and compares the actual external credential catalog on pinned3e4b. It remains outside GREEN suites. Do not invent a backend integration authority boundary to satisfy it.
+The historical executable readiness RED and its pinned3e4b logs are preserved. The current acceptance script exercises real repaired-contract owner controls through authenticated backend HTTP/Mongo and synthetic remote MCP. It does not claim generic automatic REST authority, production eligibility or an external effect receipt.
 
 ## Gate interpretation
 
 The native acceptance invokes the production runner/gateway/isolated Pi seam against real HTTP/Mongo; it does not drive installed-supervisor natural triggers. It executes all five actual work kinds plus the audience-delivery and zero-image-budget controls. The latter canonically blocks as budget_exhausted without delivering any pixels. Separate containers are inspected while active: composer and held planner really overlap, with network=none and read-only root filesystems. Earlier installed/process evidence remains separately source-labelled.
 
-Read/memory/nutrition/skill/photo and composer-private separation are independently executable. Broader automatic mutation/integration parity, natural trigger production coverage, complete A1–A13 reconciliation, and exact integrated full test/package qualification remain open. Parent owns the latter qualification and publication. This client continuation neither modifies backend exports nor runs a full package/test suite.
+Read/memory/nutrition/skill/photo, corrected conversation evidence, composer-private separation and bounded configured-integration owner wiring are independently executable. Ordinary generic automatic mutations, natural trigger production coverage, complete A1–A13 reconciliation, and integrated full test/package/browser/CI/live-model qualification remain open. Parent owns release qualification and publication. This continuation neither modifies backend exports nor runs a full package/test suite.

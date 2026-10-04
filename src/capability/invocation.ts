@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import {
+  ConfiguredIntegrations,
+  type IntegrationExecution,
+} from "./integrations.js";
 import { assertNoSecrets } from "../config/store.js";
 import { classifyAutonomyRequest } from "../katafit/autonomyNamespace.js";
 import {
@@ -83,12 +87,19 @@ export interface InvocationOptions {
   ) => void;
   /** Lease/cancellation fence checked before every mutation. */
   current: () => boolean;
+  mutationHeld?: () => boolean;
   /** Supported action types under the current admission. */
   actions: CapabilityAction[];
   journal?: ActionJournal;
   occurrences?: Occurrence[];
   ledger?: ActionLedger;
   ledgerSession?: string;
+  integrations?: {
+    execution: IntegrationExecution;
+    directory: string;
+    dispatch: boolean;
+    onUnknown?: () => void;
+  };
   /** The only recipient a member message may reach (the requester). */
   recipient?: string;
 }
@@ -257,6 +268,7 @@ export function requestAdmission(
 }
 
 export class InvocationCapability {
+  private readonly integrations?: ConfiguredIntegrations;
   private readonly known: Occurrence[];
   /**
    * Acquisition-time reuse: reads already made in this invocation (all of
@@ -271,9 +283,32 @@ export class InvocationCapability {
   private reads = 0;
   constructor(private readonly o: InvocationOptions) {
     this.known = [...(o.occurrences ?? [])];
+    if (o.integrations)
+      this.integrations = new ConfiguredIntegrations({
+        ...o.integrations,
+        origin: o.origin,
+        token: o.token,
+        secrets: o.secrets,
+        current: o.current,
+        ledger: o.ledger,
+        mutationHeld: () =>
+          this.known.some((entry) => !settled(entry)) ||
+          o.mutationHeld?.() === true,
+      });
   }
   private get values() {
     return [this.o.token, ...this.o.secrets].filter(Boolean);
+  }
+  private integrationRoute(path: string) {
+    try {
+      const segments = decodeURIComponent(path.split("?", 1)[0])
+        .toLowerCase()
+        .split("/")
+        .filter(Boolean);
+      return segments.slice(0, 3).join("/") === "api/coach/integrations";
+    } catch {
+      return true;
+    }
   }
   tools(): AgentTool[] {
     return [
@@ -285,6 +320,7 @@ export class InvocationCapability {
         execute: async (_id: string, args: any, signal?: AbortSignal) =>
           this.execute(args, signal),
       } as AgentTool,
+      ...(this.integrations?.tools() ?? []),
     ];
   }
   private async execute(raw: any, signal?: AbortSignal) {
@@ -305,6 +341,7 @@ export class InvocationCapability {
       );
     if (
       classifyAutonomyRequest(args.method, args.path).kind === "reject" ||
+      this.integrationRoute(args.path) ||
       (args.method !== "GET" &&
         classifyMemoryWrite(args.method, args.path, raw.body) !== undefined)
     )
@@ -544,6 +581,7 @@ export class InvocationCapability {
     );
     if (match) return this.prior(match, signal);
     if (this.known.some((o) => !settled(o))) this.uncertain();
+    if (this.o.ledger?.unresolved()) this.uncertain();
     if (this.known.some((o) => o.action === "member_message"))
       return refusal(
         "MESSAGE_ALREADY_SENT",
@@ -620,6 +658,7 @@ export class InvocationCapability {
     signal?: AbortSignal,
   ) {
     if (!this.o.actions.includes("rest_mutation")) return this.unsupported();
+    if (this.o.ledger?.unresolved()) this.uncertain();
     const body = Object.hasOwn(raw, "body") ? raw.body : undefined;
     if (this.o.journal) {
       const request_sha256 = digest({

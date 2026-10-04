@@ -67,6 +67,10 @@ export const ACTION_TYPES = [
   "follow_up",
   "public_praise",
 ] as const;
+export const DELEGATED_ACTION_TYPES = [
+  ...ACTION_TYPES,
+  "configured_integration",
+] as const;
 export const WORK_KINDS = [
   "event",
   "conversation",
@@ -478,9 +482,9 @@ const mandateFields = {
   }),
   delegated_actions: {
     type: "array",
-    maxItems: ACTION_TYPES.length,
+    maxItems: DELEGATED_ACTION_TYPES.length,
     uniqueItems: true,
-    items: { enum: ACTION_TYPES },
+    items: { enum: DELEGATED_ACTION_TYPES },
   },
   instructions: { type: "string", maxLength: 4000 },
 };
@@ -662,8 +666,15 @@ export const schemas = {
           uniqueItems: true,
           items: { type: "string", pattern: "^[a-z_]{1,64}$" },
         },
+        configured_integrations: object({
+          protocol: { const: "coach.integrations.v1" },
+          delegation: { const: "configured_integration" },
+          dispatch_mode: { const: "message" },
+          discover_path: { const: "/api/coach/integrations/discover" },
+          dispatch_path: { const: "/api/coach/integrations/call" },
+        }),
       },
-      ["blocked_reasons"],
+      ["blocked_reasons", "configured_integrations"],
     ),
   }),
 };
@@ -697,7 +708,7 @@ export interface MandateFields {
     images_per_cycle: number;
     max_attempts: number;
   };
-  delegated_actions: ActionType[];
+  delegated_actions: (typeof DELEGATED_ACTION_TYPES)[number][];
   instructions: string;
 }
 export interface Mandate extends MandateFields {

@@ -1,5 +1,7 @@
 import type { AutonomyCapability } from "../capability/autonomy.js";
 import { InvocationCapability } from "../capability/invocation.js";
+import { integrationAdmitted } from "../capability/integrations.js";
+import { Actions } from "../chat/actions.js";
 import { compileAutonomy, type Store } from "../config/store.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
 import { AutonomyFailure, type AutonomyBackend } from "./backend.js";
@@ -116,7 +118,8 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     const followUps = new Set<string>(work.follow_ups);
     const reads = { ok: 0, denied: 0, failed: 0 };
     const exhausted = new Set<string>();
-    let uncertain = false;
+    const sharedActions = new Actions(options.store);
+    let uncertain = sharedActions.unresolved();
     // [AC1] Trainee/public intents: the acquisition ledger, the planner's
     // own private prose (literal check only) and composition outcomes.
     const composing =
@@ -173,6 +176,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
           ],
           onTokens: (tokens) => (composerTokens += tokens),
           onExhausted: () => exhausted.add("provider_tokens"),
+          mutationHeld: () => uncertain || backend.mutationHeld,
         })
       : undefined;
     // Lease-loss recovery (contracts §21.4 step 5): a composition an earlier
@@ -394,10 +398,34 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       maxImages: mandate.budgets.images_per_cycle,
       maxReads: mandate.budgets.tool_calls,
       current: () => !signal.aborted,
+      mutationHeld: () => uncertain || backend.mutationHeld,
       actions: [],
+      ledger: {
+        unresolved: () => sharedActions.unresolved(),
+        save: (action) => sharedActions.save(action),
+      },
+      ...(integrationAdmitted(capability?.descriptor, "autonomy")
+        ? {
+            integrations: {
+              directory: options.store.dir,
+              execution: {
+                plane: "autonomy" as const,
+                work_id: work.id,
+                ...fence,
+              },
+              dispatch:
+                mandate.mode === "message" &&
+                mandate.delegated_actions.includes("configured_integration"),
+              onUnknown: () => {
+                uncertain = true;
+              },
+            },
+          }
+        : {}),
       onExhausted: (budget) => exhausted.add(budget),
       onRead: (path, acquired) => {
-        ledger.read(path, acquired);
+        if (acquired.ok && acquired.body !== undefined)
+          ledger.read(path, acquired.body);
         if (acquired.ok) reads.ok++;
         else if (acquired.denied) reads.denied++;
         else reads.failed++;
@@ -409,7 +437,9 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       autonomy: callbacks,
       actions,
       rest,
-      tools: rest ? acquisition.tools() : [],
+      tools: acquisition
+        .tools()
+        .filter((tool) => rest || tool.name !== "katafit_rest_request"),
       skills: true,
       budgets: {
         tool_calls: mandate.budgets.tool_calls,

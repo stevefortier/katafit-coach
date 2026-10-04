@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Actions } from "../chat/actions.js";
 import { compileComposer, type Store } from "../config/store.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
 import { AutonomyFailure, type AutonomyBackend } from "./backend.js";
@@ -66,6 +67,8 @@ export interface ComposerContext {
   remainingTokens(): number;
   /** Manager-private texts for the defense-in-depth literal check. */
   privateSources(): string[];
+  /** Live effect uncertainty, distinct from authority or lease expiry. */
+  mutationHeld?: () => boolean;
   onTokens(tokens: number): void;
   onExhausted(): void;
 }
@@ -103,6 +106,9 @@ export function composer(ctx: ComposerContext) {
     text: string,
   ): Promise<Fulfilment> {
     signal.throwIfAborted();
+    const canDispatch = () =>
+      !new Actions(ctx.store).unresolved() && !ctx.mutationHeld?.();
+    if (!canDispatch()) throw new AutonomyFailure("AUTONOMY_OUTCOME_UNKNOWN");
     const input: ActionIntent =
       intent.type === "public_praise"
         ? {
@@ -123,6 +129,7 @@ export function composer(ctx: ComposerContext) {
       work.id,
       slot,
       input,
+      canDispatch,
     );
     ledger.receipt(receipt, text);
     return { kind: "sent", receipt, idempotent, recovered };

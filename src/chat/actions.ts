@@ -439,7 +439,9 @@ export class Actions {
       // An HTTP write has no transferable backend receipt. Changing any
       // credential must not make an unresolved side effect disappear.
       return rows[i - 1].text === scope ||
-        (action.tool_name === "katafit_rest_request" &&
+        (["katafit_rest_request", "coach_call_integration"].includes(
+          action.tool_name ?? "",
+        ) &&
           ["pending", "unknown"].includes(action.status))
         ? [{ action, scope: rows[i - 1].text }]
         : [];

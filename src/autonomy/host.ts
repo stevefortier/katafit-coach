@@ -1,3 +1,4 @@
+import { Actions } from "../chat/actions.js";
 import type { Store } from "../config/store.js";
 import type { LogInput } from "../diagnostics/log.js";
 import type { Admission } from "../runtime/admission.js";
@@ -98,8 +99,19 @@ class TrackedBackend extends AutonomyBackend {
     secrets: string[],
     private readonly ledger: WriteLedger,
     private readonly installation: string,
+    private readonly sharedHeld: () => boolean,
   ) {
     super(origin, token, signal, secrets);
+  }
+  override get mutationHeld(): boolean {
+    return (
+      !this.ledger.healthy ||
+      this.sharedHeld() ||
+      this.ledger.unresolved.some(
+        (record) =>
+          record.state === "unknown" || !this.dispatched.has(record.id),
+      )
+    );
   }
   protected override get scope() {
     return this.cycle
@@ -125,7 +137,7 @@ class TrackedBackend extends AutonomyBackend {
           (e.op === "complete" && this.admitted?.terminal)
         )
           return false;
-        if (!records.length) return true;
+        if (!records.length && !this.sharedHeld()) return true;
         const admitted = this.admitted;
         const outcome = (
           e.body as {
@@ -480,6 +492,7 @@ export class AutonomyHost {
         Object.values(store.secrets),
         this.ledger!,
         this.owner!,
+        () => new Actions(store).unresolved(),
       );
       backend.onUnknown = () =>
         this.diagnostic("autonomy-outcome-unknown", "warn");

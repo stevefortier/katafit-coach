@@ -41,6 +41,9 @@ test(
     const containers: any[] = [];
     let compose = false;
     let zeroImages = false;
+    let overImages = false;
+    let noVision = false;
+    let readName = "katafit_rest_request";
     let imageSeen = false;
     let privateRecallSeen = false;
     let composerSeen = false;
@@ -89,6 +92,13 @@ test(
           assert.ok(
             composerInput.evidence.some((e: any) => e.kind === "activity"),
           );
+          assert.ok(
+            composerInput.evidence.some(
+              (e: any) =>
+                e.kind === "member_message" &&
+                e.text === "Synthetic canonical member question",
+            ),
+          );
           return void res.end(
             answer("Great work completing your workout. How did it feel?"),
           );
@@ -126,9 +136,13 @@ test(
                 : m.content.map((p: any) => p.text || "").join(""),
           }));
         const got = (id: string) => results.find((r: any) => r.id === id)?.text;
-        const get = (path: string, id: string) =>
+        const get = (path: string, id: string, name = readName) =>
           res.end(
-            toolCall("katafit_rest_request", { method: "GET", path }, id),
+            toolCall(
+              name,
+              name === "katafit_rest_get" ? { path } : { method: "GET", path },
+              id,
+            ),
           );
         if (!got("discovery"))
           return void get("/api/docs/coach?domain=memory", "discovery");
@@ -144,8 +158,11 @@ test(
           return void get("/api/user/targets", "nutrition");
         assert.equal(JSON.parse(got("nutrition")).protein, 200);
         if (!got("photo")) return void get(picturePath, "photo");
-        if (zeroImages) {
-          assert.match(got("photo"), /IMAGE_BUDGET_EXHAUSTED/);
+        if (zeroImages || noVision) {
+          assert.match(
+            got("photo"),
+            noVision ? /IMAGE_UNSUPPORTED/ : /IMAGE_BUDGET_EXHAUSTED/,
+          );
           assert.ok(
             !body.messages.some(
               (m: any) =>
@@ -177,6 +194,12 @@ test(
           "synthetic analysis is grounded in actual red image pixels, not media-chat text",
         );
         imageSeen = true;
+        if (overImages) {
+          if (!got("over-photo"))
+            return void get(picturePath + "?size=small", "over-photo");
+          assert.match(got("over-photo"), /IMAGE_BUDGET_EXHAUSTED/);
+          return void res.end(answer(outcome()));
+        }
         if (!got("revoked-photo")) {
           const id = picturePath.split("/")[3];
           await b.db
@@ -189,7 +212,7 @@ test(
         }
         assert.match(got("revoked-photo"), /404|denied|failed/i);
         if (!got("retained-photo"))
-          return void get(picturePath, "retained-photo");
+          return void get(picturePath, "retained-photo", "katafit_rest_get");
         assert.doesNotMatch(
           got("retained-photo"),
           /REST_READ_MISSING|IMAGE_BUDGET_EXHAUSTED/,
@@ -208,7 +231,11 @@ test(
           );
         assert.match(got("generic-write"), /ACTION_UNSUPPORTED/);
         if (!got("retained-recall"))
-          return void get("/api/coach/memory?query=Cedar", "retained-recall");
+          return void get(
+            "/api/coach/memory?query=Cedar",
+            "retained-recall",
+            "katafit_rest_get",
+          );
         assert.match(
           got("retained-recall"),
           /Synthetic Cedar private account preference/,
@@ -219,6 +246,36 @@ test(
             "member-activity",
           );
         assert.match(got("member-activity"), /Synthetic member workout/);
+        if (compose) {
+          if (!got("conversation"))
+            return void get(
+              `/api/coach/member-conversations/${member}?view=main_conversation`,
+              "conversation",
+            );
+          const page = JSON.parse(got("conversation"));
+          assert.equal(page.member_id, member);
+          const message = page.items.find(
+            (m: any) => m.text === "Synthetic canonical member question",
+          );
+          assert.ok(message?.message_ref);
+          if (!got("wrong-member"))
+            return void res.end(
+              toolCall(
+                INTEND_TOOL,
+                {
+                  slot: "wrong-member",
+                  intent: {
+                    type: "member_message",
+                    recipient_id: String(b.user),
+                    purpose: "check_in",
+                    evidence_refs: ["msg:" + message.message_ref],
+                  },
+                },
+                "wrong-member",
+              ),
+            );
+          assert.match(got("wrong-member"), /INTENT_EVIDENCE_NOT_AUTHORIZED/);
+        }
         if (compose && !got("private-report"))
           return void res.end(
             toolCall(
@@ -238,7 +295,14 @@ test(
                   recipient_id: member,
                   purpose: "check_in",
                   tone: "warm",
-                  evidence_refs: ["act:" + memberActivity],
+                  evidence_refs: [
+                    "act:" + memberActivity,
+                    "msg:" +
+                      JSON.parse(got("conversation")).items.find(
+                        (m: any) =>
+                          m.text === "Synthetic canonical member question",
+                      ).message_ref,
+                  ],
                 },
               },
               "audience-message",
@@ -249,6 +313,7 @@ test(
             ["sent", "published", "delivered"].includes(
               JSON.parse(got("audience-message")).status,
             ),
+            got("audience-message"),
           );
         }
         return void res.end(
@@ -290,6 +355,21 @@ test(
       await b.withTargets();
       const initial = await b.autonomyEvent();
       member = initial.work.subject_ids[0];
+      await b
+        .backendModule("./core/coachChatStore")
+        .appendCoachChatMessages(b.db, new b.ObjectId(member), [
+          {
+            _id: new b.ObjectId(),
+            role: "user",
+            text: "Synthetic canonical member question",
+            created_at: new Date(),
+            conversation_scope: {
+              owner_type: "dojo",
+              owner_id: initial.mandate.dojo_id,
+              requester_generation: 0,
+            },
+          },
+        ]);
       await b.db
         .collection("users")
         .updateOne(
@@ -466,7 +546,16 @@ test(
                     concurrentOwnedContainers: ids.length,
                   });
                 }
-                return target.handle(request, signal);
+                const result = await target.handle(request, signal);
+                if (
+                  request.kind === "tool" &&
+                  request.toolCallId === "over-photo"
+                )
+                  assert.ok(
+                    !result.content.some((p: any) => p.type === "image"),
+                    "refused native tool pixels withheld",
+                  );
+                return result;
               };
             },
           });
@@ -483,10 +572,24 @@ test(
         ...WORK_KINDS.filter((kind) => kind !== "event"),
         "audience-control",
         "image-zero-control",
+        "image-zero-legacy",
+        "image-over-control",
+        "image-over-legacy",
+        "image-vision-control",
+        "image-vision-legacy",
       ];
       for (const kind of kinds) {
         compose = kind === "audience-control";
-        zeroImages = kind === "image-zero-control";
+        zeroImages = kind.startsWith("image-zero");
+        overImages = kind.startsWith("image-over");
+        noVision = kind.startsWith("image-vision");
+        readName = kind.endsWith("legacy")
+          ? "katafit_rest_get"
+          : "katafit_rest_request";
+        await store.save({
+          ...store.publicConfig(),
+          provider: { ...store.publicConfig().provider, vision: !noVision },
+        });
         imageSeen = privateRecallSeen = composerSeen = false;
         failure = undefined;
         const callStart = b.calls.length;
@@ -504,12 +607,12 @@ test(
               "member_message",
             ],
           });
-        if (zeroImages)
+        if (zeroImages || overImages || noVision)
           await mandate({
             mode: "observe",
             budgets: {
               ...(await backend.mandate()).budgets,
-              images_per_cycle: 0,
+              images_per_cycle: zeroImages ? 0 : 1,
             },
           });
         const imageActivity = new b.ObjectId(),
@@ -547,7 +650,7 @@ test(
         if (kind !== "event")
           await b.backendModule("./core/coachAutonomy").enqueueWork({
             mandate_id: initial.mandate.mandate_id,
-            kind: compose || zeroImages ? "event" : kind,
+            kind: compose || kind.startsWith("image-") ? "event" : kind,
             dedupe_key: "auto-cap-" + kind,
             subject_ids: [member],
             source: {},
@@ -555,7 +658,10 @@ test(
           });
         const claimed = await backend.claimCycle({ lease_seconds: 120 });
         assert.ok(claimed);
-        assert.equal(claimed.work.kind, compose || zeroImages ? "event" : kind);
+        assert.equal(
+          claimed.work.kind,
+          compose || kind.startsWith("image-") ? "event" : kind,
+        );
         const started = await backend.start(
           claimed.work.id,
           claimed.work.lease_generation,
@@ -568,12 +674,12 @@ test(
           capability: claimed.capability,
         });
         if (failure) throw failure;
-        assert.equal(imageSeen, !zeroImages);
+        assert.equal(imageSeen, !zeroImages && !noVision);
         assert.ok(privateRecallSeen);
         assert.equal(composerSeen, compose);
         assert.equal(
           result.outcome.result,
-          zeroImages ? "blocked" : "completed",
+          zeroImages || overImages ? "blocked" : "completed",
           JSON.stringify(result),
         );
         assert.ok(
@@ -588,8 +694,11 @@ test(
         const canonical = await b.db
           .collection("coach_autonomy_work")
           .findOne({ _id: new b.ObjectId(started.id) });
-        assert.equal(canonical.status, zeroImages ? "blocked" : "completed");
-        if (zeroImages)
+        assert.equal(
+          canonical.status,
+          zeroImages || overImages ? "blocked" : "completed",
+        );
+        if (zeroImages || overImages)
           assert.equal(result.outcome.blocked_reason, "budget_exhausted");
         if (compose) {
           const sent = await backend.actionReceipt(
@@ -627,8 +736,8 @@ test(
         assert.equal(
           calls.filter((s: string) => s === "GET " + picturePath + " 200")
             .length,
-          1,
-          "retained pixels are not re-fetched after source revocation",
+          overImages ? 2 : 1,
+          "retained exact paths are reused; quota control acquires a distinct query path",
         );
         phases.push({
           kind,

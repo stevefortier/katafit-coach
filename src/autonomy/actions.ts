@@ -30,12 +30,14 @@ export async function settleAction(
   workId: string,
   slot: string,
   input: ActionIntent,
+  canDispatch: () => boolean = () => true,
 ): Promise<{
   receipt: ActionReceipt;
   idempotent: boolean;
   recovered: boolean;
 }> {
   let lost: unknown;
+  if (!canDispatch()) throw new AutonomyFailure("AUTONOMY_OUTCOME_UNKNOWN");
   try {
     return { ...(await backend.act(workId, slot, input)), recovered: false };
   } catch (error) {
@@ -48,6 +50,7 @@ export async function settleAction(
   } catch (error) {
     if (!failed(error, "ACTION_NOT_FOUND")) throw lost;
     // Never committed: the identical body is still the same occurrence.
+    if (!canDispatch()) throw new AutonomyFailure("AUTONOMY_OUTCOME_UNKNOWN");
     return { ...(await backend.act(workId, slot, input)), recovered: true };
   }
   const recipient =

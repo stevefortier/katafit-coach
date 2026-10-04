@@ -266,6 +266,7 @@ export async function admin(
         system: compile(c, Object.values(store.secrets)),
         secrets: Object.values(store.secrets),
         vision: c.provider.vision === true,
+        integrationDirectory: store.dir,
         skills,
         personaRevision: String(c.revision),
         admission,

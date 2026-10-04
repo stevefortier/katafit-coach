@@ -27,6 +27,7 @@ import type { InferenceBudget } from "../runtime/piAdapter.js";
 import { assertNoSecrets } from "../config/store.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "../katafit/client.js";
+import { integrationAdmitted } from "../capability/integrations.js";
 import { backendWireBudget } from "../katafit/wireBudget.js";
 import { serializeContext } from "../katafit/context.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
@@ -105,6 +106,7 @@ export interface WorkerOptions {
    * worker chat-request writes. Absent: chat-request writes are unsupported.
    */
   actionLedger?: ActionLedger;
+  integrationDirectory?: string;
   archiveTaskInvalidation?: (record: {
     protocol: typeof TASK_PROTOCOL;
     attempted_result_sha256: string;
@@ -844,6 +846,16 @@ export class Worker {
           !this.controller.signal.aborted &&
           Date.now() < requestDeadline,
         actions: this.options.actionLedger ? admission.actions : [],
+        ...(this.options.integrationDirectory &&
+        integrationAdmitted(context.capability, "request")
+          ? {
+              integrations: {
+                directory: this.options.integrationDirectory,
+                execution: { plane: "request" as const, ...fence },
+                dispatch: true,
+              },
+            }
+          : {}),
         ...(this.options.actionLedger
           ? {
               ledger: this.options.actionLedger,
@@ -1163,6 +1175,21 @@ export class Worker {
           Date.now() < deadline,
         actions: admission.actions,
         occurrences: admission.occurrences,
+        ledger: this.options.actionLedger,
+        ...(this.options.integrationDirectory &&
+        integrationAdmitted(context.capability, "task")
+          ? {
+              integrations: {
+                directory: this.options.integrationDirectory,
+                execution: {
+                  plane: "task" as const,
+                  task_id: task.id,
+                  lease_generation: task.lease_generation,
+                },
+                dispatch: true,
+              },
+            }
+          : {}),
         ...(admission.recipient ? { recipient: admission.recipient } : {}),
         ...(admission.negotiated
           ? {
