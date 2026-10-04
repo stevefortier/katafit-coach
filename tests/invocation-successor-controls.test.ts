@@ -238,6 +238,24 @@ for (const plane of ["request", "task"] as const)
       );
       assert.equal(remote.error, "INTEGRATION_UNRESOLVED");
       assert.equal(t.remote.calls.length, 0);
+      for (const nextPlane of ["request", "task"] as const) {
+        const next = await claimedInvocation(t, nextPlane);
+        const priorCalls = t.requests.length;
+        assert.equal(
+          parsed(
+            await next.adapter().execute({
+              ...planRequest,
+              body: { title: "New invocation held" },
+            }),
+          ).error,
+          "INVOCATION_ACTION_UNRESOLVED",
+        );
+        assert.equal(
+          t.requests.length,
+          priorCalls,
+          "shared unknown fences the other invocation plane before open",
+        );
+      }
       await t.enqueue("invocation-unknown-work-" + plane);
       const backend = t.backend(),
         cycle = await backend.claimCycle();
