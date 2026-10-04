@@ -24,10 +24,26 @@ test(
       true,
       "dynamic memory must execute, not merely be advertised",
     );
+    assert.equal(typed.action?.kind, "plan_created");
+    assert.match(typed.action.resource_id, /^[a-f0-9]{24}$/);
+    assert.equal(typed.action.occurrence.status, "response_received");
     assert.equal(
-      typed.action?.per_year,
-      24,
+      typed.action.occurrence.local_effect.resource_id,
+      typed.action.resource_id,
+      "successor occurrence binds exact resource",
+    );
+    assert.equal(
+      String(typed.action.publication._id),
+      typed.action.resource_id,
       "supported action needs canonical independent readback",
+    );
+    assert.equal(
+      typed.action.publication.title,
+      "Synthetic native typed supported plan",
+    );
+    assert.equal(
+      typed.action.unsupportedQuota,
+      "denied_before_dispatch_no_effect",
     );
     const concurrent = receipt.phases.find(
       (p: any) => p.name === "native-concurrent-typed",
