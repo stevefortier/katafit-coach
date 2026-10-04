@@ -462,8 +462,8 @@ export class Actions {
   unresolved(exceptKey?: string) {
     return this.snapshot().some(
       (a) =>
-        a.idempotency_key !== exceptKey &&
-        ["pending", "unknown"].includes(a.status),
+        a.status === "unknown" ||
+        (a.status === "pending" && a.idempotency_key !== exceptKey),
     );
   }
   memberDeliveries(): MemberDelivery[] {
