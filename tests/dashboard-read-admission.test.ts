@@ -179,9 +179,8 @@ test(
       );
       await page.waitForFunction(
         () =>
-          document
-            .querySelector("#dashboardTimeline")
-            ?.textContent?.includes("2026-09-28") &&
+          document.querySelector<HTMLElement>("#dashboardTimeline")?.dataset
+            .date === "2026-09-28" &&
           document.querySelectorAll(".dashboard-event-dot").length === 1,
       );
       assert.ok(!statuses.includes(429), `date self-throttle: ${statuses}`);
