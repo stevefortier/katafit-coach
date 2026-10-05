@@ -86,6 +86,8 @@ export interface HeadlessRun {
   gateway: NativeGateway;
   message: string;
   cycleMs: number;
+  /** Absolute inference cutoff; never a fresh budget after runtime setup. */
+  deadlineAt?: number;
   signal?: AbortSignal;
 }
 
@@ -126,6 +128,12 @@ export class HeadlessCycleRuntime {
       throw new Error("PROFILE_REJECTED");
     if (run.signal?.aborted) throw new HeadlessFailure("HEADLESS_ABORTED");
     if (this.running) throw new HeadlessFailure("HEADLESS_BUSY");
+    const deadline = Math.min(
+      Date.now() + run.cycleMs,
+      run.deadlineAt ?? Infinity,
+    );
+    if (!Number.isFinite(deadline) || deadline <= Date.now())
+      throw new HeadlessFailure("HEADLESS_TIMEOUT");
     this.running = true;
     const name = "katafit-pi-auto-" + randomUUID();
     let ownership: NativeOwnership | undefined;
@@ -149,6 +157,21 @@ export class HeadlessCycleRuntime {
         this.running = false;
         throw new HeadlessFailure("HEADLESS_CLEANUP_PENDING");
       }
+    }
+    // Durable ownership acquisition/drain is setup time too. If it consumed
+    // the inference window, no container/provider may be launched. Forget only
+    // this never-created identity; any older unconfirmed cleanup stays held.
+    if (run.signal?.aborted || deadline <= Date.now()) {
+      try {
+        if (ownership) await this.cleanup!.end(name, true);
+      } catch {
+        throw new HeadlessFailure("HEADLESS_CLEANUP_PENDING");
+      } finally {
+        this.running = false;
+      }
+      throw new HeadlessFailure(
+        run.signal?.aborted ? "HEADLESS_ABORTED" : "HEADLESS_TIMEOUT",
+      );
     }
     const runtime = new NativeRuntime(this.image, {
       ...this.engine,
@@ -212,7 +235,10 @@ export class HeadlessCycleRuntime {
     runtime.onDetached = () => end("HEADLESS_EXITED");
     const response = (id: string) =>
       new Promise<any>((resolve) => responses.set(id, resolve));
-    const timer = setTimeout(() => end("HEADLESS_TIMEOUT"), run.cycleMs);
+    const timer = setTimeout(
+      () => end("HEADLESS_TIMEOUT"),
+      Math.max(0, deadline - Date.now()),
+    );
     const onAbort = () => end("HEADLESS_ABORTED");
     run.signal?.addEventListener("abort", onAbort, { once: true });
     let prompted = false;

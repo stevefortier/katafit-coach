@@ -106,7 +106,9 @@ export async function setup(
     digest?: Record<string, unknown>;
   } = {},
 ) {
-  const fake = await autonomyFake();
+  // The real host/runner now consumes the backend's absolute timeout_at.
+  // Start this host fixture on the same clock, not a historical fixed day.
+  const fake = await autonomyFake(Date.now());
   const dir = await mkdtemp(tmpdir() + "/autonomy-runner-");
   const close = async () => {
     leaked.delete(close);
@@ -180,7 +182,12 @@ export async function cycle(
     claimed.work.lease_generation,
   );
   const mandate = await backend.mandate();
-  const run = autonomyRunner({ store: env.store, runtime, ...extra });
+  const run = autonomyRunner({
+    store: env.store,
+    runtime,
+    now: env.fake.now,
+    ...extra,
+  });
   const result = await run({
     work,
     mandate,

@@ -70,7 +70,7 @@ export interface ComposerContext {
   /** Live effect uncertainty, distinct from authority or lease expiry. */
   mutationHeld?: () => boolean;
   onTokens(tokens: number): void;
-  onExhausted(): void;
+  onExhausted(reason?: "provider_tokens" | "cycle_seconds"): void;
 }
 
 export function composerMessage(input: ComposerInput) {
@@ -158,6 +158,10 @@ export function composer(ctx: ComposerContext) {
     intent: Intent,
     input: ComposerInput,
   ): Promise<Fulfilment> {
+    if (ctx.remainingMs() <= 0) {
+      ctx.onExhausted("cycle_seconds");
+      return { kind: "unavailable", reason: "budget_exhausted" };
+    }
     const config = ctx.store.publicConfig();
     const secrets = Object.values(ctx.store.secrets).filter(
       (v): v is string => !!v,
@@ -181,11 +185,17 @@ export function composer(ctx: ComposerContext) {
     let text: string;
     let digests: string[];
     try {
+      const remaining = ctx.remainingMs();
+      if (remaining <= 0) {
+        ctx.onExhausted("cycle_seconds");
+        return { kind: "unavailable", reason: "budget_exhausted" };
+      }
       ({ text } = await ctx.options.runtime.run({
         profile: "composer",
         gateway: gateway as unknown as HeadlessRun["gateway"],
         message,
-        cycleMs: Math.max(1, ctx.remainingMs()),
+        cycleMs: remaining,
+        deadlineAt: Date.now() + remaining,
         signal,
       }));
     } catch (error) {

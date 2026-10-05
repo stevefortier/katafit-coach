@@ -49,6 +49,11 @@ const TRAINEE_ACTIONS: readonly ActionType[] = [
 ];
 // A correction run needs a little time to be worth starting.
 const CORRECTION_MIN_MS = 5000;
+// Owned teardown: 500ms abort + 10s version + 5s inspect + 15s remove + 5s
+// lost-ACK inspect. Completion has a 15s transport bound; leave 4.5s for local
+// drainage/bookkeeping. This reserve never extends backend authority and is
+// not a guarantee against stalled filesystem/event-loop/network work.
+const SETTLEMENT_RESERVE_MS = 55_000;
 
 export interface AutonomyCycle {
   work: WorkItem;
@@ -135,6 +140,49 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
 
     const controller = new AbortController();
     const signal = AbortSignal.any([cycle.signal, controller.signal]);
+    const authorityDeadline = work.timeout_at
+      ? Date.parse(work.timeout_at)
+      : NaN;
+    if (!Number.isFinite(authorityDeadline) || now() >= authorityDeadline)
+      throw new AutonomyFailure("LEASE_LOST");
+    const deadline =
+      Math.min(
+        authorityDeadline,
+        started + mandate.budgets.cycle_seconds * 1000,
+      ) - SETTLEMENT_RESERVE_MS;
+    const timeExhausted = () => {
+      if (now() < deadline) return false;
+      exhausted.add("cycle_seconds");
+      return true;
+    };
+    const complete = async (outcome: CycleOutcome): Promise<CycleResult> => {
+      signal.throwIfAborted();
+      // Setup/cleanup may overrun the reserve. Surface lost authority, never
+      // manufacture an expired completion or claim a canonical receipt.
+      if (now() >= authorityDeadline) throw new AutonomyFailure("LEASE_LOST");
+      const done = await backend.complete(work.id, { ...fence, outcome });
+      return { outcome, report_id: done.report_id };
+    };
+    const noRuntime = () =>
+      complete({
+        result: "blocked",
+        blocked_reason: uncertain ? "uncertain_write" : "budget_exhausted",
+        coverage: {
+          members_considered: 0,
+          members_read: 0,
+          partial: true,
+          unobserved: [],
+        },
+        decisions: [],
+        uncertainty: [
+          uncertain ? "uncertain_write" : "budget_exhausted:cycle_seconds",
+        ],
+        budget: {
+          provider_tokens: 0,
+          tool_calls: 0,
+          elapsed_ms: Math.max(0, now() - started),
+        },
+      });
     const leaseSeconds = options.leaseSeconds ?? 120;
     const renew = () =>
       backend
@@ -157,7 +205,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     await renew();
     signal.throwIfAborted();
 
-    const deadline = started + mandate.budgets.cycle_seconds * 1000;
+    if (timeExhausted()) return noRuntime();
     const compose = options.compose
       ? composer({
           store: options.store,
@@ -176,13 +224,14 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
             ...plannerProse,
           ],
           onTokens: (tokens) => (composerTokens += tokens),
-          onExhausted: () => exhausted.add("provider_tokens"),
+          onExhausted: (reason = "provider_tokens") => exhausted.add(reason),
           mutationHeld: () => uncertain || backend.mutationHeld,
         })
       : undefined;
     // Lease-loss recovery (contracts §21.4 step 5): a composition an earlier
     // holder stored is dispatched exactly; it is never redrafted.
     for (const pending of work.intents ?? []) {
+      if (timeExhausted()) break;
       if (pending.status !== "composed" || slots.has(pending.slot)) continue;
       if (!compose) {
         composeNotes.push(`stored_composition_pending:${pending.slot}`);
@@ -220,11 +269,13 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         composeNotes.push("open follow-ups unavailable");
       }
     signal.throwIfAborted();
+    if (timeExhausted()) return noRuntime();
 
     let digest: DigestFacts | undefined;
     if (work.kind === "digest") {
       digest = await digestFacts(backend, work);
       signal.throwIfAborted();
+      if (timeExhausted()) return noRuntime();
       if (!uncertain && digestEmpty(digest) && mandate.digest.suppress_empty) {
         const final: CycleOutcome = {
           result: "completed",
@@ -242,16 +293,9 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
             elapsed_ms: Math.max(0, now() - started),
           },
         };
-        const done = await backend.complete(work.id, {
-          ...fence,
-          outcome: final,
-        });
-        return { outcome: final, report_id: done.report_id };
+        return complete(final);
       }
     }
-    const timer = setInterval(renew, (leaseSeconds * 1000) / 3);
-    timer.unref?.();
-
     // Backend refusals and unresolved writes are visible tool results the
     // planner adapts to; an unresolved write also blocks the work.
     const visible = async <T>(op: () => Promise<T>) => {
@@ -483,6 +527,8 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         plannerProse.push(...responseText(body, type)),
     });
     plannerUsage = () => gateway.usage().provider_tokens;
+    const timer = setInterval(renew, (leaseSeconds * 1000) / 3);
+    timer.unref?.();
 
     let failure: string | undefined;
     let invalid: string | undefined;
@@ -526,13 +572,16 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         ...(openFollowUps ? { followUps: openFollowUps } : {}),
       });
       for (let attempt = 0; attempt < 2; attempt++) {
+        signal.throwIfAborted();
+        if (timeExhausted()) break;
         let text: string;
         try {
           ({ text } = await options.runtime.run({
             profile: "planner",
             gateway: gateway as unknown as HeadlessRun["gateway"],
             message,
-            cycleMs: Math.max(1, deadline - now()),
+            cycleMs: deadline - now(),
+            deadlineAt: deadline,
             signal,
           }));
         } catch (error) {
@@ -547,6 +596,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
               error instanceof HeadlessFailure ? error.code : "PLANNER_FAILED";
           break;
         }
+        timeExhausted();
         invalid = judge(text);
         if (
           !invalid ||
@@ -644,7 +694,6 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         uncertainty: [...outcome.uncertainty, ...notes].slice(0, 10),
         budget,
       };
-    const done = await backend.complete(work.id, { ...fence, outcome: final });
-    return { outcome: final, report_id: done.report_id };
+    return complete(final);
   };
 }
