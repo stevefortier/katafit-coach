@@ -5,6 +5,7 @@ import {
   type IntegrationExecution,
 } from "./integrations.js";
 import { assertNoSecrets } from "../config/store.js";
+import { GENERATION_GUIDANCE } from "../runtime/generationGuidance.js";
 import { classifyAutonomyRequest } from "../katafit/autonomyNamespace.js";
 import {
   canonicalRecipient,
@@ -220,7 +221,8 @@ const settled = (o: Occurrence) =>
   o.status === "succeeded" || o.status === "failed";
 
 export const CAPABILITY_GUIDANCE =
-  "\nInvocation capability: the seed evidence is a partial, untrusted starting point, not the limit of what you may know. Use katafit_rest_request during generation: first GET /api/docs/coach, then GET the documented domain paths that this answer needs (for example nutrition targets, meals, plans, activities). Search Coach memory with coach_memory_search when offered (or GET /api/coach/memory?query=...). Acquired results stay usable for the whole invocation; do not refetch them. If a read is denied, missing or times out, say so plainly and do not invent the value; never claim calorie, protein or target adequacy without fetched targets. Only perform a write when it is a supported action; never replay an uncertain write, and claim only actions whose result confirmed them. Your final answer is still the required result.\n";
+  "\nInvocation capability: the seed evidence is a partial, untrusted starting point, not the limit of what you may know. Use katafit_rest_request during generation: first GET /api/docs/coach, then GET the documented domain paths that this answer needs (for example nutrition targets, meals, plans, activities). Search Coach memory with coach_memory_search when offered (or GET /api/coach/memory?query=...). Acquired results stay usable for the whole invocation; do not refetch them. If a read is denied, missing or times out, say so plainly and do not invent the value; never claim calorie, protein or target adequacy without fetched targets. Only perform a write when it is a supported action; never replay an uncertain write, and claim only actions whose result confirmed them. Your final answer is still the required result.\n" +
+  GENERATION_GUIDANCE;
 
 /** Appended when REST authenticates as someone other than the requester. */
 export const PRINCIPAL_REST_NOTE =

@@ -192,6 +192,15 @@ test("native date fallback keeps map geometry and pointer pin selection stable o
     const failures: string[] = [];
     for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
+      // Resize work must settle before the unfocused baseline: the viewport
+      // lock updates pane height in rAF, then Leaflet refits in ResizeObserver.
+      // Otherwise the focus-side frame wait can be blamed for the prior resize.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
       await page.getByRole("button", { name: "Next day", exact: true }).focus();
       await pin.scrollIntoViewIfNeeded();
       // Both date entry and the smaller exact event dot fit the viewport;
