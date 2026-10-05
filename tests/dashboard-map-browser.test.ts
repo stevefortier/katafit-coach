@@ -75,21 +75,61 @@ test("an empty authorized day retains independent roster filters and an honest c
     { events: [] },
   ));
 
-test("a singleton canonical location fits at the practical maximum zoom", async () =>
-  fixture(
-    async (page) => {
-      assert.equal(
-        await page.evaluate(() => (window as any).fixtureMap.getZoom()),
-        16,
-      );
-      const center = await page.evaluate(() =>
-        (window as any).fixtureMap.getCenter(),
-      );
-      assert.ok(Math.abs(center.lat - 40.7) < 0.00001);
-      assert.ok(Math.abs(center.lng + 73.9) < 0.00001);
-    },
-    { events: ledger().slice(0, 1) },
-  ));
+for (const viewport of [
+  { width: 1440, height: 1000 },
+  { width: 390, height: 844 },
+])
+  test(`a singleton canonical location fits at the practical maximum zoom (${viewport.width}px)`, async () =>
+    fixture(
+      async (page) => {
+        const geometry = await page.evaluate(async () => {
+          // Complete a layout/ResizeObserver cycle and its following frame;
+          // the status text alone can precede Leaflet's invalidateSize callback.
+          await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          );
+          const map = (window as any).fixtureMap;
+          const size = map.getSize();
+          const target = (window as any).L.latLng(40.7, -73.9);
+          const delta = map
+            .project(map.getCenter(), 16)
+            .subtract(map.project(target, 16));
+          return {
+            zoom: map.getZoom(),
+            size,
+            renderedSize: {
+              x: map.getContainer().clientWidth,
+              y: map.getContainer().clientHeight,
+            },
+            delta,
+            visible: map.getBounds().contains(target),
+          };
+        });
+        assert.equal(geometry.zoom, 16);
+        assert.deepEqual(geometry.size, geometry.renderedSize);
+        // Leaflet rounds the pixel origin. invalidateSize clears the cached
+        // LatLng, so getCenter then unprojects that rounded origin: <= half a
+        // CSS pixel per axis, not exact floating-point coordinate equality.
+        const halfPixel = 0.5 + 1e-6; // numerical projection round-trip margin
+        assert.ok(
+          Math.abs(geometry.delta.x) <= halfPixel,
+          JSON.stringify(geometry),
+        );
+        assert.ok(
+          Math.abs(geometry.delta.y) <= halfPixel,
+          JSON.stringify(geometry),
+        );
+        assert.equal(geometry.visible, true);
+        assert.equal(await page.locator(".dashboard-event-dot").count(), 1);
+        assert.equal(
+          await page
+            .locator(".dashboard-event-dot")
+            .getAttribute("data-event-id"),
+          ev(1),
+        );
+      },
+      { events: ledger().slice(0, 1), viewport },
+    ));
 
 test("roster cards and timeline remain independent when Leaflet is unavailable", async () =>
   fixture(

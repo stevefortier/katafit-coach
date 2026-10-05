@@ -41,9 +41,15 @@ async function productionTools(dir: string): Promise<Set<string>> {
 }
 
 test("every production tool literal retains its safe name through Client, Diagnostics and restart", async () => {
+  // Reviewed protocol values that match the tool-name shape but are not tools.
+  const reviewedNonTools = [
+    "coach_request", // continuous Coach FollowUp.basis (contract §2.4)
+  ];
   const names = [
     ...(await productionTools(new URL("../src", import.meta.url).pathname)),
-  ].sort();
+  ]
+    .filter((name) => !reviewedNonTools.includes(name))
+    .sort();
   assert.ok(names.length > 0);
   assert.deepEqual(
     names.filter((name) => !backendTools.includes(name as any)),

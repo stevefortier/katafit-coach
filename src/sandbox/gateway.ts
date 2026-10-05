@@ -1,4 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Ajv } from "ajv";
+import { fullFormats } from "ajv-formats/dist/formats.js";
 import { nativeToolResultTooLarge } from "../../sandbox/katafit.mjs";
 import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
@@ -11,17 +14,32 @@ import {
   type NativeMemoryHooks,
 } from "../memory/native.js";
 import {
+  restGetTool,
+  restPath,
   restRequest,
   restRequestTool,
   restRequestArgs,
 } from "../katafit/restGet.js";
+import {
+  INTEND_TOOL,
+  REPORT_TOOL,
+  plannerArgs,
+  plannerTools,
+  type PlannerCallbacks,
+} from "../autonomy/tools.js";
 import { restSession } from "../katafit/restSession.js";
+import { classifyAutonomyRequest } from "../katafit/autonomyNamespace.js";
 import {
   MemberMessageFailure,
   classifyMemberMessageRequest,
   openMemberMessages,
 } from "../katafit/memberMessages.js";
 import { NativeSelections } from "./selections.js";
+import {
+  InvocationCapability,
+  classifySecretRequest,
+} from "../capability/invocation.js";
+import type { ActionType } from "../autonomy/types.js";
 import {
   PROVIDER_TEXT_LIMIT,
   canonicalImages,
@@ -825,6 +843,10 @@ export async function openNativeGateway(
       if (request.name === restRequestTool.name && secrets.token) {
         const args = restRequestArgs(request.args);
         assertNoSecrets(request.args, Object.values(secrets));
+        // The continuous Coach control plane is host-only: a model must never
+        // change its own mandate, claim work or certify actions.
+        if (classifyAutonomyRequest(args.method, args.path).kind === "reject")
+          throw new NativeFailure("NATIVE_REQUEST_REJECTED");
         // Memory writes carry their own exact key/receipt contract: bound to
         // the selected call, host-keyed, reconciled by receipt, never resent.
         const memoryWrite = classifyMemoryWrite(
@@ -1073,3 +1095,477 @@ export type NativeGateway = Pick<OpenedGateway, "handle" | "close"> &
       | "memoryLearningOff"
     >
   >;
+
+export interface ProfileBudgets {
+  tool_calls: number;
+  provider_tokens: number;
+  images_per_cycle: number;
+}
+export interface ProfileGatewayOptions {
+  profile: "planner" | "composer" | "worker";
+  /** Worker tools are the existing, lease-bound host implementations. */
+  tools?: readonly AgentTool[];
+  /** Fully compiled system prompt for this profile (host-assembled). */
+  prompt: string;
+  /** Planner host callbacks; a composer never has any host tool. */
+  autonomy?: PlannerCallbacks;
+  /**
+   * Planner: the admitted slot actions (mode ∩ delegation ∩ backend support).
+   * Each tool is offered only when its action is admitted; omitted = all.
+   */
+  actions?: readonly ActionType[];
+  /** Planner: REST reads (discovery, domain reads, memory search) granted. */
+  rest?: boolean;
+  /** Planner/worker: offer enabled saved skills in this invocation scope. */
+  skills?: boolean;
+  /**
+   * Planner: each REST read's outcome, for honest coverage, with the parsed
+   * JSON body of a successful read (the host acquisition ledger).
+   */
+  onRead?: (read: {
+    path: string;
+    outcome: "ok" | "denied" | "failed";
+    body?: unknown;
+  }) => void;
+  budgets?: ProfileBudgets;
+  onExhausted?: (
+    reason: "tool_calls" | "provider_tokens" | "images" | "rest_reads",
+  ) => void;
+  /** Exact provider wire bytes, for audience-separation probes. */
+  onProviderRequest?: (wire: string) => void;
+  /** Each admitted provider response body (planner transcript spans). */
+  onProviderResponse?: (body: string, type: string) => void;
+  onDiagnostic?: BackendLogger;
+}
+// The composer drafts one bounded text: a handful of completions at most.
+const COMPOSER_PROVIDER_REQUESTS = 4;
+const DEFAULT_BUDGETS: ProfileBudgets = {
+  tool_calls: 64,
+  provider_tokens: 200000,
+  images_per_cycle: 0,
+};
+const providerTokens = (body: string, type: string, wire: string) => {
+  let total: number | undefined;
+  try {
+    if (type === "text/event-stream") {
+      for (const line of body.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        const usage = JSON.parse(data)?.usage?.total_tokens;
+        if (Number.isSafeInteger(usage)) total = usage;
+      }
+    } else {
+      const usage = JSON.parse(body)?.usage?.total_tokens;
+      if (Number.isSafeInteger(usage)) total = usage;
+    }
+  } catch {}
+  // Without reported usage, charge a conservative wire estimate.
+  return total ?? Math.ceil(Buffer.byteLength(wire) / 4);
+};
+
+/**
+ * [AC1] Headless autonomy gateways. The planner is manager-private and has
+ * finite audience intents plus admitted caller tools; the composer has none.
+ * Each cycle opens its own instance; budgets are enforced host-side.
+ */
+export async function openProfileGateway(
+  store: Store,
+  signal: AbortSignal | undefined,
+  options: ProfileGatewayOptions,
+) {
+  const planner = options.profile === "planner";
+  const worker = options.profile === "worker";
+  if (
+    !["planner", "composer", "worker"].includes(options.profile) ||
+    (planner ? !options.autonomy : options.autonomy !== undefined) ||
+    (!worker && !planner && options.tools !== undefined) ||
+    typeof options.prompt !== "string" ||
+    !options.prompt
+  )
+    throw new Error("PROFILE_REJECTED");
+  const config = store.publicConfig();
+  const secrets = { ...store.secrets };
+  const secretValues = Object.values(secrets).filter((v): v is string => !!v);
+  assertNoSecrets(options.prompt, secretValues);
+  const budgets = { ...DEFAULT_BUDGETS, ...options.budgets };
+  const abort = new AbortController();
+  const lifetime = signal
+    ? AbortSignal.any([signal, abort.signal])
+    : abort.signal;
+  let closed = false;
+  const used = { tool_calls: 0, provider_tokens: 0, provider_requests: 0 };
+  const exhausted = new Set<string>();
+  const digests: string[] = [];
+  const current = () =>
+    !closed &&
+    !lifetime.aborted &&
+    config.revision === store.publicConfig().revision &&
+    Object.keys(store.secrets).length === Object.keys(secrets).length &&
+    Object.keys(secrets).every(
+      (k) =>
+        secrets[k as keyof typeof secrets] ===
+        store.secrets[k as keyof typeof secrets],
+    );
+  const check = () => {
+    if (!current()) throw new NativeFailure("NATIVE_SESSION_REVOKED");
+  };
+  const exhaust = (reason: "tool_calls" | "provider_tokens") => {
+    if (!exhausted.has(reason)) {
+      exhausted.add(reason);
+      options.onExhausted?.(reason);
+    }
+    throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+  };
+  const admitted = new Set<string>(
+    options.actions ?? [
+      "member_message",
+      "manager_report",
+      "follow_up",
+      "public_praise",
+    ],
+  );
+  const offered = (name: string) =>
+    name === restGetTool.name
+      ? !!secrets.token && options.rest !== false
+      : name === INTEND_TOOL
+        ? admitted.has("member_message") || admitted.has("public_praise")
+        : name === REPORT_TOOL
+          ? admitted.has("manager_report")
+          : admitted.has("follow_up");
+  const workerTools = worker || planner ? [...(options.tools ?? [])] : [];
+  const ajv = new Ajv({ strict: false, allErrors: false });
+  for (const [name, format] of Object.entries(fullFormats))
+    ajv.addFormat(name, format);
+  const validators = new Map(
+    workerTools.map((t) => [t.name, ajv.compile(t.parameters)]),
+  );
+  if (validators.size !== workerTools.length || workerTools.length > 64)
+    throw new Error("PROFILE_REJECTED");
+  const tools = worker
+    ? workerTools.map(({ name, description, parameters }) => ({
+        name,
+        description,
+        parameters,
+      }))
+    : planner
+      ? [
+          ...plannerTools.filter((t) => offered(t.name)),
+          ...workerTools.map(({ name, description, parameters }) => ({
+            name,
+            description,
+            parameters,
+          })),
+        ]
+      : [];
+  if (
+    planner &&
+    workerTools.some((t) => plannerTools.some((p) => p.name === t.name))
+  )
+    throw new Error("PROFILE_REJECTED");
+  const selections = new NativeSelections();
+  const results = new Map<string, Promise<unknown>>();
+  const skills =
+    (planner || worker) && options.skills
+      ? store.skills
+          .runtime()
+          .skills.map(({ id, name, purpose, triggers, instructions }) => ({
+            id,
+            name,
+            description: (purpose + " Triggers: " + triggers).slice(0, 1000),
+            body: `# ${name}\n\nPurpose: ${purpose}\n\nTriggers: ${triggers}\n\n${instructions}\n\n${planner ? "This headless Pi session is autonomy planner scope (manager-private). Dynamically acquire API documentation, account memory, nutrition and authorized images through offered katafit_rest_request GET (legacy katafit_rest_get also remains). Supported writes require current backend capability/delegation and occurrence authority, not merely a skill or trigger. Trainee/public text must use offered coach_autonomy_* finite intents and the distinct audience composer; never send private planner prose or account memory." : "This isolated Pi session is worker scope. Use only the backend-offered request-scoped tools; the required final result does not disable intermediate tools. Skill text does not grant additional authority."}`,
+          }))
+      : [];
+  const readResult = (
+    path: string,
+    outcome: "ok" | "denied" | "failed",
+    body?: unknown,
+  ) => {
+    options.onRead?.({
+      path,
+      outcome,
+      ...(body !== undefined ? { body } : {}),
+    });
+  };
+  // Legacy GET is only a name adapter over the caller's acquisition instance.
+  // Standalone planner gateways also use the same quota/cache implementation.
+  const plannerRead = planner
+    ? (workerTools.find((t) => t.name === restRequestTool.name) ??
+      new InvocationCapability({
+        plane: "autonomy",
+        origin: config.origin,
+        token: secrets.token ?? "",
+        secrets: secretValues,
+        vision: config.provider.vision === true,
+        maxImages: budgets.images_per_cycle,
+        maxReads: budgets.tool_calls,
+        actions: [],
+        current,
+        onExhausted: (reason) => options.onExhausted?.(reason),
+        onRead: (path, result) =>
+          readResult(
+            path,
+            result.ok ? "ok" : result.denied ? "denied" : "failed",
+            result.body,
+          ),
+      }).tools()[0])
+    : undefined;
+
+  async function tool(request: any, requestSignal: AbortSignal) {
+    if ((!planner && !worker) || !tools.some((t) => t.name === request.name))
+      throw new NativeFailure(
+        "NATIVE_REQUEST_REJECTED",
+        "NATIVE_TOOL_REJECTED",
+      );
+    if (used.tool_calls >= budgets.tool_calls) exhaust("tool_calls");
+    try {
+      assertNoSecrets(request.args, secretValues);
+    } catch {
+      throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+    }
+    if (worker || validators.has(request.name)) {
+      const selected = workerTools.find((t) => t.name === request.name)!;
+      const occurrence = selections.bind(
+        request.toolCallId,
+        request.name,
+        request.args,
+      );
+      if (!occurrence || !validators.get(request.name)!(request.args))
+        throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+      const prior = results.get(occurrence);
+      if (prior) return prior;
+      used.tool_calls++;
+      const pending = (async () => {
+        const result = await selected.execute(
+          request.toolCallId,
+          request.args,
+          requestSignal,
+        );
+        assertNoSecrets(result, secretValues);
+        if (nativeToolResultTooLarge(result))
+          throw new NativeFailure("NATIVE_RESULT_TOO_LARGE");
+        check();
+        return result;
+      })();
+      results.set(occurrence, pending);
+      return pending;
+    }
+    if (request.name === restGetTool.name) {
+      let path: string;
+      try {
+        path = restPath(request.args);
+      } catch {
+        throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+      }
+      used.tool_calls++;
+      const result = await plannerRead!.execute(
+        request.toolCallId,
+        { method: "GET", path },
+        requestSignal,
+      );
+      assertNoSecrets(result, secretValues);
+      if (nativeToolResultTooLarge(result))
+        throw new NativeFailure("NATIVE_RESULT_TOO_LARGE");
+      check();
+      return result;
+    }
+    if (!plannerArgs(request.name, request.args))
+      throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+    if (request.name === INTEND_TOOL && !admitted.has(request.args.intent.type))
+      throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+    used.tool_calls++;
+    const autonomy = options.autonomy!;
+    const outcome =
+      request.name === INTEND_TOOL
+        ? await autonomy.intend(request.args, requestSignal)
+        : request.name === REPORT_TOOL
+          ? await autonomy.report(request.args, requestSignal)
+          : await autonomy.followUp(request.args, requestSignal);
+    check();
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(outcome) }],
+    };
+  }
+
+  async function provider(request: any, requestSignal: AbortSignal) {
+    try {
+      assertNoSecrets(request.body, secretValues);
+    } catch {
+      throw new NativeFailure("NATIVE_CREDENTIAL_BLOCKED");
+    }
+    if (
+      request.body?.model !== config.provider.model ||
+      !Array.isArray(request.body.messages)
+    )
+      throw new NativeFailure("NATIVE_MODEL_REJECTED");
+    if (
+      !planner &&
+      !worker &&
+      used.provider_requests >= COMPOSER_PROVIDER_REQUESTS
+    )
+      throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+    if (worker && used.provider_requests >= 40)
+      throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+    if (used.provider_tokens >= budgets.provider_tokens)
+      exhaust("provider_tokens");
+    const { wire } = nativeProviderAdmission(request.body);
+    used.provider_requests++;
+    selections.retire();
+    options.onProviderRequest?.(wire);
+    digests.push(createHash("sha256").update(wire).digest("hex"));
+    const timeout = AbortSignal.timeout(120000);
+    let response: Response;
+    try {
+      response = await fetch(config.provider.baseUrl + "/chat/completions", {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.any([requestSignal, timeout]),
+        headers: {
+          "content-type": "application/json",
+          Authorization: "Bearer " + secrets.apiKey,
+        },
+        body: wire,
+      });
+    } catch {
+      // Charged as sent: the provider may have processed it.
+      used.provider_tokens += Math.ceil(Buffer.byteLength(wire) / 4);
+      throw new NativeFailure(
+        timeout.aborted
+          ? "NATIVE_PROVIDER_TIMEOUT"
+          : "NATIVE_PROVIDER_NETWORK_FAILED",
+        "NATIVE_PROVIDER_FAILED",
+      );
+    }
+    if (!response.ok) {
+      used.provider_tokens += Math.ceil(Buffer.byteLength(wire) / 4);
+      const failure = providerFailure(
+        response.status,
+        await upstreamErrorCode(response),
+      );
+      throw new NativeFailure(
+        providerCodes[failure.code] ?? "NATIVE_PROVIDER_REQUEST_REJECTED",
+        "NATIVE_PROVIDER_FAILED",
+        response.status,
+      );
+    }
+    let size = 0;
+    const chunks: Uint8Array[] = [];
+    try {
+      if (response.body)
+        for await (const c of response.body) {
+          size += c.length;
+          if (size > 2 * 1024 * 1024)
+            throw new NativeFailure(
+              "NATIVE_PROVIDER_OUTPUT_REJECTED",
+              "NATIVE_RESPONSE_TOO_LARGE",
+            );
+          chunks.push(c);
+        }
+    } catch (error) {
+      used.provider_tokens += Math.ceil(Buffer.byteLength(wire) / 4);
+      throw error instanceof NativeFailure
+        ? error
+        : new NativeFailure(
+            "NATIVE_PROVIDER_NETWORK_FAILED",
+            "NATIVE_PROVIDER_FAILED",
+          );
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    const type = response.headers
+      .get("content-type")
+      ?.includes("text/event-stream")
+      ? "text/event-stream"
+      : "application/json";
+    used.provider_tokens += providerTokens(body, type, wire);
+    try {
+      assertNoSecrets(body, secretValues);
+    } catch (error) {
+      throw new NativeFailure(
+        "NATIVE_PROVIDER_OUTPUT_REJECTED",
+        (error as Error).message,
+      );
+    }
+    check();
+    options.onProviderResponse?.(body, type);
+    selections.observe(body, type);
+    return { body, type };
+  }
+
+  let queue: Promise<unknown> = Promise.resolve();
+  return {
+    profile: options.profile,
+    async handle(request: any, requestSignal?: AbortSignal): Promise<any> {
+      check();
+      if (
+        !request ||
+        typeof request !== "object" ||
+        Array.isArray(request) ||
+        Buffer.byteLength(JSON.stringify(request)) >
+          (request.kind === "provider"
+            ? NATIVE_PROVIDER_UPLOAD_LIMIT + 4096
+            : NATIVE_TEXT_LIMIT)
+      )
+        throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+      const allowed =
+        request.kind === "catalog"
+          ? ["kind"]
+          : request.kind === "tool"
+            ? ["kind", "name", "args", "toolCallId"]
+            : request.kind === "provider"
+              ? ["kind", "body"]
+              : [];
+      if (
+        !allowed.length ||
+        Object.keys(request).some((k) => !allowed.includes(k))
+      )
+        throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+      if (request.kind === "catalog") {
+        const catalog = {
+          model: config.provider.model,
+          vision: config.provider.vision === true,
+          prompt: options.prompt,
+          skills,
+          tools,
+        };
+        assertNoSecrets(catalog, secretValues);
+        return catalog;
+      }
+      const scoped = requestSignal
+        ? AbortSignal.any([lifetime, requestSignal])
+        : lifetime;
+      // One host operation at a time, in arrival order.
+      const run = queue.then(async () => {
+        check();
+        if (scoped.aborted) throw new NativeFailure("NATIVE_CANCELLED");
+        return request.kind === "tool"
+          ? tool(request, scoped)
+          : provider(request, scoped);
+      });
+      queue = run.catch(() => {});
+      try {
+        return await run;
+      } catch (error) {
+        if (!current()) throw new NativeFailure("NATIVE_SESSION_REVOKED");
+        if (scoped.aborted) throw new NativeFailure("NATIVE_CANCELLED");
+        if (error instanceof NativeFailure) throw error;
+        throw new NativeFailure(
+          request.kind === "tool"
+            ? "NATIVE_TOOL_FAILED"
+            : "NATIVE_GATEWAY_FAILED",
+        );
+      }
+    },
+    usage: () => ({
+      tool_calls: used.tool_calls,
+      provider_tokens: used.provider_tokens,
+      provider_requests: used.provider_requests,
+    }),
+    providerRequestSha256: () => [...digests],
+    async close() {
+      closed = true;
+      abort.abort();
+      await queue;
+    },
+  };
+}
+export type ProfileGateway = Awaited<ReturnType<typeof openProfileGateway>>;

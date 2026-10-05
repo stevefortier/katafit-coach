@@ -155,6 +155,9 @@ test(
           });
         }
       }
+      // Evidence ended at mobile width with the open Coach drawer over settings.
+      // Restore the actual desktop layout before selecting a navigation control.
+      await page.setViewportSize({ width: 1440, height: 900 });
       await page.locator("#settingsTab").click();
       const longName = "Persona " + "W".repeat(7990);
       await settingsTab(page, "Persona");

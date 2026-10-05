@@ -6,7 +6,7 @@ import { complete } from "../src/runtime/piAdapter.js";
 import { stockSkills } from "../src/config/skills.js";
 import { taskFixture } from "./task-fixtures.js";
 
-test("background task pins one relevant skill body while generation remains tool-free", async () => {
+test("background task pins one relevant skill body while generation keeps the shared REST tool", async () => {
   const fixture = await taskFixture();
   const bodies: any[] = [];
   const provider = createServer(async (request, response) => {
@@ -23,7 +23,11 @@ test("background task pins one relevant skill body while generation remains tool
         "Prepare or execute an explicitly requested plan change",
       ),
     );
-    assert.ok(!body.tools?.length, "task generation receives no skill tool");
+    assert.deepEqual(
+      (body.tools ?? []).map((t: any) => t.function?.name ?? t.name),
+      ["katafit_rest_request"],
+      "task generation receives the shared REST tool, never a skill tool",
+    );
     const result = {
       activity_feedback: { reaction: "flex", reply_worthwhile: false },
       general_advice: "",
@@ -90,9 +94,10 @@ for (const mode of ["disabled", "customized"] as const) {
       for await (const chunk of request) raw += chunk;
       const body = JSON.parse(raw);
       bodies.push(body);
-      assert.ok(
-        !body.tools?.length,
-        "day closure generation receives no tools",
+      assert.deepEqual(
+        (body.tools ?? []).map((t: any) => t.function?.name ?? t.name),
+        ["katafit_rest_request"],
+        "day closure generation receives only the shared REST tool",
       );
       const result =
         bodies.length === 1

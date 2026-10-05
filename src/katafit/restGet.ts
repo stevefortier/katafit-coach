@@ -1,6 +1,12 @@
 import { assertNoSecrets } from "../config/store.js";
+import { validInvocationBinding } from "../capability/invocationActions.js";
 import { SafeError } from "../runtime/errors.js";
 import { prepareModelImage } from "./providerImage.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import workContract from "../capability/work-action-contract.json" with { type: "json" };
+const validWorkBinding = new Ajv2020().compile(
+  workContract.schemas.dispatch_header_json,
+);
 
 export const restGetTool = {
   name: "katafit_rest_get",
@@ -160,6 +166,8 @@ export async function restGet(
     { method: "GET", path: restPath(args) },
     signal,
     secrets,
+    undefined,
+    undefined,
     maxJsonBytes,
   );
 }
@@ -170,9 +178,34 @@ export async function restRequest(
   args: unknown,
   signal: AbortSignal,
   secrets: string[],
+  /** Host-only binding, never read from model arguments or caller headers. */
+  workBinding?: {
+    work_id: string;
+    slot: string;
+    lease_generation: number;
+    mandate_revision: number;
+    request_sha256: string;
+  },
+  invocationBinding?: {
+    plane: "request" | "task";
+    invocation_id: string;
+    slot: string;
+    lease_generation: number;
+    delegation_revision: number;
+    request_sha256: string;
+  },
   maxJsonBytes: 262144 | 2097152 = 262144,
 ) {
   const { path, method, body } = restRequestArgs(args);
+  if (workBinding && (method === "GET" || !validWorkBinding(workBinding)))
+    throw new Error("REST_REQUEST_REJECTED");
+  if (
+    invocationBinding &&
+    (workBinding ||
+      method === "GET" ||
+      !validInvocationBinding(invocationBinding))
+  )
+    throw new Error("REST_REQUEST_REJECTED");
   if (
     ![262144, 2097152].includes(maxJsonBytes) ||
     (maxJsonBytes !== 262144 &&
@@ -213,6 +246,12 @@ export async function restRequest(
         Authorization: `Bearer ${bearer}`,
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         Accept: "application/json, image/jpeg, image/png, image/webp",
+        ...(workBinding
+          ? { "X-Coach-Work-Action": JSON.stringify(workBinding) }
+          : {}),
+        ...(invocationBinding
+          ? { "X-Coach-Invocation-Action": JSON.stringify(invocationBinding) }
+          : {}),
       },
       signal: wireSignal,
     });

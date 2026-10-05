@@ -57,5 +57,11 @@ mkdirSync("dist/native", { recursive: true });
 writeFileSync("dist/native/npm-lock.json", readFileSync("package-lock.json"));
 writeFileSync(
   "dist/build.json",
-  JSON.stringify({ revision, protocol: 2, fingerprint }) + "\n",
+  JSON.stringify({
+    revision,
+    protocol: 2,
+    fingerprint,
+    // Keep in sync with AUTONOMY_LEDGER_CAPABILITY (src/update/capability.ts).
+    capabilities: ["autonomy-ledger-1"],
+  }) + "\n",
 );

@@ -118,6 +118,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
       "Preview",
       "Skills",
       "Memories",
+      "Autonomy",
       "Updates",
       "Worker",
       "Models",
@@ -189,7 +190,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.getByRole("tab", { name: "Log", exact: true }).press("Home");
     await settingsTab(page, "Persona");
     assert.equal(new URL(page.url()).search, "?section=persona");
-    assert.equal(await tabs.count(), 5);
+    assert.equal(await tabs.count(), 6);
     await page.locator("#name").fill("Draft coach");
     await page.getByRole("tab", { name: "Persona", exact: true }).press("End");
     assert.equal(
@@ -415,6 +416,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
         "Preview",
         "Skills",
         "Memories",
+        "Autonomy",
         "Updates",
         "Worker",
       ]) {

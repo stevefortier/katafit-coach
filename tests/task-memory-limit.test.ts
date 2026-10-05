@@ -30,7 +30,11 @@ test("activity_reaction memory recall MEMORY_LIMIT degrades to no memory and com
     system: "Coach",
     complete: async (_context, _signal, system, tools) => {
       inference++;
-      assert.deepEqual(tools, []);
+      // Degraded memory removes only memory search, not REST capability.
+      assert.deepEqual(
+        tools.map((t: any) => t.name),
+        ["katafit_rest_request"],
+      );
       assert.doesNotMatch(system, /Long-term Coach memory/);
       return JSON.stringify(valid);
     },

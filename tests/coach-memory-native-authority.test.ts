@@ -1,298 +1,249 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Readable } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import sharp from "sharp";
 import { Store } from "../src/config/store.js";
-import { openNativeGateway } from "./helpers/legacy-gateway.js";
+import { startAccountBackend, pairedSkip } from "./helpers/account-backend.js";
+import { AccountMemory } from "../src/memory/account.js";
+import { openNativeGateway } from "../src/sandbox/gateway.js";
 import {
-  memoryBackendEnabled,
-  startBackend,
-  startProvider,
-} from "./helpers/memory-backend.js";
+  startRelay,
+  piTurn,
+  providerStub,
+  loadExtension,
+} from "./helpers/native-relay.js";
+import { sseText, systems } from "./helpers/native-memory.js";
+import { toolCall as selection } from "./helpers/continuity.js";
 
-for (const boundary of [
-  "provider",
-  "send",
-  "image",
-  "attachment",
-  "activity_image",
-  "activity_attachment",
-  "archive_response",
-  "archive_request",
-])
+const modes = [
+  "forget",
+  "revise",
+  "empty_recall",
+  "configuration",
+  "image_reuse",
+  "attachment_only",
+  "new_fetch",
+  "outgoing_write",
+] as const;
+for (const mode of modes) {
   test(
-    `paired native acquired memory remains internal after forget at ${boundary} boundary`,
-    { skip: !memoryBackendEnabled, timeout: 60000 },
+    "paired native acquired memory: live-only account boundary " + mode,
+    { skip: pairedSkip, timeout: 45000 },
     async () => {
-      const backend = await startBackend();
-      const dir = await mkdtemp(tmpdir() + "/memory-native-authority-");
-      const provider = await startProvider(() => "Synthetic response.");
+      const b = await startAccountBackend();
+      const account = new AccountMemory(
+        b.origin,
+        b.token,
+        AbortSignal.timeout(40000),
+        [b.token],
+      );
+      const dir = await mkdtemp(tmpdir() + "/0640-memory-authority-");
+      const provider = await providerStub();
       let gateway: Awaited<ReturnType<typeof openNativeGateway>> | undefined;
+      let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
+      const text = "Keep reporting preferences concise.";
+      const seeded = await account.create(
+        { kind: "preference", text },
+        "0640:authority:" + mode,
+      );
+      const bodies: any[] = [];
+      let first = true;
       try {
-        const { db, service, ObjectId } = backend;
-        const chief = new ObjectId(),
-          member = new ObjectId(),
-          dojo = new ObjectId(),
-          activity = new ObjectId(),
-          file = new ObjectId();
-        await db.collection("users").insertMany([
-          { _id: chief, display_name: "Chief" },
-          {
-            _id: member,
-            display_name: "Synthetic image member",
-            privacy_settings: { media: ["dojo_chief"] },
-          },
-        ]);
-        await db.collection("dojos").insertOne({
-          _id: dojo,
-          chief_id: chief,
-          external_coach_agent: { enabled: true },
-        });
-        await db.collection("dojo_members").insertMany([
-          {
-            user_id: chief,
-            dojo_id: dojo,
-            role: "chief",
-            joined_at: new Date(0),
-          },
-          {
-            user_id: member,
-            dojo_id: dojo,
-            role: "member",
-            joined_at: new Date(0),
-          },
-        ]);
-        await db.collection("activities").insertOne({
-          _id: activity,
-          user_id: member,
-          dojo_id: dojo,
-          type: "media",
-          status: "complete",
-          name: "Weekly progress check-in",
-          created_at: new Date(Date.now() - 10000),
-          data: { files: [{ _id: file, type: "image" }] },
-        });
-        const token = (
-          await service.createCredential(String(chief), {
-            scopes: [
-              ...service.DEFAULT_SCOPES,
-              "history:read",
-              "userdata:read",
-              "media:read",
-            ],
-          })
-        ).token;
-        const auth = await service.authenticateCredential(token),
-          memory = backend.require("./core/coachMemory");
-        const remembered = (
-          await memory.execute(auth, "studio_memory_create", {
-            idempotency_key: "retained",
-            audience: "operator_private",
-            kind: "fact",
-            text: "Operator prefers brief reports.",
-            pinned: true,
-          })
-        ).item;
         const store = new Store(dir);
         await store.init();
         await store.save({
           ...store.publicConfig(),
-          origin: backend.origin,
-          token,
-          apiKey: "synthetic-model-key",
-          provider: { baseUrl: provider.origin + "/v1", model: "synthetic" },
-        });
-        let terminated = 0,
-          published = 0,
-          imageReads = 0;
-        const bytes = await sharp({
-          create: { width: 3, height: 2, channels: 3, background: "#123456" },
-        })
-          .png()
-          .toBuffer();
-        // Only object-store bytes are synthetic. Source identities, original image
-        // selection, authorization, policy, MCP transport and MIME checks are real.
-        backend.require("./core/activities/media").getMediaFile = async () => {
-          imageReads++;
-          return {
-            fileStream: Readable.from([bytes]),
-            contentType: "image/png",
-          };
-        };
-        gateway = await openNativeGateway(store, undefined, {
-          ...(boundary.startsWith("archive_")
-            ? {
-                onExchange: async (capture: any) => {
-                  if (
-                    (boundary === "archive_request" && !capture.complete) ||
-                    (boundary === "archive_response" && capture.complete)
-                  )
-                    await memory.execute(auth, "studio_memory_forget", {
-                      memory_id: remembered.id,
-                    });
-                },
-              }
-            : {}),
-          onTerminate: () => {
-            terminated++;
-          },
-          attachments: {
-            read: async () => {
-              throw new Error("No workspace fixture");
-            },
-            publish: () => {
-              published++;
-              return true;
-            },
+          origin: b.origin,
+          token: b.token,
+          apiKey: "fixture-provider-key",
+          provider: {
+            baseUrl: provider.origin + "/v1",
+            model: "synthetic-memory-model",
           },
         });
-        const tool = (name: string, args: any) =>
-          gateway!.handle({ kind: "tool", name, args });
-        const text = (result: any) => JSON.parse(result.content[0].text);
-        const firstDisclosure = gateway.handle({
-          kind: "provider",
-          body: {
-            model: "synthetic",
-            messages: [
-              {
-                role: "user",
-                content:
-                  boundary === "provider"
-                    ? [
-                        { type: "text", text: "Use my reporting preferences." },
-                        {
-                          type: "image_url",
-                          image_url: {
-                            url: `data:image/png;base64,${bytes.toString("base64")}`,
-                          },
+        gateway = await openNativeGateway(store);
+        relay = await startRelay(gateway);
+        provider.reply = async (body) => {
+          bodies.push(body);
+          // Inspect the actual Pi system content part, whether string or blocks.
+          const block = systems(body)
+            .flatMap((m: any) =>
+              typeof m.content === "string"
+                ? [m.content]
+                : m.content
+                    .filter((p: any) => p.type === "text")
+                    .map((p: any) => p.text),
+            )
+            .find((s: string) => s.includes(text));
+
+          if (first) {
+            first = false;
+            if (
+              [
+                "forget",
+                "image_reuse",
+                "attachment_only",
+                "new_fetch",
+                "outgoing_write",
+              ].includes(mode)
+            )
+              await account.forget(seeded.item.id, 1, "0640:forget:" + mode);
+            else if (mode === "revise")
+              await account.update(
+                seeded.item.id,
+                { text: "Current reports should be detailed." },
+                1,
+                "0640:revise",
+              );
+            else if (mode === "empty_recall")
+              await account.update(
+                seeded.item.id,
+                { status: "archived" },
+                1,
+                "0640:archive",
+              );
+          }
+          if (
+            ["new_fetch", "outgoing_write"].includes(mode) &&
+            !body.messages.some((m: any) => m.role === "tool")
+          ) {
+            await b.db
+              .collection("external_coach_credentials")
+              .updateMany(
+                { user_id: b.owner },
+                { $set: { revoked_at: new Date() } },
+              );
+            return {
+              status: 200,
+              headers: { "content-type": "text/event-stream" },
+              body: selection(
+                "katafit_rest_request",
+                {
+                  method: mode === "new_fetch" ? "GET" : "POST",
+                  path: "/api/coach/memory",
+                  ...(mode === "outgoing_write"
+                    ? {
+                        body: {
+                          kind: "preference",
+                          text: "Must not be written.",
                         },
-                      ]
-                    : "Use my reporting preferences.",
-              },
-            ],
-          },
-        });
-        await firstDisclosure;
-        if (boundary === "archive_request" || boundary === "archive_response") {
-          assert.equal(provider.bodies.length, 1);
-          assert.equal(terminated, 0);
-        }
-        if (boundary === "provider") {
-          const sent = provider.bodies[0];
-          assert.match(
-            sent.messages[0].content,
-            /Operator prefers brief reports/,
-          );
-          assert.deepEqual(sent.messages.at(-1).content[1], {
-            type: "image_url",
-            image_url: {
-              url: `data:image/png;base64,${bytes.toString("base64")}`,
-            },
-          });
-        }
-        const session = await db
-          .collection("studio_operator_sessions")
-          .findOne({ status: "active" });
-        assert.equal(session.retained_memories[0].id, remembered.id);
-        const checkins = text(
-          await tool("studio_operator_list_dojo_checkins", {}),
-        );
-        const entry = checkins.items.find(
-          (item: any) => item.display_name === "Synthetic image member",
-        );
-        assert.ok(entry.images[0].media_ref);
-        let args: any = {
-          member_ref: entry.member_ref,
-          media_ref: entry.images[0].media_ref,
-        };
-        let imageTool = "studio_operator_read_dojo_checkin_image";
-        if (boundary.startsWith("activity_")) {
-          const listing = text(
-            await tool("studio_operator_list_activities", {
-              member_ref: entry.member_ref,
-            }),
-          );
-          const activityRef = listing.items[0].activity_ref;
-          const detail = text(
-            await tool("studio_operator_read_activity", {
-              member_ref: entry.member_ref,
-              activity_ref: activityRef,
-              section: "media_files",
-            }),
-          );
-          args = {
-            member_ref: entry.member_ref,
-            activity_ref: activityRef,
-            media_ref: detail.items[0].media_ref,
+                      }
+                    : {}),
+                },
+                "boundary-0640",
+              ),
+            };
+          }
+          return {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+            body: sseText(
+              block ? "ACQUIRED_ACCOUNT_CONTEXT_USED" : "MEMORY_MISSING",
+            ),
           };
-          imageTool = "studio_operator_read_activity_image";
+        };
+        const human: any = {
+          role: "user",
+          content: "Use reporting preferences.",
+          timestamp: 1,
+        };
+        if (mode === "image_reuse" || mode === "attachment_only")
+          human.content = [
+            { type: "text", text: human.content },
+            {
+              type: "image",
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6dbkAAAAASUVORK5CYII=",
+              mimeType: "image/png",
+            },
+          ];
+        let result = await piTurn(relay, "synthetic-memory-model", [human]);
+        if (["new_fetch", "outgoing_write"].includes(mode)) {
+          const call = result.content.find((c) => c.type === "toolCall");
+          assert.ok(
+            call && call.type === "toolCall",
+            "actual Pi emitted the selected boundary request",
+          );
+          const extension = await loadExtension(relay);
+          if (mode === "new_fetch")
+            await assert.rejects(
+              extension.tools.get(call.name).execute(call.id, call.arguments),
+              /HTTP 401/,
+              "new reads authorize at the backend boundary",
+            );
+          else {
+            const denied = await extension.tools
+              .get(call.name)
+              .execute(call.id, call.arguments);
+            assert.match(JSON.stringify(denied), /MEMORY_AUTH_EXPIRED/);
+            assert.equal(
+              JSON.parse(denied.content[0].text).status,
+              "not_saved",
+              "sanitized error result is not a mutation receipt",
+            );
+          }
+          assert.equal(bodies.length, 1);
+        } else
+          assert.match(JSON.stringify(result), /ACQUIRED_ACCOUNT_CONTEXT_USED/);
+        if (["forget", "empty_recall", "image_reuse"].includes(mode)) {
+          const next = await piTurn(relay, "synthetic-memory-model", [
+            human,
+            result,
+            {
+              role: "user",
+              content: "Reuse preferences in this live conversation.",
+              timestamp: 2,
+            },
+          ]);
+          assert.match(JSON.stringify(next), /ACQUIRED_ACCOUNT_CONTEXT_USED/);
         }
-        const image = text(await tool(imageTool, args));
-        assert.equal(imageReads, 1);
-        const attachment = text(
-          await tool("send_to_operator", {
-            image_receipt: image.image_receipt,
-            caption: "Synthetic check-in",
-          }),
-        );
-        assert.equal(published, 1);
-        assert.deepEqual(
-          (await gateway.readAttachment(attachment.attachment_id)).bytes,
-          bytes,
-        );
-        if (!boundary.startsWith("archive_"))
-          await memory.execute(auth, "studio_memory_forget", {
-            memory_id: remembered.id,
-          });
-        const count = provider.bodies.length;
-        if (boundary === "provider") {
-          await gateway.handle({
-            kind: "provider",
-            body: {
-              model: "synthetic",
-              messages: [{ role: "user", content: "Continue." }],
+        if (mode === "configuration") {
+          await store.save({
+            ...store.publicConfig(),
+            provider: {
+              ...store.publicConfig().provider,
+              model: "changed-model",
             },
           });
-          assert.equal(provider.bodies.length, count + 1);
-        } else if (boundary === "send") {
-          const sent = text(
-            await tool("studio_operator_send_message", {
-              member_ref: entry.member_ref,
-              text: "Follow-up for the current recipient.",
-            }),
-          );
-          assert.equal(sent.status, "delivered");
-        } else if (boundary === "image" || boundary === "activity_image") {
-          assert.ok(text(await tool(imageTool, args)).image_receipt);
-          assert.equal(imageReads, 2);
-        } else {
-          assert.deepEqual(
-            (await gateway.readAttachment(attachment.attachment_id)).bytes,
-            bytes,
-          );
+          const count = bodies.length;
+          const denied = await piTurn(relay, "synthetic-memory-model", [
+            human,
+            result,
+            { role: "user", content: "Continue.", timestamp: 2 },
+          ]);
+          assert.equal(denied.stopReason, "error");
+          assert.equal(bodies.length, count);
         }
-        if (boundary !== "provider")
-          assert.equal(provider.bodies.length, count);
-        if (boundary !== "image" && boundary !== "activity_image")
-          assert.equal(imageReads, 1);
-        assert.equal(published, 1);
-        assert.equal(terminated, 0);
-        assert.equal(gateway.attachments().length, 1);
+        if (mode === "image_reuse" || mode === "attachment_only")
+          assert.ok(
+            bodies[0].messages.some(
+              (m: any) =>
+                Array.isArray(m.content) &&
+                m.content.some((p: any) => p.type === "image_url"),
+            ),
+            "actual native image wire block is preserved",
+          );
         assert.equal(
-          await db.collection("studio_operator_actions").countDocuments(),
-          boundary === "send" ? 1 : 0,
+          await b.db
+            .collection("coach_memories")
+            .countDocuments({ text: "Must not be written." }),
+          0,
         );
         assert.equal(
-          await db.collection("studio_operator_sessions").countDocuments(),
-          1,
+          await b.db.collection("studio_operator_actions").countDocuments(),
+          0,
+        );
+        assert.equal(
+          await b.db.collection("studio_operator_sessions").countDocuments(),
+          0,
+          "live-only Operator opens no backend history session",
         );
       } finally {
+        await relay?.close();
         await gateway?.close();
         await provider.close();
-        await backend.close();
+        await b.close();
         await rm(dir, { recursive: true, force: true });
       }
     },
   );
+}

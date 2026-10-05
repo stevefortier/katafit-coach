@@ -4,6 +4,8 @@ export const hints = {
     "Configuration storage could not be reconciled after a failed write. Coach remains stopped; do not resave or restart blindly. Repair protected home storage and verify the saved revision and credential binding before restarting the service.",
   RESTART_CONFIRMATION_REQUIRED:
     "Confirm to pause Coach, apply this operation and restart it only if it was running. Native sessions close; actions and chat are never replayed.",
+  AUTONOMY_WRITE_UNRESOLVED:
+    "An autonomy write's outcome is still unproven. Nothing was changed. Keep this connection and account until Coach proves the write from Kata.fit, then retry.",
   WORKER_STOP_UNCONFIRMED:
     "Coach stopped locally but backend stop or publication safety is unconfirmed. Nothing was applied. Check backend connectivity and canonical receipts before restarting.",
   DISCOVERY_REJECTED:

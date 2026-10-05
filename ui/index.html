@@ -418,6 +418,17 @@
               </button>
               <button
                 type="button"
+                id="settings-autonomy-tab"
+                role="tab"
+                aria-controls="autonomy"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Autonomy
+              </button>
+              <button
+                type="button"
                 id="settings-worker-tab"
                 role="tab"
                 aria-controls="worker"
@@ -951,6 +962,181 @@
                   </details>
                 </section>
               </details>
+            </section>
+            <section
+              class="card autonomy"
+              id="autonomy"
+              role="tabpanel"
+              aria-labelledby="settings-autonomy-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Autonomy</h2>
+              <p class="hint">
+                The continuous Coach monitors your dojo between chats under the
+                mandate below. It never interrupts the terminal, and stopping
+                the terminal never stops it.
+              </p>
+              <label class="toggle-label"
+                ><input id="autonomyParticipate" type="checkbox" /> Run the
+                continuous Coach on this installation</label
+              >
+              <dl class="autonomy-status">
+                <dt>This installation</dt>
+                <dd id="autonomyLocalState" role="status">Loading…</dd>
+                <dt>Monitoring</dt>
+                <dd id="autonomyMonitoring" role="status">Loading…</dd>
+                <dt>Terminal presence</dt>
+                <dd id="autonomyPresence">Loading…</dd>
+              </dl>
+              <h3>Blocked</h3>
+              <ul id="autonomyBlocked" class="autonomy-list"></ul>
+              <form id="autonomyMandateForm" class="autonomy-mandate">
+                <h3>
+                  Mandate <span id="autonomyRevision" class="hint"></span>
+                </h3>
+                <div class="autonomy-grid">
+                  <label
+                    >Mode<select id="autonomyMode">
+                      <option value="off">Off</option>
+                      <option value="observe">Observe and report</option>
+                      <option value="message">Message members</option>
+                    </select></label
+                  >
+                  <label class="toggle-label"
+                    ><input id="autonomyPaused" type="checkbox" /> Paused</label
+                  >
+                  <label
+                    >Time zone<input
+                      id="autonomyTimezone"
+                      maxlength="64"
+                      placeholder="Europe/Paris"
+                  /></label>
+                  <label
+                    >Quiet from<input id="autonomyQuietStart" type="time"
+                  /></label>
+                  <label
+                    >Quiet until<input id="autonomyQuietEnd" type="time"
+                  /></label>
+                </div>
+                <fieldset>
+                  <legend>Contact limits</legend>
+                  <div class="autonomy-grid">
+                    <label
+                      >Per member per day<input
+                        id="autonomyMemberDaily"
+                        type="number"
+                        min="0"
+                        max="5"
+                    /></label>
+                    <label
+                      >Member cooldown (minutes)<input
+                        id="autonomyMemberCooldown"
+                        type="number"
+                        min="0"
+                        max="1440"
+                    /></label>
+                    <label
+                      >Dojo per day<input
+                        id="autonomyDojoDaily"
+                        type="number"
+                        min="0"
+                        max="200"
+                    /></label>
+                    <label
+                      >Praise per day<input
+                        id="autonomyPraiseDaily"
+                        type="number"
+                        min="0"
+                        max="100"
+                    /></label>
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend>Delegated actions</legend>
+                  <div class="autonomy-days">
+                    <label class="toggle-label"
+                      ><input
+                        id="autonomyActionMember_message"
+                        type="checkbox"
+                      />
+                      Member messages</label
+                    >
+                    <label class="toggle-label"
+                      ><input
+                        id="autonomyActionManager_report"
+                        type="checkbox"
+                      />
+                      Manager reports</label
+                    >
+                    <label class="toggle-label"
+                      ><input id="autonomyActionFollow_up" type="checkbox" />
+                      Follow-ups</label
+                    >
+                    <label class="toggle-label"
+                      ><input
+                        id="autonomyActionPublic_praise"
+                        type="checkbox"
+                      />
+                      Public praise</label
+                    >
+                  </div>
+                </fieldset>
+                <fieldset>
+                  <legend>Digest</legend>
+                  <label class="toggle-label"
+                    ><input id="autonomyDigestEnabled" type="checkbox" /> Send a
+                    digest</label
+                  >
+                  <label>At<input id="autonomyDigestTime" type="time" /></label>
+                  <div class="autonomy-days">
+                    <label class="toggle-label"
+                      ><input id="autonomyDigestDay0" type="checkbox" />
+                      Sun</label
+                    >
+                    <label class="toggle-label"
+                      ><input id="autonomyDigestDay1" type="checkbox" />
+                      Mon</label
+                    >
+                    <label class="toggle-label"
+                      ><input id="autonomyDigestDay2" type="checkbox" />
+                      Tue</label
+                    >
+                    <label class="toggle-label"
+                      ><input id="autonomyDigestDay3" type="checkbox" />
+                      Wed</label
+                    >
+                    <label class="toggle-label"
+                      ><input id="autonomyDigestDay4" type="checkbox" />
+                      Thu</label
+                    >
+                    <label class="toggle-label"
+                      ><input id="autonomyDigestDay5" type="checkbox" />
+                      Fri</label
+                    >
+                    <label class="toggle-label"
+                      ><input id="autonomyDigestDay6" type="checkbox" />
+                      Sat</label
+                    >
+                  </div>
+                  <label class="toggle-label"
+                    ><input id="autonomyDigestSuppress" type="checkbox" /> Skip
+                    empty digests</label
+                  >
+                </fieldset>
+                <label
+                  >Instructions<textarea
+                    id="autonomyInstructions"
+                    rows="3"
+                    maxlength="4000"
+                  ></textarea>
+                </label>
+                <p id="autonomyBudgets" class="hint"></p>
+                <button id="autonomySave" type="submit">Save mandate</button>
+                <p id="autonomyMandateStatus" class="hint" role="status"></p>
+              </form>
+              <h3>Recent cycles</h3>
+              <ul id="autonomyReports" class="autonomy-list"></ul>
             </section>
             <section
               class="card"

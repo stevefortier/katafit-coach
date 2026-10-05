@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sse as selection } from "./helpers/native-member-send.js";
-import { memoryFixture, settle } from "./helpers/native-memory.js";
+import { memoryFixture, settle, freshRecall } from "./helpers/native-memory.js";
 
 // Natural-language memory changes travel through Pi's ordinary generic REST
 // tool. The host binds each write to the exact provider-selected tool call,
@@ -150,7 +150,16 @@ test("forget targets one exact revision, is announced from its receipt, and fres
       },
     });
     const system = f.provider.bodies.at(-1).messages[0].content;
-    assert.ok(!system.includes("downtown gym"));
+    assert.ok(!freshRecall(f.provider.bodies.at(-1)).includes("downtown gym"));
+    assert.ok(
+      system.includes("downtown gym"),
+      "receipt cannot retract text already acquired by this live chat",
+    );
+    assert.equal(
+      f.backend.items.has(seeded.id),
+      false,
+      "backend fixture erases the record rather than retaining its prose",
+    );
   } finally {
     await f.close();
   }

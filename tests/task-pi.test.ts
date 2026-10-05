@@ -104,7 +104,11 @@ for (const [kind, result] of Object.entries(results))
       assert.deepEqual(f.saved[0].result, result);
       assert.equal(w.state, "task-result-stored");
       assert.equal(p.bodies.length, 1);
-      assert.ok(!p.bodies[0].tools?.length);
+      // Full capability: generation keeps the shared REST tool.
+      assert.deepEqual(
+        (p.bodies[0].tools ?? []).map((t: any) => t.function?.name ?? t.name),
+        ["katafit_rest_request"],
+      );
       const payload = JSON.stringify(p.bodies[0]);
       assert.ok(payload.includes("generation_task"));
       assert.ok(payload.includes("Saved standalone persona"));
@@ -217,7 +221,7 @@ for (const [category, first] of [
     '{"activity_feedback":{"reaction":"flex","reply_worthwhile":false},"general_advice":"not silent"}',
   ],
 ] as const)
-  test(`actual Pi corrects ${category} typed output with a fresh tool-free request`, async () => {
+  test(`actual Pi corrects ${category} typed output with a fresh request that keeps its tools`, async () => {
     const f = await taskFixture();
     const valid =
       category === "semantic"
@@ -248,7 +252,11 @@ for (const [category, first] of [
         f.calls.filter((c) => c.name === "coach_reconcile_task").length,
         1,
       );
-      assert.ok(!p.bodies[1].tools?.length);
+      // Structured-output correction keeps the same tools.
+      assert.deepEqual(
+        (p.bodies[1].tools ?? []).map((t: any) => t.function?.name ?? t.name),
+        ["katafit_rest_request"],
+      );
       assert.ok(!JSON.stringify(p.bodies[1]).includes(first));
       assert.ok(JSON.stringify(p.bodies[1]).includes("Return only JSON"));
       assert.ok(
@@ -302,7 +310,7 @@ test("actual Pi publishes corrected fenced JSON after a semantic meal-reaction r
     );
     assert.ok(
       JSON.stringify(p.bodies[1]).includes(
-        "no prose, tools or Markdown code fences",
+        "never repeat an action that already ran",
       ),
     );
     assert.equal(

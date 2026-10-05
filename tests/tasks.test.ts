@@ -367,7 +367,10 @@ for (const outcome of ["corrected", "permanent", "meal", "workout"] as const) {
       system: "Coach",
       complete: async (_context, _signal, system, tools) => {
         prompts.push(system!);
-        assert.deepEqual(tools, []);
+        assert.deepEqual(
+          tools.map((t: any) => t.name),
+          ["katafit_rest_request"],
+        );
         assert.equal(f.saved.length, 0);
         return JSON.stringify(
           outcome === "permanent" ||
@@ -1289,7 +1292,10 @@ test("negotiated task lifecycle submits structured result once and independently
       f.calls.filter((c) => c.name === "coach_reconcile_task").length,
       1,
     );
-    assert.deepEqual(seen.tools, []);
+    assert.deepEqual(
+      seen.tools.map((t: any) => t.name),
+      ["katafit_rest_request"],
+    );
     assert.ok(seen.system.includes("Saved Coach persona"));
     assert.equal(w.state, "task-result-stored");
     assert.ok(!f.calls.some((c) => c.name === "coach_read_context"));

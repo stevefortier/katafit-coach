@@ -51,7 +51,7 @@ jobs:
       - uses: ./.github/actions/prepare
       - uses: ./.github/actions/native-image
       - name: Verify real immutable native pair and isolated runtime
-        run: SKILLS_NATIVE_TEST_IMAGE="$NATIVE_TEST_IMAGE" NATIVE_DOCKER_TEST=1 npx tsx --test --test-concurrency=1 tests/native-deployment.test.ts tests/native-runtime.test.ts tests/native-startup-tools.test.ts tests/native-pi-path.test.ts tests/native-terminal.test.ts tests/skills-native.test.ts tests/native-attachments-runtime.test.ts tests/native-attachments-pi.test.ts tests/native-session-docker.test.ts tests/native-account-memory-docker.test.ts
+        run: SKILLS_NATIVE_TEST_IMAGE="$NATIVE_TEST_IMAGE" NATIVE_DOCKER_TEST=1 npx tsx --test --test-concurrency=1 tests/native-deployment.test.ts tests/native-runtime.test.ts tests/native-startup-tools.test.ts tests/native-pi-path.test.ts tests/native-terminal.test.ts tests/skills-native.test.ts tests/native-attachments-runtime.test.ts tests/native-attachments-pi.test.ts tests/native-session-docker.test.ts tests/native-account-memory-docker.test.ts tests/autonomy-headless-docker.test.ts
   package:
     runs-on: ubuntu-latest
     timeout-minutes: 40

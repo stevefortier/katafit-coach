@@ -111,6 +111,7 @@ export async function discoverReads(
   options: ReadOptions,
 ): Promise<{
   tools: AgentTool[];
+  advertised: ReadonlySet<string>;
   status: string;
   dispose: () => void;
   readBudget: () => { used: number; limit: number };
@@ -140,6 +141,7 @@ export async function discoverReads(
   if (!listed.some((t) => t.name === "coach_get_capabilities"))
     return {
       tools: [],
+      advertised: new Set(listed.map((t) => t.name)),
       status: "v1: no request-scoped reads; text-only",
       dispose: () => {},
       readBudget: () => ({ used: 0, limit: 0 }),
@@ -396,6 +398,7 @@ export async function discoverReads(
       throw new Error("CAPABILITIES_REJECTED");
     return {
       tools,
+      advertised: new Set(listed.map((t) => t.name)),
       status,
       dispose: handles.dispose,
       readBudget: () => ({ used: calls, limit: READ_CALL_LIMIT }),

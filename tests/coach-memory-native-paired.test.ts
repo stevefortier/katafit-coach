@@ -12,10 +12,12 @@ import { answer, toolCall } from "./helpers/continuity.js";
 import { PI_READY } from "./helpers/native-ready.js";
 import {
   memoryBackendEnabled,
-  startBackend,
   isExtraction,
   systemOf,
 } from "./helpers/memory-backend.js";
+
+import { startAccountBackend as startBackend } from "./helpers/account-backend.js";
+import { AccountMemory } from "../src/memory/account.js";
 
 const enabled =
   memoryBackendEnabled &&
@@ -24,7 +26,7 @@ const enabled =
 // Actual immutable network-none Pi, terminal/WebSocket, relay, host gateway,
 // backend/Mongo. Inference alone is synthetic; no production service or data.
 test(
-  "actual Pi retains final delivered tool-grounded turn, recalls next turn, and destroys the same runtime after correction",
+  "actual Pi retains final delivered tool-grounded turn, recalls next turn, and preserves live context while fencing retention after correction",
   { skip: !enabled, timeout: 240000 },
   async () => {
     const backend = await startBackend();
@@ -57,15 +59,20 @@ test(
       const toolResults = body.messages
         .slice(userIndex + 1)
         .filter((m: any) => m.role === "tool");
-      const second = /second synthetic|new-runtime synthetic/.test(
-        JSON.stringify(body.messages[userIndex]),
-      );
+      const second =
+        /second synthetic|new-runtime synthetic|third synthetic/.test(
+          JSON.stringify(body.messages[userIndex]),
+        );
       const newRuntime = JSON.stringify(body.messages[userIndex]).includes(
         "new-runtime synthetic",
       );
       if (!second && !toolResults.length)
         return res.end(
-          toolCall("studio_operator_list_members", {}, "actual_memory_roster"),
+          toolCall(
+            "katafit_rest_request",
+            { method: "GET", path: "/api/coach/memory" },
+            "actual_memory_rest",
+          ),
         );
       res.end(
         answer(
@@ -84,53 +91,7 @@ test(
       ws: WebSocket | undefined;
     let output = "";
     try {
-      const { db, service, ObjectId } = backend;
-      const chief = new ObjectId(),
-        member = new ObjectId(),
-        dojo = new ObjectId();
-      await db.collection("users").insertMany([
-        { _id: chief, display_name: "Synthetic chief", timezone: "UTC" },
-        {
-          _id: member,
-          display_name: "Synthetic member",
-          timezone: "UTC",
-          privacy_settings: Object.fromEntries(
-            ["workout", "meal", "media", "metric", "survey"].map((k) => [
-              k,
-              ["dojo_chief"],
-            ]),
-          ),
-        },
-      ]);
-      await db.collection("dojos").insertOne({
-        _id: dojo,
-        chief_id: chief,
-        external_coach_agent: { enabled: true },
-      });
-      await db.collection("dojo_members").insertMany([
-        {
-          user_id: chief,
-          dojo_id: dojo,
-          role: "chief",
-          joined_at: new Date(0),
-        },
-        {
-          user_id: member,
-          dojo_id: dojo,
-          role: "member",
-          joined_at: new Date(0),
-        },
-      ]);
-      const token = (
-        await service.createCredential(String(chief), {
-          scopes: [
-            ...service.DEFAULT_SCOPES,
-            "history:read",
-            "userdata:read",
-            "media:read",
-          ],
-        })
-      ).token;
+      const { db, token } = backend;
       const store = new Store(dir);
       await store.init();
       await store.save({
@@ -222,12 +183,13 @@ test(
         "intermediate tool-call response is not learned",
       );
       const extraction = bodies.find(isExtraction);
-      assert.match(JSON.stringify(extraction), /Synthetic member/);
+      assert.match(JSON.stringify(extraction), /coach.memory.v1/);
+      assert.doesNotMatch(JSON.stringify(bodies), /Tool .*not found/);
       assert.match(JSON.stringify(extraction), /MEMORY_PAIRED_FIRST_DONE/);
       const record = await db
         .collection("coach_memories")
         .findOne({ status: "active" });
-      assert.equal(record.audience, "operator_private");
+      assert.equal(record.audience, "account_private");
       // Verify the actual runtime sandbox configuration by its task-owned name,
       // never requiring other users' native containers to be absent.
       let containerIds = execFileSync(
@@ -370,40 +332,49 @@ test(
         .split("\n")
         .filter(Boolean);
       assert.equal(containerIds.length, 1);
-      const auth = await service.authenticateCredential(token);
-      await backend
-        .require("./core/coachMemory")
-        .execute(auth, "studio_memory_update", {
-          memory_id: String(record._id),
-          expected_revision: 1,
-          text: "Operator now prefers detailed weekly reports.",
-        });
+      const account = new AccountMemory(
+        backend.origin,
+        token,
+        AbortSignal.timeout(20000),
+        [token],
+      );
+      const current = await account.get(String(record._id));
+      await account.update(
+        String(record._id),
+        { text: "Operator now prefers detailed weekly reports." },
+        current.item.revision,
+        "0640:paired:correction",
+      );
       const count = bodies.filter((body) => !isExtraction(body)).length;
+      const extractionCount = bodies.filter(isExtraction).length;
       ws.send(
         JSON.stringify({
           type: "input",
           data: "Perform a third synthetic turn.\r",
         }),
       );
-      await waitFor(() => closed !== undefined, "revoked runtime closure");
-      assert.equal(closed, 1008);
       await waitFor(
         () =>
-          !execFileSync(
-            "docker",
-            [
-              "ps",
-              "-a",
-              "--filter",
-              "id=" + containerIds[0],
-              "--format",
-              "{{.ID}}",
-            ],
-            { encoding: "utf8" },
-          ).trim(),
-        "task-owned runtime removal",
+          bodies.filter((body) => !isExtraction(body)).length > count &&
+          output.includes("MEMORY_PAIRED_SECOND_DONE"),
+        "live correction turn",
       );
-      assert.equal(bodies.filter((body) => !isExtraction(body)).length, count);
+      const corrected = bodies.filter((body) => !isExtraction(body)).at(-1);
+      assert.match(
+        systemOf(corrected),
+        /Operator now prefers detailed weekly reports/,
+      );
+      assert.equal(
+        closed,
+        undefined,
+        "correction does not reauthorize/destroy internal acquired context",
+      );
+      await new Promise((r) => setTimeout(r, 500));
+      assert.equal(
+        bodies.filter(isExtraction).length,
+        extractionCount,
+        "changed ancestry disables learning until a new chat",
+      );
       assert.equal(
         await db.collection("studio_operator_actions").countDocuments(),
         0,
@@ -418,7 +389,7 @@ test(
               containerNames,
               providerRequests: count,
               extractionRequests: bodies.filter(isExtraction).length,
-              correctionCloseCode: closed,
+              correctionPreservedLiveRuntime: closed === undefined,
               toolGrounding: true,
             },
             null,

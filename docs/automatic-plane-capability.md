@@ -1,0 +1,52 @@
+# Automatic-plane capability inventory and remaining contract gate
+
+Current invocation successor: immutable backend1b82, vendored
+`coach.invocation-actions.v1`, and real Worker request/task lifecycle wiring.
+See the successor section in `ordinary-work-actions.md`. Per-plane human
+delegation is optional for legacy mandate DTOs but strict when present; it is
+never auto-copied from autonomy. The installation-wide pending/unknown fence,
+acquired-read policy and separate no-tools composer apply unchanged. Local
+client1740 receipts must name their exact source/image; older pins and receipts
+below are historical, not substitute qualification. Backend1705's comment-only
+runtime diff does not change the consumed1b82 protocol. Production/provider
+acceptance and independent parent review remain outside this client slice.
+
+This is an independent implementation inventory, not release/full-capability approval. The corrective continuation consumes parent-supplied immutable backend `bf5cd2d08c09523af0b8b336cdee74787dfbc17b` and `coach.integrations.v1` repair2153. Historical d7 read/photo receipts remain pinned to `3e4b9bccc4bb17eb0ee2a4b4b84791d0138eeff0`; they are not reassigned to bf5. See `configured-integration-capability.md` for exact dependency and qualification limits.
+
+## Actual profiles and admission
+
+- Presence heartbeat (`src/worker/runner.ts`) and the continuous scheduler's idle tick (`src/autonomy/scheduler.ts`) are host control traffic, not extra model profiles. Idle ticks remain zero-inference; due work is claimed before reasoning. The socket heartbeat in `src/server/terminal.ts` is unrelated to Coach capability.
+- `reconcile`, `event`, `conversation`, `digest`, `follow_up` are the actual `WORK_KINDS` in `src/autonomy/types.ts`. All run the same manager-private planner through `autonomyRunner` and installed production `AutonomyHost` wiring. The new paired/native regression enumerates this constant rather than inventing a heartbeat model or additional kinds.
+- Backend producers exist in `core/coachAutonomy.js`: event enqueue at 1296, conversation enqueue at 1355, `materializeDigest` at 1445, `materializeFollowUps` at 1467, reconciliation enqueue at 1506. The new regression uses the real `enqueueWork` service with synthetic sources and actual claim/start/completion HTTP. It proves per-kind execution, not that all natural producer triggers have been exercised.
+- Typed Worker keeps the shared `InvocationCapability` transport and its existing request/task occurrence handling. Its previously enumerated advertised registrations are distinct from the automatic work-kind enum. Declared `activity_followup` and `exercise_chat` lack advertised registrations in the pinned backend; do not manufacture producers or include them in a GREEN advertised count.
+- Composer remains an independent native container, audience-scoped, zero tools and zero skills. It receives `ComposerInput` fixed projections from acquired records plus backend-authorized intent, not planner messages, account memory, raw photos, private reports, or skill text. Public praise still needs its own attested event/public projection. Trigger parity does not remove this AC1 boundary.
+
+## Independent client closure
+
+`src/autonomy/runner.ts` offers the same `katafit_rest_request` transport used by Worker to every admitted automatic planner. No profile/trigger switch suppresses dynamic discovery, populated credential-account memory search, nutrition reads or authorized image reads. `katafit_rest_get` is now only a GET name adapter over that same acquisition instance, not a separate REST transport. Both advertised names share vision/quota admission and exact-path success/failure retention across sharing changes. Successful acquisition bodies, not envelopes, enter the audience evidence ledger. A refused unsupported write does not invalidate acquired context.
+
+The shared transport's optional image/read quotas are bound to the validated mandate, with global gateway tool/provider budgets still enforced. Vision requires explicit provider support and positive image quota. Model image preparation validates decoded pixels and limits transient input to at most 1 MP even for tiny compressed high-resolution images; originals are neither overwritten nor persisted. New reads after media-file revocation use the real backend authorization and fail; previously acquired model pixels are retained without periodic re-fetch, re-authorization or re-render.
+
+Caller tools are accepted for planner and worker only, AJV-validated and bound to host-observed native selections. A planner caller cannot shadow the finite audience-action tools. Composer still rejects caller tools. The enabled planner skill suffix describes dynamic read transport and current-authority requirements rather than declaring a trigger-based ban. Memory query URLs are classified manager-private by the acquisition ledger, including `?query=`.
+
+`tests/autonomy-native-capability.test.ts` runs real Docker/Pi, host gateway, authenticated backend routes and disposable Mongo. A synthetic provider policy actually opens the enabled saved skill, discovers memory API documentation, searches populated private recall, fetches real prescription protein, obtains a valid synthetic JPEG through the real media ownership/file-membership route, sees and decodes pixels in the actual pinned Pi provider request, reports revocation truthfully, tests retained read reuse, and refuses ungranted generic writes. The separate composer control acquires the recipient's shared workout via the real social-activity route, submits a finite intent, receives only typed activity evidence, stores/composes/dispatches through real HTTP, and verifies the member chat in Mongo. The storage-byte boundary and model policy are synthetic: this is native image acquisition/analysis mechanism coverage, not evaluation of a real model's physique interpretation accuracy.
+
+## Additive ordinary work-action contract (next0340)
+
+The supplied a404 `coach.work-actions.v1` contract now admits ordinary automatic REST through a negotiated journal and trusted host work binding, with `rest_mutation` delegation. Proposal approval additionally needs `proposal_approval`. The same production caller executes the supported plan slice and all five local proposal kinds with persisted readbacks. `response_received/effect_receipt:false` is an observation, not an effect receipt or audience authority. Older descriptors without that exact additive journal remain non-mutating. See `ordinary-work-actions.md` for source/schema pins, actual hooks and controls.
+
+The following original contract requirements remain acceptance criteria, not blanket future-contract excuses. Configured bf5 and ordinary a404 pins/receipts are separate; new native probes must name their actual source and image:
+
+1. Exact committed protocol/JSON schemas for both worker and automatic planner discovery and execution. Real callable names, input/result schemas and dispatch endpoints must be included; `integrations.source=worker_configured` metadata alone is not executable availability.
+2. Explicit authority for ordinary supported automatic writes: configured principal, work ID, lease generation, mandate revision, observe/delegation rules, action classification and audience. Backend must acquire current authority at actual send, not only at discovery/preparation. Trainee/public free text cannot bypass AC1; any new audience-bearing mutation needs a specified declassification/composition contract, not raw private planner body forwarding.
+3. Integration ownership/configuration revision and unique namespaces, server/tool enabled state, current membership/chief role and mutation delegation. Reject conflicting names and stale target handles. No forwarding backend/provider/customer credentials into Pi or provider prompts, including decoded/quoted/backslash-escaped secret echoes.
+4. Durable exact occurrence open/settle/reconcile schemas for automatic and worker integration/REST effects: stable host keys, exact payload/target binding, proven-not-committed gates, committed receipt readback, cancellation/release boundedness, and unknown/no-replay outcomes across retry/restart/upgrade. A generic success-shaped receipt is not proof.
+5. Parent-authorized exact repaired immutable export and committed READY/results after independent repairs. a404 finite review PASS is not parent full test or release approval. No adoption from file existence or an older READY.
+
+Historical readiness/scaffolding/behavioral REDs remain preserved with their own pins. Ordinary controls now exercise actual automatic plan/proposal authority through HTTP/Mongo and native Pi. They do not assert unrestricted route authority, production eligibility or external effect receipts.
+
+## Gate interpretation
+
+The native acceptance invokes the production runner/gateway/isolated Pi seam against real HTTP/Mongo; it does not drive installed-supervisor natural triggers. It executes all five actual work kinds plus the audience-delivery and zero-image-budget controls. The latter canonically blocks as budget_exhausted without delivering any pixels. Separate containers are inspected while active: composer and held planner really overlap, with network=none and read-only root filesystems. Earlier installed/process evidence remains separately source-labelled.
+
+Read/memory/nutrition/skill/photo, corrected conversation evidence, composer-private separation, configured-integration owner wiring and the finite ordinary plan/proposal contract are independently executable. Natural trigger production coverage, complete A1–A13/approved-plan/addendum reconciliation and independent full release qualification remain parent gates. Client local build/full/package/native results must be read from the exact next0340 handoff, not inferred from this inventory. Parent owns release qualification/publication; the client never modifies backend exports.

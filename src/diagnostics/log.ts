@@ -58,6 +58,17 @@ export const stages = [
   "memory-unavailable",
   "memory-retained",
   "memory-retention-skipped",
+  "autonomy-cycle",
+  "autonomy-backoff",
+  "autonomy-credential",
+  "autonomy-completed",
+  "autonomy-blocked",
+  "autonomy-action",
+  "autonomy-participation",
+  "autonomy-started",
+  "autonomy-stopped",
+  "autonomy-outcome-unknown",
+  "autonomy-outcome-settled",
 ] as const;
 export type Stage = (typeof stages)[number];
 export interface LogInput {

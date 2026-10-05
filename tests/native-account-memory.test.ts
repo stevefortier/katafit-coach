@@ -5,7 +5,11 @@ import {
   startAccountMemoryBackend,
   type AccountMemoryBackend,
 } from "./helpers/account-memory-backend.js";
-import { memoryFixture, systems } from "./helpers/native-memory.js";
+import {
+  memoryFixture,
+  systems,
+  freshRecall,
+} from "./helpers/native-memory.js";
 
 const recallReads = (backend: AccountMemoryBackend) =>
   backend.requests.filter(
@@ -60,7 +64,18 @@ test("each new human turn acquires bounded account memory into the single leadin
     assert.ok(recallReads(f.backend) > reads);
     const next = systems(f.provider.bodies.at(-1))[0].content as string;
     assert.ok(next.includes(pinned.text!));
-    assert.ok(!next.includes(knee.text!));
+    assert.ok(
+      !freshRecall(f.provider.bodies.at(-1)).includes(knee.text!),
+      "fresh backend acquisition omits forgotten memory",
+    );
+    assert.ok(
+      next.includes(knee.text!),
+      "already acquired text remains in this live runtime only",
+    );
+    assert.match(
+      next,
+      /Previously acquired context retained only in this live conversation/,
+    );
   } finally {
     await f.close();
   }

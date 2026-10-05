@@ -7,6 +7,70 @@ import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 import { photoReviewGuidance } from "../src/worker/photoReviewGuidance.js";
+import { Admission } from "../src/runtime/admission.js";
+import { complete } from "../src/runtime/piAdapter.js";
+import {
+  CAPABILITY_GUIDANCE,
+  PRINCIPAL_REST_NOTE,
+} from "../src/capability/invocation.js";
+
+test("Stop waits for cancelled invocation teardown and retains shared admission", async () => {
+  const f = await fixture();
+  const admission = new Admission();
+  let entered!: () => void;
+  const started = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  const cleanup = new Promise<void>((r) => (release = r));
+  const worker = new Worker({
+    origin: f.origin,
+    token: "synthetic-token",
+    system: "Coach",
+    admission,
+    complete: async (_context, signal) => {
+      entered();
+      await new Promise<void>((r) =>
+        signal.addEventListener("abort", () => r(), { once: true }),
+      );
+      await cleanup;
+      throw new Error("CANCELLED");
+    },
+  });
+  let stopped = false;
+  let stop: Promise<void> | undefined;
+  try {
+    f.enqueue("Synthetic lifecycle question");
+    const poll = worker.pollOnce();
+    await started;
+    stop = worker.stop().then(() => {
+      stopped = true;
+    });
+    await assert.rejects(poll, /CANCELLED/);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(
+      stopped,
+      false,
+      "poll cancellation is not native teardown confirmation",
+    );
+    assert.equal(worker.safeToReplace, false);
+    assert.equal(worker.stopConfirmed, false);
+    assert.equal(
+      admission.busy,
+      true,
+      "no second inference before owned cleanup settles",
+    );
+    release();
+    await stop;
+    assert.equal(worker.stopConfirmed, true);
+    assert.equal(worker.safeToReplace, true);
+    assert.equal(admission.busy, false);
+    assert.equal(f.publications, 0);
+  } finally {
+    release();
+    await stop;
+    await worker.stop();
+    await f.close();
+  }
+});
 
 test("photo requests guide native media reads at the original request anchor", () => {
   const asOf = "2026-09-23T21:05:00.000Z";
@@ -104,7 +168,12 @@ test("preview and running worker receive byte-identical saved effective instruct
         t.unref();
       }),
     ]);
-    assert.deepEqual(systems, [preview.prompt, preview.prompt]);
+    // The worker appends only per-invocation runtime capability guidance
+    // (this fixture request is Dojo-scoped, so REST is the principal's).
+    assert.deepEqual(systems, [
+      preview.prompt,
+      preview.prompt + CAPABILITY_GUIDANCE + PRINCIPAL_REST_NOTE,
+    ]);
   } finally {
     await app.close();
     await f.close();
@@ -517,7 +586,7 @@ test("model deadline includes time spent discovering read tools", async () => {
   }
 });
 
-test("stop fences a non-cooperative late model and settles promptly without publishing", async () => {
+test("stop fences a non-cooperative late model until its invocation settles without publishing", async () => {
   const f = await fixture();
   let enter!: () => void;
   const entered = new Promise<void>((r) => (enter = r));
@@ -536,14 +605,18 @@ test("stop fences a non-cooperative late model and settles promptly without publ
     const pending = worker.pollOnce();
     pending.catch(() => {});
     await entered;
+    const stopped = worker.stop();
+    await pending.catch(() => {});
+    assert.equal(worker.safeToReplace, false);
+    assert.equal(worker.stopConfirmed, false);
+    finish("Late response");
     await Promise.race([
-      worker.stop(),
+      stopped,
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("stop did not settle")), 200),
       ),
     ]);
-    finish("Late response");
-    await pending.catch(() => {});
+    assert.equal(worker.stopConfirmed, true);
     assert.equal(f.publications, 0);
   } finally {
     finish?.("Late");
@@ -738,7 +811,7 @@ test("worker offers negotiated media only inside claimed request budget", async 
     await w.pollOnce();
     assert.deepEqual(
       exposed.map((t: any) => t.name),
-      ["coach_read_media"],
+      ["coach_read_media", "katafit_rest_request"],
     );
     assert.equal(f.publications, 1);
     const callCount = f.calls.length;
@@ -847,7 +920,7 @@ test("safe worker failure reaches fenced backend and Studio logs survives idle",
   }
 });
 
-test("real Pi provider rejection is correlated through worker backend failure and authenticated logs", async () => {
+test("synthetic in-process Pi adapter rejection is correlated through worker failure and authenticated logs", async () => {
   const f = await fixture();
   const dir = await mkdtemp(tmpdir() + "/coach-wire-diagnostics-");
   const provider = createServer((req, res) => {
@@ -875,7 +948,8 @@ test("real Pi provider rejection is correlated through worker backend failure an
       model: "synthetic",
     },
   });
-  const app = await admin(store, 0);
+  // Explicit synthetic adapter seam, not installed default isolated execution.
+  const app = await admin(store, 0, (...args) => complete(...args));
   const headers = {
     Authorization: "Bearer " + store.secrets.admin,
     Origin: app.origin,
@@ -984,6 +1058,42 @@ for (const code of [
       }
     });
 
+test("worker inference waits for the shared admission slot held by autonomy", async () => {
+  const { Admission } = await import("../src/runtime/admission.js");
+  const f = await fixture();
+  const admission = new Admission();
+  let calls = 0;
+  try {
+    let release!: () => void;
+    const held = admission.run(
+      "autonomy",
+      undefined,
+      () => new Promise<void>((r) => (release = r)),
+    );
+    const worker = new Worker({
+      origin: f.origin,
+      token: "synthetic-token",
+      system: "Coach",
+      admission,
+      complete: async () => {
+        calls++;
+        return "Synthetic admission reply.";
+      },
+    });
+    f.enqueue("How was my meal?");
+    const poll = worker.pollOnce();
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(calls, 0, "no inference while autonomy holds the slot");
+    release();
+    await held;
+    await poll;
+    assert.equal(calls, 1);
+    assert.equal(f.publications, 1);
+    assert.equal(admission.busy, false);
+  } finally {
+    await f.close();
+  }
+});
 function upgradeGate() {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => (resolve = r));

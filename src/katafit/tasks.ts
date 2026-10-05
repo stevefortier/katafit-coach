@@ -3,6 +3,16 @@ import { Ajv } from "ajv";
 import { taskCatalog } from "./taskCatalog.js";
 import { Client } from "./client.js";
 import { assertNoSecrets } from "../config/store.js";
+import {
+  invocationAdmission,
+  INVOCATION_ACTION_PROTOCOL,
+} from "../capability/invocationActions.js";
+import {
+  CAPABILITY_PROTOCOL,
+  validOccurrence,
+  type CapabilityAction,
+  type Occurrence,
+} from "../capability/invocation.js";
 
 export const TASK_PROTOCOL = "coach.tasks.v1";
 export const TASK_TOOLS = [
@@ -38,11 +48,21 @@ const validators = new Map(
   }),
 );
 export async function discoverTasks(c: Client): Promise<string[]> {
+  return (await discoverTaskPlane(c)).kinds;
+}
+/**
+ * Kinds plus whether the backend negotiates the shared invocation capability
+ * (coach.capability.v1) and its task action journal. Never sent unadvertised:
+ * a strict older backend would reject the unknown claim field.
+ */
+export async function discoverTaskPlane(
+  c: Client,
+): Promise<{ kinds: string[]; capability: boolean; invocation?: boolean }> {
   // Capability absence/mismatch never grants task authority or breaks legacy chat.
   try {
     const listed = await c.rpc("tools/list");
     if (!TASK_TOOLS.every((n) => listed.tools?.some((t: any) => t.name === n)))
-      return [];
+      return { kinds: [], capability: false };
     const cap = await c.call("coach_task_capabilities", {});
     if (
       cap.protocol !== TASK_PROTOCOL ||
@@ -52,8 +72,14 @@ export async function discoverTasks(c: Client): Promise<string[]> {
       !Array.isArray(cap.kinds) ||
       !Array.isArray(cap.contracts)
     )
-      return [];
-    return [...catalog.keys()].filter(
+      return { kinds: [], capability: false };
+    const capability =
+      Array.isArray(cap.capability_protocols) &&
+      cap.capability_protocols.includes(CAPABILITY_PROTOCOL) &&
+      cap.negotiated_capability?.protocol === CAPABILITY_PROTOCOL &&
+      cap.negotiated_capability?.tools_during_generation === true &&
+      JOURNAL_TOOLS.every((n) => listed.tools?.some((t: any) => t.name === n));
+    const kinds = [...catalog.keys()].filter(
       (kind) =>
         cap.kinds.includes(kind) &&
         cap.contracts.filter((x: any) => x.kind === kind).length === 1 &&
@@ -62,10 +88,23 @@ export async function discoverTasks(c: Client): Promise<string[]> {
           catalog.get(kind),
         ),
     );
+    const claim = listed.tools?.find((t: any) => t.name === "coach_claim_task");
+    const invocation =
+      capability &&
+      claim?.inputSchema?.properties?.capability_protocols?.items?.enum?.includes(
+        INVOCATION_ACTION_PROTOCOL,
+      ) &&
+      [
+        "coach_open_invocation_action",
+        "coach_read_invocation_action",
+        "coach_settle_invocation_action",
+      ].every((n) => listed.tools?.some((t: any) => t.name === n));
+    return { kinds, capability, ...(invocation ? { invocation: true } : {}) };
   } catch {
-    return [];
+    return { kinds: [], capability: false };
   }
 }
+const JOURNAL_TOOLS = ["coach_open_task_action", "coach_settle_task_action"];
 export function validateTask(task: any, kinds: string[]) {
   const keys = [
     "id",
@@ -108,24 +147,134 @@ export function validateTask(task: any, kinds: string[]) {
 export function taskSchema(kind: string) {
   return catalog.get(kind)?.result_schema;
 }
-export function taskContext(task: any, context: any, secrets: string[]) {
-  if (
-    !isDeepStrictEqual(context.task, task) ||
-    !isDeepStrictEqual(context.result_schema, taskSchema(task.kind)) ||
-    context.direct_mutations_forbidden !== true ||
-    !isDeepStrictEqual(context.allowed_tools, []) ||
-    typeof context.instructions !== "string"
-  )
-    throw new Error("CONTEXT_REJECTED");
-  if (
-    !exactKeys(context, [
+export interface TaskAdmission {
+  negotiated: boolean;
+  actions: CapabilityAction[];
+  occurrences: Occurrence[];
+  /** The requester, the only member-message recipient of a Dojo task. */
+  recipient?: string;
+  subjectIsPrincipal: boolean;
+  ordinary?: ReturnType<typeof invocationAdmission>;
+}
+/**
+ * Legacy contexts (allowed_tools [], direct_mutations_forbidden) still get the
+ * shared read/memory/discovery capability but no actions. A negotiated
+ * coach.capability.v1 context adds its supported, journaled actions.
+ */
+export function taskAdmission(task: any, context: any): TaskAdmission {
+  if (!context.capability)
+    return {
+      negotiated: false,
+      actions: [],
+      occurrences: [],
+      subjectIsPrincipal: task.owner_type === "personal",
+    };
+  const cap = context.capability;
+  const supported = cap.rest?.available === true ? cap.actions.supported : [];
+  return {
+    negotiated: true,
+    actions: supported,
+    occurrences: context.occurrences,
+    ...(supported.includes("member_message")
+      ? { recipient: String(task.requester_id).toLowerCase() }
+      : {}),
+    subjectIsPrincipal: cap.rest.subject_is_principal === true,
+    ...(invocationAdmission(cap, {
+      plane: "task",
+      id: task.id,
+      lease_generation: task.lease_generation,
+      requester_id: task.requester_id,
+    })
+      ? {
+          ordinary: invocationAdmission(cap, {
+            plane: "task",
+            id: task.id,
+            lease_generation: task.lease_generation,
+            requester_id: task.requester_id,
+          }),
+        }
+      : {}),
+  };
+}
+function validAdmission(task: any, context: any) {
+  const cap = context.capability;
+  const ordinary = invocationAdmission(cap, {
+    plane: "task",
+    id: task.id,
+    lease_generation: task.lease_generation,
+    requester_id: task.requester_id,
+  });
+  return (
+    exactKeys(context, [
       "task",
       "instructions",
       "evidence",
       "result_schema",
       "allowed_tools",
       "direct_mutations_forbidden",
-    ]) ||
+      "capability",
+      "occurrences",
+    ]) &&
+    Array.isArray(context.allowed_tools) &&
+    context.allowed_tools.length <= 16 &&
+    context.allowed_tools.every(
+      (t: any) => typeof t === "string" && /^[a-z_]{1,40}$/.test(t),
+    ) &&
+    typeof context.direct_mutations_forbidden === "boolean" &&
+    cap &&
+    typeof cap === "object" &&
+    cap.protocol === CAPABILITY_PROTOCOL &&
+    cap.plane === "task" &&
+    cap.kind === task.kind &&
+    cap.tools_during_generation === true &&
+    cap.final_result === "structured_result" &&
+    cap.structured_result_correction?.replay_actions === false &&
+    typeof cap.rest?.available === "boolean" &&
+    typeof cap.rest?.subject_is_principal === "boolean" &&
+    cap.rest?.subject_user_id === task.requester_id &&
+    Array.isArray(cap.actions?.supported) &&
+    cap.actions.supported.length <= (ordinary ? 3 : 2) &&
+    cap.actions.supported.every((a: any) =>
+      [
+        "rest_mutation",
+        "member_message",
+        ...(ordinary ? ["proposal_approval"] : []),
+      ].includes(a),
+    ) &&
+    // A Dojo task never writes as the chief; a personal task never messages.
+    (task.owner_type === "dojo"
+      ? ordinary || !cap.actions.supported.includes("rest_mutation")
+      : !cap.actions.supported.includes("member_message")) &&
+    context.direct_mutations_forbidden ===
+      (cap.actions.supported.length === 0) &&
+    Array.isArray(context.occurrences) &&
+    context.occurrences.length <= 50 &&
+    context.occurrences.every(validOccurrence) &&
+    Buffer.byteLength(JSON.stringify(cap)) <= 16384
+  );
+}
+export function taskContext(task: any, context: any, secrets: string[]) {
+  const negotiated = context && Object.hasOwn(context, "capability");
+  if (
+    !isDeepStrictEqual(context.task, task) ||
+    !isDeepStrictEqual(context.result_schema, taskSchema(task.kind)) ||
+    (!negotiated &&
+      (context.direct_mutations_forbidden !== true ||
+        !isDeepStrictEqual(context.allowed_tools, []))) ||
+    (negotiated && !validAdmission(task, context)) ||
+    typeof context.instructions !== "string"
+  )
+    throw new Error("CONTEXT_REJECTED");
+  if (
+    (!negotiated &&
+      !exactKeys(context, [
+        "task",
+        "instructions",
+        "evidence",
+        "result_schema",
+        "allowed_tools",
+        "direct_mutations_forbidden",
+      ])) ||
     context.instructions.length > 8000 ||
     !validEvidence(context.evidence)
   )

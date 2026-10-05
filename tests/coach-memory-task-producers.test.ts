@@ -30,7 +30,14 @@ for (const kind of [
             _id: new ObjectId(),
             exercise_id: new ObjectId(),
             name: "Synthetic press",
-            sets: [],
+            sets: [
+              {
+                _id: new ObjectId(),
+                complete: false,
+                weight: 20,
+                repetitions: 8,
+              },
+            ],
             conversation_log: [],
           };
         const workout =
@@ -89,10 +96,35 @@ for (const kind of [
                         : {}),
                     };
         let sourceExtractions = 0;
+        let dynamicSearches = 0;
         let supersededId: string;
         const provider = await startProvider((body) => {
           if (!isExtraction(body)) {
-            assert.equal(body.tools, undefined);
+            assert.deepEqual(
+              body.tools.map((tool: any) => tool.function.name),
+              ["katafit_rest_request", "coach_memory_search"],
+              "typed structured final output retains dynamic intermediate tools",
+            );
+            assert.equal(body.tool_choice === "none", false);
+            const search = body.messages.find(
+              (m: any) =>
+                m.role === "tool" &&
+                m.tool_call_id === "producer_memory_search",
+            );
+            if (!search) {
+              dynamicSearches++;
+              return {
+                tool: "coach_memory_search",
+                args: { query: "synthetic source" },
+                id: "producer_memory_search",
+              };
+            }
+            assert.match(
+              typeof search.content === "string"
+                ? search.content
+                : JSON.stringify(search.content),
+              /Observed synthetic source/,
+            );
             return JSON.stringify(result);
           }
           sourceExtractions++;
@@ -102,11 +134,21 @@ for (const kind of [
           const input = JSON.parse(
             typeof content === "string"
               ? content
-              : content.map((part: any) => part.text ?? "").join(""),
+              : content.find((part: any) => part.type === "text").text,
           );
           assert.equal(input.origin, "task");
           assert.ok(input.evidence.task_context);
-          assert.deepEqual(input.evidence.task_result, result);
+          if (kind === "workout_suggestions") {
+            assert.deepEqual(
+              Object.values(input.evidence.task_result.recommendations),
+              Object.values(result.recommendations!),
+            );
+            assert.equal(
+              JSON.stringify(input.evidence).includes(String(exercise._id)),
+              false,
+              "technical navigation handles never enter extraction",
+            );
+          } else assert.deepEqual(input.evidence.task_result, result);
           assert.match(
             JSON.stringify(input.evidence.task_context),
             /Synthetic|calm morning|started a workout/i,
@@ -242,6 +284,11 @@ for (const kind of [
             .collection("external_coach_tasks")
             .findOne({ kind });
           assert.equal(task.status, "completed");
+          assert.deepEqual(
+            task.result,
+            result,
+            "canonical publication keeps exact structured identities; only extraction redacts them",
+          );
           const memory = await db
             .collection("coach_memories")
             .findOne({ "provenance.task_kind": kind });
@@ -380,6 +427,11 @@ for (const kind of [
             await recovery.stop();
           }
           assert.equal(sourceExtractions, 1);
+          assert.equal(
+            dynamicSearches,
+            1,
+            "the real typed Pi invocation dynamically acquired memory before its structured final result",
+          );
           assert.equal(
             JSON.stringify(
               await db

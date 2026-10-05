@@ -20,10 +20,14 @@ import {
   assertNoSecrets,
 } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
+import { isolatedWorkerCompletion } from "../runtime/isolatedInvocation.js";
 import { Worker } from "../worker/runner.js";
 import { Client, ToolFailure } from "../katafit/client.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 import { archiveTaskInvalidation } from "../worker/taskInvalidationArchive.js";
+import { Admission } from "../runtime/admission.js";
+import { AutonomyHost, type AutonomyHostOptions } from "../autonomy/host.js";
+import { AutonomyBackend, AutonomyFailure } from "../autonomy/backend.js";
 // The stable runtime imports this value from the selected application module.
 // Absence means a legacy one-step admin; never infer capability from source text.
 export const updatePreparationProtocol = 1;
@@ -33,6 +37,9 @@ export async function admin(
   infer = complete,
   onShutdown?: () => void,
   updates = new Updates(null, null),
+  options: {
+    autonomy?: Pick<AutonomyHostOptions, "runtimes" | "scheduler">;
+  } = {},
 ) {
   const logs = new Diagnostics(store.dir);
   const onBackendDiagnostic = (
@@ -49,6 +56,14 @@ export async function admin(
     },
   });
   let worker: Worker | undefined;
+  // One inference slot shared by the request Worker and the continuous Coach.
+  const admission = new Admission();
+  const autonomy = new AutonomyHost({
+    ...options.autonomy,
+    store,
+    admission,
+    onDiagnostic: (event) => logs.record(event),
+  });
   // Preview is isolated from worker/native lifecycle: it never holds `busy`,
   // but it excludes configuration mutation and update admission.
   let preview: AbortController | undefined;
@@ -64,6 +79,7 @@ export async function admin(
   // Child-owned compatibility path: existing stable owners already call
   // quiesce/release. Never stop an idle worker just to inspect a receipt.
   const reconcileForUpdate = async () => {
+    await autonomy.reconcile().catch(() => false);
     if (
       updateQuiesced &&
       worker?.presenceStopRecovery === "pending" &&
@@ -164,6 +180,48 @@ export async function admin(
   };
   const memoryCall = (name: string, args: unknown) =>
     memoryOperation()(name, args);
+  // Host-only autonomy surfaces: the backend owns the mandate; this proxy
+  // only adds the installation credential and never widens the request.
+  const autonomyCall = <T>(work: (backend: AutonomyBackend) => Promise<T>) => {
+    const token = store.secrets.token;
+    if (!token) throw new SafeError("TOKEN_REQUIRED");
+    return work(
+      new AutonomyBackend(
+        store.publicConfig().origin,
+        token,
+        AbortSignal.timeout(15000),
+        Object.values(store.secrets),
+      ),
+    );
+  };
+  const autonomyFailure = (error: AutonomyFailure) => ({
+    status:
+      error.code === "AUTONOMY_INVALID"
+        ? 400
+        : error.code === "AUTONOMY_OUTCOME_UNKNOWN"
+          ? 502
+          : error.status && error.status >= 400 && error.status < 500
+            ? error.status
+            : 503,
+    body: { error: error.code },
+  });
+  const autonomyView = async () => {
+    let backend: unknown;
+    try {
+      backend = await autonomyCall((b) => b.status());
+    } catch (error) {
+      backend = {
+        error:
+          error instanceof AutonomyFailure ? error.code : safeError(error).code,
+      };
+    }
+    autonomy.nudge();
+    return {
+      participate: store.autonomySettings().participate,
+      local: autonomy.snapshot(),
+      backend,
+    };
+  };
   // Default "My memories": ordinary account REST. The retired Studio MCP
   // collection is reachable only under its own separately labeled path.
   const accountMemory = accountMemoryRoutes(
@@ -208,25 +266,42 @@ export async function admin(
         system: compile(c, Object.values(store.secrets)),
         secrets: Object.values(store.secrets),
         vision: c.provider.vision === true,
+        integrationDirectory: store.dir,
         skills,
         personaRevision: String(c.revision),
+        admission,
         onDiagnostic: (event) => logs.record(event),
         archiveTaskInvalidation: (record) =>
           archiveTaskInvalidation(store.dir, record),
-        complete: (context, signal, system, tools, ref, budget) =>
-          infer(
-            {
-              ...c.provider,
-              onDiagnostic: (event) => logs.record({ ...event, ref }),
-              apiKey,
-              secrets: Object.values(store.secrets),
-            },
-            system,
-            context,
-            signal,
-            tools,
-            budget,
-          ),
+        // The installation's one durable action ledger: an uncertain write
+        // from any surface fences worker writes too.
+        actionLedger: (() => {
+          const actions = new Actions(store, (event) => logs.record(event));
+          return {
+            unresolved: (except?: string) => actions.unresolved(except),
+            snapshot: () => actions.snapshot(),
+            save: (action) => actions.save(action),
+          };
+        })(),
+        // An explicitly supplied infer is a synthetic test seam only. The
+        // installed CLI/server default never runs Agent on the host.
+        complete:
+          infer === complete
+            ? isolatedWorkerCompletion(store, () => autonomy.runtimeContext())
+            : (context, signal, system, tools, ref, budget) =>
+                infer(
+                  {
+                    ...c.provider,
+                    onDiagnostic: (event) => logs.record({ ...event, ref }),
+                    apiKey,
+                    secrets: Object.values(store.secrets),
+                  },
+                  system,
+                  context,
+                  signal,
+                  tools,
+                  budget,
+                ),
       });
       try {
         await worker.start();
@@ -236,14 +311,69 @@ export async function admin(
       }
     }
   };
+  // The continuous Coach runs only while this installation participates; it
+  // is independent of the Worker, the native terminal and any browser.
+  const startAutonomy = async () => {
+    if (
+      !store.autonomySettings().participate ||
+      closing ||
+      configurationUncertain ||
+      updateQuiesced ||
+      updates.applying ||
+      updates.recovering
+    )
+      return;
+    try {
+      await autonomy.start();
+    } catch (error) {
+      logs.record({
+        source: "worker",
+        stage: "operation-failed",
+        level: "error",
+        error: safeError(error),
+      });
+    }
+  };
+  let activationResumeTimer: ReturnType<typeof setTimeout> | undefined;
+  const resumeAfterInitialActivation = () => {
+    const deadline = Date.now() + 60000;
+    const observe = () => {
+      activationResumeTimer = undefined;
+      if (closing || !store.autonomySettings().participate) return;
+      // Retain the initial intent while an admitted admin transition owns
+      // stop/apply. A startup admitted before busy was set is joined by stop;
+      // one admitted after it clears sees only the confirmed saved binding.
+      if (updates.applying || updates.recovering || busy) {
+        if (Date.now() < deadline) {
+          activationResumeTimer = setTimeout(observe, 250);
+          activationResumeTimer.unref();
+        }
+        return;
+      }
+      // An older stable launcher loads this admin while activation is fenced,
+      // then clears its local update state after ready. Resume once, through
+      // the same admission checks; never poll backend permissions or replay.
+      void startAutonomy();
+    };
+    observe();
+  };
+  // An unresolved autonomy write is provable only by its original origin and
+  // account: a binding change waits until exact proof settles it.
+  const bindingSettled = async () => (
+    await autonomy.reconcile().catch(() => false),
+    autonomy.unresolvedWrites === 0 && autonomy.snapshot().ledgerHealthy
+  );
   const transition = async <T>(
     operation: string,
     body: any,
     apply: () => Promise<T>,
+    rebinding = false,
   ) => {
     const wasRunning = !!worker && worker.state !== "stopped";
     if ((wasRunning || terminal.active) && body.confirmRestart !== true)
       throw new SafeError("RESTART_CONFIRMATION_REQUIRED");
+    if (rebinding && !(await bindingSettled()))
+      throw new SafeError("AUTONOMY_WRITE_UNRESOLVED");
     let settled!: () => void;
     lifecycleDone = new Promise<void>((resolve) => {
       settled = resolve;
@@ -258,8 +388,14 @@ export async function admin(
       resumed: false,
     };
     let safeToResume = false;
+    // Configuration changes reach autonomy only through a restart; an active
+    // cycle is aborted without local release (the backend lease fences it).
+    const autonomyWasRunning = autonomy.running;
     try {
       await terminal.stop();
+      await autonomy.stop();
+      if (rebinding && !(await bindingSettled()))
+        throw new SafeError("AUTONOMY_WRITE_UNRESOLVED");
       if (wasRunning) await worker!.stop();
       if (
         worker?.state === "stopped" &&
@@ -314,6 +450,7 @@ export async function admin(
             "Coach could not restart. Retry starts the saved revision only; it never saves again or replays chat or actions.";
         }
       }
+      if (autonomyWasRunning) await startAutonomy();
       lifecycle.running = !!worker && worker.state !== "stopped";
       lifecycle.phase = "complete";
       settled();
@@ -483,7 +620,10 @@ export async function admin(
         return send(401, { error: "UNAUTHORIZED" });
       if (req.headers.origin && req.headers.origin !== origin)
         return send(403, { error: "ORIGIN_REJECTED" });
-      if (req.method === "POST" && req.headers.origin !== origin)
+      if (
+        (req.method === "POST" || req.method === "PUT") &&
+        req.headers.origin !== origin
+      )
         return send(403, { error: "ORIGIN_REQUIRED" });
       if (req.method === "GET" && /^\/api\/dashboard(?:[/?]|$)/.test(path)) {
         if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
@@ -680,10 +820,17 @@ export async function admin(
           };
           let result;
           try {
+            // Own the same claim/inference slot as autonomy. Drain accepted
+            // Worker work first; never abort either lane just to read Stats.
+            const coordinatedRead = () =>
+              stats ? admission.run("request", readSignal, read) : read();
             result =
               stats && readWorker
-                ? await readWorker.withIdlePollingPaused(readSignal, read)
-                : await read();
+                ? await readWorker.withIdlePollingPaused(
+                    readSignal,
+                    coordinatedRead,
+                  )
+                : await coordinatedRead();
             current();
           } catch (error) {
             if (readSignal.aborted)
@@ -1031,13 +1178,95 @@ export async function admin(
         return send(200, { persona: stockPersona() });
       if (req.method === "GET" && path === "/api/logs")
         return send(200, logs.snapshot());
+      if (req.method === "GET" && path === "/api/autonomy/status")
+        return send(200, await autonomyView());
+      if (req.method === "GET" && path === "/api/autonomy/mandate")
+        return send(200, await autonomyCall((b) => b.mandate()));
+      if (
+        req.method === "GET" &&
+        (path === "/api/autonomy/reports" ||
+          path.startsWith("/api/autonomy/reports?"))
+      ) {
+        const params = new URL(path, origin).searchParams;
+        if (
+          [...params.keys()].some(
+            (k) =>
+              !["cursor", "limit"].includes(k) || params.getAll(k).length !== 1,
+          ) ||
+          (params.has("limit") && !/^[1-9][0-9]?$/.test(params.get("limit")!))
+        )
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        return send(
+          200,
+          await autonomyCall((b) =>
+            b.reports({
+              ...(params.has("cursor")
+                ? { cursor: params.get("cursor")! }
+                : {}),
+              ...(params.has("limit")
+                ? { limit: Number(params.get("limit")) }
+                : {}),
+            }),
+          ),
+        );
+      }
+      if (req.method === "PUT" && path === "/api/autonomy/mandate") {
+        const refused = (): [number, string] | undefined =>
+          closing
+            ? [503, "SERVICE_CLOSING"]
+            : updateQuiesced
+              ? [409, "UPDATE_QUIESCED"]
+              : updates.applying
+                ? [409, "UPDATE_IN_PROGRESS"]
+                : busy
+                  ? [409, "OPERATION_IN_PROGRESS"]
+                  : undefined;
+        if (closing) return send(503, { error: "SERVICE_CLOSING" });
+        if (!req.headers["content-type"]?.startsWith("application/json"))
+          return send(415, { error: "JSON_REQUIRED" });
+        const early = refused();
+        if (early) return send(early[0], { error: early[1] });
+        let raw = "";
+        for await (const c of req) {
+          raw += c;
+          if (Buffer.byteLength(raw) > 65536)
+            return send(413, { error: "TOO_LARGE" });
+        }
+        let input: any;
+        try {
+          input = JSON.parse(raw);
+        } catch {
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        }
+        // An update barrier or transition may have landed during the body.
+        const late = refused();
+        if (late) return send(late[0], { error: late[1] });
+        const halting =
+          input?.mandate?.paused === true || input?.mandate?.mode === "off";
+        let result;
+        try {
+          result = await autonomyCall((b) => b.putMandate(input));
+        } catch (error) {
+          // An unknown outcome may still have paused: drain anyway.
+          if (halting) await autonomy.interrupt("AUTONOMY_PAUSED");
+          throw error;
+        }
+        const m = result.mandate;
+        // The acknowledgement means this installation has stopped acting.
+        if (m.paused || m.mode === "off" || m.status !== "active")
+          await autonomy.interrupt("AUTONOMY_PAUSED");
+        return send(200, result);
+      }
       if (req.method === "GET" && path === "/api/status")
         return send(200, {
           state: worker?.state ?? "stopped",
           presence: worker?.presence ?? "unconfirmed",
           presenceStopRecovery: worker?.presenceStopRecovery ?? "none",
           preview: !!preview,
-          safeToReplace: worker?.safeToReplace ?? true,
+          // Autonomy writes fence replacement independent of participation.
+          safeToReplace:
+            (worker?.safeToReplace ?? true) && autonomy.safeToReplace,
+          autonomyUnresolvedWrites: autonomy.unresolvedWrites,
           stopConfirmed: worker?.stopConfirmed ?? true,
           nativeActive: terminal.active,
           lastError: logs.lastError,
@@ -1047,7 +1276,10 @@ export async function admin(
           transition: busy,
           updateQuiesced,
           updateQuiesceReady:
-            updateQuiesced && !updateQuiescePending && terminal.idle,
+            updateQuiesced &&
+            !updateQuiescePending &&
+            terminal.idle &&
+            autonomy.safeToReplace,
           updateWasRunning: updateQuiesced && updateWasRunning,
         });
       if (req.method !== "POST") return send(404, { error: "NOT_FOUND" });
@@ -1162,12 +1394,14 @@ export async function admin(
         if (
           updateQuiesced &&
           (!terminal.idle ||
+            !autonomy.safeToReplace ||
             (worker && (!worker.stopConfirmed || !worker.safeToReplace)))
         )
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
         updateQuiesced = false;
         updateWasRunning = false;
         worker?.releaseUpdateQuiesce();
+        await startAutonomy();
         return send(200, { ok: true });
       }
       if (path === "/api/update/quiesce" && updates.snapshot().supported) {
@@ -1179,6 +1413,7 @@ export async function admin(
             await updateQuiescePending;
             if (
               !terminal.idle ||
+              !autonomy.safeToReplace ||
               (worker && (!worker.stopConfirmed || !worker.safeToReplace))
             )
               throw new Error("WORKER_STOP_UNCONFIRMED");
@@ -1195,16 +1430,26 @@ export async function admin(
           updates.recovering ||
           busy ||
           preview ||
+          // An in-flight autonomy cycle or action is never interrupted.
+          autonomy.busy ||
           (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
         )
           return send(409, { error: "UPDATE_BUSY" });
+        // An abandoned autonomy write must be settled before replacement.
+        if (!autonomy.safeToReplace) {
+          worker?.releaseUpdateQuiesce();
+          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+        }
         updateQuiesced = true;
         updateWasRunning = !!worker && worker.state !== "stopped";
         const stopping = (async () => {
+          await autonomy.stop();
+          await autonomy.reconcile();
           await terminal.stop();
           if (updateWasRunning) await worker!.stop();
           if (
             !terminal.idle ||
+            !autonomy.safeToReplace ||
             (worker && (!worker.stopConfirmed || !worker.safeToReplace))
           )
             throw new Error("WORKER_STOP_UNCONFIRMED");
@@ -1243,6 +1488,23 @@ export async function admin(
               }
             : { error: "OPERATION_IN_PROGRESS" },
         );
+      if (path === "/api/autonomy/participate") {
+        if (
+          Object.keys(input).join() !== "participate" ||
+          typeof input.participate !== "boolean"
+        )
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        // Durable first: a restart honours exactly what was acknowledged.
+        await store.setAutonomyParticipate(input.participate);
+        logs.record({
+          source: "studio",
+          stage: "autonomy-participation",
+          metadata: { status: input.participate ? 1 : 0 },
+        });
+        if (input.participate) await startAutonomy();
+        else await autonomy.stop();
+        return send(200, await autonomyView());
+      }
       if (/^\/api\/memories(?:\/|$)/.test(path)) {
         const result = await accountMemory.post(path, body);
         return result === undefined
@@ -1434,6 +1696,34 @@ export async function admin(
             hint: "Finish or cancel the other operation, then retry the upgrade.",
           });
         }
+        await autonomy.reconcile().catch(() => false);
+        // Exact proof may await HTTP/storage. Main's captured admission scope
+        // must still hold before either lane is synchronously reserved.
+        if (
+          updateQuiesced ||
+          busy ||
+          preview ||
+          updates.recovering ||
+          closing ||
+          worker !== admissionWorker ||
+          admissionScope() !== capturedScope ||
+          (!!worker && worker.state !== "stopped") !== wasRunning
+        ) {
+          await cancelPrepared("OPERATION_IN_PROGRESS");
+          return send(409, { error: "OPERATION_IN_PROGRESS" });
+        }
+        if (autonomy.busy) {
+          await cancelPrepared("UPDATE_BUSY");
+          return send(409, {
+            error: "UPDATE_BUSY",
+            hint: admissionHelp.UPDATE_BUSY,
+          });
+        }
+        // Reject before native teardown or irreversible Worker.stop().
+        if (!autonomy.safeToReplace) {
+          await cancelPrepared("WORKER_STOP_UNCONFIRMED");
+          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+        }
         if (wasRunning && !updates.snapshot().manualRestartSupported) {
           await cancelPrepared("LAUNCHER_UPGRADE_REQUIRED");
           return send(409, { error: "LAUNCHER_UPGRADE_REQUIRED" });
@@ -1441,6 +1731,10 @@ export async function admin(
         if (worker?.state === "stopped" && !worker.stopConfirmed) {
           await cancelPrepared("WORKER_STOP_UNCONFIRMED");
           return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+        }
+        if (!autonomy.reserveForManualUpdate()) {
+          await cancelPrepared("UPDATE_BUSY");
+          return send(409, { error: "UPDATE_BUSY" });
         }
         // The reservation and admin/native admission fence are synchronous:
         // existing claims finish, but neither another claim nor another admin
@@ -1450,6 +1744,7 @@ export async function admin(
           worker.state !== "stopped" &&
           !worker.reserveForManualUpdate()
         ) {
+          autonomy.releaseUpdateQuiesce();
           await cancelPrepared("UPDATE_BUSY");
           return send(409, { error: "UPDATE_BUSY" });
         }
@@ -1509,6 +1804,10 @@ export async function admin(
             controller.signal.throwIfAborted();
             updates.validatePrepared(queued.sha);
             queued.phase = "stopping"; // Cancel is now refused, before any await.
+            await autonomy.stop();
+            await autonomy.reconcile().catch(() => false);
+            if (!autonomy.safeToReplace)
+              throw new SafeError("WORKER_STOP_UNCONFIRMED");
             await terminal.stop();
             if (!terminal.idle) throw new SafeError("WORKER_STOP_UNCONFIRMED");
             if (wasRunning) await worker!.stop();
@@ -1553,8 +1852,10 @@ export async function admin(
               await startWorker().catch(() => {});
           } finally {
             worker?.releaseUpdateQuiesce();
+            autonomy.releaseUpdateQuiesce();
             manualQueueController = undefined;
             busy = false;
+            if (!updates.applying && !closing) await startAutonomy();
           }
         })();
         return send(202, { ok: true, queued: true, id: queued.id });
@@ -1719,52 +2020,67 @@ export async function admin(
               error: "RESTART_CONFIRMATION_REQUIRED",
               hint: "Confirm to stop Coach, apply this change and restart it if it was running. Native sessions close; chat and actions are never replayed.",
             });
-          await transition(path, { confirmRestart, operationId }, async () => {
-            if (skillMutation) {
-              const id = skillMutation[1];
-              const restored = !!skillMutation[2];
-              if (
-                restored &&
-                (!body || Array.isArray(body) || Object.keys(body).length !== 0)
-              )
-                throw new Error("INVALID_SKILL");
-              const result = restored
-                ? await store.skills.restoreDefault(id, expectedRevision)
-                : await store.skills.save(id, body, expectedRevision);
-              logs.record({
-                source: "studio",
-                stage: "skills-revision-saved",
-                metadata: {
-                  skillRevision: result.revision,
-                  enabledSkills: store.skills.runtime().skills.length,
-                },
-              });
-            } else if (path === "/api/config") {
-              // Every incoming credential, including inactive and new registry
-              // providers, must be absent from retained action receipts.
-              // Retired chat archives are never loaded, served or rewritten.
-              const secrets = [
-                ...Object.values(store.secrets),
-                ...[
-                  body?.apiKey,
-                  body?.token,
-                  ...(Array.isArray(body?.models?.providers)
-                    ? body.models.providers.map((p: any) => p?.apiKey)
-                    : []),
-                ].filter((v): v is string => typeof v === "string"),
-              ];
-              new Actions(store, onBackendDiagnostic).assertSecrets(secrets);
-              await store.save(body);
-            } else if (path === "/api/persona-restore") {
-              if (
-                !body ||
-                Array.isArray(body) ||
-                Object.keys(body).join() !== "revision"
-              )
-                throw new Error("INVALID_REVISION");
-              await store.restorePersona(body.revision);
-            } else await store.rollback();
-          });
+          // Origin/account changes (and rollbacks, which may restore either)
+          // rebind autonomy authority.
+          const rebinding =
+            path === "/api/rollback" ||
+            (path === "/api/config" &&
+              (body?.origin !== store.publicConfig().origin ||
+                (typeof body?.token === "string" &&
+                  body.token !== store.secrets.token)));
+          await transition(
+            path,
+            { confirmRestart, operationId },
+            async () => {
+              if (skillMutation) {
+                const id = skillMutation[1];
+                const restored = !!skillMutation[2];
+                if (
+                  restored &&
+                  (!body ||
+                    Array.isArray(body) ||
+                    Object.keys(body).length !== 0)
+                )
+                  throw new Error("INVALID_SKILL");
+                const result = restored
+                  ? await store.skills.restoreDefault(id, expectedRevision)
+                  : await store.skills.save(id, body, expectedRevision);
+                logs.record({
+                  source: "studio",
+                  stage: "skills-revision-saved",
+                  metadata: {
+                    skillRevision: result.revision,
+                    enabledSkills: store.skills.runtime().skills.length,
+                  },
+                });
+              } else if (path === "/api/config") {
+                // Every incoming credential, including inactive and new registry
+                // providers, must be absent from retained action receipts.
+                // Retired chat archives are never loaded, served or rewritten.
+                const secrets = [
+                  ...Object.values(store.secrets),
+                  ...[
+                    body?.apiKey,
+                    body?.token,
+                    ...(Array.isArray(body?.models?.providers)
+                      ? body.models.providers.map((p: any) => p?.apiKey)
+                      : []),
+                  ].filter((v): v is string => typeof v === "string"),
+                ];
+                new Actions(store, onBackendDiagnostic).assertSecrets(secrets);
+                await store.save(body);
+              } else if (path === "/api/persona-restore") {
+                if (
+                  !body ||
+                  Array.isArray(body) ||
+                  Object.keys(body).join() !== "revision"
+                )
+                  throw new Error("INVALID_REVISION");
+                await store.restorePersona(body.revision);
+              } else await store.rollback();
+            },
+            rebinding,
+          );
           return send(
             200,
             skillMutation
@@ -1813,6 +2129,10 @@ export async function admin(
       if (account) return send(account.status, account.body);
       const memory = memoryError(e);
       if (memory) return send(memory.status, memory.body);
+      if (e instanceof AutonomyFailure) {
+        const failure = autonomyFailure(e);
+        return send(failure.status, failure.body);
+      }
       if ((e as Error)?.message === "NATIVE_HISTORY_BUSY")
         return send(409, {
           error: "NATIVE_HISTORY_BUSY",
@@ -1835,7 +2155,9 @@ export async function admin(
             : failure.code === "CONNECTIVITY_ERROR"
               ? 503
               : 400
-          : 400;
+          : failure.code === "AUTONOMY_WRITE_UNRESOLVED"
+            ? 409
+            : 400;
       send(status, {
         error: failure.code,
         hint: failure.hint,
@@ -1862,10 +2184,18 @@ export async function admin(
     server.listen(port, "127.0.0.1", resolve);
   });
   origin = `http://127.0.0.1:${(server.address() as any).port}`;
+  // The write ledger loads (and starts exact proof) whether or not this
+  // installation participates; replacement safety depends on it.
+  await autonomy.init().catch(() => {});
+  void autonomy.reconcile().catch(() => {});
+  // A participating installation resumes autonomy on (re)start by itself.
+  if (updates.applying || updates.recovering) resumeAfterInitialActivation();
+  else void startAutonomy();
   return {
     origin,
     async close() {
       closing = true;
+      clearTimeout(activationResumeTimer);
       manualQueueController?.abort();
       await manualQueueDone;
       preview?.abort();
@@ -1874,6 +2204,7 @@ export async function admin(
       await terminal.close();
       for (const controller of memberReads) controller.abort();
       preview?.abort();
+      await autonomy.stop();
       await worker?.stop();
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));

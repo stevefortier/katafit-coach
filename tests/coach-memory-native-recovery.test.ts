@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
-import { Client } from "../src/katafit/client.js";
-import { openNativeGateway } from "./helpers/legacy-gateway.js";
+import { AccountMemory } from "../src/memory/account.js";
+import { startAccountBackend as startBackend } from "./helpers/account-backend.js";
+import { openNativeGateway } from "../src/sandbox/gateway.js";
 import {
-  startBackend,
   startProvider,
   isExtraction,
   memoryBackendEnabled,
@@ -34,50 +34,19 @@ test(
         : "New turn reply.",
     );
     try {
-      const { db, ObjectId, service } = backend;
-      const chief = new ObjectId(),
-        dojo = new ObjectId();
-      await db.collection("users").insertOne({
-        _id: chief,
-        display_name: "Synthetic chief",
-        timezone: "UTC",
-      });
-      await db.collection("dojos").insertOne({
-        _id: dojo,
-        chief_id: chief,
-        external_coach_agent: { enabled: true },
-      });
-      await db.collection("dojo_members").insertOne({
-        user_id: chief,
-        dojo_id: dojo,
-        role: "chief",
-        joined_at: new Date(0),
-      });
-      const token = (
-        await service.createCredential(String(chief), {
-          scopes: [...service.DEFAULT_SCOPES, "history:read", "userdata:read"],
-        })
-      ).token;
-      const client = new Client(
+      const { db, token } = backend;
+      const client = new AccountMemory(
         backend.origin,
         token,
-        new AbortController().signal,
+        AbortSignal.timeout(50000),
+        [token],
       );
-      await client.connect();
-      const opened = await client.call("studio_operator_open_session", {
-        mode: "dojo_operator",
-        idempotency_key: "original",
-        continuity_version: 1,
-      });
-      const capture = await client.call("studio_operator_record_interaction", {
-        session_id: opened.session_id,
-        turn_generation: 0,
+      const capture = await client.capture({
         idempotency_key: "original-delivered",
         human_text: "I prefer brief morning reports.",
         assistant_text: "I will keep reports brief.",
-      });
-      await client.call("studio_operator_close_session", {
-        session_id: opened.session_id,
+        tool_results: [],
+        recalled: [],
       });
       const store = new Store(dir);
       await store.init();
@@ -99,6 +68,11 @@ test(
           messages: [{ role: "user", content: "A new unrelated turn." }],
         },
       });
+      const deadline = Date.now() + 15000;
+      while ((await client.pending()).captures.length) {
+        assert.ok(Date.now() < deadline, "original capture recovery settles");
+        await new Promise((r) => setTimeout(r, 50));
+      }
       const extractions = provider.bodies.filter(isExtraction);
       assert.equal(extractions.length, 1);
       assert.match(
@@ -115,10 +89,7 @@ test(
           .countDocuments({ "provenance.capture_id": capture.capture_id }),
         1,
       );
-      assert.equal(
-        (await client.call("studio_memory_pending", {})).captures.length,
-        0,
-      );
+      assert.equal((await client.pending()).captures.length, 0);
       await gateway.close();
       gateway = await openNativeGateway(store);
       await gateway.handle({

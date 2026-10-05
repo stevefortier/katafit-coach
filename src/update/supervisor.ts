@@ -7,7 +7,11 @@ import {
 import { Store } from "../config/store.js";
 import { launcherSkillCatalog } from "../config/skills.js";
 import { Updates, validSha } from "./updates.js";
-import { manualOnlySourceUpdates } from "./capability.js";
+import {
+  AUTONOMY_LEDGER_CAPABILITY,
+  manualOnlySourceUpdates,
+} from "./capability.js";
+import { ledgerObligations } from "../autonomy/ledger.js";
 
 import { UpdateJournal, atomicWrite } from "./journal.js";
 import {
@@ -113,6 +117,18 @@ export async function supervise(
   ) {
     if (revision && (await metadata(path)).revision !== revision)
       throw new Error("INVALID_ACTIVE");
+    // C5 R4: unresolved (or unreadable) autonomy writes may only be held by an
+    // application that declares it honours the ledger. Fail closed: launch
+    // nothing and leave the ledger and rollback artifacts untouched.
+    if ((await ledgerObligations(home)) !== "none") {
+      let capable = false;
+      try {
+        capable = !!(await metadata(path)).capabilities?.includes(
+          AUTONOMY_LEDGER_CAPABILITY,
+        );
+      } catch {}
+      if (!capable) throw new Error("AUTONOMY_LEDGER_UNSUPPORTED");
+    }
     if (revision) {
       const image = await (
         boundary.preflight ??

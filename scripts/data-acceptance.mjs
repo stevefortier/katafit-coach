@@ -204,7 +204,7 @@ try {
   assert.equal(payloads.length, 2);
   assert.deepEqual(
     payloads[0].tools.map((t) => t.function.name),
-    ["coach_read_media"],
+    ["coach_read_media", "katafit_rest_request"],
   );
   const blocks = payloads[1].messages.flatMap((m) =>
     Array.isArray(m.content) ? m.content : [],
