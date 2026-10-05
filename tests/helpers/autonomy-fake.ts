@@ -382,7 +382,13 @@ export async function autonomyFake(
       w.lease_generation += 1;
       expiredGeneration.delete(w.id);
       w.mandate_revision = state.mandate.revision;
-      w.lease_expires_at = iso(now + (body.lease_seconds ?? 60) * 1000);
+      w.timeout_at = iso(now + state.mandate.budgets.cycle_seconds * 1000);
+      w.lease_expires_at = iso(
+        Math.min(
+          Date.parse(w.timeout_at),
+          now + (body.lease_seconds ?? 60) * 1000,
+        ),
+      );
       w.updated_at = iso(now);
       state.claimedBy.set(w.id, credential);
       if (!body?.capability_protocols?.includes("coach.capability.v1"))

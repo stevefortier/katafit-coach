@@ -839,3 +839,37 @@ test("C11 isolation: the composer never shares the planner's runtime (one fresh 
     await env.close();
   }
 });
+
+test("deadline: an intent acquired after the inference window never launches a composer", async () => {
+  const env = await composeEnv({ kind: "conversation" });
+  const composer = new ScriptedRuntime([
+    composerScript("This must not be sent."),
+  ]);
+  try {
+    const { result } = await cycle(
+      env,
+      [
+        async (io) => {
+          await read(io, conversationPath);
+          env.fake.advance(65_000); // 120s authority, inference window consumed
+          await io.call(INTEND_TOOL, {
+            slot: "late-intent",
+            intent: message(),
+          });
+          return outcome();
+        },
+      ],
+      composerOptions(composer),
+    );
+    assert.equal(
+      composer.runs.length,
+      0,
+      "no 1ms fallback launches provider work",
+    );
+    assert.equal(env.fake.messages.length, 0);
+    assert.equal(result.outcome.result, "blocked");
+    assert.equal(result.outcome.blocked_reason, "budget_exhausted");
+  } finally {
+    await env.close();
+  }
+});
