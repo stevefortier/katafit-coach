@@ -1146,22 +1146,44 @@ const DEFAULT_BUDGETS: ProfileBudgets = {
 };
 const providerTokens = (body: string, type: string, wire: string) => {
   let total: number | undefined;
+  let reported: any;
+  const observe = (usage: any) => {
+    if (Number.isSafeInteger(usage?.total_tokens)) {
+      total = usage.total_tokens;
+      reported = usage;
+    } else if (total === undefined && usage && typeof usage === "object")
+      reported = usage;
+  };
   try {
     if (type === "text/event-stream") {
       for (const line of body.split("\n")) {
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (data === "[DONE]") continue;
-        const usage = JSON.parse(data)?.usage?.total_tokens;
-        if (Number.isSafeInteger(usage)) total = usage;
+        observe(JSON.parse(data)?.usage);
       }
     } else {
-      const usage = JSON.parse(body)?.usage?.total_tokens;
-      if (Number.isSafeInteger(usage)) total = usage;
+      observe(JSON.parse(body)?.usage);
     }
   } catch {}
   // Without reported usage, charge a conservative wire estimate.
-  return total ?? Math.ceil(Buffer.byteLength(wire) / 4);
+  const metadata: Record<string, number> = {};
+  for (const [key, value] of [
+    ["inputTokens", reported?.prompt_tokens ?? reported?.input_tokens],
+    ["outputTokens", reported?.completion_tokens ?? reported?.output_tokens],
+    [
+      "cachedTokens",
+      reported?.prompt_tokens_details?.cached_tokens ??
+        reported?.input_tokens_details?.cached_tokens,
+    ],
+  ] as const)
+    if (Number.isSafeInteger(value) && value >= 0) metadata[key] = value;
+  // Detail fields describe supplied usage, not an inferred billing breakdown.
+  return {
+    tokens: total ?? Math.ceil(Buffer.byteLength(wire) / 4),
+    chargeSource: total === undefined ? 2 : 1,
+    metadata,
+  };
 };
 
 /**
@@ -1195,6 +1217,54 @@ export async function openProfileGateway(
     : abort.signal;
   let closed = false;
   const used = { tool_calls: 0, provider_tokens: 0, provider_requests: 0 };
+  // Numeric-only receipts: profileCode 1=planner, 2=composer, 3=worker;
+  // chargeSource 1=reported_total, 2=wire_estimate. Saturation is telemetry
+  // only: never change the accounting ledger or the next-request threshold.
+  const bounded = (n: number) =>
+    Number.isFinite(n)
+      ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(n)))
+      : Number.MAX_SAFE_INTEGER;
+  const diagnostic = (
+    stage: "provider-accounting" | "provider-budget-refused",
+    metadata: Record<string, number>,
+  ) => {
+    try {
+      options.onDiagnostic?.({
+        source: "provider",
+        stage,
+        metadata: {
+          profileCode: planner ? 1 : worker ? 3 : 2,
+          cumulativeTokens: bounded(used.provider_tokens),
+          tokenBudget: bounded(budgets.provider_tokens),
+          remainingTokens: bounded(
+            budgets.provider_tokens - used.provider_tokens,
+          ),
+          ...metadata,
+        },
+      });
+    } catch {}
+  };
+  const charge = (
+    wire: string,
+    usage = {
+      tokens: Math.ceil(Buffer.byteLength(wire) / 4),
+      chargeSource: 2,
+      metadata: {} as Record<string, number>,
+    },
+  ) => {
+    used.provider_tokens += usage.tokens;
+    diagnostic("provider-accounting", {
+      requestOrdinal: bounded(used.provider_requests),
+      wireBytes: Buffer.byteLength(wire),
+      chargeSource: usage.chargeSource,
+      ...usage.metadata,
+      chargedTokens: bounded(usage.tokens),
+      ...(bounded(usage.tokens) !== usage.tokens ||
+      bounded(used.provider_tokens) !== used.provider_tokens
+        ? { accountingClamped: 1 }
+        : {}),
+    });
+  };
   const exhausted = new Set<string>();
   const digests: string[] = [];
   const current = () =>
@@ -1406,8 +1476,12 @@ export async function openProfileGateway(
       throw new NativeFailure("NATIVE_REQUEST_REJECTED");
     if (worker && used.provider_requests >= 40)
       throw new NativeFailure("NATIVE_REQUEST_REJECTED");
-    if (used.provider_tokens >= budgets.provider_tokens)
+    if (used.provider_tokens >= budgets.provider_tokens) {
+      diagnostic("provider-budget-refused", {
+        requestOrdinal: bounded(used.provider_requests + 1),
+      });
       exhaust("provider_tokens");
+    }
     const { wire } = nativeProviderAdmission(request.body);
     used.provider_requests++;
     selections.retire();
@@ -1428,7 +1502,7 @@ export async function openProfileGateway(
       });
     } catch {
       // Charged as sent: the provider may have processed it.
-      used.provider_tokens += Math.ceil(Buffer.byteLength(wire) / 4);
+      charge(wire);
       throw new NativeFailure(
         timeout.aborted
           ? "NATIVE_PROVIDER_TIMEOUT"
@@ -1437,7 +1511,7 @@ export async function openProfileGateway(
       );
     }
     if (!response.ok) {
-      used.provider_tokens += Math.ceil(Buffer.byteLength(wire) / 4);
+      charge(wire);
       const failure = providerFailure(
         response.status,
         await upstreamErrorCode(response),
@@ -1462,7 +1536,7 @@ export async function openProfileGateway(
           chunks.push(c);
         }
     } catch (error) {
-      used.provider_tokens += Math.ceil(Buffer.byteLength(wire) / 4);
+      charge(wire);
       throw error instanceof NativeFailure
         ? error
         : new NativeFailure(
@@ -1476,7 +1550,7 @@ export async function openProfileGateway(
       ?.includes("text/event-stream")
       ? "text/event-stream"
       : "application/json";
-    used.provider_tokens += providerTokens(body, type, wire);
+    charge(wire, providerTokens(body, type, wire));
     try {
       assertNoSecrets(body, secretValues);
     } catch (error) {

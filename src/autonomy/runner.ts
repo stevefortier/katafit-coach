@@ -4,6 +4,7 @@ import { integrationAdmitted } from "../capability/integrations.js";
 import { WorkActions } from "../capability/workActions.js";
 import { Actions } from "../chat/actions.js";
 import { compileAutonomy, type Store } from "../config/store.js";
+import type { BackendLogger } from "../katafit/client.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
 import { AutonomyFailure, type AutonomyBackend } from "./backend.js";
 import {
@@ -69,6 +70,7 @@ export interface AutonomyRunnerOptions {
   compose?: ComposeOptions;
   leaseSeconds?: number;
   now?: () => number;
+  onDiagnostic?: BackendLogger;
 }
 export interface CycleResult {
   outcome: CycleOutcome;
@@ -171,6 +173,34 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       // manufacture an expired completion or claim a canonical receipt.
       if (now() >= authorityDeadline) throw new AutonomyFailure("LEASE_LOST");
       const done = await backend.complete(work.id, { ...fence, outcome });
+      // Only a validated canonical completion emits the final numeric summary.
+      // Preserve cancellation/unknown-write behavior; logging never settles it.
+      const bounded = (n: number) =>
+        Number.isFinite(n)
+          ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(n)))
+          : Number.MAX_SAFE_INTEGER;
+      try {
+        options.onDiagnostic?.({
+          source: "worker",
+          stage: "autonomy-usage",
+          metadata: {
+            plannerTokens: bounded(plannerUsage()),
+            composerTokens: bounded(composerTokens),
+            cumulativeTokens: bounded(outcome.budget.provider_tokens),
+            tokenBudget: bounded(mandate.budgets.provider_tokens),
+            remainingTokens: bounded(
+              mandate.budgets.provider_tokens - outcome.budget.provider_tokens,
+            ),
+            calls: bounded(outcome.budget.tool_calls),
+            elapsedMs: bounded(outcome.budget.elapsed_ms),
+            exhaustedProviderTokens: Number(exhausted.has("provider_tokens")),
+            exhaustedToolCalls: Number(exhausted.has("tool_calls")),
+            exhaustedImages: Number(exhausted.has("images")),
+            exhaustedRestReads: Number(exhausted.has("rest_reads")),
+            exhaustedCycleSeconds: Number(exhausted.has("cycle_seconds")),
+          },
+        });
+      } catch {}
       return { outcome, report_id: done.report_id };
     };
     // Setup can exhaust time after a recovered send. Use the same accounting
@@ -248,6 +278,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       ? composer({
           store: options.store,
           options: options.compose,
+          onDiagnostic: options.onDiagnostic,
           backend,
           work,
           fence,
@@ -561,6 +592,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         images_per_cycle: mandate.budgets.images_per_cycle,
       },
       onExhausted: (reason) => exhausted.add(reason),
+      onDiagnostic: options.onDiagnostic,
       onRead: ({ path, outcome, body }) => {
         observeConversation(path, outcome === "denied");
         reads[outcome]++;

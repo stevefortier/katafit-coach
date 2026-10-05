@@ -32,6 +32,8 @@ type Engine = ConstructorParameters<typeof HeadlessCycleRuntime>[0]["engine"];
 export interface RuntimeContext {
   owner: string;
   cleanup: CleanupRegistry;
+  /** Existing installation logger, also used by the isolated request Worker. */
+  onDiagnostic?: (event: LogInput) => void;
 }
 /**
  * Production wiring: the planner and the composer each get their own bounded
@@ -401,7 +403,11 @@ export class AutonomyHost {
   /** Same installation cleanup owner for every background Pi audience. */
   async runtimeContext(): Promise<RuntimeContext> {
     await this.init();
-    return { owner: this.owner!, cleanup: this.cleanup! };
+    return {
+      owner: this.owner!,
+      cleanup: this.cleanup!,
+      onDiagnostic: this.options.onDiagnostic,
+    };
   }
 
   /**
@@ -515,6 +521,7 @@ export class AutonomyHost {
         store,
         runtime: runtimes.planner,
         compose: { runtime: runtimes.composer },
+        onDiagnostic: this.options.onDiagnostic,
         leaseSeconds: this.options.scheduler?.leaseSeconds,
       });
       const scheduler = new AutonomyScheduler({
