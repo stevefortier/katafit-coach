@@ -78,6 +78,7 @@ function accounting(logs: Diagnostics) {
     assert.deepEqual(Object.keys(entry).sort(), [
       "level",
       "metadata",
+      "ref",
       "source",
       "stage",
       "time",
@@ -91,8 +92,30 @@ function accounting(logs: Diagnostics) {
       JSON.stringify(entry),
       /PRIVATE-|synthetic-model|127\.0\.0\.1/,
     );
+    assert.match(entry.ref!, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
+    for (const field of [
+      "emissionOrdinal",
+      "toolHistoryMessages",
+      "toolHistoryTextBytes",
+      "toolHistoryImageParts",
+    ])
+      assert.ok(
+        Number.isSafeInteger(entry.metadata[field]) &&
+          entry.metadata[field] >= 0,
+      );
   }
-  return entries.map((e) => e.metadata);
+  // Keep exact old accounting assertions separate from added history fields,
+  // asserted above and in the acquisition suite.
+  return entries.map(({ metadata }) => {
+    const {
+      emissionOrdinal,
+      toolHistoryMessages,
+      toolHistoryTextBytes,
+      toolHistoryImageParts,
+      ...accounting
+    } = metadata;
+    return accounting;
+  });
 }
 
 test("SSE detail-only usage survives later chunks without usage", async () => {
