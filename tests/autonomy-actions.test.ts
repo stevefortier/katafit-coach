@@ -307,7 +307,7 @@ test("conversation work: the planner reads the member's conversation by REST and
     const { runtime, result } = await cycle(env, [
       async ({ call }) => {
         const r = await call("katafit_rest_get", {
-          path: `${conversationPath}?view=main_conversation&order=oldest`,
+          path: `${conversationPath}?view=main_conversation&order=newest&limit=25`,
         });
         assert.match(r.content[0].text, /Should I deload/);
         return outcome();
@@ -321,11 +321,13 @@ test("conversation work: the planner reads the member's conversation by REST and
     assert.match(run.catalog.prompt, /message_ref/);
     assert.ok(
       run.message.includes(
-        `GET ${conversationPath}?view=main_conversation&order=oldest`,
+        `GET ${conversationPath}?view=main_conversation&order=newest&limit=25`,
       ),
       "member-specific reader hint",
     );
-    assert.deepEqual(queries, ["?view=main_conversation&order=oldest"]);
+    assert.deepEqual(queries, [
+      "?view=main_conversation&order=newest&limit=25",
+    ]);
     assert.equal(result.outcome.result, "completed");
   } finally {
     await env.close();
