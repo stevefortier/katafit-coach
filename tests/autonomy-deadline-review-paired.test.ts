@@ -143,7 +143,7 @@ async function scene(t: TestContext) {
   };
   const readRef = async (io: Io) => {
     const path = io.message.match(
-      /GET (\/api\/coach\/member-conversations\/\S+)/,
+      /GET (\/api\/coach\/member-conversations\/[^\s.]+)/,
     )?.[1];
     assert.ok(path);
     const reply = parse(await io.call("katafit_rest_get", { path }));
