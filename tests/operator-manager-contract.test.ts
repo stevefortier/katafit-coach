@@ -23,6 +23,33 @@ test("manager persona retains identity and delegates capability permissions to b
   assert.doesNotMatch(prompt, /do not otherwise mutate records/);
 });
 
+test("member comparisons acquire missing evidence instead of asking the manager to authorize routine reads", () => {
+  const prompt = compileOperator(new Store("/unused").publicConfig());
+  assert.ok(
+    prompt.includes(
+      "For member assessments or comparisons, load the relevant enabled API skill and acquire authorized evidence for every named subject before answering",
+    ),
+  );
+  assert.ok(
+    prompt.includes(
+      "Memory and the current context are not a complete roster or activity inventory",
+    ),
+  );
+  assert.ok(
+    prompt.includes(
+      "Reuse sufficient acquired evidence; do not refresh permissions for internal reuse",
+    ),
+  );
+  assert.ok(
+    prompt.includes("Do not ask the manager to approve ordinary offered reads"),
+  );
+  assert.ok(
+    prompt.includes(
+      "If discovery or acquisition is denied, unavailable or incomplete, state that specific limitation",
+    ),
+  );
+});
+
 test("image acquisition is backend-authorized but retained pixels are not refetched", async () => {
   const f = await fixture();
   try {
