@@ -743,3 +743,66 @@ test(
     assert.equal(await s.backend.claimCycle(), null);
   },
 );
+
+test(
+  "F2: crossing initial dispatch admission is budget-unavailable, not an unknown write",
+  gate,
+  async (t) => {
+    const s = await scene(t);
+    const first = await s.claim();
+    const base = Date.parse(first.work.timeout_at) - 120_000;
+    let crossed = false;
+    let checks = 0;
+    let attempts = 0;
+    const put = s.backend.putComposition.bind(s.backend);
+    t.mock.method(
+      s.backend,
+      "putComposition",
+      async (...args: Parameters<typeof put>) => {
+        const result = await put(...args);
+        crossed = true;
+        return result;
+      },
+    );
+    const act = s.backend.act.bind(s.backend);
+    t.mock.method(s.backend, "act", (...args: Parameters<typeof act>) => {
+      attempts++;
+      return act(...args);
+    });
+    const runtime = new ScriptedRuntime([
+      async (io) => {
+        const ref = await s.readRef(io);
+        await io.call(INTEND_TOOL, { slot: "m1", intent: s.intent(ref) });
+        return outcome();
+      },
+    ]);
+    const result = await autonomyRunner({
+      store: s.store,
+      runtime,
+      now: () => (!crossed ? base : base + (++checks === 1 ? 49_999 : 50_001)),
+      compose: { runtime: new ScriptedRuntime([composerScript(storedText)]) },
+    })({
+      work: first.work,
+      mandate: s.mandate,
+      backend: s.backend,
+      capability: first.claimed.capability,
+      signal: s.controller.signal,
+    });
+    assert.equal(crossed, true);
+    assert.ok(checks >= 2);
+    assert.equal(attempts, 0);
+    assert.equal((await s.messages()).length, 0);
+    assert.equal(result.outcome.blocked_reason, "budget_exhausted");
+    const receipt = await s.backend.completionReceipt(
+      first.work.id,
+      first.work.lease_generation,
+    );
+    assert.equal(receipt.state, "committed");
+    const row = await s.rows();
+    const report = await s.b.db
+      .collection("coach_autonomy_reports")
+      .findOne({ _id: new s.b.ObjectId(result.report_id) });
+    assert.equal(row.status, "blocked");
+    assert.equal(report.blocked_reason, "budget_exhausted");
+  },
+);

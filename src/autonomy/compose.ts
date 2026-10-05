@@ -139,13 +139,26 @@ export function composer(ctx: ComposerContext) {
             recipient_id: intent.recipient_id!,
             text,
           };
-    const { receipt, idempotent, recovered } = await settleAction(
-      backend,
-      work.id,
-      slot,
-      input,
-      () => canDispatch() && timeFor(),
-    );
+    let admitted = false;
+    let deniedBeforeDispatch = false;
+    let settled: Awaited<ReturnType<typeof settleAction>>;
+    try {
+      settled = await settleAction(backend, work.id, slot, input, () => {
+        if (!canDispatch()) return false;
+        if (!timeFor()) {
+          // The first admission refusal proves no act() was attempted. A
+          // refused retry, in contrast, must retain its unknown outcome.
+          deniedBeforeDispatch = !admitted;
+          return false;
+        }
+        admitted = true;
+        return true;
+      });
+    } catch (error) {
+      if (deniedBeforeDispatch && isUnknown(error)) return unavailable();
+      throw error;
+    }
+    const { receipt, idempotent, recovered } = settled;
     ledger.receipt(receipt, text);
     return { kind: "sent", receipt, idempotent, recovered };
   }
