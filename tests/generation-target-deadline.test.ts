@@ -29,6 +29,12 @@ function assertPolicy(prompt: string) {
   assert.match(prompt, /future unreleased.*completed.*expired/is);
   assert.match(prompt, /not.*autonomy work-item.*commitment.*due_at/is);
   assert.match(prompt, /override.*editable persona/is);
+  assert.match(prompt, /one stated calendar-day basis.*both subjects/is);
+  assert.match(prompt, /never mix UTC completion dates.*local day_key/is);
+  assert.match(prompt, /group.*exact user_id.*type.*status/is);
+  assert.match(prompt, /verify.*counts.*before quoting/is);
+  assert.match(prompt, /counts alone.*not.*consistency.*adherence/is);
+  assert.match(prompt, /expected schedule.*coverage/is);
 }
 
 // Synthetic storage/provider boundaries: proves delivered instructions and real
