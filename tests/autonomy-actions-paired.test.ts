@@ -373,7 +373,7 @@ test(
         const runtime = new ScriptedRuntime([
           async ({ message, call }) => {
             const path = message.match(
-              /GET (\/api\/coach\/member-conversations\/\S+)/,
+              /GET (\/api\/coach\/member-conversations\/[^\s.]+)/,
             )?.[1];
             assert.ok(path, "reader hint for this member");
             const r = await call("katafit_rest_get", { path });

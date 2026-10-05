@@ -144,7 +144,7 @@ test(
     /** Reads the member conversation; returns the member's newest message_ref. */
     const readRef = async (io: any) => {
       const path = io.message.match(
-        /GET (\/api\/coach\/member-conversations\/\S+)/,
+        /GET (\/api\/coach\/member-conversations\/[^\s.]+)/,
       )?.[1];
       assert.ok(path, "reader hint for this member");
       const r = await io.call("katafit_rest_get", { path });
