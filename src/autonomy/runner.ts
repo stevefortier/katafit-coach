@@ -163,26 +163,54 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       const done = await backend.complete(work.id, { ...fence, outcome });
       return { outcome, report_id: done.report_id };
     };
-    const noRuntime = () =>
-      complete({
-        result: "blocked",
-        blocked_reason: uncertain ? "uncertain_write" : "budget_exhausted",
+    // Setup can exhaust time after a recovered send. Use the same accounting
+    // on early exits and planner failures; never invent certifying decisions.
+    const fallbackAccounting = (
+      result: "blocked" | "failed",
+      reason: string,
+      blocked: CycleOutcome["blocked_reason"] | undefined,
+      budget: CycleOutcome["budget"],
+      notes: string[] = [],
+      coverage?: CycleOutcome["coverage"],
+    ): CycleOutcome => {
+      const confirmed = [
+        ...[...slots].map((s) => `slot ${s}`),
+        ...[...followUps].map((f) => `follow-up ${f}`),
+      ];
+      return {
+        result,
+        ...(blocked ? { blocked_reason: blocked } : {}),
         coverage: {
-          members_considered: 0,
-          members_read: 0,
+          members_considered: coverage?.members_considered ?? 0,
+          members_read: coverage?.members_read ?? 0,
           partial: true,
-          unobserved: [],
+          unobserved: coverage?.unobserved ?? [],
         },
         decisions: [],
         uncertainty: [
+          reason.slice(0, 200),
+          ...(confirmed.length
+            ? [`uncertified confirmed: ${confirmed.join(", ")}`.slice(0, 200)]
+            : []),
+          ...notes,
+        ].slice(0, 10),
+        budget,
+      };
+    };
+    const noRuntime = () =>
+      complete(
+        fallbackAccounting(
+          "blocked",
           uncertain ? "uncertain_write" : "budget_exhausted:cycle_seconds",
-        ],
-        budget: {
-          provider_tokens: 0,
-          tool_calls: 0,
-          elapsed_ms: Math.max(0, now() - started),
-        },
-      });
+          uncertain ? "uncertain_write" : "budget_exhausted",
+          {
+            provider_tokens: composerTokens,
+            tool_calls: 0,
+            elapsed_ms: Math.max(0, now() - started),
+          },
+          composeNotes,
+        ),
+      );
     const leaseSeconds = options.leaseSeconds ?? 120;
     const renew = () =>
       backend
@@ -242,7 +270,10 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         if (sent?.kind === "sent") {
           slots.add(sent.receipt.slot);
           recovered.push(sent.receipt);
-        }
+        } else if (sent?.kind === "unavailable")
+          composeNotes.push(
+            `stored_composition_pending:${pending.slot}:${sent.reason}`,
+          );
       } catch (error) {
         if (isUnknown(error)) {
           uncertain = true;
@@ -358,7 +389,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
           );
           return {
             error: "COMPOSER_UNAVAILABLE",
-            note: "No text was composed for this intent; nothing was sent.",
+            note: "This intent did not send a message. A stored composition may remain pending; cite only confirmed receipts.",
           };
         }),
       report: (args: ReportArgs) =>
@@ -631,34 +662,19 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     if (digest && !digest.window_complete)
       notes.push(`digest window incomplete: ${digest.unknowns[0]}`);
     notes.push(...composeNotes);
-    const confirmed = [
-      ...[...slots].map((s) => `slot ${s}`),
-      ...[...followUps].map((f) => `follow-up ${f}`),
-    ];
     const fallback = (
       result: "blocked" | "failed",
       reason: string,
       blocked?: CycleOutcome["blocked_reason"],
-    ): CycleOutcome => ({
-      result,
-      ...(blocked ? { blocked_reason: blocked } : {}),
-      coverage: {
-        members_considered: outcome?.coverage.members_considered ?? 0,
-        members_read: outcome?.coverage.members_read ?? 0,
-        partial: true,
-        unobserved: outcome?.coverage.unobserved ?? [],
-      },
-      // Never certify anything the planner did not validly report.
-      decisions: [],
-      uncertainty: [
-        reason.slice(0, 200),
-        ...notes,
-        ...(confirmed.length
-          ? [`uncertified confirmed: ${confirmed.join(", ")}`.slice(0, 200)]
-          : []),
-      ].slice(0, 10),
-      budget,
-    });
+    ) =>
+      fallbackAccounting(
+        result,
+        reason,
+        blocked,
+        budget,
+        notes,
+        outcome?.coverage,
+      );
     let final: CycleOutcome;
     if (uncertain)
       final = fallback("blocked", "uncertain_write", "uncertain_write");

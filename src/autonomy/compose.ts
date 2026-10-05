@@ -31,6 +31,10 @@ import {
 // or the source between acquisition and dispatch.
 
 const MEMBER_TEXT_LIMIT = 8000;
+// The backend transport bounds each request at 15s. New mutations must fit
+// before the planner cutoff, not consume its 55s teardown/completion reserve.
+// Exact receipt reads for an already-dispatched unknown still settle normally.
+const WRITE_REQUEST_MS = 15_000;
 const sha256 = (text: string) =>
   createHash("sha256").update(text).digest("hex");
 
@@ -84,18 +88,28 @@ export function composerMessage(input: ComposerInput) {
 const limit = (type: Intent["type"]) =>
   type === "public_praise" ? PRAISE_TEXT_LIMIT : MEMBER_TEXT_LIMIT;
 
-/** One identical re-send settles a lost response of an idempotent write. */
-async function once<T>(write: () => Promise<T>): Promise<T> {
-  try {
-    return await write();
-  } catch (error) {
-    if (!isUnknown(error)) throw error;
-  }
-  return write();
-}
-
 export function composer(ctx: ComposerContext) {
   const { backend, work, fence, ledger, signal } = ctx;
+  const unavailable = (): Fulfilment => ({
+    kind: "unavailable",
+    reason: "budget_exhausted",
+  });
+  const timeFor = (requests = 1) => {
+    signal.throwIfAborted();
+    if (ctx.remainingMs() >= requests * WRITE_REQUEST_MS) return true;
+    ctx.onExhausted("cycle_seconds");
+    return false;
+  };
+  /** Retry only the same unknown write while another full request fits.
+   * Otherwise preserve its unknown result; never start a late replay. */
+  async function once<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (error) {
+      if (!isUnknown(error) || !timeFor()) throw error;
+    }
+    return write();
+  }
 
   async function dispatch(
     slot: string,
@@ -109,6 +123,7 @@ export function composer(ctx: ComposerContext) {
     const canDispatch = () =>
       !new Actions(ctx.store).unresolved() && !ctx.mutationHeld?.();
     if (!canDispatch()) throw new AutonomyFailure("AUTONOMY_OUTCOME_UNKNOWN");
+    if (!timeFor()) return unavailable();
     const input: ActionIntent =
       intent.type === "public_praise"
         ? {
@@ -129,7 +144,7 @@ export function composer(ctx: ComposerContext) {
       work.id,
       slot,
       input,
-      canDispatch,
+      () => canDispatch() && timeFor(),
     );
     ledger.receipt(receipt, text);
     return { kind: "sent", receipt, idempotent, recovered };
@@ -158,10 +173,9 @@ export function composer(ctx: ComposerContext) {
     intent: Intent,
     input: ComposerInput,
   ): Promise<Fulfilment> {
-    if (ctx.remainingMs() <= 0) {
-      ctx.onExhausted("cycle_seconds");
-      return { kind: "unavailable", reason: "budget_exhausted" };
-    }
+    // An outbound composition also needs storage and delivery. This is
+    // pipeline-specific admission, not a larger global settlement reserve.
+    if (!timeFor(2)) return unavailable();
     const config = ctx.store.publicConfig();
     const secrets = Object.values(ctx.store.secrets).filter(
       (v): v is string => !!v,
@@ -186,10 +200,7 @@ export function composer(ctx: ComposerContext) {
     let digests: string[];
     try {
       const remaining = ctx.remainingMs();
-      if (remaining <= 0) {
-        ctx.onExhausted("cycle_seconds");
-        return { kind: "unavailable", reason: "budget_exhausted" };
-      }
+      if (!timeFor(2)) return unavailable();
       ({ text } = await ctx.options.runtime.run({
         profile: "composer",
         gateway: gateway as unknown as HeadlessRun["gateway"],
@@ -216,6 +227,9 @@ export function composer(ctx: ComposerContext) {
       return { kind: "rejected", reason: "praise_text" };
     if (privateLiteral(draft, ctx.privateSources(), message))
       return { kind: "rejected", reason: "private_literal" };
+    // runtime.run includes owned cleanup, and gateway.close drains provider
+    // work. Re-admit the remaining pipeline after both, not at output time.
+    if (!timeFor(2)) return unavailable();
     let stored: { text: string };
     try {
       stored = await once(() =>
@@ -250,6 +264,7 @@ export function composer(ctx: ComposerContext) {
       const acquired = ledger.resolve(intent);
       if (typeof acquired === "string")
         return { kind: "refused", code: acquired };
+      if (!timeFor()) return unavailable();
       const saved = await once(() =>
         backend.putIntent(work.id, slot, { ...fence, intent }),
       );
