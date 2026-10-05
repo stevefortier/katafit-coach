@@ -249,8 +249,11 @@ test("R1: an earlier attempt's committed receipt (equal report) never settles a 
     });
   const t = await proxied([
     new ScriptedRuntime([
-      async () => deferred("2026-10-03T07:01:00.000Z"),
-      async () => deferred("2026-10-03T09:00:00.000Z"),
+      // Use the backend fixture clock: stale wall dates admit generation 2
+      // before the intentional advance and can expire its held start lease.
+      async () => deferred(new Date(t.env.fake.now() + 60_000).toISOString()),
+      async () =>
+        deferred(new Date(t.env.fake.now() + 7_200_000).toISOString()),
     ]),
   ]);
   const { env, proxy } = t;
@@ -267,11 +270,13 @@ test("R1: an earlier attempt's committed receipt (equal report) never settles a 
       () => env.fake.state.reports.length === 1,
       "attempt 1 reported",
     );
+    assert.equal(env.fake.state.work.get(id).lease_generation, 1);
     // Observe generation-2 proof from its admission onward: reconciliation
     // can finish before the later pending-status snapshot is read.
     const mark = env.fake.calls.length;
     env.fake.advance(120_000);
     await until(() => sent === 2, "attempt 2 completion sent");
+    assert.equal(env.fake.state.work.get(id).lease_generation, 2);
     await until(
       async () => (await env.status()).local.unresolvedWrites === 1,
       "attempt 2 unknown",

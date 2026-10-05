@@ -139,7 +139,7 @@ test("capability intersection includes only exact local schemas and advertised r
     assert.deepEqual(f.calls.find((c) => c.name === "coach_claim_task").args, {
       protocol: "coach.tasks.v1",
       kinds: ["activity_followup"],
-      lease_seconds: 60,
+      lease_seconds: 120,
     });
   } finally {
     await w.stop();
