@@ -123,6 +123,16 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
     const slots = new Set<string>(work.actions.map((a) => a.slot));
     const followUps = new Set<string>(work.follow_ups);
     const reads = { ok: 0, denied: 0, failed: 0 };
+    let conversationDenials = 0;
+    const observeConversation = (path: string, denied: boolean) => {
+      if (
+        denied &&
+        /^\/api\/coach\/member-conversations\/[a-f0-9]{24}\/?$/i.test(
+          decodeURIComponent(path.split("?", 1)[0]),
+        )
+      )
+        conversationDenials++;
+    };
     const exhausted = new Set<string>();
     const sharedActions = new Actions(options.store);
     let uncertain = sharedActions.unresolved();
@@ -527,6 +537,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         : {}),
       onExhausted: (budget) => exhausted.add(budget),
       onRead: (path, acquired) => {
+        observeConversation(path, acquired.denied);
         if (acquired.ok && acquired.body !== undefined)
           ledger.read(path, acquired.body);
         if (acquired.ok) reads.ok++;
@@ -551,6 +562,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       },
       onExhausted: (reason) => exhausted.add(reason),
       onRead: ({ path, outcome, body }) => {
+        observeConversation(path, outcome === "denied");
         reads[outcome]++;
         if (outcome === "ok" && body !== undefined) ledger.read(path, body);
       },
@@ -574,6 +586,11 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
       };
       if (!validate.cycleOutcome(candidate) || !outcomeCoherent(candidate))
         return "schema mismatch";
+      const claimedConversationDenials = (candidate.coverage.pages ?? [])
+        .filter((page: any) => page.source === "member_conversation")
+        .reduce((count: number, page: any) => count + page.denied, 0);
+      if (claimedConversationDenials > conversationDenials)
+        return "conversation denial coverage exceeds host-observed denials";
       for (const d of candidate.decisions) {
         if (d.action_slots.some((s) => !slots.has(s)))
           return "cites an action slot not confirmed this cycle";
