@@ -1248,7 +1248,10 @@ export class Worker {
     const { task } = await c.call("coach_claim_task", {
       protocol: TASK_PROTOCOL,
       kinds,
-      lease_seconds: 60,
+      // The isolated Worker has the same 100s inference ceiling as main chat.
+      // Claim enough time for context/native setup and the existing 12s
+      // absolute-fence/publication reserve; never renew a claimed generation.
+      lease_seconds: 120,
       ...(negotiate
         ? {
             capability_protocols: [
@@ -1292,7 +1295,7 @@ export class Worker {
       const serialized = taskContext(task, context, secrets);
       this.update("task-working");
       const ms = Math.min(
-        this.options.modelMs ?? 60000,
+        this.options.modelMs ?? 100000,
         deadline - Date.now() - 10000,
       );
       if (ms <= 0) throw new Error("LEASE_EXPIRED");
