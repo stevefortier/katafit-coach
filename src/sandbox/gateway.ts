@@ -1217,6 +1217,9 @@ export async function openProfileGateway(
     : abort.signal;
   let closed = false;
   const used = { tool_calls: 0, provider_tokens: 0, provider_requests: 0 };
+  // Ephemeral gateway correlation, never a work/member/call identity.
+  const diagnosticRef = randomUUID();
+  let emissionOrdinal = 0;
   // Numeric-only receipts: profileCode 1=planner, 2=composer, 3=worker;
   // chargeSource 1=reported_total, 2=wire_estimate. Saturation is telemetry
   // only: never change the accounting ledger or the next-request threshold.
@@ -1241,8 +1244,106 @@ export async function openProfileGateway(
           ),
           ...metadata,
         },
+        ref: diagnosticRef,
       });
     } catch {}
+  };
+  // Fixed codes: 0=other/unknown, 1=docs, 2=feed/activity,
+  // 3=conversation, 4=memory, 5=image route. Diagnostic syntax validation
+  // cannot change dispatch. Unknown/encoded route families stay 0.
+  const sourceCode = (name: string, args: unknown) => {
+    try {
+      const path =
+        name === restGetTool.name
+          ? restPath(args)
+          : name === restRequestTool.name && (args as any)?.method === "GET"
+            ? restRequestArgs(args).path
+            : undefined;
+      const route = path?.split("?")[0] ?? "";
+      if (route === "/api/docs/coach") return 1;
+      if (
+        route === "/api/friends/feed/dojo" ||
+        /^\/api\/(?:friends\/activity|activities)\/[a-f0-9]{24}$/.test(route)
+      )
+        return 2;
+      if (/^\/api\/coach\/member-conversations\/[a-f0-9]{24}$/.test(route))
+        return 3;
+      if (/^\/api\/coach\/memory(?:\/[a-f0-9]{24})?$/.test(route)) return 4;
+      if (/^\/api\/media\/[a-f0-9]{24}\/files\/[a-f0-9]{24}$/.test(route))
+        return 5;
+    } catch {}
+    return 0;
+  };
+  // Shared validated return receipt: no body parsing/serialization or inferred
+  // success/freshness. cacheCode 1 attests only this occurrence-cache return;
+  // 0 is unknown acquisition provenance, including InvocationCapability cache.
+  const emitted = (request: any, result: any, cacheCode: 0 | 1) => {
+    if (!planner) return;
+    emissionOrdinal = bounded(emissionOrdinal + 1);
+    try {
+      let resultTextBytes = 0;
+      let resultImageParts = 0;
+      for (const part of Array.isArray(result?.content) ? result.content : []) {
+        if (part?.type === "text" && typeof part.text === "string")
+          resultTextBytes = bounded(
+            resultTextBytes + Buffer.byteLength(part.text),
+          );
+        if (part?.type === "image")
+          resultImageParts = bounded(resultImageParts + 1);
+      }
+      options.onDiagnostic?.({
+        source: "provider",
+        stage: "acquisition-result",
+        ref: diagnosticRef,
+        metadata: {
+          profileCode: 1,
+          requestOrdinal: bounded(used.provider_requests),
+          emissionOrdinal,
+          toolCode:
+            request.name === restRequestTool.name
+              ? 1
+              : request.name === restGetTool.name
+                ? 2
+                : 0,
+          sourceCode: sourceCode(request.name, request.args),
+          cacheCode,
+          outcomeCode: 0, // Outcome unknown: never infer from returned prose.
+          resultTextBytes,
+          resultImageParts,
+        },
+      });
+    } catch {}
+  };
+  // Counts from the admitted ORIGINAL envelope, not schemas/seed/skills or
+  // images Pi moves into user messages. Bytes/parts are not billing attribution.
+  const toolHistory = (original: any): Record<string, number> => {
+    const counts = {
+      toolHistoryMessages: 0,
+      toolHistoryTextBytes: 0,
+      toolHistoryImageParts: 0,
+    };
+    try {
+      for (const message of original.messages) {
+        if (message?.role !== "tool") continue;
+        counts.toolHistoryMessages = bounded(counts.toolHistoryMessages + 1);
+        if (typeof message.content === "string")
+          counts.toolHistoryTextBytes = bounded(
+            counts.toolHistoryTextBytes + Buffer.byteLength(message.content),
+          );
+        else if (Array.isArray(message.content))
+          for (const part of message.content) {
+            if (part?.type === "text" && typeof part.text === "string")
+              counts.toolHistoryTextBytes = bounded(
+                counts.toolHistoryTextBytes + Buffer.byteLength(part.text),
+              );
+            if (part?.type === "image_url")
+              counts.toolHistoryImageParts = bounded(
+                counts.toolHistoryImageParts + 1,
+              );
+          }
+      }
+    } catch {}
+    return counts;
   };
   const charge = (
     wire: string,
@@ -1251,10 +1352,13 @@ export async function openProfileGateway(
       chargeSource: 2,
       metadata: {} as Record<string, number>,
     },
+    history: Record<string, number> = {},
   ) => {
     used.provider_tokens += usage.tokens;
     diagnostic("provider-accounting", {
       requestOrdinal: bounded(used.provider_requests),
+      emissionOrdinal,
+      ...history,
       wireBytes: Buffer.byteLength(wire),
       chargeSource: usage.chargeSource,
       ...usage.metadata,
@@ -1403,7 +1507,11 @@ export async function openProfileGateway(
       if (!occurrence || !validators.get(request.name)!(request.args))
         throw new NativeFailure("NATIVE_REQUEST_REJECTED");
       const prior = results.get(occurrence);
-      if (prior) return prior;
+      if (prior) {
+        const result = await prior;
+        emitted(request, result, 1);
+        return result;
+      }
       used.tool_calls++;
       const pending = (async () => {
         const result = await selected.execute(
@@ -1415,6 +1523,7 @@ export async function openProfileGateway(
         if (nativeToolResultTooLarge(result))
           throw new NativeFailure("NATIVE_RESULT_TOO_LARGE");
         check();
+        emitted(request, result, 0);
         return result;
       })();
       results.set(occurrence, pending);
@@ -1437,6 +1546,7 @@ export async function openProfileGateway(
       if (nativeToolResultTooLarge(result))
         throw new NativeFailure("NATIVE_RESULT_TOO_LARGE");
       check();
+      emitted(request, result, 0);
       return result;
     }
     if (!plannerArgs(request.name, request.args))
@@ -1482,7 +1592,8 @@ export async function openProfileGateway(
       });
       exhaust("provider_tokens");
     }
-    const { wire } = nativeProviderAdmission(request.body);
+    const { original, wire } = nativeProviderAdmission(request.body);
+    const history = toolHistory(original);
     used.provider_requests++;
     selections.retire();
     options.onProviderRequest?.(wire);
@@ -1502,7 +1613,7 @@ export async function openProfileGateway(
       });
     } catch {
       // Charged as sent: the provider may have processed it.
-      charge(wire);
+      charge(wire, undefined, history);
       throw new NativeFailure(
         timeout.aborted
           ? "NATIVE_PROVIDER_TIMEOUT"
@@ -1511,7 +1622,7 @@ export async function openProfileGateway(
       );
     }
     if (!response.ok) {
-      charge(wire);
+      charge(wire, undefined, history);
       const failure = providerFailure(
         response.status,
         await upstreamErrorCode(response),
@@ -1536,7 +1647,7 @@ export async function openProfileGateway(
           chunks.push(c);
         }
     } catch (error) {
-      charge(wire);
+      charge(wire, undefined, history);
       throw error instanceof NativeFailure
         ? error
         : new NativeFailure(
@@ -1550,7 +1661,7 @@ export async function openProfileGateway(
       ?.includes("text/event-stream")
       ? "text/event-stream"
       : "application/json";
-    charge(wire, providerTokens(body, type, wire));
+    charge(wire, providerTokens(body, type, wire), history);
     try {
       assertNoSecrets(body, secretValues);
     } catch (error) {

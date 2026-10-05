@@ -35,6 +35,7 @@ export const stages = [
   "provider-response",
   "provider-accounting",
   "provider-budget-refused",
+  "acquisition-result",
   "autonomy-usage",
   "tool-execution",
   "publishing",

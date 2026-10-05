@@ -168,6 +168,12 @@ export const hints = {
 export type ErrorCode = keyof typeof hints;
 export function numericMetadata(input: Record<string, unknown> = {}) {
   const result: Record<string, number> = {};
+  const codeLimits: Record<string, number> = {
+    toolCode: 2,
+    sourceCode: 5,
+    cacheCode: 1,
+    outcomeCode: 0,
+  };
   for (const key of [
     "status",
     "bytes",
@@ -175,6 +181,17 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     // Profile accounting uses fixed numeric discriminators, no private strings.
     "profileCode",
     "requestOrdinal",
+    // Content-free fixed-code acquisition and original tool-history receipts.
+    "emissionOrdinal",
+    "toolCode",
+    "sourceCode",
+    "cacheCode",
+    "outcomeCode",
+    "resultTextBytes",
+    "resultImageParts",
+    "toolHistoryMessages",
+    "toolHistoryTextBytes",
+    "toolHistoryImageParts",
     "chargeSource",
     "inputTokens",
     "cachedTokens",
@@ -219,8 +236,11 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
       typeof input[key] === "number" &&
       Number.isSafeInteger(input[key]) &&
       input[key] >= 0
-    )
+    ) {
+      if (codeLimits[key] !== undefined && input[key] > codeLimits[key])
+        continue;
       result[key] = input[key];
+    }
   return result;
 }
 export class SafeError extends Error {
