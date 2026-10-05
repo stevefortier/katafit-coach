@@ -32,6 +32,7 @@ export function isolatedWorkerCompletion(
       prompt,
       tools,
       skills: true,
+      onDiagnostic: owner.onDiagnostic,
       budgets: {
         tool_calls: 64,
         provider_tokens: 200000,

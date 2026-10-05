@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Actions } from "../chat/actions.js";
 import { compileComposer, type Store } from "../config/store.js";
+import type { BackendLogger } from "../katafit/client.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
 import { AutonomyFailure, type AutonomyBackend } from "./backend.js";
 import {
@@ -61,6 +62,7 @@ export type Fulfilment =
 export interface ComposerContext {
   store: Store;
   options: ComposeOptions;
+  onDiagnostic?: BackendLogger;
   backend: AutonomyBackend;
   work: WorkItem;
   fence: { lease_generation: number; mandate_revision: number };
@@ -205,6 +207,7 @@ export function composer(ctx: ComposerContext) {
       prompt,
       budgets: { tool_calls: 0, provider_tokens: tokens, images_per_cycle: 0 },
       onExhausted: () => ctx.onExhausted(),
+      onDiagnostic: ctx.onDiagnostic,
       ...(ctx.options.onProviderRequest
         ? { onProviderRequest: ctx.options.onProviderRequest }
         : {}),
