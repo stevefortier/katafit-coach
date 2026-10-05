@@ -203,11 +203,14 @@ export async function fixture(
     leaseMs?: number;
     discoveryDelayMs?: number;
     holdClaim?: () => Promise<void>;
+    holdReceipt?: () => Promise<void>;
     memoryDenial?: { code: string; after: number };
   } = {},
 ) {
   let history: any[] = [];
   let current: any = null;
+  // Enqueueing another request must not erase the prior canonical receipt.
+  const previousRequests = new Map<string, any>();
   let calls: string[] = [];
   let publications = 0;
   let memoryRecalls = 0;
@@ -339,24 +342,33 @@ export async function fixture(
             limits: {},
           };
           break;
-        case "coach_list_requests":
+        case "coach_list_requests": {
+          if (a.request_id && a.statuses?.includes("completed"))
+            await options.holdReceipt?.();
+          const requested = a.request_id
+            ? current?.id === a.request_id
+              ? current
+              : previousRequests.get(a.request_id)
+            : current;
           value = {
             requests:
-              current && (!a.statuses || a.statuses.includes(current.status))
+              requested &&
+              (!a.statuses || a.statuses.includes(requested.status))
                 ? [
                     {
-                      ...current,
+                      ...requested,
                       ...(a.statuses?.includes("failed") &&
                       options.failureMismatch
                         ? options.failureMismatch === "code"
                           ? { failure_code: "OTHER_FAILURE" }
-                          : { lease_generation: current.lease_generation + 1 }
+                          : { lease_generation: requested.lease_generation + 1 }
                         : {}),
                     },
                   ]
                 : [],
           };
           break;
+        }
         case "coach_claim_request":
           if (current && current.status === "queued") {
             current = {
@@ -432,6 +444,7 @@ export async function fixture(
   return {
     origin: `http://127.0.0.1:${(server.address() as any).port}`,
     enqueue(text: string) {
+      if (current) previousRequests.set(current.id, current);
       current = {
         id: String(history.length + 1),
         text,
@@ -1159,7 +1172,17 @@ test("manual reservation drains a backend-accepted claim still reported idle wit
 for (const cancel of [false, true])
   test(`busy manual queue ${cancel ? "cancels without aborting accepted work and resumes claims" : "drains accepted work before one installation"}`, async () => {
     const { Updates } = await import("../src/update/updates.js");
-    const f = await fixture();
+    const receiptEntered = upgradeGate(),
+      receiptRelease = upgradeGate();
+    let receiptReads = 0;
+    const f = await fixture({
+      holdReceipt: async () => {
+        if (cancel && ++receiptReads === 1) {
+          receiptEntered.resolve();
+          await receiptRelease.promise;
+        }
+      },
+    });
     const home = await mkdtemp(tmpdir() + "/coach-busy-manual-queue-");
     const store = new Store(home);
     await store.init();
@@ -1275,15 +1298,23 @@ for (const cancel of [false, true])
         );
       } else {
         assert.equal(applications, 0);
+        // Publication precedes canonical receipt verification. Keep that read
+        // pending while new work arrives, as it can on a slower CI runner.
+        while (receiptReads !== 1 && Date.now() < until)
+          await new Promise((r) => setTimeout(r, 10));
+        assert.equal(receiptReads, 1);
+        await receiptEntered.promise;
         f.enqueue("New work after cancellation");
-        const until = Date.now() + 7000;
-        while (f.publications !== 2 && Date.now() < until)
+        receiptRelease.resolve();
+        const resumeUntil = Date.now() + 7000;
+        while (f.publications !== 2 && Date.now() < resumeUntil)
           await new Promise((r) => setTimeout(r, 10));
         assert.equal(f.publications, 2);
         assert.equal(inferences, 2);
       }
     } finally {
       release.resolve();
+      receiptRelease.resolve();
       await app.close();
       await f.close();
       await rm(home, { recursive: true, force: true });
