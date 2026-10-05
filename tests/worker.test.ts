@@ -174,6 +174,19 @@ test("preview and running worker receive byte-identical saved effective instruct
       preview.prompt,
       preview.prompt + CAPABILITY_GUIDANCE + PRINCIPAL_REST_NOTE,
     ]);
+    assert.match(
+      systems[1],
+      /effective personal targets.*correct member and day.*take precedence.*shared strategy baseline/is,
+    );
+    assert.match(systems[1], /Numeric disagreement alone is not an ambiguity/);
+    assert.match(
+      systems[1],
+      /workout\/activity due_at.*hard expiry.*not a start time/is,
+    );
+    assert.ok(
+      systems[1].endsWith(PRINCIPAL_REST_NOTE),
+      "member precedence never overrides principal/requester attribution",
+    );
   } finally {
     await app.close();
     await f.close();
