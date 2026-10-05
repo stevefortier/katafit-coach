@@ -267,6 +267,9 @@ test("R1: an earlier attempt's committed receipt (equal report) never settles a 
       () => env.fake.state.reports.length === 1,
       "attempt 1 reported",
     );
+    // Observe generation-2 proof from its admission onward: reconciliation
+    // can finish before the later pending-status snapshot is read.
+    const mark = env.fake.calls.length;
     env.fake.advance(120_000);
     await until(() => sent === 2, "attempt 2 completion sent");
     await until(
@@ -279,10 +282,12 @@ test("R1: an earlier attempt's committed receipt (equal report) never settles a 
     // leased-then-expired, never reclaimed: still pending, never absence.
     assert.equal(env.fake.state.completions.get(id).length, 1);
     env.fake.advance(LEASE_MS);
-    const mark = env.fake.calls.length;
+    // Require an observed exact-generation read, not merely cached reason.
     const pending = await t.settle(
-      (x) => x.local.unresolved[0]?.reason === "pending",
-      "pending generation",
+      (x) =>
+        x.local.unresolved[0]?.reason === "pending" &&
+        reads(env.fake.calls, mark).includes(`/work/${id}/completions/2`),
+      "pending generation after fresh exact receipt read",
     );
     assert.equal(pending.local.unresolvedWrites, 1);
     const r = reads(env.fake.calls, mark);
