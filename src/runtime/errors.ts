@@ -171,8 +171,9 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
   const codeLimits: Record<string, number> = {
     toolCode: 2,
     sourceCode: 5,
-    cacheCode: 1,
-    outcomeCode: 0,
+    cacheCode: 4,
+    outcomeCode: 8,
+    statusCode: 599,
     headlessSource: 11,
     headlessPhase: 12,
     headlessIntentional: 1,
@@ -258,6 +259,7 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     ) {
       if (codeLimits[key] !== undefined && input[key] > codeLimits[key])
         continue;
+      if (key === "statusCode" && input[key] < 100) continue;
       result[key] = input[key];
     }
   return result;

@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
+  acquisitionDiagnostic,
+  attestAcquisition,
+  type AcquisitionDiagnostic,
+} from "../diagnostics/acquisition.js";
+import {
   ConfiguredIntegrations,
   type IntegrationExecution,
 } from "./integrations.js";
@@ -312,7 +317,11 @@ export class InvocationCapability {
    */
   private readonly acquired = new Map<
     string,
-    { result: any; failed?: { error: string; status?: number } }
+    {
+      result: any;
+      failed?: { error: string; status?: number };
+      diagnostic?: AcquisitionDiagnostic;
+    }
   >();
   private images = 0;
   private reads = 0;
@@ -397,14 +406,31 @@ export class InvocationCapability {
     this.acquired.clear();
     return this.mutate(raw, args, signal);
   }
+  private observeRead(
+    path: string,
+    result: { ok: boolean; denied: boolean; body?: unknown },
+  ) {
+    // Observation must never turn acquired success into failure, replace a
+    // transport error, or bypass the acquired cache/no-replay behavior.
+    try {
+      this.o.onRead?.(path, result);
+    } catch {}
+  }
   private async read(raw: any, path: string, signal?: AbortSignal) {
     const prior = this.acquired.get(path);
+    const retained = (result: any) =>
+      prior?.diagnostic
+        ? attestAcquisition(result, { ...prior.diagnostic, cacheCode: 2 })
+        : result;
     if (prior?.failed)
-      return text({
-        ...prior.failed,
-        note: "This exact read already failed in this invocation and was not repeated. Use a documented path from GET /api/docs/coach (domain index) or state the fact as unavailable.",
-      });
-    if (prior) return prior.result;
+      return retained(
+        text({
+          ...prior.failed,
+          note: "This exact read already failed in this invocation and was not repeated. Use a documented path from GET /api/docs/coach (domain index) or state the fact as unavailable.",
+        }),
+      );
+    if (prior) return retained(prior.result);
+    let diagnostic: AcquisitionDiagnostic | undefined;
     try {
       if (this.o.maxReads !== undefined && this.reads >= this.o.maxReads) {
         this.o.onExhausted?.("rest_reads");
@@ -418,6 +444,7 @@ export class InvocationCapability {
         signal ?? new AbortController().signal,
         this.values,
       );
+      diagnostic = acquisitionDiagnostic(result);
       if (result.restReadError) {
         const status = result.restReadError.status;
         const failed = {
@@ -429,15 +456,18 @@ export class InvocationCapability {
                 : "REST_READ_UNAVAILABLE",
           status,
         };
-        this.acquired.set(path, { result: undefined, failed });
-        this.o.onRead?.(path, {
+        this.acquired.set(path, { result: undefined, failed, diagnostic });
+        this.observeRead(path, {
           ok: false,
           denied: status === 401 || status === 403,
         });
-        return text({
+        const unavailable = text({
           ...failed,
           note: "This fact is unavailable to this invocation. State that plainly; do not invent it.",
         });
+        return diagnostic
+          ? attestAcquisition(unavailable, diagnostic)
+          : unavailable;
       }
       const image = result.content?.find((p: any) => p.type === "image");
       if (image && !this.o.vision) throw new Error("IMAGE_UNSUPPORTED");
@@ -458,22 +488,35 @@ export class InvocationCapability {
           result.content.find((p: any) => p.type === "text")?.text,
         );
       } catch {}
-      this.o.onRead?.(path, { ok: true, denied: false, body });
+      this.observeRead(path, { ok: true, denied: false, body });
       const acquired = { content: result.content, details: {} };
-      this.acquired.set(path, { result: acquired });
+      if (diagnostic) attestAcquisition(acquired, diagnostic);
+      this.acquired.set(path, { result: acquired, diagnostic });
       return acquired;
     } catch (error) {
       const code = (error as Error).message;
-      if (code === "CANCELLED") throw error;
+      const observed: AcquisitionDiagnostic = acquisitionDiagnostic(error) ?? {
+        ...diagnostic,
+        outcomeCode: code === "CANCELLED" ? 7 : 8,
+        cacheCode: diagnostic?.cacheCode ?? 4,
+      };
+      if (code === "CANCELLED") throw attestAcquisition(error, observed);
       const failed = {
         error: /^[A-Z_]{3,64}$/.test(code) ? code : "REST_READ_UNAVAILABLE",
       };
-      this.acquired.set(path, { result: undefined, failed });
-      this.o.onRead?.(path, { ok: false, denied: false });
-      return text({
-        ...failed,
-        note: "This read did not complete. Report the fact as unavailable; do not invent it.",
+      this.acquired.set(path, {
+        result: undefined,
+        failed,
+        diagnostic: observed,
       });
+      this.observeRead(path, { ok: false, denied: false });
+      return attestAcquisition(
+        text({
+          ...failed,
+          note: "This read did not complete. Report the fact as unavailable; do not invent it.",
+        }),
+        observed,
+      );
     }
   }
   private unsupported() {
