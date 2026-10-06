@@ -1629,8 +1629,61 @@ header {
   margin: 0 0 8px;
 }
 .active-badge:empty,
-#modelDraftStatus:empty {
+#modelDraftStatus:empty,
+#registryModelNote:empty {
   display: none;
+}
+#registryModelNote {
+  color: #ffda8b;
+}
+#modelChoices {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+#modelChoices label.model-choice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  border: 1px solid #454545;
+  background: #202020;
+  padding: 14px 16px;
+  cursor: pointer;
+}
+.model-choice input {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.model-choice-text {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.model-choice-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: flex-start;
+}
+.model-choice-title {
+  flex: 1 1 10rem;
+  min-width: 0;
+  color: #f0f0f0;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.model-choice-meta {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 #modelDraftStatus {
   color: #ffda8b;

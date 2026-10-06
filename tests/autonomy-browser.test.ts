@@ -263,7 +263,8 @@ test("C5 UI: the Autonomy tab is keyboard reachable and fits 320 px", async () =
       env.app.origin + "/settings?section=persona#" + env.store.secrets.admin,
     );
     await page.locator("#settings-persona-tab").focus();
-    for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowRight");
+    // Model is between Persona and Preview in the Coach Settings tab order.
+    for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowRight");
     assert.equal(
       await page.evaluate(() => document.activeElement?.id),
       "settings-autonomy-tab",

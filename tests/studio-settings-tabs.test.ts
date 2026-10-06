@@ -115,6 +115,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.locator("#token").fill("unsaved-secret");
     for (const name of [
       "Persona",
+      "Model",
       "Preview",
       "Skills",
       "Memories",
@@ -190,7 +191,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await page.getByRole("tab", { name: "Log", exact: true }).press("Home");
     await settingsTab(page, "Persona");
     assert.equal(new URL(page.url()).search, "?section=persona");
-    assert.equal(await tabs.count(), 6);
+    assert.equal(await tabs.count(), 7);
     await page.locator("#name").fill("Draft coach");
     await page.getByRole("tab", { name: "Persona", exact: true }).press("End");
     assert.equal(
@@ -413,6 +414,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
         "Kata.fit",
         "Models",
         "Persona",
+        "Model",
         "Preview",
         "Skills",
         "Memories",
