@@ -85,6 +85,8 @@ type Engine = ConstructorParameters<typeof NativeRuntime>[1] & {};
 export interface HeadlessRun {
   profile: NativeProfile;
   gateway: NativeGateway;
+  /** A multi-attempt cycle owns final gateway drainage, not this container. */
+  gatewayOwnership?: "cycle";
   message: string;
   cycleMs: number;
   /** Absolute inference cutoff; never a fresh budget after runtime setup. */
@@ -329,7 +331,16 @@ export class HeadlessCycleRuntime {
     try {
       milestone(2);
       await Promise.race([
-        runtime.start(run.gateway, { mode: "rpc", profile: run.profile }),
+        runtime.start(
+          run.gatewayOwnership === "cycle"
+            ? {
+                handle: (request, signal) =>
+                  run.gateway.handle(request, signal),
+                close: async () => {},
+              }
+            : run.gateway,
+          { mode: "rpc", profile: run.profile },
+        ),
         failed,
       ]);
       milestone(3);
