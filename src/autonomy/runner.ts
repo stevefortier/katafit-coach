@@ -658,6 +658,10 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
         try {
           ({ text } = await options.runtime.run({
             profile: "planner",
+            operational: {
+              workId: work.id,
+              leaseGeneration: work.lease_generation,
+            },
             gateway: gateway as unknown as HeadlessRun["gateway"],
             message,
             cycleMs: deadline - now(),

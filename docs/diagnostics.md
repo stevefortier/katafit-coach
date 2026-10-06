@@ -106,3 +106,92 @@ Open `http://127.0.0.1:4317` locally and enter the protected installation's admi
 Deterministic tests use actual Pi with loopback synthetic HTTP providers and MCP peers. They establish serialized-byte enforcement, safe classification, fenced reporting, protected HTTP logs, bounds/restart behavior and browser controls; they do not establish live-model quality or reproduce the installed production incident. A successful small setup probe does not prove that a larger real-chat request fits its provider budget. Use correlated stages and byte counts to distinguish a local size rejection from a provider or transport failure. No real provider/customer requests or expanded grants are needed for these tests.
 
 Run `npm test`, `npm run build`, `npm run format:check`, `npm run test:package`, and `npm run test:browser`. Browser evidence goes to `COACH_EVIDENCE_DIR` when set, otherwise the system temporary `coach-browser-evidence` directory. All test servers and browser contexts are closed in `finally`.
+
+
+## Headless first-boundary observations
+
+`worker / headless-lifecycle` and `worker / headless-first-boundary` are
+content-free diagnostics wired from AutonomyHost through the production planner
+and separate composer runtimes into the existing Diagnostics logger and reload
+sanitizer. They do not change errors, cancellation, cleanup, authority, replay,
+provider/model/prompt bytes or budgets. Sink exceptions are discarded; the first
+boundary latch is set **before** the sink is called. At most one first-boundary
+record is attempted per admitted headless invocation; later socket close,
+stop/removal callbacks and relay death cannot replace it. Lifecycle records are
+fixed milestones, not every message/token/tool event.
+
+Correlation contract (numeric fields are explicit allowlists, not arbitrary
+string logging):
+
+- `ref` is exactly the UUID suffix of `katafit-pi-auto-<UUID>`. Reconstruct the
+  container name by adding that prefix; the logger's UUID rule is unchanged.
+- `profileCode`: 1 planner, 2 composer, 3 isolated worker.
+- `headlessInvocation`: monotonic invocation ordinal on this runtime object,
+  reset with a new object/process. This is not a backend generation. Use ref
+  plus profile, exact operational work ID and lease generation to correlate.
+- `headlessWorkKnown=1`: `headlessWork0..2` encode only the operational work's
+  validated **24 lowercase hex** ID as three consecutive unsigned 32-bit limbs.
+  `leaseGeneration` is the exact nonnegative safe-integer issued lease
+  generation. Planner and separate composer callers pass the same work/generation;
+  each actual container invocation has its own ref. No account, Dojo, chief,
+  recipient/member, mandate or credential identity is included. Invalid/missing
+  operational identity gives known=0 and no limbs/generation; it is not normalized.
+- `headlessContainerKnown=1`: `headlessContainer0..7` encode the exact **64
+  lowercase hex** container ID available from the existing validated Docker
+  create reply/owned receipt. This uses no new inspect or process wait. Before
+  create resolves, or after an invalid/lost create reply, known=0 and no limbs;
+  the UUID name suffix remains available. Later milestones may have the ID
+  even if the first observation did not. Never infer an ID from a name or prefix.
+- Decode each limb with `n.toString(16).padStart(8, "0")`, then concatenate
+  indices in order (3 limbs for work, 8 for container). Zero limbs are significant.
+  These are lossless encodings, **not hashes**, anonymization, or authority proof.
+- `headlessIntentional=1` means headless final cleanup was entered, or the native
+  runtime was already closing at this observation. It does not assert cleanup
+  success or explain the original operation's result. A timeout/abort first
+  observation is distinct and remains first despite its subsequent intended stop.
+
+`headlessSource` fixed source codes:
+
+| Code | First observed seam |
+| --- | --- |
+| 1 | Headless receives NativeRuntime `onExit` callback (currently removal confirmation, not a Pi process wait) |
+| 2 | Headless receives `onDetached` callback without an earlier native observation |
+| 3 | Headless deadline timer / deadline exhausted after ownership setup |
+| 4 | Headless abort signal / aborted after ownership setup |
+| 5 | Headless final-cleanup entry, or ownership setup refusal with no container |
+| 6 | Actual Docker attach socket `close`, before onDetached and stop |
+| 7 | Actual relay child-process `exit`, before its stop path |
+| 8 | NativeRuntime `stop` entry from another existing runtime path |
+| 9 | Relay child-process `error`, before stop |
+| 10 | Attach socket `error`, before socket destruction |
+| 11 | Docker create dispatch failed, before its existing stop |
+
+`headlessPhase` fixed lifecycle codes:
+
+| Code | Phase |
+| --- | --- |
+| 1 | Name allocated; ownership setup |
+| 2 | NativeRuntime.start pending (API negotiation/create) |
+| 3 | NativeRuntime.start resolved; create reply observed if valid |
+| 4 | Attach/container start/relay setup pending |
+| 5 | Attach resolved |
+| 6 | Prompt write/acceptance response pending |
+| 7 | Prompt accepted; terminal agent_end pending |
+| 8 | Terminal text attested; final-text RPC pending |
+| 9 | Final text validated, before return/final cleanup |
+| 10 | Existing abort acknowledgement grace |
+| 11 | Final cleanup pending |
+| 12 | Cleanup-finally reached (not evidence of confirmed absence) |
+
+Limitations: this is first **host observation**, not a causal ordering of Docker
+or Pi events. Attach detach can follow natural Pi process death; an observed
+relay exit is not Pi's exit status. NativeRuntime has no Pi process-wait callback:
+its onExit currently runs after stop/removal. Do not relabel it a natural Pi
+crash. No new process wait, OOM inspection, signal attribution, stderr capture,
+transcripts, message/tool arguments or owner/member text are introduced. Initial
+pre-admission refusals (invalid profile, already aborted/busy/expired before name
+allocation) have no invocation/ref and emit nothing. Throwing/unavailable sinks
+or bounded log rotation can lose records; they never retry or change the result.
+Failed setup/finalization may lack a later milestone. These records cannot
+retroactively correlate historical exit137 containers or approve a runtime
+repair, production release, provider behavior or semantic model quality.

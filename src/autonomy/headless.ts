@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import type { NativeGateway } from "../sandbox/gateway.js";
 import type { CleanupRegistry } from "./cleanup.js";
+import type { LogInput } from "../diagnostics/log.js";
 import {
   dockerProbeEngine,
   NATIVE_PROFILES,
@@ -89,6 +90,8 @@ export interface HeadlessRun {
   /** Absolute inference cutoff; never a fresh budget after runtime setup. */
   deadlineAt?: number;
   signal?: AbortSignal;
+  /** Operational work only, never account/Dojo/member identity. */
+  operational?: { workId: string; leaseGeneration: number };
 }
 
 /**
@@ -101,6 +104,8 @@ export interface HeadlessRun {
  */
 export class HeadlessCycleRuntime {
   private running = false;
+  private invocation = 0;
+  private readonly onDiagnostic?: (event: LogInput) => void;
   private readonly image: string;
   private readonly engine: Engine;
   private readonly cleanup?: CleanupRegistry;
@@ -109,10 +114,12 @@ export class HeadlessCycleRuntime {
     image: string;
     engine?: Engine;
     cleanup?: CleanupRegistry;
+    onDiagnostic?: (event: LogInput) => void;
   }) {
     this.image = options.image;
     this.engine = options.engine ?? {};
     this.cleanup = options.cleanup;
+    this.onDiagnostic = options.onDiagnostic;
     this.probe = dockerProbeEngine(
       this.engine.exec ??
         (promisify(execFile) as unknown as NonNullable<Engine["exec"]>),
@@ -136,6 +143,64 @@ export class HeadlessCycleRuntime {
       throw new HeadlessFailure("HEADLESS_TIMEOUT");
     this.running = true;
     const name = "katafit-pi-auto-" + randomUUID();
+    const invocation = ++this.invocation;
+    let phase = 1;
+    let firstObserved = false;
+    let runtime: NativeRuntime | undefined;
+    const limbs = (hex: string, prefix: string) =>
+      Object.fromEntries(
+        hex.match(/.{8}/g)!.map((limb, i) => [prefix + i, parseInt(limb, 16)]),
+      );
+    const work = run.operational;
+    const workKnown =
+      !!work &&
+      typeof work.workId === "string" &&
+      /^[a-f0-9]{24}$/.test(work.workId) &&
+      Number.isSafeInteger(work.leaseGeneration) &&
+      work.leaseGeneration >= 0;
+    const emit = (
+      stage: LogInput["stage"],
+      extra: Record<string, number> = {},
+    ) => {
+      try {
+        const id = runtime?.diagnosticContainerId;
+        const known = typeof id === "string" && /^[a-f0-9]{64}$/.test(id);
+        this.onDiagnostic?.({
+          source: "worker",
+          stage,
+          ref: name.slice("katafit-pi-auto-".length),
+          metadata: {
+            profileCode: NATIVE_PROFILES.indexOf(run.profile) + 1,
+            headlessPhase: phase,
+            headlessInvocation: invocation,
+            headlessWorkKnown: workKnown ? 1 : 0,
+            ...(workKnown
+              ? {
+                  ...limbs(work!.workId, "headlessWork"),
+                  leaseGeneration: work!.leaseGeneration,
+                }
+              : {}),
+            headlessContainerKnown: known ? 1 : 0,
+            ...(known ? limbs(id!, "headlessContainer") : {}),
+            ...extra,
+          },
+        });
+      } catch {}
+    };
+    const boundary = (source: number, intentional = false) => {
+      if (firstObserved) return;
+      // Latch before calling the sink, including throwing/reentrant sinks.
+      firstObserved = true;
+      emit("headless-first-boundary", {
+        headlessSource: source,
+        headlessIntentional: intentional ? 1 : 0,
+      });
+    };
+    const milestone = (next: number) => {
+      phase = next;
+      emit("headless-lifecycle");
+    };
+    milestone(1);
     let ownership: NativeOwnership | undefined;
     if (this.cleanup) {
       const cleanup = this.cleanup;
@@ -154,6 +219,7 @@ export class HeadlessCycleRuntime {
           },
         });
       } catch {
+        boundary(5, true);
         this.running = false;
         throw new HeadlessFailure("HEADLESS_CLEANUP_PENDING");
       }
@@ -162,6 +228,7 @@ export class HeadlessCycleRuntime {
     // the inference window, no container/provider may be launched. Forget only
     // this never-created identity; any older unconfirmed cleanup stays held.
     if (run.signal?.aborted || deadline <= Date.now()) {
+      boundary(run.signal?.aborted ? 4 : 3);
       try {
         if (ownership) await this.cleanup!.end(name, true);
       } catch {
@@ -173,7 +240,7 @@ export class HeadlessCycleRuntime {
         run.signal?.aborted ? "HEADLESS_ABORTED" : "HEADLESS_TIMEOUT",
       );
     }
-    const runtime = new NativeRuntime(this.image, {
+    runtime = new NativeRuntime(this.image, {
       ...this.engine,
       ...(ownership
         ? { ownership, probeEngine: this.probe }
@@ -229,28 +296,46 @@ export class HeadlessCycleRuntime {
         end("HEADLESS_OUTPUT_TOO_LARGE");
       }
     };
-    runtime.onExit = () => end("HEADLESS_EXITED");
+    runtime.onBoundary = boundary;
+    runtime.onExit = () => {
+      boundary(1);
+      end("HEADLESS_EXITED");
+    };
     // Removal may be unconfirmed; the cycle still ends now and `finally`
     // retains the owned record instead of holding the cycle budget.
-    runtime.onDetached = () => end("HEADLESS_EXITED");
+    runtime.onDetached = () => {
+      boundary(2);
+      end("HEADLESS_EXITED");
+    };
     const response = (id: string) =>
       new Promise<any>((resolve) => responses.set(id, resolve));
     const timer = setTimeout(
-      () => end("HEADLESS_TIMEOUT"),
+      () => {
+        boundary(3);
+        end("HEADLESS_TIMEOUT");
+      },
       Math.max(0, deadline - Date.now()),
     );
-    const onAbort = () => end("HEADLESS_ABORTED");
+    const onAbort = () => {
+      boundary(4);
+      end("HEADLESS_ABORTED");
+    };
     run.signal?.addEventListener("abort", onAbort, { once: true });
     let prompted = false;
     try {
+      milestone(2);
       await Promise.race([
         runtime.start(run.gateway, { mode: "rpc", profile: run.profile }),
         failed,
       ]);
+      milestone(3);
+      milestone(4);
       await Promise.race([runtime.attach(), failed]);
+      milestone(5);
       const promptId = randomUUID();
       const accepted = response(promptId);
       prompted = true;
+      milestone(6);
       await Promise.race([
         runtime.rpc({ id: promptId, type: "prompt", message: run.message }),
         failed,
@@ -258,7 +343,9 @@ export class HeadlessCycleRuntime {
       const reply = await Promise.race([accepted, failed]);
       if (reply.success !== true)
         throw new HeadlessFailure("HEADLESS_PROMPT_REJECTED");
+      milestone(7);
       const attestedText = await Promise.race([ended, failed]);
+      milestone(8);
       const textId = randomUUID();
       const last = response(textId);
       await Promise.race([
@@ -271,16 +358,21 @@ export class HeadlessCycleRuntime {
         throw new HeadlessFailure("HEADLESS_NO_OUTPUT");
       if (text !== attestedText)
         throw new HeadlessFailure("HEADLESS_MODEL_FAILED");
+      milestone(9);
       return { text, container: name };
     } catch (error) {
       const code = failure?.code;
       if (
         prompted &&
         (code === "HEADLESS_TIMEOUT" || code === "HEADLESS_ABORTED")
-      )
+      ) {
+        milestone(10);
         await this.abort(runtime, response);
+      }
       throw failure ?? error;
     } finally {
+      boundary(5, true);
+      milestone(11);
       clearTimeout(timer);
       run.signal?.removeEventListener("abort", onAbort);
       runtime.onOutput = () => {};
@@ -290,6 +382,7 @@ export class HeadlessCycleRuntime {
           await runtime.stop();
         } finally {
           this.running = false;
+          milestone(12);
         }
       } else {
         let absent = false;
@@ -305,6 +398,7 @@ export class HeadlessCycleRuntime {
           absent = false;
         } finally {
           this.running = false;
+          milestone(12);
         }
         if (!absent) throw new HeadlessFailure("HEADLESS_CLEANUP_PENDING");
       }

@@ -265,8 +265,20 @@ export class NativeRuntime {
   get cleanupPending() {
     return this.closing;
   }
+  // Content-free observer only; never changes teardown or callback semantics.
+  onBoundary: (source: number, intentional: boolean) => void = () => {};
+  private observedContainerId?: string;
+  private boundary(source: number) {
+    try {
+      this.onBoundary(source, this.closing);
+    } catch {}
+  }
   get containerId() {
     return this.ownership?.containerId ?? undefined;
+  }
+  /** Exact validated create reply, observation only; no extra inspect/wait. */
+  get diagnosticContainerId() {
+    return this.containerId ?? this.observedContainerId;
   }
   private readonly run: (
     file: string,
@@ -375,9 +387,11 @@ export class NativeRuntime {
         },
       );
       const id = created.stdout.trim();
+      if (containerId.test(id)) this.observedContainerId = id;
       if (this.ownership && containerId.test(id))
         this.ownership.containerId = id;
     } catch (error) {
+      this.boundary(11);
       await this.stop();
       throw error;
     }
@@ -401,7 +415,10 @@ export class NativeRuntime {
       req.once("upgrade", (_res, socket, head) => {
         clearTimeout(timeout);
         this.socket = socket;
-        socket.on("error", () => socket.destroy());
+        socket.on("error", () => {
+          this.boundary(10);
+          socket.destroy();
+        });
         const decoder = new StringDecoder("utf8");
         const write = (bytes: Buffer) => {
           const text = decoder.write(bytes);
@@ -413,6 +430,7 @@ export class NativeRuntime {
         if (head.length) emit(head);
         socket.on("data", emit);
         socket.once("close", () => {
+          this.boundary(6);
           this.onDetached();
           void this.stop().catch(() => {});
         });
@@ -461,9 +479,11 @@ export class NativeRuntime {
       const deliveries = new Map<number, string>();
       relay.stderr.resume();
       relay.on("error", () => {
+        this.boundary(9);
         void this.stop().catch(() => {});
       });
       relay.on("exit", () => {
+        this.boundary(7);
         if (this.created) void this.stop().catch(() => {});
       });
       const respond = (response: any) => {
@@ -701,6 +721,7 @@ export class NativeRuntime {
     return JSON.parse(stdout)[0];
   }
   stop() {
+    this.boundary(8);
     this.closing = true;
     for (const request of this.requests.values()) request.abort();
     this.requests.clear();

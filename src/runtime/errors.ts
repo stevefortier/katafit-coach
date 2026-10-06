@@ -173,6 +173,17 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     sourceCode: 5,
     cacheCode: 1,
     outcomeCode: 0,
+    headlessSource: 11,
+    headlessPhase: 12,
+    headlessIntentional: 1,
+    headlessContainerKnown: 1,
+    headlessWorkKnown: 1,
+    ...Object.fromEntries(
+      [
+        ...Array.from({ length: 3 }, (_, i) => `headlessWork${i}`),
+        ...Array.from({ length: 8 }, (_, i) => `headlessContainer${i}`),
+      ].map((key) => [key, 0xffffffff]),
+    ),
   };
   for (const key of [
     "status",
@@ -219,6 +230,14 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     "nativeCalls",
     "textParts",
     "leaseGeneration",
+    "headlessSource",
+    "headlessPhase",
+    "headlessIntentional",
+    "headlessContainerKnown",
+    "headlessWorkKnown",
+    "headlessInvocation",
+    ...Array.from({ length: 3 }, (_, i) => `headlessWork${i}`),
+    ...Array.from({ length: 8 }, (_, i) => `headlessContainer${i}`),
     "turns",
     "turnLimit",
     "calls",
