@@ -1,6 +1,7 @@
 import { assertNoSecrets } from "../config/store.js";
 import { validInvocationBinding } from "../capability/invocationActions.js";
 import { SafeError } from "../runtime/errors.js";
+import { attestAcquisition } from "../diagnostics/acquisition.js";
 import { prepareModelImage } from "./providerImage.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import workContract from "../capability/work-action-contract.json" with { type: "json" };
@@ -172,6 +173,18 @@ export async function restGet(
   );
 }
 
+// Preserve the existing transport result union across host-only attestation.
+// No diagnostic keys are serialized into either branch.
+type RestResult =
+  | { restReadError: { status: number }; content?: undefined }
+  | {
+      restReadError?: undefined;
+      content: (
+        | { type: string; text: string; mimeType?: undefined; data?: undefined }
+        | { type: string; mimeType: string; data: string; text?: undefined }
+      )[];
+    };
+
 export async function restRequest(
   origin: string,
   bearer: string,
@@ -195,7 +208,7 @@ export async function restRequest(
     request_sha256: string;
   },
   maxJsonBytes: 262144 | 2097152 = 262144,
-) {
+): Promise<RestResult> {
   const { path, method, body } = restRequestArgs(args);
   if (workBinding && (method === "GET" || !validWorkBinding(workBinding)))
     throw new Error("REST_REQUEST_REJECTED");
@@ -236,6 +249,22 @@ export async function restRequest(
   const deadline = AbortSignal.timeout(8000);
   const wireSignal = AbortSignal.any([signal, deadline]);
   let response: Response | undefined;
+  const acquired = <T>(value: T) =>
+    method === "GET"
+      ? attestAcquisition(value, {
+          outcomeCode: response!.ok
+            ? 1
+            : [401, 403].includes(response!.status)
+              ? 2
+              : response!.status === 404
+                ? 3
+                : response!.status >= 500
+                  ? 4
+                  : 8,
+          statusCode: response!.status,
+          cacheCode: 3,
+        })
+      : value;
   try {
     response = await fetch(url, {
       method,
@@ -259,12 +288,12 @@ export async function restRequest(
       throw new Error("REST_REDIRECT_REJECTED");
     if (!response.ok) {
       if (method !== "GET") throw new Error("REST_MUTATION_UNKNOWN");
-      return { restReadError: { status: response.status } };
+      return acquired({ restReadError: { status: response.status } });
     }
     if (response.status === 204)
-      return {
+      return acquired({
         content: [{ type: "text", text: JSON.stringify({ status: 204 }) }],
-      };
+      });
     const mime = response.headers
       .get("content-type")
       ?.split(";", 1)[0]
@@ -288,7 +317,7 @@ export async function restRequest(
     const bytes = Buffer.concat(chunks);
     if (image) {
       const checked = await prepareModelImage(bytes, mime!);
-      return {
+      return acquired({
         content: [
           { type: "text", text: "Kata.fit image read (validated pixels)." },
           {
@@ -297,22 +326,37 @@ export async function restRequest(
             data: checked.data.toString("base64"),
           },
         ],
-      };
+      });
     }
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     JSON.parse(text);
     assertNoSecrets(text, [...secrets, bearer]);
-    return { content: [{ type: "text", text }] };
+    return acquired({ content: [{ type: "text", text }] });
   } catch (error) {
     if (method !== "GET") throw new Error("REST_MUTATION_UNKNOWN");
-    if (wireSignal.aborted)
-      throw new SafeError(
-        wireSignal.reason?.name === "TimeoutError"
-          ? "BACKEND_TIMEOUT"
-          : "CANCELLED",
-      );
-    if (error instanceof TypeError) throw new SafeError("CONNECTIVITY_ERROR");
-    throw error;
+    const failure = wireSignal.aborted
+      ? new SafeError(
+          wireSignal.reason?.name === "TimeoutError"
+            ? "BACKEND_TIMEOUT"
+            : "CANCELLED",
+        )
+      : error instanceof TypeError
+        ? new SafeError("CONNECTIVITY_ERROR")
+        : error;
+    throw attestAcquisition(failure, {
+      outcomeCode:
+        failure instanceof SafeError
+          ? failure.code === "BACKEND_TIMEOUT"
+            ? 5
+            : failure.code === "CONNECTIVITY_ERROR"
+              ? 6
+              : failure.code === "CANCELLED"
+                ? 7
+                : 8
+          : 8,
+      cacheCode: 3,
+      ...(response ? { statusCode: response.status } : {}),
+    });
   } finally {
     await response?.body?.cancel().catch(() => {});
   }

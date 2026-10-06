@@ -7,6 +7,7 @@ import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
 import { ToolFailure, type BackendLogger } from "../katafit/client.js";
 import { providerFailure } from "../runtime/errors.js";
+import { acquisitionDiagnostic } from "../diagnostics/acquisition.js";
 import { complete as providerComplete } from "../runtime/piAdapter.js";
 import {
   NativeMemory,
@@ -1274,15 +1275,20 @@ export async function openProfileGateway(
     } catch {}
     return 0;
   };
-  // Shared validated return receipt: no body parsing/serialization or inferred
-  // success/freshness. cacheCode 1 attests only this occurrence-cache return;
-  // 0 is unknown acquisition provenance, including InvocationCapability cache.
-  const emitted = (request: any, result: any, cacheCode: 0 | 1) => {
+  // Shared validated return receipt. Provenance comes only from the actual
+  // acquisition's host-only side channel, never parsed from model-facing prose.
+  const emitted = (
+    request: any,
+    result: any,
+    cacheCode: 0 | 1,
+    failure?: unknown,
+  ) => {
     if (!planner) return;
     emissionOrdinal = bounded(emissionOrdinal + 1);
     try {
       let resultTextBytes = 0;
       let resultImageParts = 0;
+      const acquisition = acquisitionDiagnostic(failure ?? result);
       for (const part of Array.isArray(result?.content) ? result.content : []) {
         if (part?.type === "text" && typeof part.text === "string")
           resultTextBytes = bounded(
@@ -1306,8 +1312,9 @@ export async function openProfileGateway(
                 ? 2
                 : 0,
           sourceCode: sourceCode(request.name, request.args),
-          cacheCode,
-          outcomeCode: 0, // Outcome unknown: never infer from returned prose.
+          outcomeCode: 0,
+          ...acquisition,
+          cacheCode: cacheCode === 1 ? 1 : (acquisition?.cacheCode ?? 0),
           resultTextBytes,
           resultImageParts,
         },
@@ -1485,6 +1492,22 @@ export async function openProfileGateway(
       }).tools()[0])
     : undefined;
 
+  const executeRead = async (
+    selected: AgentTool,
+    request: any,
+    args: any,
+    requestSignal: AbortSignal,
+  ) => {
+    try {
+      return await selected.execute(request.toolCallId, args, requestSignal);
+    } catch (error) {
+      // A cancelled acquisition has no model-facing result. Keep its attested
+      // numeric outcome (zero result bytes), then preserve the original throw.
+      if (acquisitionDiagnostic(error)) emitted(request, undefined, 0, error);
+      throw error;
+    }
+  };
+
   async function tool(request: any, requestSignal: AbortSignal) {
     if ((!planner && !worker) || !tools.some((t) => t.name === request.name))
       throw new NativeFailure(
@@ -1514,8 +1537,9 @@ export async function openProfileGateway(
       }
       used.tool_calls++;
       const pending = (async () => {
-        const result = await selected.execute(
-          request.toolCallId,
+        const result = await executeRead(
+          selected,
+          request,
           request.args,
           requestSignal,
         );
@@ -1537,8 +1561,9 @@ export async function openProfileGateway(
         throw new NativeFailure("NATIVE_REQUEST_REJECTED");
       }
       used.tool_calls++;
-      const result = await plannerRead!.execute(
-        request.toolCallId,
+      const result = await executeRead(
+        plannerRead!,
+        request,
         { method: "GET", path },
         requestSignal,
       );
