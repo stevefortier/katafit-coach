@@ -151,13 +151,15 @@ export class HeadlessCycleRuntime {
       Object.fromEntries(
         hex.match(/.{8}/g)!.map((limb, i) => [prefix + i, parseInt(limb, 16)]),
       );
-    const work = run.operational;
+    // Snapshot primitives once: caller mutation cannot rebind an invocation's logs.
+    const workId = run.operational?.workId;
+    const leaseGeneration = run.operational?.leaseGeneration;
     const workKnown =
-      !!work &&
-      typeof work.workId === "string" &&
-      /^[a-f0-9]{24}$/.test(work.workId) &&
-      Number.isSafeInteger(work.leaseGeneration) &&
-      work.leaseGeneration >= 0;
+      typeof workId === "string" &&
+      /^[a-f0-9]{24}$/.test(workId) &&
+      typeof leaseGeneration === "number" &&
+      Number.isSafeInteger(leaseGeneration) &&
+      leaseGeneration >= 0;
     const emit = (
       stage: LogInput["stage"],
       extra: Record<string, number> = {},
@@ -176,8 +178,8 @@ export class HeadlessCycleRuntime {
             headlessWorkKnown: workKnown ? 1 : 0,
             ...(workKnown
               ? {
-                  ...limbs(work!.workId, "headlessWork"),
-                  leaseGeneration: work!.leaseGeneration,
+                  ...limbs(workId, "headlessWork"),
+                  leaseGeneration,
                 }
               : {}),
             headlessContainerKnown: known ? 1 : 0,
@@ -298,27 +300,29 @@ export class HeadlessCycleRuntime {
     };
     runtime.onBoundary = boundary;
     runtime.onExit = () => {
-      boundary(1);
       end("HEADLESS_EXITED");
+      boundary(1);
     };
     // Removal may be unconfirmed; the cycle still ends now and `finally`
     // retains the owned record instead of holding the cycle budget.
     runtime.onDetached = () => {
-      boundary(2);
       end("HEADLESS_EXITED");
+      boundary(2);
     };
     const response = (id: string) =>
       new Promise<any>((resolve) => responses.set(id, resolve));
+    // Commit the original terminal outcome before a sink can reenter callbacks.
+    // Promise reactions run later; the first-boundary latch/source still precede cleanup.
     const timer = setTimeout(
       () => {
-        boundary(3);
         end("HEADLESS_TIMEOUT");
+        boundary(3);
       },
       Math.max(0, deadline - Date.now()),
     );
     const onAbort = () => {
-      boundary(4);
       end("HEADLESS_ABORTED");
+      boundary(4);
     };
     run.signal?.addEventListener("abort", onAbort, { once: true });
     let prompted = false;

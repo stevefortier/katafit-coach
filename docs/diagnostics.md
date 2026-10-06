@@ -107,7 +107,6 @@ Deterministic tests use actual Pi with loopback synthetic HTTP providers and MCP
 
 Run `npm test`, `npm run build`, `npm run format:check`, `npm run test:package`, and `npm run test:browser`. Browser evidence goes to `COACH_EVIDENCE_DIR` when set, otherwise the system temporary `coach-browser-evidence` directory. All test servers and browser contexts are closed in `finally`.
 
-
 ## Headless first-boundary observations
 
 `worker / headless-lifecycle` and `worker / headless-first-boundary` are
@@ -115,7 +114,11 @@ content-free diagnostics wired from AutonomyHost through the production planner
 and separate composer runtimes into the existing Diagnostics logger and reload
 sanitizer. They do not change errors, cancellation, cleanup, authority, replay,
 provider/model/prompt bytes or budgets. Sink exceptions are discarded; the first
-boundary latch is set **before** the sink is called. At most one first-boundary
+boundary latch is set **before** the sink is called. Terminal headless callbacks
+commit their original error before sink delivery, so a sink reentering native
+exit/detach callbacks cannot replace timeout/abort or suppress the existing abort
+RPC/grace path. Promise reactions are deferred; the first observation is still
+recorded in place, before cleanup rather than by cleanup. At most one first-boundary
 record is attempted per admitted headless invocation; later socket close,
 stop/removal callbacks and relay death cannot replace it. Lifecycle records are
 fixed milestones, not every message/token/tool event.
@@ -136,6 +139,10 @@ string logging):
   each actual container invocation has its own ref. No account, Dojo, chief,
   recipient/member, mandate or credential identity is included. Invalid/missing
   operational identity gives known=0 and no limbs/generation; it is not normalized.
+  Work ID and lease generation are primitive snapshots taken and validated once
+  at invocation admission. Mutating the caller's operational object during setup
+  cannot rebind later lifecycle/first-boundary or persisted-reloaded records,
+  even when the later ID is invalid.
 - `headlessContainerKnown=1`: `headlessContainer0..7` encode the exact **64
   lowercase hex** container ID available from the existing validated Docker
   create reply/owned receipt. This uses no new inspect or process wait. Before
@@ -152,36 +159,36 @@ string logging):
 
 `headlessSource` fixed source codes:
 
-| Code | First observed seam |
-| --- | --- |
-| 1 | Headless receives NativeRuntime `onExit` callback (currently removal confirmation, not a Pi process wait) |
-| 2 | Headless receives `onDetached` callback without an earlier native observation |
-| 3 | Headless deadline timer / deadline exhausted after ownership setup |
-| 4 | Headless abort signal / aborted after ownership setup |
-| 5 | Headless final-cleanup entry, or ownership setup refusal with no container |
-| 6 | Actual Docker attach socket `close`, before onDetached and stop |
-| 7 | Actual relay child-process `exit`, before its stop path |
-| 8 | NativeRuntime `stop` entry from another existing runtime path |
-| 9 | Relay child-process `error`, before stop |
-| 10 | Attach socket `error`, before socket destruction |
-| 11 | Docker create dispatch failed, before its existing stop |
+| Code | First observed seam                                                                                       |
+| ---- | --------------------------------------------------------------------------------------------------------- |
+| 1    | Headless receives NativeRuntime `onExit` callback (currently removal confirmation, not a Pi process wait) |
+| 2    | Headless receives `onDetached` callback without an earlier native observation                             |
+| 3    | Headless deadline timer / deadline exhausted after ownership setup                                        |
+| 4    | Headless abort signal / aborted after ownership setup                                                     |
+| 5    | Headless final-cleanup entry, or ownership setup refusal with no container                                |
+| 6    | Actual Docker attach socket `close`, before onDetached and stop                                           |
+| 7    | Actual relay child-process `exit`, before its stop path                                                   |
+| 8    | NativeRuntime `stop` entry from another existing runtime path                                             |
+| 9    | Relay child-process `error`, before stop                                                                  |
+| 10   | Attach socket `error`, before socket destruction                                                          |
+| 11   | Docker create dispatch failed, before its existing stop                                                   |
 
 `headlessPhase` fixed lifecycle codes:
 
-| Code | Phase |
-| --- | --- |
-| 1 | Name allocated; ownership setup |
-| 2 | NativeRuntime.start pending (API negotiation/create) |
-| 3 | NativeRuntime.start resolved; create reply observed if valid |
-| 4 | Attach/container start/relay setup pending |
-| 5 | Attach resolved |
-| 6 | Prompt write/acceptance response pending |
-| 7 | Prompt accepted; terminal agent_end pending |
-| 8 | Terminal text attested; final-text RPC pending |
-| 9 | Final text validated, before return/final cleanup |
-| 10 | Existing abort acknowledgement grace |
-| 11 | Final cleanup pending |
-| 12 | Cleanup-finally reached (not evidence of confirmed absence) |
+| Code | Phase                                                        |
+| ---- | ------------------------------------------------------------ |
+| 1    | Name allocated; ownership setup                              |
+| 2    | NativeRuntime.start pending (API negotiation/create)         |
+| 3    | NativeRuntime.start resolved; create reply observed if valid |
+| 4    | Attach/container start/relay setup pending                   |
+| 5    | Attach resolved                                              |
+| 6    | Prompt write/acceptance response pending                     |
+| 7    | Prompt accepted; terminal agent_end pending                  |
+| 8    | Terminal text attested; final-text RPC pending               |
+| 9    | Final text validated, before return/final cleanup            |
+| 10   | Existing abort acknowledgement grace                         |
+| 11   | Final cleanup pending                                        |
+| 12   | Cleanup-finally reached (not evidence of confirmed absence)  |
 
 Limitations: this is first **host observation**, not a causal ordering of Docker
 or Pi events. Attach detach can follow natural Pi process death; an observed

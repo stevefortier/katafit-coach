@@ -708,3 +708,205 @@ test("natural relay child exit is observed before automatic stop/detach without 
     await fake.close();
   }
 });
+
+for (const trigger of ["timeout", "abort"] as const) {
+  test(`F1 reentrant sink preserves original ${trigger} and actual abort RPC`, async () => {
+    const controller = new AbortController();
+    const events: LogInput[] = [];
+    const order: string[] = [];
+    let native: NativeRuntime | undefined;
+    const original = NativeRuntime.prototype.attach;
+    const fake = await fakeEngine((command, pi) => {
+      order.push(command.type);
+      if (command.type === "prompt" || command.type === "abort")
+        pi.send({ id: command.id, type: "response", success: true });
+    });
+    const exec = fake.engine.exec;
+    fake.engine.exec = async (file, args) => {
+      if (args.includes("rm")) order.push("remove");
+      return exec(file, args);
+    };
+    NativeRuntime.prototype.attach = async function () {
+      native = this;
+      await original.call(this);
+    };
+    try {
+      const runtime = new HeadlessCycleRuntime({
+        image: IMAGE,
+        engine: fake.engine,
+        onDiagnostic: (event) => {
+          events.push(event);
+          if (event.stage === "headless-first-boundary") {
+            native!.onExit();
+            native!.onDetached();
+            throw new Error("REENTRANT-SINK");
+          }
+        },
+      });
+      const settled = runtime
+        .run({
+          profile: "planner",
+          gateway: stubGateway(),
+          message: "PRIVATE",
+          cycleMs: trigger === "timeout" ? 200 : 2000,
+          signal: controller.signal,
+          operational: { workId, leaseGeneration: 17 },
+        })
+        .then(
+          () => "unexpected-success",
+          (error) => error.code,
+        );
+      await until(() =>
+        events.some(
+          (e) =>
+            e.stage === "headless-lifecycle" && e.metadata!.headlessPhase === 7,
+        ),
+      );
+      if (trigger === "abort") controller.abort();
+      const code = await settled;
+      await new Promise((resolve) => setImmediate(resolve));
+      const first = events.filter((e) => e.stage === "headless-first-boundary");
+      const observed = {
+        code,
+        commands: fake.commands.map((c) => c.type),
+        order,
+        boundaryAttempts: first.length,
+        firstSource: first[0]?.metadata!.headlessSource,
+        firstPhase: first[0]?.metadata!.headlessPhase,
+        intentional: first[0]?.metadata!.headlessIntentional,
+        removes: fake.removes().length,
+        active: runtime.active,
+        containers: fake.daemon.containers.size,
+      };
+      console.log(JSON.stringify({ finding: "F1", trigger, observed }));
+      assert.deepEqual(observed, {
+        code: trigger === "timeout" ? "HEADLESS_TIMEOUT" : "HEADLESS_ABORTED",
+        commands: ["prompt", "abort"],
+        order: ["prompt", "abort", "remove"],
+        boundaryAttempts: 1,
+        firstSource: trigger === "timeout" ? 3 : 4,
+        firstPhase: 7,
+        intentional: 0,
+        removes: 1,
+        active: false,
+        containers: 0,
+      });
+      assert.equal(
+        decode(first[0].metadata as Record<string, number>, "headlessWork", 3),
+        workId,
+      );
+      assert.equal(first[0].metadata!.leaseGeneration, 17);
+    } finally {
+      NativeRuntime.prototype.attach = original;
+      await fake.close();
+    }
+  });
+}
+
+for (const replacement of ["valid", "invalid"] as const) {
+  test(`F2 immutable operational identity during held create; later ID ${replacement}`, async () => {
+    const dir = await mkdtemp(tmpdir() + "/exit0555-f2-");
+    const logs = new Diagnostics(dir);
+    const operational = { workId, leaseGeneration: 17 };
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fake = await fakeEngine((command, pi) => {
+      if (command.type === "prompt") pi.close();
+    });
+    const exec = fake.engine.exec;
+    fake.engine.exec = async (file, args) => {
+      if (args.includes("create")) {
+        entered();
+        await gate;
+      }
+      return exec(file, args);
+    };
+    let pending: Promise<unknown> | undefined;
+    try {
+      const runtime = new HeadlessCycleRuntime({
+        image: IMAGE,
+        engine: fake.engine,
+        onDiagnostic: (e) => logs.record(e),
+      });
+      pending = runtime
+        .run({
+          profile: "planner",
+          gateway: stubGateway(),
+          message: "PRIVATE",
+          cycleMs: 2000,
+          operational,
+        })
+        .then(
+          () => "unexpected-success",
+          (error) => error.code,
+        );
+      await held;
+      const initial = logs.snapshot().entries;
+      assert.deepEqual(
+        initial.map((e) => e.metadata.headlessPhase),
+        [1, 2],
+      );
+      for (const entry of initial) {
+        assert.equal(decode(entry.metadata, "headlessWork", 3), workId);
+        assert.equal(entry.metadata.leaseGeneration, 17);
+      }
+      operational.workId =
+        replacement === "valid" ? "fedcba9876543210fedcba98" : "";
+      operational.leaseGeneration = 18;
+      release();
+      assert.equal(await pending, "HEADLESS_EXITED");
+      const entries = logs.snapshot().entries;
+      const reloaded = new Diagnostics(dir).snapshot().entries;
+      assert.deepEqual(reloaded, entries, "persisted sanitizer roundtrip");
+      const first = entries.filter(
+        (e) => e.stage === "headless-first-boundary",
+      );
+      const observed = {
+        firstCount: first.length,
+        phases: entries
+          .filter((e) => e.stage === "headless-lifecycle")
+          .map((e) => e.metadata.headlessPhase),
+        identities: reloaded.map((e) => ({
+          work:
+            e.metadata.headlessWorkKnown === 1
+              ? decode(e.metadata, "headlessWork", 3)
+              : "unknown",
+          generation: e.metadata.leaseGeneration,
+        })),
+        removes: fake.removes().length,
+        active: runtime.active,
+        containers: fake.daemon.containers.size,
+      };
+      console.log(JSON.stringify({ finding: "F2", replacement, observed }));
+      assert.deepEqual(observed, {
+        firstCount: 1,
+        phases: [1, 2, 3, 4, 5, 6, 11, 12],
+        identities: Array.from({ length: 9 }, () => ({
+          work: workId,
+          generation: 17,
+        })),
+        removes: 1,
+        active: false,
+        containers: 0,
+      });
+      assert.equal(first[0].metadata.headlessSource, 6);
+      assert.equal(first[0].metadata.headlessPhase, 6);
+      assert.equal(new Set(entries.map((e) => e.ref)).size, 1);
+      assert.doesNotMatch(
+        await readFile(dir + "/diagnostics.jsonl", "utf8"),
+        /PRIVATE|fedcba9876543210fedcba98/,
+      );
+    } finally {
+      release();
+      await pending;
+      await fake.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
