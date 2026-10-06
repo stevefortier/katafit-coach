@@ -663,6 +663,7 @@ export function autonomyRunner(options: AutonomyRunnerOptions) {
               leaseGeneration: work.lease_generation,
             },
             gateway: gateway as unknown as HeadlessRun["gateway"],
+            gatewayOwnership: "cycle",
             message,
             cycleMs: deadline - now(),
             deadlineAt: deadline,
