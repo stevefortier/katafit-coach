@@ -219,6 +219,10 @@ export function composer(ctx: ComposerContext) {
       if (!timeFor(2)) return unavailable();
       ({ text } = await ctx.options.runtime.run({
         profile: "composer",
+        operational: {
+          workId: work.id,
+          leaseGeneration: work.lease_generation,
+        },
         gateway: gateway as unknown as HeadlessRun["gateway"],
         message,
         cycleMs: remaining,

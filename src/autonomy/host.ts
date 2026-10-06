@@ -55,11 +55,13 @@ export async function productionRuntimes(
     image,
     engine: o.engine,
     cleanup: o.cleanup,
+    onDiagnostic: o.onDiagnostic,
   });
   const composer = new HeadlessCycleRuntime({
     image,
     engine: o.engine,
     cleanup: o.cleanup,
+    onDiagnostic: o.onDiagnostic,
   });
   await planner.sweep();
   return { planner, composer };
@@ -500,7 +502,11 @@ export class AutonomyHost {
       await this.init();
       const runtimes = await (this.options.runtimes ?? productionRuntimes)(
         store.dir,
-        { owner: this.owner!, cleanup: this.cleanup! },
+        {
+          owner: this.owner!,
+          cleanup: this.cleanup!,
+          onDiagnostic: this.options.onDiagnostic,
+        },
       );
       if (runtimes.planner === runtimes.composer)
         throw new Error("COMPOSER_RUNTIME_SHARED");

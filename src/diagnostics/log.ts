@@ -37,6 +37,8 @@ export const stages = [
   "provider-budget-refused",
   "acquisition-result",
   "autonomy-usage",
+  "headless-lifecycle",
+  "headless-first-boundary",
   "tool-execution",
   "publishing",
   "verifying",
