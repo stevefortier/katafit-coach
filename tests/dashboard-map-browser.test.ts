@@ -362,6 +362,28 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
       await page
         .locator(`.dashboard-timeline-mark[data-event-id="${ev(1)}"]`)
         .focus();
+      assert.equal(
+        await page.evaluate(() =>
+          document.activeElement?.getAttribute("data-event-id"),
+        ),
+        ev(1),
+      );
+      await page.evaluate(() => {
+        const mark = document.activeElement as HTMLElement;
+        (window as any).__focusedTimelineMark = mark;
+        const scroll = mark.parentElement!.parentElement!;
+        scroll.style.width = `${Math.max(160, scroll.clientWidth - 48)}px`;
+      });
+      await page.waitForFunction(
+        () => !(window as any).__focusedTimelineMark.isConnected,
+      );
+      assert.equal(
+        await page.evaluate(() =>
+          document.activeElement?.getAttribute("data-event-id"),
+        ),
+        ev(1),
+        "timeline redraw must preserve keyboard focus on its authorized visible event",
+      );
       await page.keyboard.press("Enter");
       await page.waitForFunction(() =>
         document

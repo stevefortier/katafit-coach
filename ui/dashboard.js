@@ -1509,6 +1509,13 @@ window.CoachDashboard = (() => {
       dismiss();
     };
     const draw = () => {
+      const focused = document.activeElement;
+      const focusedEventId =
+        interactive() &&
+        focused?.classList.contains("dashboard-timeline-mark") &&
+        track.contains(focused)
+          ? focused.getAttribute("data-event-id")
+          : null;
       cancelGesture();
       for (const [id, item] of items)
         if (suppressedMembers.has(item.user_id)) items.delete(id);
@@ -1630,6 +1637,16 @@ window.CoachDashboard = (() => {
         zoom === 1 ? "Full day" : `${zoom}× zoom`;
       toolbar.querySelector('[data-action="Zoom in"]').disabled = zoom === 128;
       toolbar.querySelector('[data-action="Zoom out"]').disabled = zoom === 1;
+      // Redrawing scale/markers must not send the next keyboard activation to
+      // the page. Never restore an old or filtered authority inventory's focus.
+      if (focusedEventId && visibleIds.has(focusedEventId) && interactive()) {
+        const replacement = [
+          ...track.querySelectorAll(".dashboard-timeline-mark"),
+        ].find(
+          (mark) => mark.dataset.eventId === focusedEventId && !mark.hidden,
+        );
+        replacement?.focus({ preventScroll: true });
+      }
     };
     for (const type of [null, ...new Set([...items.values()].map(category))]) {
       const chip = text(
