@@ -364,26 +364,40 @@ export class Worker {
       : "none";
   }
   /** Retry only the captured incarnation; backend Stop acknowledges an already
-   * stopped generation when the original response was lost. */
-  async recoverStoppedPresence() {
-    if (this.state !== "stopped" || this.presenceStopRecovery !== "pending")
-      return;
-    try {
-      await this.report("stopped");
-      this.presence = "reported";
-      this.diagnostic({
-        source: "worker",
-        stage: "presence-stop-recovery",
-        level: "info",
-      });
-    } catch {
-      // Denied/stale generation and transport failures remain unconfirmed.
-      this.diagnostic({
-        source: "worker",
-        stage: "presence-stop-recovery",
-        level: "warn",
-      });
-    }
+   * stopped generation when the original response was lost. An initial
+   * registration whose reply was lost left no generation: this same instance's
+   * generation-less running report returns a still-running row's generation
+   * without rotating it (or registers an uncommitted one) and is denied for a
+   * stopped row. Only that issued generation is then stopped. One bounded
+   * attempt per call, after Stop settled; never a new instance or task work. */
+  recoverStoppedPresence(): Promise<void> {
+    if (this.presenceRecovery) return this.presenceRecovery;
+    if (!this.stopSettled || this.presenceStopRecovery === "none")
+      return Promise.resolve();
+    this.presenceRecovery = (async () => {
+      try {
+        if (!this.presenceGeneration) await this.report("running");
+        await this.report("stopped");
+        this.presence = "reported";
+        this.diagnostic({
+          source: "worker",
+          stage: "presence-stop-recovery",
+          level: "info",
+        });
+      } catch (error) {
+        // Denied/stale/stopped rows, malformed generations and transport
+        // failures remain unconfirmed; a denial is never stop proof.
+        this.diagnostic({
+          source: "worker",
+          stage: "presence-stop-recovery",
+          level: "warn",
+          error: safeError(error),
+        });
+      }
+    })().finally(() => {
+      this.presenceRecovery = undefined;
+    });
+    return this.presenceRecovery;
   }
   get incidents() {
     return this.isolated.map(({ task, digest, reason, nextCheck }) => ({
@@ -397,6 +411,8 @@ export class Worker {
   private loop?: Promise<void>;
   private startup?: Promise<"reported" | "unsupported">;
   private stopping?: Promise<void>;
+  private stopSettled = false;
+  private presenceRecovery?: Promise<void>;
   // Poll's cancellation race may settle before native finally/cleanup. Keep
   // the real invocation owned until it settles, including queued admission.
   private readonly invocations = new Set<Promise<string>>();
@@ -1711,8 +1727,13 @@ export class Worker {
     this.update("stopped");
   }
   async stop() {
-    if (this.stopping) return this.stopping;
-    this.stopping = (async () => {
+    this.stopping ??= this.stopOnce();
+    await this.stopping;
+    // Shutdown joins an in-flight presence recovery rather than abandoning it.
+    await this.presenceRecovery;
+  }
+  private stopOnce() {
+    return (async () => {
       this.controller.abort();
       if (this.presenceTimer) clearInterval(this.presenceTimer);
       await Promise.allSettled([
@@ -1744,7 +1765,7 @@ export class Worker {
         }
       }
       this.update("stopped");
+      this.stopSettled = true;
     })();
-    return this.stopping;
   }
 }
