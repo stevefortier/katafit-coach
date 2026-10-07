@@ -387,7 +387,7 @@ action("save", async () => {
   const draft = modelsDraft;
   if (!draftActive(draft)) {
     notice(
-      "Choose the active model to use after Save. The active model cannot be removed without choosing another.",
+      "Choose the active model in Coach Settings → Model before saving. The active model cannot be removed without choosing another.",
       "warning",
     );
     return;
@@ -513,6 +513,8 @@ function renderModelStatus() {
   if (!config || !modelsDraft) {
     $("activeModelBadge").textContent = "";
     $("modelDraftStatus").textContent = "";
+    $("registryModelNote").textContent = "";
+    renderModelChoices();
     return;
   }
   const saved = savedModels();
@@ -533,19 +535,97 @@ function renderModelStatus() {
         modelLabel(draft.provider, draft.model) +
         " — becomes active only after Save."
       : "";
+  $("registryModelNote").textContent = draft
+    ? ""
+    : "This draft removes the active model. Choose another in Coach Settings → Model before saving.";
   for (const card of $("providerList").querySelectorAll("[data-provider]")) {
     const p = modelsDraft.providers.find((x) => x.id === card.dataset.provider);
     if (!p) continue;
     card.querySelector(".key-status").textContent = keyStatus(p);
     card.querySelector('[data-field="clearApiKey"]').checked = p.clearApiKey;
-    for (const radio of card.querySelectorAll('input[type="radio"]')) {
-      const m = p.models.find((x) => x.id === radio.value);
-      if (m)
+  }
+  renderModelChoices();
+}
+// Coach Settings → Model: choose the active entry from the (draft) registry.
+// Rebuilt only when registered identities change so keyboard focus survives.
+let modelChoicesShape;
+function renderModelChoices() {
+  const list = $("modelChoices");
+  const saved = config && modelsDraft ? savedModels().active : null;
+  const providers = saved ? modelsDraft.providers : [];
+  const shape = JSON.stringify([
+    saved,
+    providers.map((p) => [
+      p.id,
+      p.name,
+      p.models.map((m) => [m.id, m.name, m.model, m.vision === true]),
+    ]),
+  ]);
+  if (shape !== modelChoicesShape) {
+    modelChoicesShape = shape;
+    const focused = list.contains(document.activeElement)
+      ? document.activeElement.value
+      : null;
+    list.replaceChildren();
+    for (const p of providers)
+      for (const m of p.models) {
+        const providerName = p.name || "New provider";
+        const title = m.name.trim() || m.model.trim() || "New model";
+        const option = document.createElement("label");
+        option.className = "model-choice";
+        option.dataset.choiceProvider = p.id;
+        option.dataset.choiceModel = m.id;
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "activeModel";
+        radio.value = p.id + "/" + m.id;
         radio.setAttribute(
           "aria-label",
-          `Use ${p.name || "provider"} · ${m.name || m.model || "model"} after Save`,
+          `Use ${providerName} · ${title} (${m.model || "no model ID"}) after Save`,
         );
-    }
+        radio.addEventListener("change", () => {
+          modelsDraft.active = { provider: p.id, model: m.id };
+          renderModelStatus();
+        });
+        const text = document.createElement("span");
+        text.className = "model-choice-text";
+        const head = document.createElement("span");
+        head.className = "model-choice-head";
+        const name = document.createElement("strong");
+        name.className = "model-choice-title";
+        name.textContent = title;
+        head.append(name);
+        if (saved.provider === p.id && saved.model === m.id) {
+          const badge = document.createElement("span");
+          badge.className = "saved-badge";
+          badge.textContent = "Saved active";
+          head.append(badge);
+        }
+        const meta = (value) => {
+          const line = document.createElement("span");
+          line.className = "model-choice-meta";
+          line.textContent = value;
+          return line;
+        };
+        text.append(
+          head,
+          meta("Provider: " + providerName),
+          meta("Model ID: " + (m.model || "not set")),
+        );
+        if (m.vision) text.append(meta("Vision: original-image input"));
+        option.append(radio, text);
+        list.append(option);
+      }
+    list
+      .querySelector(`input[value="${CSS.escape(focused ?? "")}"]`)
+      ?.focus({ preventScroll: true });
+  }
+  for (const radio of list.querySelectorAll("input")) {
+    const option = radio.closest(".model-choice");
+    radio.checked =
+      modelsDraft.active.provider === option.dataset.choiceProvider &&
+      modelsDraft.active.model === option.dataset.choiceModel;
+    radio.disabled = editorsLocked;
   }
 }
 function keyStatus(p) {
@@ -602,8 +682,7 @@ function editorButton(label, actionName, onClick, disabled = false) {
 function renderProviders(focus) {
   const list = $("providerList");
   list.replaceChildren();
-  if (!modelsDraft) return;
-  const saved = config ? savedModels() : null;
+  if (!modelsDraft) return renderModelStatus();
   for (const p of modelsDraft.providers) {
     const card = document.createElement("section");
     card.className = "provider-card";
@@ -695,24 +774,6 @@ function renderProviders(focus) {
       };
       updateTitle();
       modelHeader.append(title);
-      const pick = editorInput(
-        "Active after Save",
-        modelsDraft.active.provider === p.id &&
-          modelsDraft.active.model === m.id,
-        { type: "radio", name: "activeModel", value: m.id },
-        () => (modelsDraft.active = { provider: p.id, model: m.id }),
-      );
-      pick.wrapper.classList.add("active-pick");
-      if (
-        saved &&
-        saved.active.provider === p.id &&
-        saved.active.model === m.id
-      ) {
-        const badge = document.createElement("span");
-        badge.className = "saved-badge";
-        badge.textContent = "Saved active";
-        modelHeader.append(badge);
-      }
       const fieldsRow = document.createElement("div");
       fieldsRow.className = "split";
       const label = editorInput(
@@ -749,7 +810,6 @@ function renderProviders(focus) {
       vision.input.dataset.field = "vision";
       row.append(
         modelHeader,
-        pick.wrapper,
         fieldsRow,
         vision.wrapper,
         editorButton(
@@ -812,7 +872,7 @@ function renderProviders(focus) {
 let editorsLocked = false;
 function applyEditorLock() {
   for (const input of document.querySelectorAll(
-    "#katafit input, #models input, #models select, #models button, #persona input, #persona textarea, #persona select, #skills input, #skills textarea, #skills button",
+    "#katafit input, #models input, #models select, #models button, #model input, #persona input, #persona textarea, #persona select, #skills input, #skills textarea, #skills button",
   ))
     input.disabled = editorsLocked || input.dataset.fixed === "disabled";
 }
@@ -1455,6 +1515,7 @@ const settingsGroups = {
   settings: ["katafit", "models", "updates", "log"],
   coachSettings: [
     "persona",
+    "model",
     "preview",
     "skills",
     "memories",

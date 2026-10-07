@@ -385,6 +385,17 @@
               </button>
               <button
                 type="button"
+                id="settings-model-tab"
+                role="tab"
+                aria-controls="model"
+                aria-selected="false"
+                tabindex="-1"
+                class="secondary"
+              >
+                Model
+              </button>
+              <button
+                type="button"
                 id="settings-preview-tab"
                 role="tab"
                 aria-controls="preview"
@@ -474,16 +485,15 @@
               hidden
             >
               <h2>Models</h2>
-              <p id="activeModelBadge" class="active-badge"></p>
-              <p id="modelDraftStatus" class="hint" role="status"></p>
               <p class="hint">
                 Providers must offer an OpenAI-compatible Chat Completions API:
                 Coach sends requests to the base URL plus /chat/completions.
                 Coach does not discover, list or verify models; enter model IDs
                 exactly as your provider documents them. Browsing and editing
-                here contacts nobody. Save applies the selected model; Preview,
-                the worker and native Operator Pi use the saved active model.
+                here contacts nobody. Choose which registered model Coach uses
+                in Coach Settings → Model.
               </p>
+              <p id="registryModelNote" class="hint" role="status"></p>
               <div id="providerList"></div>
               <div class="provider-add">
                 <label
@@ -502,6 +512,29 @@
                 in them; original images are sent only when the saved active
                 model has vision enabled.
               </p>
+            </section>
+            <section
+              class="card"
+              id="model"
+              role="tabpanel"
+              aria-labelledby="settings-model-tab"
+              tabindex="0"
+              hidden
+            >
+              <h2>Model</h2>
+              <p id="activeModelBadge" class="active-badge"></p>
+              <p id="modelDraftStatus" class="hint" role="status"></p>
+              <p class="hint">
+                Choose which registered model Coach uses. The choice applies
+                only after Save; Preview, the worker and native Operator Pi use
+                the saved active model. Register providers, models and API keys
+                in Server Settings → Models.
+              </p>
+              <div
+                id="modelChoices"
+                role="radiogroup"
+                aria-label="Active model"
+              ></div>
             </section>
             <section
               class="card"
@@ -1271,8 +1304,8 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               ><span id="revision"></span>
             </div>
             <p class="hint" id="settingsSaveHint">
-              Save applies Kata.fit, Models and Persona drafts across tabs.
-              Preview and worker use saved settings.
+              Save applies Kata.fit, Models, Model and Persona drafts across
+              tabs. Preview and worker use saved settings.
             </p>
             <section
               class="card diagnostics"

@@ -65,7 +65,7 @@ async function neutralSurfaces(page: Page) {
       // Deliberate status/warning/error colors are not decorative accents.
       if (
         el.matches(
-          '#modelDraftStatus, #models .saved-badge, [data-tone="error"], #nativeStatus[data-state="error"], #nativeStatus[data-state="unavailable"], #nativeStatus[data-state="overflow"], #coachPaneStatus[data-state], .log-error, .log-warn',
+          '#modelDraftStatus, #registryModelNote, #model .saved-badge, [data-tone="error"], #nativeStatus[data-state="error"], #nativeStatus[data-state="unavailable"], #nativeStatus[data-state="overflow"], #coachPaneStatus[data-state], .log-error, .log-warn',
         )
       )
         continue;
@@ -545,9 +545,11 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       await primaryContrast(page, "#settings-katafit-tab");
       await capture("settings-katafit");
       await settingsTab(page, "Models");
-      await page.locator(".saved-badge").waitFor();
       await primaryContrast(page, "#settings-models-tab");
       await capture("settings-models");
+      await settingsTab(page, "Model");
+      await page.locator(".saved-badge").waitFor();
+      await capture("settings-model");
       await settingsTab(page, "Persona");
       await capture("settings-persona");
       await page.locator("#name").fill("Unsaved synthetic draft");

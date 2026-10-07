@@ -99,8 +99,9 @@ test("Models hierarchy groups connections and named model cards at desktop and m
       "Everyday reasoning",
     );
     assert.equal(
-      await first.locator(".model-header .saved-badge").innerText(),
-      "Saved active",
+      await page.locator("#models .saved-badge, #models [type=radio]").count(),
+      0,
+      "registration cards carry no activation controls",
     );
     const name = first.locator('[data-field="name"]');
     await name.fill('<img src=x onerror="alert(1)">');
@@ -217,10 +218,21 @@ const card = (page: Page, id: string) =>
   page.locator(`[data-provider="${id}"]`);
 const field = (page: Page, id: string, name: string) =>
   card(page, id).locator(`[data-field="${name}"]`).first();
+// The active choice lives in Coach Settings → Model, one radio per model.
+const pick = (page: Page, id: string) =>
+  page.locator(
+    `#model .model-choice[data-choice-provider="${id}"] input[type="radio"]`,
+  );
+async function choose(page: Page, id: string) {
+  await settingsTab(page, "Model");
+  await pick(page, id).check();
+}
 
 async function assertSavedBadge(page: Page, providerId: string) {
   assert.equal(await page.locator(".saved-badge").count(), 1);
-  const badge = card(page, providerId).locator(".saved-badge");
+  const badge = page
+    .locator(`#model .model-choice[data-choice-provider="${providerId}"]`)
+    .locator(".saved-badge");
   assert.equal(await badge.innerText(), "Saved active");
   assert.deepEqual(
     await badge.evaluate((element) => {
@@ -321,10 +333,6 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     );
     assert.equal(new URL(page.url()).search, "?section=models");
     assert.match(
-      await page.locator("#activeModelBadge").innerText(),
-      /Alpha.*Alpha one/,
-    );
-    assert.match(
       await page.locator("#models").innerText(),
       /OpenAI-compatible/,
     );
@@ -334,10 +342,16 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       (await field(page, "alpha", "apiKey").getAttribute("placeholder"))!,
       /keep/i,
     );
+    assert.equal(await page.locator("#models [type=radio]").count(), 0);
+    await settingsTab(page, "Model");
+    assert.match(
+      await page.locator("#activeModelBadge").innerText(),
+      /Alpha.*Alpha one/,
+    );
     await assertSavedBadge(page, "alpha");
     // Browse and draft-select without any request.
     const before = apiCalls.length;
-    await card(page, "bravo").getByRole("radio").check();
+    await pick(page, "bravo").check();
     await assertSavedBadge(page, "alpha");
     assert.match(
       await page.locator("#activeModelBadge").innerText(),
@@ -348,8 +362,16 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       await page.locator("#modelDraftStatus").innerText(),
       /Bravo.*Save/,
     );
+    await settingsTab(page, "Models");
     await field(page, "alpha", "name").fill("Alpha renamed");
-    for (const name of ["Persona", "Preview", "Updates", "Worker", "Models"]) {
+    for (const name of [
+      "Persona",
+      "Preview",
+      "Updates",
+      "Worker",
+      "Model",
+      "Models",
+    ]) {
       const checked =
         name === "Updates"
           ? page.waitForResponse(
@@ -361,10 +383,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       await settingsTab(page, name);
       if (checked) await checked;
     }
-    assert.equal(
-      await card(page, "bravo").getByRole("radio").isChecked(),
-      true,
-    );
+    assert.equal(await pick(page, "bravo").isChecked(), true);
     assert.equal(
       await field(page, "alpha", "name").inputValue(),
       "Alpha renamed",
@@ -402,12 +421,9 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       await page.getByRole("tab", { selected: true }).innerText(),
       "Models",
     );
-    assert.equal(
-      await card(page, "bravo").getByRole("radio").isChecked(),
-      true,
-    );
+    assert.equal(await pick(page, "bravo").isChecked(), true);
     await assertSavedBadge(page, "bravo");
-    await card(page, "alpha").getByRole("radio").check();
+    await choose(page, "alpha");
     await assertSavedBadge(page, "bravo");
     await page.locator("#save").click();
     await page.waitForFunction(() =>
@@ -422,6 +438,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       vision: false,
     });
     // Endpoint change requires explicit credential intent.
+    await settingsTab(page, "Models");
     const revision = store.publicConfig().revision;
     await field(page, "bravo", "baseUrl").fill(endpoint + "/moved/v1");
     assert.match(
@@ -464,7 +481,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       .last()
       .locator('[data-action="removeModel"]')
       .click();
-    await card(page, addedId).getByRole("radio").check();
+    await choose(page, addedId);
     await page.locator("#save").click();
     await page.waitForFunction(() =>
       /Charlie/.test(document.querySelector("#activeModelBadge")!.textContent!),
@@ -474,13 +491,14 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     assert.equal(store.modelRegistry().providers.length, 3);
     assert.equal(await field(page, addedId, "apiKey").inputValue(), "");
     // Removing the saved active provider requires another selection.
+    await settingsTab(page, "Models");
     await card(page, addedId).locator('[data-action="removeProvider"]').click();
     await page.locator("#save").click();
     await page.waitForFunction(() =>
       /active model/i.test(document.querySelector("#notice")!.textContent!),
     );
     assert.equal(store.modelRegistry().providers.length, 3);
-    await card(page, "alpha").getByRole("radio").check();
+    await choose(page, "alpha");
     await page.locator("#save").click();
     await page.waitForFunction(() =>
       /Alpha renamed/.test(
@@ -490,6 +508,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     assert.equal(store.modelRegistry().providers.length, 2);
     assert.equal(store.secrets.apiKey, keyA);
     // Persona restore keeps unsaved Models and Kata.fit drafts.
+    await settingsTab(page, "Models");
     await field(page, "bravo", "name").fill("Bravo draft");
     await settingsTab(page, "Kata.fit");
     await page.locator("#token").fill("restore-token-draft");
@@ -542,7 +561,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       fullPage: true,
     });
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const name of ["Kata.fit", "Models"]) {
+    for (const name of ["Kata.fit", "Models", "Model"]) {
       await settingsTab(page, name);
       assert.equal(
         await page.evaluate(
@@ -559,11 +578,11 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       }
       await page.evaluate(() => scrollTo(0, 0));
       await page.screenshot({
-        path: `${evidence}/models-mobile-${name === "Models" ? "models" : "katafit"}.png`,
+        path: `${evidence}/models-mobile-${name.toLowerCase().replace(".", "")}.png`,
         fullPage: true,
       });
     }
-    const radio = await card(page, "alpha").getByRole("radio").boundingBox();
+    const radio = await pick(page, "alpha").first().boundingBox();
     assert.ok(radio && radio.width <= 24);
     // Update locking disables every registry editor control.
     await page.route("**/api/update", (route) =>
@@ -583,7 +602,7 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     await page.waitForFunction(() =>
       [
         ...document.querySelectorAll(
-          "#models input, #models button, #models select",
+          "#models input, #models button, #models select, #model input",
         ),
       ].every((el) => (el as HTMLInputElement).disabled),
     );

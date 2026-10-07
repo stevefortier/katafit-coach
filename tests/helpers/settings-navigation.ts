@@ -4,6 +4,7 @@ import type { Page } from "playwright-core";
 export async function settingsTab(page: Page, name: string) {
   const coach = [
     "Persona",
+    "Model",
     "Preview",
     "Skills",
     "Memories",
