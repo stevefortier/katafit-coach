@@ -82,7 +82,8 @@ export async function admin(
     await autonomy.reconcile().catch(() => false);
     if (
       updateQuiesced &&
-      worker?.presenceStopRecovery === "pending" &&
+      worker &&
+      worker.presenceStopRecovery !== "none" &&
       !updateQuiescePending &&
       !busy &&
       !preview &&
@@ -248,6 +249,16 @@ export async function admin(
     if (closing) throw new SafeError("CANCELLED");
     if (configurationUncertain)
       throw new SafeError("CONFIGURATION_STATE_UNCONFIRMED");
+    if (
+      worker?.state === "stopped" &&
+      !worker.stopConfirmed &&
+      worker.presenceStopRecovery !== "none"
+    ) {
+      // Supported Retry: one bounded exact-instance presence recovery under
+      // the caller's busy fence, before any replacement can be constructed.
+      await worker.recoverStoppedPresence();
+      if (closing) throw new SafeError("CANCELLED");
+    }
     if (
       worker?.state === "stopped" &&
       (!worker.stopConfirmed || !worker.safeToReplace)
