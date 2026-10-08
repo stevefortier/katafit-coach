@@ -1613,6 +1613,16 @@ export class Worker {
         );
       return true;
     } catch (error) {
+      // Settle the local outcome before any reporting await: the inference
+      // timer keeps running while the failure is reported and must not
+      // reinterpret a cause that was already observed.
+      const outcome = completing
+        ? new SafeError("DELIVERY_UNVERIFIED")
+        : inference &&
+            taskModelSignal?.aborted &&
+            !this.controller.signal.aborted
+          ? abortCause(inference)
+          : error;
       if (
         !completing &&
         !this.controller.signal.aborted &&
@@ -1668,13 +1678,7 @@ export class Worker {
         }
       }
       if (completing) this.update("task-result-unknown");
-      throw completing
-        ? new SafeError("DELIVERY_UNVERIFIED")
-        : inference &&
-            taskModelSignal?.aborted &&
-            !this.controller.signal.aborted
-          ? abortCause(inference)
-          : error;
+      throw outcome;
     }
   }
   start(): Promise<"reported" | "unsupported"> {

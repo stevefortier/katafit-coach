@@ -140,11 +140,15 @@ const detailAllowed = (code: unknown, detail: unknown) =>
 /** Exact additive capability; anything else keeps the legacy failure shape. */
 function failureDetailsNegotiated(cap: any) {
   const advertised = cap?.failure_details;
+  const codes = advertised?.detail_codes?.TASK_PROVIDER_FAILED;
+  // The advertised vocabulary must be exactly this closed set, as an array.
   return (
     advertised?.protocol === FAILURE_DETAILS_PROTOCOL &&
-    PROVIDER_FAILURE_DETAILS.every((detail) =>
-      advertised.detail_codes?.TASK_PROVIDER_FAILED?.includes?.(detail),
-    ) &&
+    Array.isArray(codes) &&
+    codes.every((code: unknown) => typeof code === "string") &&
+    new Set(codes).size === codes.length &&
+    codes.length === PROVIDER_FAILURE_DETAILS.length &&
+    PROVIDER_FAILURE_DETAILS.every((detail) => codes.includes(detail)) &&
     isDeepStrictEqual(advertised.timing_fields, ["elapsed_ms", "budget_ms"]) &&
     advertised.timing_max_ms === FAILURE_TIMING_MAX_MS
   );
