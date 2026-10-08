@@ -55,9 +55,12 @@ export async function discoverTasks(c: Client): Promise<string[]> {
  * (coach.capability.v1) and its task action journal. Never sent unadvertised:
  * a strict older backend would reject the unknown claim field.
  */
-export async function discoverTaskPlane(
-  c: Client,
-): Promise<{ kinds: string[]; capability: boolean; invocation?: boolean }> {
+export async function discoverTaskPlane(c: Client): Promise<{
+  kinds: string[];
+  capability: boolean;
+  invocation?: boolean;
+  failureDetails?: boolean;
+}> {
   // Capability absence/mismatch never grants task authority or breaks legacy chat.
   try {
     const listed = await c.rpc("tools/list");
@@ -99,12 +102,53 @@ export async function discoverTaskPlane(
         "coach_read_invocation_action",
         "coach_settle_invocation_action",
       ].every((n) => listed.tools?.some((t: any) => t.name === n));
-    return { kinds, capability, ...(invocation ? { invocation: true } : {}) };
+    return {
+      kinds,
+      capability,
+      ...(invocation ? { invocation: true } : {}),
+      ...(failureDetailsNegotiated(cap) ? { failureDetails: true } : {}),
+    };
   } catch {
     return { kinds: [], capability: false };
   }
 }
 const JOURNAL_TOOLS = ["coach_open_task_action", "coach_settle_task_action"];
+export const FAILURE_DETAILS_PROTOCOL = "coach.task-failure-details.v1";
+export const OUTPUT_FAILURE_DETAILS = [
+  "TASK_OUTPUT_JSON",
+  "TASK_OUTPUT_SCHEMA",
+  "TASK_OUTPUT_SEMANTIC",
+  "TASK_OUTPUT_SECURITY",
+  "TASK_OUTPUT_SIZE",
+] as const;
+export const PROVIDER_FAILURE_DETAILS = [
+  "PROVIDER_MODEL_DEADLINE",
+  "PROVIDER_UPSTREAM_TIMEOUT",
+  "PROVIDER_TOOL_ABORTED",
+  "PROVIDER_RATE_LIMITED",
+  "PROVIDER_CONNECTION_FAILED",
+  "PROVIDER_UNKNOWN",
+] as const;
+export type ProviderFailureDetail = (typeof PROVIDER_FAILURE_DETAILS)[number];
+export const FAILURE_TIMING_MAX_MS = 900000;
+// Output subtypes predate negotiation; provider subtypes never do.
+const detailAllowed = (code: unknown, detail: unknown) =>
+  (code === "TASK_INVALID_OUTPUT" &&
+    (OUTPUT_FAILURE_DETAILS as readonly unknown[]).includes(detail)) ||
+  (code === "TASK_PROVIDER_FAILED" &&
+    (PROVIDER_FAILURE_DETAILS as readonly unknown[]).includes(detail));
+/** Exact additive capability; anything else keeps the legacy failure shape. */
+function failureDetailsNegotiated(cap: any) {
+  const advertised = cap?.failure_details;
+  return (
+    advertised?.protocol === FAILURE_DETAILS_PROTOCOL &&
+    PROVIDER_FAILURE_DETAILS.every((detail) =>
+      advertised.detail_codes?.TASK_PROVIDER_FAILED?.includes?.(detail),
+    ) &&
+    isDeepStrictEqual(advertised.timing_fields, ["elapsed_ms", "budget_ms"]) &&
+    advertised.timing_max_ms === FAILURE_TIMING_MAX_MS
+  );
+}
 export function validateTask(task: any, kinds: string[]) {
   const keys = [
     "id",
@@ -535,14 +579,7 @@ export function verifyTaskResolution(task: any, response: any, digest: string) {
   if (
     Object.hasOwn(receipt, "failure_detail_code") &&
     (receipt.status !== "failed" ||
-      receipt.failure_code !== "TASK_INVALID_OUTPUT" ||
-      ![
-        "TASK_OUTPUT_JSON",
-        "TASK_OUTPUT_SCHEMA",
-        "TASK_OUTPUT_SEMANTIC",
-        "TASK_OUTPUT_SECURITY",
-        "TASK_OUTPUT_SIZE",
-      ].includes(receipt.failure_detail_code))
+      !detailAllowed(receipt.failure_code, receipt.failure_detail_code))
   )
     throw new Error("DELIVERY_UNVERIFIED");
   if (["completed", "consumed"].includes(receipt.status)) {
@@ -594,13 +631,7 @@ export function verifyTaskFailure(
     receipt.status !== "failed" ||
     receipt.failure_code !== code ||
     (detailCode &&
-      (![
-        "TASK_OUTPUT_JSON",
-        "TASK_OUTPUT_SCHEMA",
-        "TASK_OUTPUT_SEMANTIC",
-        "TASK_OUTPUT_SECURITY",
-        "TASK_OUTPUT_SIZE",
-      ].includes(detailCode) ||
+      (!detailAllowed(code, detailCode) ||
         receipt.failure_detail_code !== detailCode)) ||
     receipt.result_sha256 !== null ||
     receipt.completed_at !== null ||

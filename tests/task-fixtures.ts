@@ -233,6 +233,15 @@ export async function taskFixture(options: any = {}) {
         }),
       );
     };
+    // Opt-in transport-level denial of only the in-generation search tool.
+    if (
+      n === "coach_memory_recall" &&
+      options.memorySearchFailure &&
+      a?.mode === "search"
+    ) {
+      res.writeHead(403).end();
+      return;
+    }
     if (n === "coach_memory_recall" && options.memory) {
       res.setHeader("Content-Type", "application/json");
       res.end(
@@ -375,6 +384,32 @@ export async function taskFixture(options: any = {}) {
         limits,
         direct_mutations_forbidden: true,
         completion_is_publication: false,
+        ...(options.failureDetails
+          ? {
+              failure_details: {
+                protocol: "coach.task-failure-details.v1",
+                detail_codes: {
+                  TASK_PROVIDER_FAILED: [
+                    "PROVIDER_MODEL_DEADLINE",
+                    "PROVIDER_UPSTREAM_TIMEOUT",
+                    "PROVIDER_TOOL_ABORTED",
+                    "PROVIDER_RATE_LIMITED",
+                    "PROVIDER_CONNECTION_FAILED",
+                    "PROVIDER_UNKNOWN",
+                  ],
+                  TASK_INVALID_OUTPUT: [
+                    "TASK_OUTPUT_JSON",
+                    "TASK_OUTPUT_SCHEMA",
+                    "TASK_OUTPUT_SEMANTIC",
+                    "TASK_OUTPUT_SECURITY",
+                    "TASK_OUTPUT_SIZE",
+                  ],
+                },
+                timing_fields: ["elapsed_ms", "budget_ms"],
+                timing_max_ms: 900000,
+              },
+            }
+          : {}),
         ...(options.negotiate
           ? {
               capability_protocols: ["coach.capability.v1"],
