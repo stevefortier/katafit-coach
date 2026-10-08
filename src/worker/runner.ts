@@ -13,6 +13,8 @@ import {
   verifyTaskFailure,
   verifyTaskResolution,
   verifyTaskInvalidation,
+  FAILURE_TIMING_MAX_MS,
+  type ProviderFailureDetail,
 } from "../katafit/tasks.js";
 import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
@@ -78,6 +80,55 @@ export async function bounded<T>(
   } finally {
     signal.removeEventListener("abort", abort);
   }
+}
+interface InferenceSignals {
+  startedAt: number;
+  budgetMs: number;
+  timer: AbortSignal;
+  terminal: AbortController;
+  signal: AbortSignal;
+}
+const boundedMs = (ms: number) =>
+  Math.min(FAILURE_TIMING_MAX_MS, Math.max(0, Math.round(ms)));
+const terminalFirst = (inference: InferenceSignals) =>
+  inference.terminal.signal.aborted &&
+  inference.signal.reason === inference.terminal.signal.reason;
+/**
+ * Closed provider-failure subtype from observed facts only: an HTTP status
+ * seen at the provider boundary, then which abort source fired first. Never
+ * inferred from provider text or elapsed time alone.
+ */
+export function providerFailureDetail(
+  error: unknown,
+  inference: InferenceSignals,
+): ProviderFailureDetail {
+  const safe = error instanceof SafeError ? error : undefined;
+  if (safe && Number.isInteger(safe.metadata.status)) {
+    if (safe.code === "PROVIDER_TIMEOUT") return "PROVIDER_UPSTREAM_TIMEOUT";
+    // HTTP 429 admission refusal, for request rate or quota.
+    if (
+      ["PROVIDER_RATE_LIMITED", "PROVIDER_QUOTA_EXCEEDED"].includes(safe.code)
+    )
+      return "PROVIDER_RATE_LIMITED";
+    return "PROVIDER_UNKNOWN";
+  }
+  if (inference.signal.aborted) {
+    if (terminalFirst(inference)) return "PROVIDER_TOOL_ABORTED";
+    if (inference.timer.aborted) return "PROVIDER_MODEL_DEADLINE";
+    return "PROVIDER_UNKNOWN";
+  }
+  if (safe?.code === "PROVIDER_CONNECTION_FAILED")
+    return "PROVIDER_CONNECTION_FAILED";
+  return "PROVIDER_UNKNOWN";
+}
+/** The local error for an aborted inference keeps its original safe cause. */
+function abortCause(inference: InferenceSignals) {
+  if (terminalFirst(inference))
+    return safeError(inference.terminal.signal.reason);
+  return new SafeError("PROVIDER_TIMEOUT", {
+    elapsedMs: boundedMs(Date.now() - inference.startedAt),
+    budgetMs: boundedMs(inference.budgetMs),
+  });
 }
 export interface WorkerOptions {
   origin: string;
@@ -795,6 +846,7 @@ export class Worker {
           taskPlane.invocation === true &&
             !!this.options.actionLedger?.snapshot &&
             !!this.options.integrationDirectory,
+          taskPlane.failureDetails === true,
         );
         if (!handled) taskAttempt = false;
         return handled;
@@ -1259,6 +1311,7 @@ export class Worker {
     ref: string,
     negotiate = false,
     ordinary = false,
+    failureDetails = false,
   ) {
     if (this.updateQuiesced || this.statsPollPauses) return false;
     const { task } = await c.call("coach_claim_task", {
@@ -1304,6 +1357,7 @@ export class Worker {
     };
     let phase = "context";
     let taskModelSignal: AbortSignal | undefined;
+    let inference: InferenceSignals | undefined;
     let completing = false;
     try {
       const context = await c.call("coach_read_task_context", fence, budget());
@@ -1316,12 +1370,22 @@ export class Worker {
       );
       if (ms <= 0) throw new Error("LEASE_EXPIRED");
       const terminal = new AbortController();
+      // Keep each abort source distinct: the timer, a tool/terminal fence and
+      // Stop are different failure causes even though they share one signal.
+      const timer = AbortSignal.timeout(ms);
       const signal = AbortSignal.any([
         this.controller.signal,
-        AbortSignal.timeout(ms),
+        timer,
         terminal.signal,
       ]);
       taskModelSignal = signal;
+      inference = {
+        startedAt: Date.now(),
+        budgetMs: ms,
+        timer,
+        terminal,
+        signal,
+      };
       const deadlineAt = Date.now() + ms;
       const admission = taskAdmission(task, context);
       // One capability (and action record) for every attempt of this lease:
@@ -1549,6 +1613,16 @@ export class Worker {
         );
       return true;
     } catch (error) {
+      // Settle the local outcome before any reporting await: the inference
+      // timer keeps running while the failure is reported and must not
+      // reinterpret a cause that was already observed.
+      const outcome = completing
+        ? new SafeError("DELIVERY_UNVERIFIED")
+        : inference &&
+            taskModelSignal?.aborted &&
+            !this.controller.signal.aborted
+          ? abortCause(inference)
+          : error;
       if (
         !completing &&
         !this.controller.signal.aborted &&
@@ -1571,6 +1645,16 @@ export class Worker {
               ["JSON", "SCHEMA", "SEMANTIC", "SECURITY", "SIZE"] as const
             ).includes(error.category)
               ? `TASK_OUTPUT_${error.category}`
+              : // Provider subtypes and timing only when the backend advertises them.
+                failureDetails && code === "TASK_PROVIDER_FAILED" && inference
+                ? providerFailureDetail(error, inference)
+                : undefined;
+          const timing =
+            failureDetails && inference && phase !== "context"
+              ? {
+                  elapsed_ms: boundedMs(Date.now() - inference.startedAt),
+                  budget_ms: boundedMs(inference.budgetMs),
+                }
               : undefined;
           await c.call(
             "coach_fail_task",
@@ -1578,6 +1662,7 @@ export class Worker {
               ...fence,
               code,
               ...(detailCode ? { detail_code: detailCode } : {}),
+              ...(timing ? { timing } : {}),
             },
             budget(),
           );
@@ -1593,11 +1678,7 @@ export class Worker {
         }
       }
       if (completing) this.update("task-result-unknown");
-      throw completing
-        ? new SafeError("DELIVERY_UNVERIFIED")
-        : taskModelSignal?.aborted && !this.controller.signal.aborted
-          ? new SafeError("PROVIDER_TIMEOUT")
-          : error;
+      throw outcome;
     }
   }
   start(): Promise<"reported" | "unsupported"> {
