@@ -367,6 +367,47 @@ export class InvocationCapability {
       ...(this.integrations?.tools() ?? []),
     ];
   }
+  /**
+   * Host-initiated GET through the model tool's own acquisition path: the
+   * backend authorizes it, and the result is retained so a later model read
+   * of the same path reuses it instead of refetching.
+   */
+  async acquire(
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<
+    { ok: true; body: unknown } | { ok: false; error: string; status?: number }
+  > {
+    const raw = { method: "GET", path };
+    let canonical: string;
+    try {
+      canonical = restRequestArgs(raw).path;
+    } catch {
+      return { ok: false, error: "ARGUMENTS_REJECTED" };
+    }
+    // The same GET guards as the model tool; nothing reaches the network.
+    if (classifySecretRequest("GET", canonical))
+      return { ok: false, error: "SECRET_ENDPOINT_DENIED" };
+    if (this.integrationRoute(canonical))
+      return { ok: false, error: "HOST_ONLY_ROUTE" };
+    await this.read(raw, canonical, signal);
+    const entry = this.acquired.get(canonical);
+    if (!entry || entry.failed)
+      return {
+        ok: false,
+        ...(entry?.failed ?? { error: "REST_READ_UNAVAILABLE" }),
+      };
+    try {
+      return {
+        ok: true,
+        body: JSON.parse(
+          entry.result.content.find((p: any) => p.type === "text").text,
+        ),
+      };
+    } catch {
+      return { ok: false, error: "REST_READ_UNAVAILABLE" };
+    }
+  }
   private async execute(raw: any, signal?: AbortSignal) {
     let args: ReturnType<typeof restRequestArgs>;
     try {
