@@ -34,6 +34,7 @@ import { backendWireBudget } from "../katafit/wireBudget.js";
 import { serializeContext } from "../katafit/context.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 import { photoReviewGuidance } from "./photoReviewGuidance.js";
+import { acquireDayMeals } from "./dayMealEvidence.js";
 import {
   formatSkillBodies,
   skillForTask,
@@ -1475,6 +1476,24 @@ export class Worker {
           enabledSkills: selectedSkills.length,
         },
       });
+      // A day closeout's seed lists meal IDs only. Read them before the model
+      // sees the task; REST opt-out and legacy contexts keep the seed alone.
+      const meals =
+        task.kind === "day_closure" &&
+        admission.negotiated &&
+        context.capability.rest.available === true
+          ? await acquireDayMeals(capability, context.evidence, {
+              subject: String(task.requester_id).toLowerCase(),
+              self: admission.subjectIsPrincipal,
+              signal,
+            })
+          : undefined;
+      const envelope = meals
+        ? JSON.stringify({
+            ...JSON.parse(serialized),
+            acquired_meal_evidence: meals,
+          })
+        : serialized;
       const system =
         effectivePrompt(this.options.system, context.instructions, secrets) +
         formatSkillBodies(selectedSkills, "worker") +
@@ -1490,7 +1509,7 @@ export class Worker {
           ? "\nSemantic constraint: activity_feedback.reply_worthwhile must equal Boolean(general_advice). If you write nonempty general_advice, set reply_worthwhile to true; if reply_worthwhile is false, general_advice must be empty. This is an individual activity reaction, not a day closeout. Omit day_closeout_meal_assessment; return feedback only for the triggering activity."
           : "") +
         (task.kind === "day_closure"
-          ? "\nDay closeout fixed constraints (these override conflicting editable or disabled skill guidance): Set activity_feedback.reply_worthwhile to true. Write one coherent closeout using 3 to 6 concise, substantive, persona-aware sentences total across general_advice and day_closeout_meal_assessment; do not repeat the same assessment in both fields. Acknowledge that all scheduled meals are complete. Say the full day or all activities are complete only when the supplied evidence explicitly says the remaining activity count is zero; otherwise state remaining work accurately. Treat the evidence as a snapshot only at its supplied as-of timestamp and do not claim later state. Provide a nonempty day_closeout_meal_assessment supported by supplied or fetched meal and nutrition facts; do not infer nutrition adequacy or target alignment unless you actually fetched the targets. Identify an evidenced win and give at most one next-day or recovery priority across the output. Do not invent achievements, targets, nutrition quality, actions, proposals, plan changes, or prescriptions; claim only actions whose tool result confirmed them."
+          ? "\nDay closeout fixed constraints (these override conflicting editable or disabled skill guidance): Set activity_feedback.reply_worthwhile to true. Write one coherent closeout using 3 to 6 concise, substantive, persona-aware sentences total across general_advice and day_closeout_meal_assessment; do not repeat the same assessment in both fields. Acknowledge that all scheduled meals are complete. Say the full day or all activities are complete only when the supplied evidence explicitly says the remaining activity count is zero; otherwise state remaining work accurately. Treat the evidence as a snapshot only at its supplied as-of timestamp and do not claim later state. Provide a nonempty day_closeout_meal_assessment supported by supplied or fetched meal and nutrition facts; do not infer nutrition adequacy or target alignment unless you actually fetched the targets. When the input has acquired_meal_evidence, it holds this host's current per-meal reads: an ok read with foods_empty true means no saved foods, and foods_truncated means foods lists only part of foods_count saved foods; any other read status, and null or unavailable totals or targets, are unknown, never zero or absent. Identify an evidenced win and give at most one next-day or recovery priority across the output. Do not invent achievements, targets, nutrition quality, actions, proposals, plan changes, or prescriptions; claim only actions whose tool result confirmed them."
           : "") +
         (task.kind === "workout_suggestions"
           ? '\nWorkout output: recommendations is an object keyed by the exact exercise IDs from the workout context, not an array or a single summary. Cover each exercise in that workout using its exact key (1 to 40 entries); never use the workout ID as an exercise key. Do not invent IDs, history, or evidence. Shape template only: {"recommendations":{"<exact exercise ID from context>":{"summary":"","target_weight":null}}}. Replace the placeholder with a context exercise ID; do not output the placeholder. Each entry requires summary (string, at most 1000 characters). Optional numeric targets must be JSON numbers within the schema bounds, or null when unknown; sets/reps/duration must be integers. Intensity is low, moderate, high, or null. Omit unsupported optional fields; no extra fields. Use evidence-grounded advice, not example claims or invented loads. Return the actual complete JSON object, at most 24000 UTF-8 bytes, not a description of it.'
@@ -1505,7 +1524,7 @@ export class Worker {
         const text = await bounded(
           () =>
             this.options.complete(
-              serialized,
+              envelope,
               signal,
               system +
                 (attempt === 1
