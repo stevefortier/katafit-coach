@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { complete } from "../src/runtime/piAdapter.js";
-import { Worker } from "../src/worker/runner.js";
+// This acceptance gate exercises the built package, never the tsx src loader.
+import { complete } from "../dist/runtime/piAdapter.js";
+import { Worker } from "../dist/worker/runner.js";
 import { closeServer, pairedSkip } from "./helpers/account-backend.js";
 import { answer } from "./helpers/continuity.js";
 import {
@@ -95,6 +96,27 @@ async function runOnce(
   } finally {
     await w.stop();
   }
+}
+
+async function retryHttp(b: TaskPairedBackend, user: string, status: string) {
+  const jwt = b.backendModule("jsonwebtoken");
+  const token = jwt.sign({ user_id: user }, process.env.JWT_SECRET);
+  const response = await fetch(
+    `${b.origin}/api/status/${status}/coach-insight/retry`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    },
+  );
+  const result = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(result));
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.match(result.task_id, /^[a-f0-9]{24}$/);
+  return result;
 }
 
 function envelopeOf(body: any) {
@@ -254,7 +276,8 @@ test(
           assert.equal(first.failure_code, "TASK_PROVIDER_FAILED");
           await f.drift();
 
-          const renewed = await tasks.retryFailedDailyInsight(
+          const renewed = await retryHttp(
+            backend,
             String(f.member),
             String(f.status),
           );
@@ -362,10 +385,7 @@ test(
           const f = await dojo(backend);
           model.set("fail");
           await runOnce(backend, f.token, model);
-          await tasks.retryFailedDailyInsight(
-            String(f.member),
-            String(f.status),
-          );
+          await retryHttp(backend, String(f.member), String(f.status));
           model.set("ok", async () => {
             await backend.db.collection("activities").insertOne({
               _id: new backend.ObjectId(),
@@ -399,10 +419,7 @@ test(
             superseded.invalidation_detail_code,
             "DAILY_SNAPSHOT_CHANGED",
           );
-          await tasks.retryFailedDailyInsight(
-            String(f.member),
-            String(f.status),
-          );
+          await retryHttp(backend, String(f.member), String(f.status));
           const ok = await runOnce(backend, f.token, model);
           assert.equal(ok.error, undefined, String(ok.error));
           const { observation } = envelopeOf(model.bodies.at(-1));
