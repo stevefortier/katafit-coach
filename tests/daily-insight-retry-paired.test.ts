@@ -92,7 +92,7 @@ async function runOnce(
       () => undefined,
       (e: Error) => e,
     );
-    return { error, state: w.state };
+    return { error, state: w.state, safeToReplace: w.safeToReplace };
   } finally {
     await w.stop();
   }
@@ -263,6 +263,81 @@ test(
           .collection("recommendations")
           .find({ user_id: member, kind: "daily" })
           .toArray();
+
+      await t.test(
+        "accepted but unpublished supersession settles the original worker even after Retry renews the lease",
+        async () => {
+          const f = await dojo(backend);
+          model.set("ok");
+          const daily = backend.backendModule("./core/externalDailyCoachTasks");
+          const execute = tasks.execute;
+          let release!: () => void;
+          let enter!: () => void;
+          const held = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const entered = new Promise<void>((resolve) => {
+            enter = resolve;
+          });
+          let gate = true;
+          // Hold the actual HTTP reconciliation at dispatch BEFORE its Mongo
+          // transaction. Completion must already be committed; no result or
+          // authorization response is replaced by this test-only scheduling gate.
+          tasks.execute = async (auth: any, name: string, input: any) => {
+            if (name === "coach_reconcile_task" && gate) {
+              gate = false;
+              enter();
+              await held;
+            }
+            return execute(auth, name, input);
+          };
+          const pending = runOnce(backend, f.token, model);
+          try {
+            await Promise.race([
+              entered,
+              pending.then(() => {
+                throw new Error("worker never reached held reconciliation");
+              }),
+            ]);
+            const accepted = await row(f.status);
+            assert.equal(accepted.status, "completed");
+            assert.match(accepted.result_hash, /^[a-f0-9]{64}$/);
+            await f.drift();
+            assert.equal(await daily.consumePending(backend.db), 0);
+            assert.equal((await row(f.status)).status, "invalidated");
+            assert.equal((await published(f.member)).length, 0);
+            const retry = await retryHttp(
+              backend,
+              String(f.member),
+              String(f.status),
+            );
+            assert.equal(retry.queued, true);
+            release();
+            const settled = await pending;
+            assert.equal(settled.error, undefined, String(settled.error));
+            assert.equal(
+              settled.safeToReplace,
+              true,
+              "accepted original lease must settle without unresolved incident",
+            );
+            const fresh = await runOnce(backend, f.token, model);
+            assert.equal(fresh.error, undefined, String(fresh.error));
+            assert.equal(fresh.safeToReplace, true);
+            assert.equal((await row(f.status)).retry_count, 1);
+            assert.equal((await published(f.member)).length, 1);
+            assert.equal(
+              await backend.db
+                .collection("external_coach_task_actions")
+                .countDocuments({}),
+              0,
+            );
+          } finally {
+            release();
+            tasks.execute = execute;
+            await pending;
+          }
+        },
+      );
 
       await t.test(
         "failed attempt + ordinary drift: Retry delivers dated retry metadata and fresh evidence, then publishes once",
