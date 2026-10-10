@@ -329,9 +329,36 @@ export function taskContext(task: any, context: any, secrets: string[]) {
     throw new Error("CONTEXT_REJECTED");
   assertNoSecrets(context, secrets);
   return JSON.stringify({
-    generation_task: { kind: task.kind, schema_id: task.schema_id },
+    generation_task: {
+      kind: task.kind,
+      schema_id: task.schema_id,
+      // The validated claim (echoed by the context and, when negotiated, bound
+      // to capability.rest.subject_user_id), so requester facts match exactly.
+      requester: {
+        user_id: task.requester_id.toLowerCase(),
+        owner_type: task.owner_type,
+      },
+      ...(negotiated ? restPrincipal(task, context.capability) : {}),
+    },
     evidence: context.evidence,
   });
+}
+/** Only a REST principal consistent with the validated subject binding. */
+function restPrincipal(task: any, cap: any) {
+  const principal = cap.rest.principal_user_id;
+  if (
+    typeof principal !== "string" ||
+    !/^[a-f0-9]{24}$/i.test(principal) ||
+    (principal.toLowerCase() === task.requester_id.toLowerCase()) !==
+      cap.rest.subject_is_principal
+  )
+    return {};
+  return {
+    rest_principal: {
+      user_id: principal.toLowerCase(),
+      is_requester: cap.rest.subject_is_principal,
+    },
+  };
 }
 function exactKeys(value: any, keys: string[]) {
   return (
