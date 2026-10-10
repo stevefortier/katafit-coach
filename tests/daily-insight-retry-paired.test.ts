@@ -323,6 +323,8 @@ test(
             const fresh = await runOnce(backend, f.token, model);
             assert.equal(fresh.error, undefined, String(fresh.error));
             assert.equal(fresh.safeToReplace, true);
+            assert.equal(await daily.consumePending(backend.db), 1);
+            assert.equal(await daily.consumePending(backend.db), 0);
             assert.equal((await row(f.status)).retry_count, 1);
             assert.equal((await published(f.member)).length, 1);
             assert.equal(
