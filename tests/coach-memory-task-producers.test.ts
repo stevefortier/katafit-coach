@@ -18,13 +18,43 @@ for (const kind of [
   "workout_suggestions",
   "exercise_suggestions",
 ])
-  for (const consumption of ["success", "source_revoked"])
+  for (const consumption of [
+    "success",
+    "source_revoked",
+    ...(["workout_suggestions", "exercise_suggestions"].includes(kind)
+      ? ["source_aba"]
+      : []),
+  ])
     test(
       `paired actual Worker ${kind} consolidation ${consumption}: original source extraction, accepted versus consumed publication, no replay`,
       { skip: !memoryBackendEnabled, timeout: 90000 },
       async () => {
         const backend = await startBackend();
         const { db, service, ObjectId } = backend;
+        // Exercise suggestions publish automatically after acceptance. Hold the
+        // final consume write so that transaction rolls back while this test
+        // inspects the accepted-but-unpublished memory and revokes its source.
+        // This is a database seam, not a disabled production completion listener.
+        let holdPublication = kind === "exercise_suggestions";
+        const collection = db.collection.bind(db);
+        db.collection = (name: string, ...args: any[]) => {
+          const target = collection(name, ...args);
+          if (name !== "external_coach_tasks") return target;
+          return new Proxy(target, {
+            get(target, key) {
+              const method = Reflect.get(target, key, target);
+              if (key === "updateOne")
+                return (...args: any[]) => {
+                  if (holdPublication && args[1]?.$set?.status === "consumed")
+                    throw new Error("SYNTHETIC_PUBLICATION_HELD");
+                  return method.apply(target, args);
+                };
+              return typeof method === "function"
+                ? method.bind(target)
+                : method;
+            },
+          });
+        };
         const user = new ObjectId(),
           exercise = {
             _id: new ObjectId(),
@@ -276,6 +306,12 @@ for (const kind of [
               ),
           });
           await worker.pollOnce();
+          if (kind === "exercise_suggestions") {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            await backend
+              .require("./core/workoutExternalSuggestions")
+              .publicationsIdle();
+          }
           assert.match(
             worker.state,
             /^task-(result-stored|publication-confirmed)$/,
@@ -316,6 +352,21 @@ for (const kind of [
           );
           if (consumption === "source_revoked")
             await db.collection("activities").deleteOne({ _id: activity._id });
+          if (consumption === "source_aba") {
+            await db
+              .collection("activities")
+              .updateOne(
+                { _id: activity._id },
+                { $set: { "data.exercises.0.name": "Withdrawn source" } },
+              );
+            await db
+              .collection("activities")
+              .updateOne(
+                { _id: activity._id },
+                { $set: { "data.exercises.0.name": exercise.name } },
+              );
+          }
+          holdPublication = false;
           if (kind === "activity_reaction")
             await backend
               .require("./core/externalActivityCoachTasks")
@@ -336,7 +387,7 @@ for (const kind of [
             await backend
               .require("./core/workoutExternalSuggestions")
               .processCompleted(db);
-          if (consumption === "source_revoked") {
+          if (consumption !== "success") {
             assert.notEqual(
               (
                 await db
@@ -385,7 +436,7 @@ for (const kind of [
                 memory_id: String(memory._id),
               })
             ).item.availability,
-            "available",
+            consumption === "source_aba" ? "unavailable" : "available",
           );
           const before = JSON.stringify(
             await db
@@ -455,6 +506,7 @@ for (const kind of [
         } finally {
           await worker?.stop();
           await provider.close();
+          db.collection = collection;
           await backend.close();
         }
       },

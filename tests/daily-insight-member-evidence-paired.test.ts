@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { complete } from "../src/runtime/piAdapter.js";
 import { Worker } from "../src/worker/runner.js";
+import { Client } from "../src/katafit/client.js";
 import { closeServer, pairedSkip } from "./helpers/account-backend.js";
 import { answer } from "./helpers/continuity.js";
 import {
@@ -177,6 +178,54 @@ async function runWorker(
 ) {
   let p: Awaited<ReturnType<typeof scriptedProvider>> | undefined;
   let w: Worker | undefined;
+  const originalFetch = globalThis.fetch;
+  const taskReplies: Array<{
+    tool: string;
+    taskId: string;
+    httpStatus: number;
+    result: any;
+  }> = [];
+  // Observe the real completion/reconciliation MCP responses. The worker's
+  // conservative DELIVERY_UNVERIFIED alone does not prove a source refusal.
+  globalThis.fetch = async (input, init) => {
+    const response = await originalFetch(input, init);
+    if (
+      String(input) === b.origin + "/api/agents/coach/mcp" &&
+      typeof init?.body === "string"
+    ) {
+      const request = JSON.parse(init.body);
+      if (
+        request.method === "tools/call" &&
+        ["coach_complete_task", "coach_reconcile_task"].includes(
+          request.params?.name,
+        )
+      ) {
+        const raw = await response.clone().text();
+        const packets = response.headers
+          .get("content-type")
+          ?.includes("text/event-stream")
+          ? raw
+              .replace(/\r\n/g, "\n")
+              .split("\n\n")
+              .flatMap((event) => {
+                const data = event
+                  .split("\n")
+                  .filter((line) => line.startsWith("data:"))
+                  .map((line) => line.slice(5).trimStart())
+                  .join("\n");
+                return data ? [JSON.parse(data)] : [];
+              })
+          : [JSON.parse(raw)];
+        taskReplies.push({
+          tool: request.params.name,
+          taskId: request.params.arguments.task_id,
+          httpStatus: response.status,
+          result: packets.find((packet) => packet.id === request.id)?.result,
+        });
+      }
+    }
+    return response;
+  };
   try {
     p = await scriptedProvider(during);
     const provider = p;
@@ -212,6 +261,7 @@ async function runWorker(
     );
     return {
       error,
+      taskReplies,
       raw: JSON.stringify(first ?? {}),
       system: (first?.messages ?? [])
         .filter((m: any) => m.role === "system" || m.role === "developer")
@@ -221,8 +271,15 @@ async function runWorker(
       targets: observation ? JSON.parse(observation.text) : undefined,
     };
   } finally {
-    await w?.stop();
-    await p?.close();
+    try {
+      await w?.stop();
+    } finally {
+      try {
+        await p?.close();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
   }
 }
 
@@ -357,13 +414,107 @@ test(
             assert.equal(await backend.daily.consumePending(backend.db), 0);
             assert.equal(await published(f.member), 0);
             if (change === "target change") {
-              // Accepted completion, refused only at the publication fence.
-              assert.equal(r.error, undefined, String(r.error));
+              // Inference received 2400, but the actual source is now 2700.
+              // Completion must refuse that stale result before accepting it.
+              const overlay = await backend.db
+                .collection("member_nutrition_overlays")
+                .findOne({ member_id: f.member });
+              assert.deepEqual(overlay.daily_targets, prescription(2700, 175));
+              assert.equal((r.error as any)?.code, "DELIVERY_UNVERIFIED");
               const task = await backend.task();
-              assert.equal(task?.status, "completed");
+              assert.equal(task?.status, "claimed");
+              const completions = r.taskReplies.filter(
+                (reply) => reply.tool === "coach_complete_task",
+              );
+              const reconciliations = r.taskReplies.filter(
+                (reply) => reply.tool === "coach_reconcile_task",
+              );
               assert.equal(
-                task?.consumption_failure_code,
+                completions.length,
+                1,
+                "one real completion attempt, no write replay",
+              );
+              assert.ok(
+                reconciliations.length > 0,
+                "worker checked the real reconciliation boundary",
+              );
+              for (const wire of [...completions, ...reconciliations]) {
+                assert.equal(wire.taskId, String(task._id));
+                assert.equal(wire.httpStatus, 200);
+                assert.equal(wire.result.isError, true);
+                const denial = JSON.parse(
+                  wire.result.content.find((part: any) => part.type === "text")
+                    .text,
+                );
+                assert.equal(denial.code, "TASK_SOURCE_CHANGED");
+              }
+              const noAcceptedResult = (row: any) => {
+                for (const field of [
+                  "result",
+                  "result_hash",
+                  "completed_at",
+                  "result_auth",
+                  "provenance",
+                  "consumed_at",
+                  "recommendation_id",
+                  "consumption_failure_code",
+                ])
+                  assert.equal(row[field], undefined, field);
+              };
+              noAcceptedResult(task);
+              // A failed completion leaves the lease claimed. Simulate only its
+              // expiry, then let the real claim path record source invalidation.
+              await backend.db
+                .collection("external_coach_tasks")
+                .updateOne(
+                  { _id: task._id },
+                  { $set: { lease_expires_at: new Date(Date.now() - 1000) } },
+                );
+              const recovery = new Client(
+                backend.origin,
+                f.token,
+                AbortSignal.timeout(10000),
+              );
+              await recovery.connect();
+              const claimed = await recovery.call("coach_claim_task", {
+                protocol: P,
+                kinds: ["daily_insight"],
+                capability_protocols: [CAP],
+              });
+              assert.equal(claimed.task, null);
+              const invalidated = await backend.task();
+              assert.equal(invalidated.status, "invalidated");
+              assert.equal(
+                invalidated.invalidation_code,
                 "TASK_SOURCE_CHANGED",
+              );
+              assert.equal(
+                invalidated.invalidation_detail_code,
+                "DAILY_SNAPSHOT_CHANGED",
+              );
+              noAcceptedResult(invalidated);
+              const receipt = await recovery.call("coach_read_task_receipt", {
+                protocol: P,
+                task_id: String(task._id),
+                lease_generation: task.lease_generation,
+              });
+              assert.equal(receipt.status, "invalidated");
+              assert.equal(receipt.invalidation_code, "TASK_SOURCE_CHANGED");
+              assert.equal(receipt.result_sha256, null);
+              assert.equal(receipt.completed_at, null);
+              assert.equal(receipt.consumed_at, null);
+              assert.equal(await backend.daily.consumePending(backend.db), 0);
+              assert.equal(
+                await backend.db
+                  .collection("recommendations")
+                  .countDocuments({ user_id: f.member }),
+                0,
+              );
+              assert.equal(
+                await backend.db
+                  .collection("recommendations")
+                  .countDocuments({ external_task_id: String(task._id) }),
+                0,
               );
             }
           },

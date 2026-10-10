@@ -371,64 +371,190 @@ test(
   },
 );
 
-test(
-  "real worker preserves ordinary legacy context when optional durable ancestry is unavailable",
-  { skip: !memoryBackendEnabled, timeout: 60000 },
-  async () => {
-    const backend = await startBackend();
-    const { db, service, ObjectId } = backend;
-    let inference = 0;
-    const user = new ObjectId(),
-      plan = new ObjectId();
-    await db.collection("users").insertOne({
-      _id: user,
-      display_name: "Legacy synthetic member",
-      timezone: "UTC",
-      external_coach_agent: { enabled: true },
-    });
-    await db
-      .collection("activity_plans")
-      .insertOne({ _id: plan, user_id: new ObjectId() });
-    await db.collection("activities").insertOne({
-      user_id: user,
-      type: "workout",
-      name: "Owned legacy workout",
-      created_at: new Date(),
-      source: { activity_plan_id: plan },
-    });
-    const token = (await service.createCredential(String(user), {})).token;
-    const worker = new Worker({
-      origin: backend.origin,
-      token,
-      system: PERSONA,
-      complete: async (context, _signal, system) => {
-        assert.doesNotMatch(system, /You maintain the long-term memory/);
-        assert.match(context, /Owned legacy workout/);
-        inference++;
-        return "Ordinary authorized reply.";
+for (const dayContract of ["legacy", "captured"] as const)
+  for (const durableCoverage of ["complete", "unavailable"] as const)
+    test(
+      `real worker preserves ordinary ${dayContract} chat without unproven activity when durable coverage is ${durableCoverage}`,
+      { skip: !memoryBackendEnabled, timeout: 60000 },
+      async () => {
+        const backend = await startBackend();
+        const { db, service, ObjectId } = backend;
+        let worker: Worker | undefined;
+        let inference = 0,
+          extraction = 0,
+          capturedAsOf: string;
+        const stages: string[] = [];
+        const user = new ObjectId(),
+          plan = new ObjectId();
+        const message = "Read my recent workout.";
+        const reply = "Ordinary authorized reply.";
+        const checkEvidence = (evidence: any) => {
+          assert.doesNotMatch(
+            JSON.stringify(evidence),
+            /Unproven legacy workout/,
+          );
+          assert.equal(
+            evidence.profile.display_name,
+            "Legacy synthetic member",
+          );
+          assert.deepEqual(evidence.recent_activities, []);
+          const day = evidence.current_local_day;
+          assert.equal(day.protocol, "coach.current-day.v1");
+          assert.equal(day.subject, "requester");
+          if (dayContract === "legacy") {
+            assert.deepEqual(day.coverage, {
+              status: "unavailable",
+              reason: "LEGACY_CAPTURE_UNAVAILABLE",
+            });
+            assert.deepEqual(day.activities, []);
+            assert.equal(day.counts, null);
+            assert.equal(day.completed_nutrition.status, "unavailable");
+            assert.equal(day.completed_nutrition.known_totals, null);
+            assert.equal(day.targets.status, "unavailable");
+            assert.match(day.limitations, /not zero intake or a deficit/);
+          } else {
+            assert.equal(day.as_of, capturedAsOf);
+            assert.equal(day.coverage.status, "complete");
+            assert.equal(day.coverage.included, 1);
+            assert.equal(day.coverage.excluded_unproven, 1);
+            assert.deepEqual(
+              day.activities.map((activity: any) => activity.name),
+              ["Authorized personal workout"],
+            );
+            assert.equal(day.activities[0].summary.detail, "not_loaded");
+            assert.equal(day.completed_nutrition.status, "partial");
+            assert.match(
+              day.limitations,
+              /cannot establish a deficit or zero intake/,
+            );
+          }
+        };
+        try {
+          await db.collection("users").insertOne({
+            _id: user,
+            display_name: "Legacy synthetic member",
+            timezone: "UTC",
+            external_coach_agent: { enabled: true },
+          });
+          await db
+            .collection("activity_plans")
+            .insertOne({ _id: plan, user_id: new ObjectId() });
+          await db.collection("activities").insertMany([
+            {
+              user_id: user,
+              type: "workout",
+              name: "Unproven legacy workout",
+              created_at: new Date(),
+              source: { activity_plan_id: plan },
+            },
+            {
+              user_id: user,
+              type: "workout",
+              name: "Authorized personal workout",
+              status: "pending",
+              created_at: new Date(),
+              data: { exercises: [] },
+            },
+          ]);
+          const token = (await service.createCredential(String(user), {}))
+            .token;
+          const queued = await service.enqueueExternalCoachRequest(
+            String(user),
+            message,
+            [],
+            { client_request_id: `coverage-${dayContract}-${durableCoverage}` },
+          );
+          const requestId = new ObjectId(queued.request.id);
+          const captured = await db
+            .collection("external_coach_requests")
+            .findOne({ _id: requestId });
+          capturedAsOf = captured.current_day_capture.snapshot.as_of;
+          if (dayContract === "legacy") {
+            // A pre-feature request has no original physical day capture. Do
+            // not fabricate one from the activities present at its later read.
+            await db
+              .collection("external_coach_requests")
+              .updateOne(
+                { _id: requestId },
+                { $unset: { current_day_capture: "" } },
+              );
+          }
+          if (durableCoverage === "unavailable") {
+            // Synthetic persisted state from an earlier unprovable optional
+            // read. Excluding an undisclosed foreign activity alone does NOT
+            // make the remaining authorized chat evidence unprovable.
+            await db.collection("external_coach_requests").updateOne(
+              { _id: requestId },
+              {
+                $set: {
+                  memory_unproven_context: true,
+                  memory_proof_version: 0,
+                },
+              },
+            );
+          }
+          worker = new Worker({
+            origin: backend.origin,
+            token,
+            system: PERSONA,
+            onDiagnostic: (event) => {
+              stages.push(event.stage);
+            },
+            complete: async (context, _signal, system) => {
+              assert.doesNotMatch(context, /Unproven legacy workout/);
+              const payload = JSON.parse(context);
+              if (system.includes("You maintain the long-term memory")) {
+                assert.equal(durableCoverage, "complete");
+                checkEvidence(payload.evidence.initial_context);
+                assert.equal(payload.evidence.member_message, message);
+                assert.equal(payload.evidence.coach_reply, reply);
+                extraction++;
+                return JSON.stringify({ proposals: [] });
+              }
+              checkEvidence(payload);
+              assert.equal(
+                payload.request.message ?? payload.conversation.at(-1)?.text,
+                message,
+              );
+              inference++;
+              return reply;
+            },
+          });
+          await worker.pollOnce();
+          assert.equal(worker.state, "reply-persisted");
+          assert.equal(inference, 1);
+          assert.equal(extraction, durableCoverage === "complete" ? 1 : 0);
+          assert.equal(
+            stages.includes("memory-unavailable"),
+            durableCoverage === "unavailable",
+          );
+          assert.equal(
+            await db.collection("coach_memory_captures").countDocuments(),
+            durableCoverage === "complete" ? 1 : 0,
+          );
+          assert.equal(
+            await db.collection("coach_memories").countDocuments(),
+            0,
+          );
+          const stored = await db
+            .collection("external_coach_requests")
+            .findOne({ _id: requestId });
+          assert.equal(stored.status, "completed");
+          assert.equal(
+            stored.memory_proof_version,
+            durableCoverage === "complete" ? 2 : 0,
+          );
+          assert.equal(
+            stored.memory_unproven_context,
+            durableCoverage === "unavailable",
+          );
+          checkEvidence(stored.memory_evidence);
+        } finally {
+          await worker?.stop();
+          await backend.close();
+        }
       },
-    });
-    try {
-      await service.enqueueExternalCoachRequest(
-        String(user),
-        "Read my recent workout.",
-        [],
-        { client_request_id: "legacy-coverage" },
-      );
-      await worker.pollOnce();
-      assert.equal(worker.state, "reply-persisted");
-      assert.equal(inference, 1);
-      assert.equal(
-        await db.collection("coach_memory_captures").countDocuments(),
-        0,
-      );
-      assert.equal(await db.collection("coach_memories").countDocuments(), 0);
-    } finally {
-      await worker.stop();
-      await backend.close();
-    }
-  },
-);
+    );
 
 for (const invalidation of ["forget", "correct", "archive"])
   test(
