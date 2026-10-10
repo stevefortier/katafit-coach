@@ -209,7 +209,7 @@ test(
     };
 
     await t.test(
-      "nutrition regression: the seed lacks targets; Pi discovers, reads canonical targets and intake, and the canonical insight cites the fetched values",
+      "nutrition regression: the seed carries canonical requester targets; Pi still discovers, reads canonical targets and intake, and the canonical insight cites the fetched values",
       async () => {
         await b.reset();
         await b.withTargets();
@@ -218,11 +218,29 @@ test(
         const token = await b.credential(true);
         const { bodies, state } = await run(token, nutritionPolicy);
         assert.equal(state, "task-result-stored");
-        // The first provider request: tools offered, seed has no targets and
-        // no tools-empty or "No nutrition targets" guidance.
+        // The first provider request: tools offered, the seed carries the
+        // requester's canonical day targets (never raw prescription fields)
+        // and no tools-empty or "No nutrition targets" guidance.
         const first = JSON.stringify(bodies[0]);
         assert.ok(offered(bodies[0]).includes(REST));
-        assert.doesNotMatch(first, /3000|daily_calories|protein_g/);
+        assert.doesNotMatch(first, /daily_calories|protein_g/);
+        const envelope = JSON.parse(
+          toolText(
+            bodies[0].messages.find(
+              (m: any) =>
+                m.role === "user" && toolText(m).includes("generation_task"),
+            ),
+          ),
+        );
+        const seeded = JSON.parse(
+          envelope.evidence.observations.find(
+            (o: any) => o.label === "Requester nutrition targets",
+          ).text,
+        );
+        assert.equal(seeded.status, "available");
+        assert.equal(seeded.source, "strategy");
+        assert.equal(seeded.targets.calories, 3000);
+        assert.equal(seeded.targets.protein, 200);
         assert.doesNotMatch(
           first,
           /No nutrition targets were supplied|Return only the required structured result/,
