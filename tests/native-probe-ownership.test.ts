@@ -101,7 +101,7 @@ async function fixture() {
   const home = await mkdtemp(join(tmpdir(), "native-probe-owner-"));
   const root = join(home, "application");
   await mkdir(join(root, "dist"), { recursive: true });
-  await mkdir(join(home, "native-artifacts"));
+  await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
   await writeFile(
     join(root, "dist/build.json"),
     JSON.stringify({ revision, protocol: 2, fingerprint }),
@@ -114,6 +114,7 @@ async function fixture() {
       image,
       platform: `linux/${process.arch === "arm64" ? "arm64" : "amd64"}`,
     }),
+    { mode: 0o600 },
   );
   return { home, root };
 }

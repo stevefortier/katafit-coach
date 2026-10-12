@@ -1,3 +1,4 @@
+import { CandidateOwnership } from "./candidate.js";
 import { spawn } from "node:child_process";
 import {
   mkdir,
@@ -16,6 +17,7 @@ import { repository, validSha } from "./updates.js";
 // Code-only injection for deterministic tests. Never read a URL/ref from HTTP or env.
 export interface SourceBoundary {
   source?: string;
+  candidateToken?: string;
 }
 export async function directory(path: string, create = false): Promise<void> {
   const full = resolve(path),
@@ -100,10 +102,12 @@ export async function command(
       stdio: "ignore",
     });
     let failed = false,
+      cancelled = false,
       finished = false;
     const stop = () => {
       // An in-flight scan may settle after exit; never signal a stale PID.
       if (finished) return;
+      if (failed) return;
       failed = true;
       try {
         process.kill(-child.pid!, "SIGKILL");
@@ -123,12 +127,24 @@ export async function command(
           checking = false;
         });
     }, 1000);
-    signal?.addEventListener("abort", stop, { once: true });
+    const abort = () => {
+      if (
+        !finished &&
+        !failed &&
+        child.exitCode === null &&
+        child.signalCode === null
+      ) {
+        cancelled = true;
+        stop();
+      }
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
     const clear = () => {
       finished = true;
       clearTimeout(timer);
       clearInterval(disk);
-      signal?.removeEventListener("abort", stop);
+      signal?.removeEventListener("abort", abort);
     };
     child.once("error", () => {
       clear();
@@ -137,7 +153,7 @@ export async function command(
     child.once("exit", (code) => {
       clear();
       if (code === 0 && !failed) resolve();
-      else reject(new Error("BUILD_FAILED"));
+      else reject(new Error(cancelled ? "BUILD_CANCELLED" : "BUILD_FAILED"));
     });
   });
 }
@@ -189,7 +205,7 @@ export async function stage(
   await rm(staging, { recursive: true, force: true });
   await mkdir(staging, { mode: 0o700 });
   const checkout = join(staging, "source");
-  await mkdir(checkout);
+  await mkdir(checkout, { mode: 0o700 });
   const run = (file: string, args: string[]) =>
     command(file, args, checkout, staging, signal);
   try {
@@ -226,11 +242,30 @@ export async function stage(
       throw new Error("SOURCE_MISMATCH");
     await managedFile(join(checkout, "dist/server/admin.js"), 1024 * 1024);
     await rm(join(checkout, ".git"), { recursive: true, force: true });
-    const destination = join(versions, sha);
-    // Existing versions are never overwritten (may be loaded by the live owner).
-    await rename(checkout, destination);
-    return destination;
+    return await publishCandidate(home, sha, checkout, boundary.candidateToken);
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
+}
+
+/** Marker moves atomically with staged code; a crash cannot publish unowned code. */
+export async function publishCandidate(
+  home: string,
+  sha: string,
+  checkout: string,
+  token?: string,
+) {
+  if (token) await new CandidateOwnership(home).mark(checkout, sha, token);
+  const destination = join(home, "versions", sha);
+  await rename(checkout, destination);
+  const parent = await open(
+    join(home, "versions"),
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await parent.sync();
+  } finally {
+    await parent.close();
+  }
+  return destination;
 }

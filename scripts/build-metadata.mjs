@@ -62,6 +62,6 @@ writeFileSync(
     protocol: 2,
     fingerprint,
     // Keep in sync with AUTONOMY_LEDGER_CAPABILITY (src/update/capability.ts).
-    capabilities: ["autonomy-ledger-1"],
+    capabilities: ["autonomy-ledger-1", "ready-releases-v1"],
   }) + "\n",
 );

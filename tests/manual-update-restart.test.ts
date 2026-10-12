@@ -1,3 +1,4 @@
+import "./fixtures/legacy-source-check.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -5,6 +6,7 @@ import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { UpdateJournal } from "../src/update/journal.js";
 import { Store } from "../src/config/store.js";
 import { supervise } from "./helpers/legacy-supervisor.js";
 
@@ -49,8 +51,8 @@ test("manual update stable owner resumes after replacement and rollback without 
     },
     prepare: async (sha) => {
       const root = join(home, "versions", sha);
-      await mkdir(join(root, "dist/config"), { recursive: true });
-      await mkdir(join(root, "dist/server"), { recursive: true });
+      await mkdir(join(root, "dist/config"), { recursive: true, mode: 0o700 });
+      await mkdir(join(root, "dist/server"), { recursive: true, mode: 0o700 });
       await writeFile(join(root, "package.json"), '{"type":"module"}');
       await writeFile(
         join(root, "dist/build.json"),
@@ -176,6 +178,8 @@ test("manual update stable owner resumes after replacement and rollback without 
         true,
         "stable owner must resume, not leave applied-but-stopped",
       );
+      assert.doesNotMatch(owner.updates.guidance, /Worker remains stopped/);
+      assert.match(owner.updates.guidance, /Saved running intent restored/);
       assert.notEqual(owner.pid, pid);
       assert.equal(
         owner.updates.lastOperation?.state,
@@ -250,10 +254,67 @@ test("manual update stable owner resumes after replacement and rollback without 
     assert.equal(sourceRequests, beforeRestartChecks);
     assert.equal(recoveredOwner.updates.installed, latest);
     assert.equal(
+      recoveredOwner.updates.preparationAttempt?.state,
+      "completed",
+      "completed preparation must not become an interrupted failure after an accepted upgrade",
+    );
+    assert.equal(
       JSON.parse(await readFile(join(home, "update-resume.json"), "utf8"))
         .pending,
       false,
     );
+    // Crash after intent B was persisted, before B's authoritative acceptance.
+    const priorReceipt = structuredClone(recoveredOwner.updates.lastOperation);
+    await recoveredOwner.close();
+    const unaccepted = "f".repeat(40);
+    await writeFile(
+      join(home, "update-resume.json"),
+      JSON.stringify({ sha: unaccepted, pending: true }),
+    );
+    recoveredOwner = await supervise(store, 0, undefined, {
+      request: async () => {
+        throw new Error("intent recovery cannot discover source");
+      },
+      prepare: async () => {
+        throw new Error("intent recovery cannot replay installation");
+      },
+    });
+    for (let n = 0; n < 200 && recoveredOwner.updates.recovering; n++)
+      await new Promise((r) => setTimeout(r, 20));
+    assert.equal(recoveredOwner.updates.recovering, false);
+    assert.equal(recoveredOwner.updates.installed, latest);
+    assert.deepEqual(recoveredOwner.updates.lastOperation, priorReceipt);
+    assert.deepEqual(recoveredOwner.updates.recoveryOutcome, {
+      sha: unaccepted,
+      state: "restored-running",
+    });
+    assert.doesNotMatch(recoveredOwner.updates.guidance, /Upgrade healthy/);
+    assert.match(recoveredOwner.updates.guidance, /Existing runtime restored/);
+    // A process-local success is not proof that its terminal receipt persisted.
+    await recoveredOwner.close();
+    await writeFile(
+      join(home, "update-resume.json"),
+      JSON.stringify({ sha: latest, pending: true }),
+    );
+    let runRecovery!: () => void;
+    recoveredOwner = await supervise(store, 0, undefined, {
+      recoveryTimer: ((callback: () => void) => {
+        runRecovery = callback;
+        return setTimeout(() => {}, 60000);
+      }) as typeof setTimeout,
+      request: async () => {
+        throw new Error("recovery cannot discover source");
+      },
+    });
+    assert.equal(recoveredOwner.updates.lastOperation?.sha, latest);
+    await new UpdateJournal(home).write({ ...priorReceipt!, sha: unaccepted });
+    runRecovery();
+    for (let n = 0; n < 200 && recoveredOwner.updates.recovering; n++)
+      await new Promise((r) => setTimeout(r, 20));
+    assert.equal(recoveredOwner.updates.recovering, false);
+    assert.equal(recoveredOwner.updates.installed, latest);
+    assert.doesNotMatch(recoveredOwner.updates.guidance, /Upgrade healthy/);
+    assert.match(recoveredOwner.updates.guidance, /Existing runtime restored/);
   } finally {
     globalThis.fetch = realFetch;
     await recoveredOwner?.close();

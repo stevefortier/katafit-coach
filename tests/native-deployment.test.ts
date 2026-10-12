@@ -16,6 +16,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { Store } from "../src/config/store.js";
 import { supervise } from "../src/update/supervisor.js";
 import { provisionArtifact } from "../src/sandbox/artifact.js";
+import {
+  digest,
+  releaseApi,
+  releaseRepository,
+  type Manifest,
+} from "../src/release/manifest.js";
 
 test(
   "real native image pair staging, missing-artifact rejection, post-stop rollback and restart",
@@ -33,16 +39,103 @@ test(
     const next = sha(),
       missing = sha(),
       crash = sha();
+    const fingerprintFor = (revision: string) =>
+      revision === missing
+        ? createHash("sha256")
+            .update("missing:" + base.fingerprint)
+            .digest("hex")
+        : base.fingerprint;
     const owned: string[] = [];
+    const images = new Map<string, string>();
+    const staged: string[] = [];
+    let selected: string;
+    // Only source discovery is synthetic. Use the supported request boundary so
+    // check() retains its target; readiness, Docker preflight and activation stay real.
+    const request: typeof fetch = async (input) => {
+      assert.ok([next, missing, crash].includes(selected));
+      const manifest: Manifest = {
+        version: 1,
+        repository: releaseRepository,
+        revision: selected,
+        fingerprint: fingerprintFor(selected),
+        image:
+          images.get(selected) ??
+          "sha256:" + digest(Buffer.from("undelivered:" + selected)),
+        platform: "linux/amd64",
+        protocol: 2,
+        launcher: "manual-only-ready-releases-1",
+        node: "26.10.0",
+        // Synthetic discovery metadata, not published archives or provenance.
+        // This test stages its explicit local candidate trees through prepare().
+        artifacts: ["coach", "native"].map((kind) => {
+          const bytes = Buffer.from(`synthetic ${kind} ${selected}`);
+          return {
+            name: `${kind}-${selected}.${kind === "coach" ? "tgz" : "tar.gz"}`,
+            size: bytes.length,
+            sha256: digest(bytes),
+          };
+        }),
+      };
+      const bytes = Buffer.from(JSON.stringify(manifest));
+      const url = (name: string) =>
+        `https://github.com/${releaseRepository}/releases/download/coach-${selected}/${name}`;
+      const api = `https://api.github.com/repos/${releaseRepository}`;
+      const installed = owner!.updates.installed;
+      const responses = new Map<string, unknown>([
+        [
+          releaseApi,
+          {
+            tag_name: `coach-${selected}`,
+            target_commitish: selected,
+            draft: false,
+            prerelease: false,
+            immutable: true,
+            assets: [
+              ...manifest.artifacts,
+              {
+                name: "manifest.json",
+                size: bytes.length,
+                sha256: digest(bytes),
+              },
+            ].map((a, i) => ({
+              id: i + 1,
+              name: a.name,
+              size: a.size,
+              digest: `sha256:${a.sha256}`,
+              browser_download_url: url(a.name),
+            })),
+          },
+        ],
+        [url("manifest.json"), manifest],
+        [`${api}/git/ref/heads/main`, { object: { sha: selected } }],
+        [
+          `${api}/compare/${installed}...${selected}`,
+          {
+            status: "ahead",
+            base_commit: { sha: installed },
+            merge_base_commit: { sha: installed },
+            ahead_by: 1,
+            commits: [{ sha: selected }],
+          },
+        ],
+      ]);
+      assert.ok(
+        responses.has(String(input)),
+        `unexpected fixture request: ${input}`,
+      );
+      return new Response(JSON.stringify(responses.get(String(input))));
+    };
     const docker = (...args: string[]) =>
       execFileSync("docker", args, {
         encoding: "utf8",
         timeout: 30000,
         stdio: ["pipe", "pipe", "pipe"],
       }).trim();
-    const prepare = async (revision: string) => {
-      const root = join(home, "versions", revision);
-      await mkdir(root, { recursive: true });
+    const prepare = async (
+      revision: string,
+      root = join(home, "versions", revision),
+    ) => {
+      await mkdir(root, { recursive: true, mode: 0o700 });
       await cp(resolve("dist"), join(root, "dist"), { recursive: true });
       await cp(resolve("ui"), join(root, "ui"), { recursive: true });
       await cp(resolve("sandbox"), join(root, "sandbox"), { recursive: true });
@@ -54,12 +147,7 @@ test(
       );
       // A changed native fingerprint has no provisioned image; same-fingerprint
       // source-only candidates legitimately reuse the base receipt.
-      const fingerprint =
-        revision === missing
-          ? createHash("sha256")
-              .update("missing:" + base.fingerprint)
-              .digest("hex")
-          : base.fingerprint;
+      const fingerprint = fingerprintFor(revision);
       await writeFile(
         join(root, "dist/build.json"),
         JSON.stringify({ ...base, revision, fingerprint }),
@@ -80,7 +168,11 @@ test(
       return root;
     };
     const provision = async (revision: string) => {
-      const root = await prepare(revision);
+      // Provision independently; only the owner may stage a leased version.
+      const root = await prepare(
+        revision,
+        join(home, "provision-source", revision),
+      );
       // Derive the revision-labelled pair image without a builder: BuildKit
       // resolves `FROM sha256:<local id>` as a registry name and cannot pull
       // it. The never-started container only carries the exact image config.
@@ -103,6 +195,13 @@ test(
       );
       owned.push(output);
       await provisionArtifact(home, root, output);
+      images.set(revision, output);
+      await assert.rejects(
+        readFile(join(home, "versions", revision, "dist/build.json")),
+        {
+          code: "ENOENT",
+        },
+      );
       return output;
     };
     let owner: Awaited<ReturnType<typeof supervise>> | undefined;
@@ -117,25 +216,71 @@ test(
         ),
       );
       await provisionArtifact(home, process.cwd(), image);
-      owner = await supervise(store, 0, undefined, { prepare });
-      const apply = async (revision: string) => {
-        owner!.updates.latest = revision;
-        owner!.updates.checkedAt = Date.now();
-        return owner!.updates.apply(revision);
+      owner = await supervise(store, 0, undefined, {
+        request,
+        prepare: async (revision) => {
+          staged.push(revision);
+          return prepare(revision);
+        },
+      });
+      const check = async (revision: string) => {
+        selected = revision;
+        owner!.updates.checkedAt = 0; // Allow the next synthetic publication check.
+        const state = await owner!.updates.check();
+        assert.equal(state.latest, revision);
+        assert.equal(state.checkError, null);
+        assert.equal(state.readiness?.sha, revision);
+        assert.equal(state.readiness?.fingerprint, fingerprintFor(revision));
+        return state;
       };
       const originalPid = owner.pid;
-      await assert.rejects(apply(missing), /UPGRADE_FAILED/);
+      const pending = await check(missing);
+      assert.equal(pending.readiness?.state, "delivery-pending");
+      assert.equal(pending.readiness?.reason, "MISSING_MATCHING_ARTIFACT");
+      await assert.rejects(
+        owner.updates.apply(missing),
+        /UPDATE_DELIVERY_PENDING/,
+      );
       assert.equal(owner.pid, originalPid);
-      assert.match(owner.updates.guidance, /external artifact.*bootstrap/);
+      assert.deepEqual(staged, []);
+      assert.equal(owner.updates.preparationAttempt, undefined);
+      assert.equal(owner.updates.lastOperation, undefined);
       const nextImage = await provision(next);
-      await apply(next);
+      assert.equal((await check(next)).readiness?.state, "ready");
+      await owner.updates.apply(next);
+      assert.equal(owner.updates.lastOperation?.sha, next);
+      assert.equal(owner.updates.lastOperation?.state, "succeeded");
       assert.deepEqual(
         JSON.parse(await readFile(join(home, "active.json"), "utf8")),
         { revision: next, image: nextImage },
       );
       const healthyPid = owner.pid;
-      await provision(crash);
-      await assert.rejects(apply(crash), /UPGRADE_FAILED/);
+      const crashImage = await provision(crash);
+      assert.equal((await check(crash)).readiness?.state, "ready");
+      await assert.rejects(owner.updates.apply(crash), /UPGRADE_FAILED/);
+      assert.equal(owner.updates.lastOperation?.sha, crash);
+      assert.equal(owner.updates.lastOperation?.state, "failed");
+      assert.equal(owner.updates.lastOperation?.phase, "activating");
+      assert.equal(
+        owner.updates.lastOperation?.reason,
+        "ACTIVATION_ROLLED_BACK",
+      );
+      assert.deepEqual(staged, [next, crash]);
+      console.log(
+        JSON.stringify({
+          nativePairObservation: {
+            base: base.revision,
+            missing,
+            next,
+            crash,
+            nextImage,
+            crashImage,
+            pending: pending.readiness,
+            staged,
+            rollback: owner.updates.lastOperation,
+          },
+        }),
+      );
       assert.notEqual(
         owner.pid,
         healthyPid,
@@ -155,7 +300,7 @@ test(
         ),
         before,
       );
-      await owner.close();
+      assert.equal(await owner.close(), true);
       owner = undefined;
       owner = await supervise(store, 0);
       assert.equal(owner.updates.installed, next);
@@ -163,7 +308,7 @@ test(
         headers: { Authorization: "Bearer " + store.secrets.admin },
       });
       assert.equal((await response.json()).state, "stopped");
-      await owner.close();
+      assert.equal(await owner.close(), true);
       owner = undefined;
       await writeFile(
         join(home, "active.json"),
@@ -179,8 +324,25 @@ test(
         image,
         "rollback base image retained",
       );
+    } catch (error) {
+      console.log(
+        JSON.stringify({
+          nativePairFailure: {
+            readiness: owner?.updates.snapshot().readiness,
+            preparation: owner?.updates.preparationAttempt,
+            operation: owner?.updates.lastOperation ?? null,
+            staged,
+          },
+        }),
+      );
+      throw error;
     } finally {
-      await owner?.close();
+      if (owner)
+        assert.equal(
+          await owner.close(),
+          true,
+          "retain fixture home if owner cleanup is pending",
+        );
       for (const id of owned) docker("image", "rm", "--no-prune", id);
       await rm(home, { recursive: true, force: true });
     }

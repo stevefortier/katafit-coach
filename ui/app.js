@@ -3455,7 +3455,20 @@ const logJSON = () =>
           ? updateData.installed
           : null,
         latest: sourceSha(updateData?.latest) ? updateData.latest : null,
+        readinessProtocol: updateData?.readinessProtocol === 1 ? 1 : 0,
+        readinessSupported:
+          updateData?.readinessProtocol === 1 &&
+          updateData.readinessSupported === true,
+        readiness: safeReadiness(updateData),
         lastOperation: safeUpdateOperation(updateData?.lastOperation),
+        preparationAttempt: safePreparationAttempt(
+          updateData?.preparationAttempt,
+        ),
+        preparationOutcomeSupported:
+          updateData?.preparationOutcomeSupported === true,
+        preparationJournalIssue: safePreparationJournalIssue(
+          updateData?.preparationJournalIssue,
+        ),
         lastAdmission: safeUpdateOperation(updateData?.lastAdmission),
       },
     },
@@ -3503,14 +3516,18 @@ const updateFailureHelp = {
     "Finish or cancel the other operation before confirming again.",
   UPDATE_NOT_ACCEPTED:
     "Inspect protected-home storage and worker status before confirming again.",
+  PREPARATION_JOURNAL_UNAVAILABLE:
+    "Owner storage could not confirm the preparation journal. Nothing was accepted; inspect protected-home permissions before another confirmation.",
   EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED:
-    "Matching native artifact or bootstrap required. Provision and preflight the exact candidate image outside Pi. Manual updates need another confirmation; opted-in automatic updates retry after cooldown. The updater never builds or pulls sandbox images.",
+    "Matching native artifact or bootstrap required. Provision and preflight the exact candidate image outside Pi. Manual updates need another confirmation. The updater never builds or pulls sandbox images.",
   INSUFFICIENT_DISK:
     "Not enough free disk. Free at least 1.5 GiB in the Coach home filesystem, then retry manually.",
   BUILD_TOOL_UNAVAILABLE:
     "A required build tool could not start. Check Git, npm and Node in the launcher environment.",
   BUILD_FAILED:
     "Source build or candidate probe failed or exceeded a resource/time limit. Check disk, Git/npm network access and candidate compatibility.",
+  UPDATE_CLEANUP_PENDING:
+    "Candidate cleanup is pending; ownership is retained. Restore protected-home and Docker access before retrying supported cleanup or preparation.",
   BUILD_CANCELLED:
     "Preparation was cancelled. Check that the service is running before retrying.",
   INCOMPATIBLE_BUILD:
@@ -3570,6 +3587,54 @@ function safeUpdateOperation(outcome) {
       ? { reason: outcome.reason }
       : {}),
   };
+}
+const preparationArtifactHelp = {
+  MISSING_MATCHING_ARTIFACT:
+    "Matching trusted native artifact is missing. Provision it outside Pi before confirming again.",
+  DOCKER_UNAVAILABLE:
+    "Docker image inspection was unavailable. Check the host Docker service and immutable image availability.",
+  INVALID_BINDING:
+    "Native artifact binding or platform was rejected. Do not bypass identity checks.",
+  PROBE_FAILED:
+    "Native readiness probe failed. Check the reviewed image and host prerequisites.",
+  CLEANUP_PENDING:
+    "Owned probe cleanup is incomplete. Resolve cleanup before another preparation.",
+};
+function safePreparationJournalIssue(value) {
+  return value === "PREPARATION_JOURNAL_UNAVAILABLE" ? value : undefined;
+}
+function safePreparationAttempt(value) {
+  if (
+    !value ||
+    ![
+      "preparing",
+      "ready",
+      "completed",
+      "failed",
+      "cancelled",
+      "interrupted",
+    ].includes(value.state) ||
+    !["source", "artifact", "probe", "cleanup"].includes(value.stage) ||
+    typeof value.durable !== "boolean"
+  )
+    return;
+  const safe = safeUpdateOperation({
+    ...value,
+    state: ["failed", "cancelled", "interrupted"].includes(value.state)
+      ? "failed"
+      : "succeeded",
+  });
+  return safe
+    ? {
+        ...safe,
+        state: value.state,
+        stage: value.stage,
+        durable: value.durable,
+        ...(Object.hasOwn(preparationArtifactHelp, value.artifactReason)
+          ? { artifactReason: value.artifactReason }
+          : {}),
+      }
+    : undefined;
 }
 function manualUpdateQueue(data = updateData) {
   const queue = data?.manualQueue;
@@ -3644,6 +3709,48 @@ function updateRouteEntry() {
     else void refreshUpdate(true);
   }
 }
+function safeReadiness(data = updateData) {
+  const r = data?.readiness;
+  if (
+    data?.readinessProtocol !== 1 ||
+    data.readinessSupported !== true ||
+    !r ||
+    !sourceSha(r.sha) ||
+    r.sha !== data.latest ||
+    r.checkedAt !== data.checkedAt ||
+    typeof r.fingerprint !== "string" ||
+    !/^[a-f0-9]{64}$/.test(r.fingerprint) ||
+    !Number.isSafeInteger(r.checkedAt) ||
+    r.checkedAt <= 0 ||
+    !Number.isSafeInteger(r.observedAt) ||
+    r.observedAt <= 0 ||
+    !["ready", "delivery-pending", "blocked"].includes(r.state)
+  )
+    return;
+  return {
+    sha: r.sha,
+    fingerprint: r.fingerprint,
+    checkedAt: r.checkedAt,
+    observedAt: r.observedAt,
+    state: r.state,
+    ...([
+      "MISSING_MATCHING_ARTIFACT",
+      "DOCKER_UNAVAILABLE",
+      "INVALID_BINDING",
+      "LOCAL_UNAVAILABLE",
+    ].includes(r.reason)
+      ? { reason: r.reason }
+      : {}),
+  };
+}
+function hostReady(data = updateData) {
+  return (
+    safeReadiness(data)?.state === "ready" &&
+    !data.checkError &&
+    data.checkedAt > 0 &&
+    (data.serverNow || Date.now()) - data.checkedAt <= 300000
+  );
+}
 function renderUpdate() {
   renderHeaderStatus();
   const data = updateData;
@@ -3682,6 +3789,20 @@ function renderUpdate() {
     lifecycleBusy ||
     lifecycleUncertain ||
     serverTransition;
+  const preparation = safePreparationAttempt(data.preparationAttempt);
+  const journalIssue = safePreparationJournalIssue(
+    data.preparationJournalIssue,
+  );
+  $("updatePreparation").hidden = false;
+  $("updatePreparation").dataset.tone =
+    journalIssue || preparation?.state === "failed" ? "error" : "neutral";
+  $("updatePreparation").textContent = preparation
+    ? `Preparation ${preparation.state} · ${preparation.sha.slice(0, 12)} · ${formatTimestamp(preparation.at)}. ${[preparation.artifactReason ? preparationArtifactHelp[preparation.artifactReason] : "", preparation.reason ? updateFailureHelp[preparation.reason] : ""].filter(Boolean).join(" ")} ${["failed", "cancelled", "interrupted"].includes(preparation.state) ? "No installation accepted by preparation." : "Installation outcome is shown separately."} ${preparation.durable ? "Owner-retained observation." : "Process-local observation; not durably retained."} ${journalIssue ? "Preparation journal unavailable; new observations may not be retained. " : ""}Details are included in diagnostic JSON.`
+    : journalIssue
+      ? "Preparation journal unavailable. No retained preparation observation is available; past attempts cannot be reconstructed."
+      : data.preparationOutcomeSupported === true
+        ? "No preparation attempt recorded by this owner."
+        : "This stable owner cannot retain preparation outcomes. Replace the reviewed launcher to enable durable observation; old failures cannot be reconstructed.";
   const admission = safeUpdateOperation(data.lastAdmission);
   const operation = safeUpdateOperation(data.lastOperation);
   const outcome =
@@ -3705,11 +3826,15 @@ function renderUpdate() {
   $("updateLatest").textContent = sourceSha(data.latest)
     ? data.latest.slice(0, 12)
     : "Not available";
+  $("updateLatestLabel").textContent =
+    data.sourceChannel === "ready-releases-v1"
+      ? "PUBLISHED RELEASE"
+      : "LATEST SOURCE";
   $("updateLatest").title = sourceSha(data.latest) ? data.latest : "";
   const guidance =
     updateError ||
     data.guidance ||
-    "Open Updates or press Check for updates to check main. Installation requires your confirmation.";
+    "Open Updates or press Check for updates to check the source channel. Installation requires your confirmation.";
   $("updateStatus").textContent =
     guidance +
     (data.cleanupWarning === true && !/cleanup/i.test(guidance)
@@ -3759,16 +3884,52 @@ function renderUpdate() {
     ? "Last check · " + formatTimestamp(data.checkedAt)
     : "Not checked yet.";
   $("updateCheck").disabled = updateRequest || locked;
+  const local = safeReadiness(data);
+  const readinessHelp = {
+    DOCKER_UNAVAILABLE:
+      "Local Docker inspection is unavailable. Restore access and refresh host readiness.",
+    INVALID_BINDING:
+      "Protected native image binding is invalid. Repair trusted local provisioning, then refresh host readiness.",
+    LOCAL_UNAVAILABLE:
+      "Local artifact observation is unavailable. Check trusted provisioning, then refresh host readiness.",
+  };
+  $("updateReadiness").textContent =
+    data.readinessProtocol !== 1 || data.readinessSupported !== true
+      ? "Host readiness unknown. Replace the reviewed stable launcher to enable local readiness checks."
+      : !sourceSha(data.latest)
+        ? "Host readiness awaits a successful source check."
+        : data.latest === data.installed
+          ? "Published source is already installed."
+          : hostReady(data)
+            ? "Host ready: compatible protected native image is available. Installation still requires confirmation."
+            : local?.state === "delivery-pending"
+              ? "Published release · delivery pending on this host. Coach remains available. Refresh host readiness after trusted artifact provisioning completes."
+              : local?.state === "blocked"
+                ? readinessHelp[local.reason] || readinessHelp.LOCAL_UNAVAILABLE
+                : "Host readiness unknown or source approval expired. Check for updates before confirming.";
+  $("updateReadinessRefresh").disabled =
+    locked ||
+    updateRequest ||
+    data.preparing === true ||
+    data.readinessProtocol !== 1 ||
+    data.readinessSupported !== true ||
+    !sourceSha(data.latest);
+  if (!hostReady(data)) $("updateConfirm").hidden = true;
   $("updateApply").disabled =
     updateRequest ||
     locked ||
     data.preparing === true ||
     updateWorkerBlocked ||
     !data.supported ||
+    !hostReady(data) ||
     !sourceSha(data.latest) ||
     data.latest === data.installed;
   $("updateConfirmApply").disabled =
-    locked || data.preparing === true || updateRequest || updateWorkerBlocked;
+    locked ||
+    data.preparing === true ||
+    updateRequest ||
+    updateWorkerBlocked ||
+    !hostReady(data);
   for (const id of [
     "run",
     "stop",
@@ -3810,7 +3971,7 @@ function renderUpdate() {
     $("updateSource").href =
       "https://github.com/stevefortier/katafit-coach/commit/" + data.latest;
 }
-async function refreshUpdate(check = false) {
+async function refreshUpdate(check = false, local = false) {
   clearTimeout(updateTimer);
   if (!key || updateRequest || document.hidden || $("studio").hidden) return;
   const generation = authGeneration;
@@ -3827,6 +3988,8 @@ async function refreshUpdate(check = false) {
     // Observe an existing queued pin before asking for source discovery. A
     // reload/lost POST never submits apply again or overwrites the queued target.
     let data = await api("update", undefined, signal);
+    if (local && sourceSha(data.latest))
+      data = await api("update/readiness", { sha: data.latest }, signal);
     if (check && !manualUpdateActive(data) && !data.preparing && !data.applying)
       data = await api("update/check", {}, signal);
     if (controller.signal.aborted || generation !== authGeneration) return;
@@ -3889,6 +4052,10 @@ action("updateQueueCancel", async () => {
   await status();
   await refreshUpdate();
 });
+action("updateReadinessRefresh", async () => {
+  $("updateConfirm").hidden = true;
+  await refreshUpdate(false, true);
+});
 action("updateCheck", async () => {
   $("updateConfirm").hidden = true;
   await refreshUpdate(true);
@@ -3922,6 +4089,7 @@ action("updateApply", async () => {
     return;
   }
   if (
+    !hostReady() ||
     !sourceSha(updateData?.latest) ||
     updatePending ||
     updateData.preparing ||
@@ -3951,6 +4119,7 @@ let updateApplyRequest = false;
 action("updateConfirmApply", async () => {
   const generation = authGeneration;
   if (
+    !hostReady() ||
     !sourceSha(updateTarget) ||
     updateTarget !== updateData?.latest ||
     updatePending ||

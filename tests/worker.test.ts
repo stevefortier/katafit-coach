@@ -1,3 +1,5 @@
+// Worker/publication lifecycle holds source and native eligibility synthetic.
+import "./fixtures/legacy-source-check.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";

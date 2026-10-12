@@ -1,3 +1,4 @@
+import "./fixtures/legacy-source-check.js";
 import { test, before, after } from "node:test";
 import { NativeTerminal } from "../src/server/terminal.js";
 import { openNativeGateway as legacyGateway } from "./helpers/legacy-gateway.js";

@@ -9,6 +9,57 @@ import {
   nativePreflight,
   provisionArtifact,
 } from "../src/sandbox/artifact.js";
+test("native readiness diagnostics distinguish missing receipt, Docker outage and invalid binding without subprocess text", async () => {
+  const home = await mkdtemp(join(tmpdir(), "artifact-reason-"));
+  const root = join(home, "app");
+  try {
+    await mkdir(join(root, "dist"), { recursive: true });
+    await writeFile(
+      join(root, "dist/build.json"),
+      JSON.stringify({ revision, protocol: 2, fingerprint }),
+    );
+    let calls = 0;
+    const unavailable = async () => {
+      calls++;
+      throw new Error("private subprocess customer sentinel");
+    };
+    const rejects = (reason: string) => (error: any) => {
+      assert.equal(error.message, "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED");
+      assert.equal(error.artifactReason, reason);
+      assert.doesNotMatch(JSON.stringify(error), /private|customer|sentinel/);
+      return true;
+    };
+    await assert.rejects(
+      nativeImage(home, root, unavailable),
+      rejects("MISSING_MATCHING_ARTIFACT"),
+    );
+    assert.equal(calls, 0);
+    await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
+    const path = join(home, "native-artifacts", revision + ".json");
+    await writeFile(
+      path,
+      JSON.stringify({ revision, fingerprint, image, platform: "linux/amd64" }),
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      nativeImage(home, root, unavailable),
+      rejects("DOCKER_UNAVAILABLE"),
+    );
+    assert.equal(calls, 1);
+    await writeFile(
+      path,
+      JSON.stringify({ revision, fingerprint, image: "mutable-tag" }),
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      nativeImage(home, root, unavailable),
+      rejects("INVALID_BINDING"),
+    );
+    assert.equal(calls, 1);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
 const revision = "a".repeat(40),
   fingerprint = "b".repeat(64),
   image = "sha256:" + "c".repeat(64);
@@ -73,7 +124,7 @@ test("native artifact is immutable and bound to exact application identity", asy
   const root = join(home, "app");
   try {
     await mkdir(join(root, "dist"), { recursive: true });
-    await mkdir(join(home, "native-artifacts"));
+    await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
     await writeFile(
       join(root, "dist/build.json"),
       JSON.stringify({ revision, protocol: 2, fingerprint }),
@@ -108,7 +159,7 @@ test("native artifact is immutable and bound to exact application identity", asy
       probe: async () => image,
     });
     assert.equal(JSON.parse(await readFile(path, "utf8")).image, image);
-    await writeFile(path, JSON.stringify(binding));
+    await writeFile(path, JSON.stringify(binding), { mode: 0o600 });
     assert.equal(await nativeImage(home, root, inspect), image);
     for (const invalid of [
       { image: "katafit-pi:0.86.1" },
@@ -116,7 +167,9 @@ test("native artifact is immutable and bound to exact application identity", asy
       { fingerprint: "e".repeat(64) },
       { platform: "linux/arm64" },
     ]) {
-      await writeFile(path, JSON.stringify({ ...binding, ...invalid }));
+      await writeFile(path, JSON.stringify({ ...binding, ...invalid }), {
+        mode: 0o600,
+      });
       await assert.rejects(
         nativeImage(home, root, inspect),
         /EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED/,
@@ -133,7 +186,7 @@ test("native receipt is reused for another revision with the same fingerprint", 
   const provisioned = "d".repeat(40);
   try {
     await mkdir(join(root, "dist"), { recursive: true });
-    await mkdir(join(home, "native-artifacts"));
+    await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
     await writeFile(
       join(root, "dist/build.json"),
       JSON.stringify({ revision, protocol: 2, fingerprint }),
@@ -159,7 +212,7 @@ test("native receipt is reused for another revision with the same fingerprint", 
         },
       ]),
     });
-    await writeFile(receipt, JSON.stringify(binding));
+    await writeFile(receipt, JSON.stringify(binding), { mode: 0o600 });
     assert.equal(await nativeImage(home, root, inspect), image);
     // Image labels must match the reused receipt, not merely the fingerprint.
     labels = { ...labels, "fit.kata.native.revision": revision };
@@ -172,6 +225,7 @@ test("native receipt is reused for another revision with the same fingerprint", 
     await writeFile(
       receipt,
       JSON.stringify({ ...binding, fingerprint: "e".repeat(64) }),
+      { mode: 0o600 },
     );
     await assert.rejects(
       nativeImage(home, root, inspect),
@@ -182,16 +236,18 @@ test("native receipt is reused for another revision with the same fingerprint", 
     await writeFile(
       join(home, "native-artifacts", "f".repeat(40) + ".json"),
       JSON.stringify(binding),
+      { mode: 0o600 },
     );
     await assert.rejects(
       nativeImage(home, root, inspect),
       /EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED/,
     );
     // An invalid exact receipt fails closed instead of falling back.
-    await writeFile(receipt, JSON.stringify(binding));
+    await writeFile(receipt, JSON.stringify(binding), { mode: 0o600 });
     await writeFile(
       join(home, "native-artifacts", revision + ".json"),
       JSON.stringify({ ...binding, revision, fingerprint: "e".repeat(64) }),
+      { mode: 0o600 },
     );
     await assert.rejects(
       nativeImage(home, root, inspect),
@@ -208,7 +264,7 @@ test("native preflight retains failed cleanup ownership and retries before reuse
   let failedStops = 0;
   try {
     await mkdir(join(root, "dist"), { recursive: true });
-    await mkdir(join(home, "native-artifacts"));
+    await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
     await writeFile(
       join(root, "dist/build.json"),
       JSON.stringify({ revision, protocol: 2, fingerprint }),
@@ -216,6 +272,7 @@ test("native preflight retains failed cleanup ownership and retries before reuse
     await writeFile(
       join(home, "native-artifacts", revision + ".json"),
       JSON.stringify({ revision, fingerprint, image, platform: "linux/amd64" }),
+      { mode: 0o600 },
     );
     const inspect = async () => ({
       stdout: JSON.stringify([
@@ -279,7 +336,7 @@ test("graceful cleanup drain retries every retained native runtime", async () =>
   let stops = 0;
   try {
     await mkdir(join(root, "dist"), { recursive: true });
-    await mkdir(join(home, "native-artifacts"));
+    await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
     await writeFile(
       join(root, "dist/build.json"),
       JSON.stringify({ revision, protocol: 2, fingerprint }),
@@ -287,6 +344,7 @@ test("graceful cleanup drain retries every retained native runtime", async () =>
     await writeFile(
       join(home, "native-artifacts", revision + ".json"),
       JSON.stringify({ revision, fingerprint, image, platform: "linux/amd64" }),
+      { mode: 0o600 },
     );
     const inspect = async () => ({
       stdout: JSON.stringify([
@@ -344,7 +402,7 @@ test("native preflight serializes a protected home", async () => {
   let maximum = 0;
   try {
     await mkdir(join(root, "dist"), { recursive: true });
-    await mkdir(join(home, "native-artifacts"));
+    await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
     await writeFile(
       join(root, "dist/build.json"),
       JSON.stringify({ revision, protocol: 2, fingerprint }),
@@ -352,6 +410,7 @@ test("native preflight serializes a protected home", async () => {
     await writeFile(
       join(home, "native-artifacts", revision + ".json"),
       JSON.stringify({ revision, fingerprint, image, platform: "linux/amd64" }),
+      { mode: 0o600 },
     );
     const inspect = async () => ({
       stdout: JSON.stringify([

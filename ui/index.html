@@ -1215,7 +1215,7 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
                   ><code id="updateInstalled">Unknown</code>
                 </div>
                 <div>
-                  <span class="hint">LATEST ON MAIN</span
+                  <span class="hint" id="updateLatestLabel">LATEST SOURCE</span
                   ><code id="updateLatest">Not checked</code>
                 </div>
               </div>
@@ -1223,15 +1223,20 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
                 Check for a newer source revision.
               </p>
               <p class="hint" id="updateChecked">Not checked yet.</p>
+              <p id="updatePreparation" class="hint" role="status" hidden></p>
               <p id="updateOutcome" class="hint" role="status" hidden></p>
               <p class="hint">
                 Source is checked only when you open Updates or press Check for
                 updates. Every installation requires your confirmation.
               </p>
               <p class="hint" id="updateCheckStatus" role="status"></p>
+              <p class="hint" id="updateReadiness" role="status"></p>
               <div class="log-controls">
                 <button id="updateCheck" class="secondary">
                   Check for updates
+                </button>
+                <button id="updateReadinessRefresh" class="secondary" disabled>
+                  Refresh host readiness
                 </button>
                 <button id="updateApply" disabled>Upgrade…</button>
                 <button id="updateReload" class="secondary" hidden>

@@ -1,3 +1,4 @@
+import "./fixtures/legacy-source-check.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -24,7 +25,7 @@ const legacyOperation = ({
   ...rest
 }: { reason?: unknown } & Record<string, unknown>) => rest;
 
-test("failed and interrupted accepted operations retain durable outcome across restart", async () => {
+test("failed preparation and interrupted accepted operations retain distinct durable outcomes across restart", async () => {
   const home = await mkdtemp(join(tmpdir(), "coach-outcome-"));
   const store = new Store(home);
   await store.init();
@@ -37,16 +38,23 @@ test("failed and interrupted accepted operations retain durable outcome across r
     owner.updates.latest = "7".repeat(40);
     owner.updates.checkedAt = Date.now();
     await assert.rejects(owner.updates.apply(owner.updates.latest));
-    const outcome = owner.updates.snapshot().lastOperation;
+    const outcome = owner.updates.snapshot().preparationAttempt;
+    assert.equal(owner.updates.lastOperation, undefined);
     assert.equal(outcome?.state, "failed");
     assert.equal(outcome?.sha, "7".repeat(40));
     await owner.close();
     owner = await supervise(store, 0);
-    assert.deepEqual(owner.updates.snapshot().lastOperation, outcome);
+    assert.deepEqual(owner.updates.snapshot().preparationAttempt, outcome);
+    assert.equal(owner.updates.lastOperation, undefined);
     await owner.close();
     await writeFile(
       join(home, "update-operation.json"),
-      JSON.stringify({ ...legacyOperation(outcome!), state: "applying" }),
+      JSON.stringify({
+        id: outcome!.id,
+        sha: outcome!.sha,
+        at: Date.now(),
+        state: "applying",
+      }),
     );
     owner = await supervise(store, 0);
     assert.equal(owner.updates.snapshot().lastOperation?.state, "interrupted");
@@ -103,8 +111,14 @@ test("activation rollback never replays an older native probe cleanup receipt", 
   const receipt = join(home, "native-probe-cleanup.json");
   let candidatePreflights = 0;
   const prepare = async () => {
-    await mkdir(join(candidate, "dist/config"), { recursive: true });
-    await mkdir(join(candidate, "dist/server"), { recursive: true });
+    await mkdir(join(candidate, "dist/config"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await mkdir(join(candidate, "dist/server"), {
+      recursive: true,
+      mode: 0o700,
+    });
     await writeFile(join(candidate, "package.json"), '{"type":"module"}');
     await writeFile(
       join(candidate, "dist/build.json"),
@@ -209,8 +223,8 @@ test("owner shutdown drains retained native preflight cleanup", async () => {
   let stops = 0;
   let owner: Awaited<ReturnType<typeof supervise>> | undefined;
   try {
-    await mkdir(join(root, "dist"), { recursive: true });
-    await mkdir(join(home, "native-artifacts"));
+    await mkdir(join(root, "dist"), { recursive: true, mode: 0o700 });
+    await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
     await writeFile(
       join(root, "dist/build.json"),
       JSON.stringify({ revision, protocol: 2, fingerprint }),
@@ -223,6 +237,7 @@ test("owner shutdown drains retained native preflight cleanup", async () => {
         image,
         platform: `linux/${architecture}`,
       }),
+      { mode: 0o600 },
     );
     const inspect = async () => ({
       stdout: JSON.stringify([
@@ -302,8 +317,14 @@ test("failed staged deletion is retained and drained before same-SHA retry", asy
       },
       () => {},
     );
-    await mkdir(join(candidate, "dist/config"), { recursive: true });
-    await mkdir(join(candidate, "dist/server"), { recursive: true });
+    await mkdir(join(candidate, "dist/config"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await mkdir(join(candidate, "dist/server"), {
+      recursive: true,
+      mode: 0o700,
+    });
     await writeFile(join(candidate, "package.json"), '{"type":"module"}');
     await writeFile(
       join(candidate, "dist/build.json"),
@@ -354,15 +375,158 @@ test("failed staged deletion is retained and drained before same-SHA retry", asy
   }
 });
 
-test("new owner explicitly supports stopped legacy admin but withholds running capability", async () => {
-  const home = await mkdtemp(join(tmpdir(), "coach-new-owner-legacy-admin-"));
-  const store = new Store(home);
-  await store.init();
-  const initial = "1".repeat(40);
-  let latest = "a".repeat(40);
-  const currentStore = pathToFileURL(resolve("dist/config/store.js")).href;
-  const legacyAdmin = `
+for (const transition of ["cancel", "activate"] as const)
+  test(`failed A cleanup drains before B ${transition} and permits shutdown`, async () => {
+    const home = await mkdtemp(join(tmpdir(), "coach-candidate-transition-"));
+    const store = new Store(home);
+    await store.init();
+    await activateLegacyFixture(home);
+    const initial = "1".repeat(40),
+      a = "a".repeat(40),
+      b = "b".repeat(40);
+    const versions = join(home, "versions"),
+      candidateA = join(versions, a);
+    const lease = join(home, "update-candidate.json");
+    const activeBefore = await readFile(join(home, "active.json"));
+    const rollbackBefore = await readFile(
+      join(versions, initial, "dist/build.json"),
+    );
+    const configBefore = await readFile(join(home, "config.json"));
+    const prepared: string[] = [];
+    const owner = await supervise(store, 0, undefined, {
+      prepare: async (sha) => {
+        prepared.push(sha);
+        const candidate = join(versions, sha);
+        await mkdir(join(candidate, "dist/config"), {
+          recursive: true,
+          mode: 0o700,
+        });
+        await mkdir(join(candidate, "dist/server"), {
+          recursive: true,
+          mode: 0o700,
+        });
+        await writeFile(join(candidate, "package.json"), '{"type":"module"}');
+        await writeFile(
+          join(candidate, "dist/build.json"),
+          JSON.stringify({ revision: sha, protocol: 1 }),
+        );
+        await writeFile(
+          join(candidate, "dist/config/store.js"),
+          `export {Store} from ${JSON.stringify(pathToFileURL(resolve("dist/config/store.js")).href)};`,
+        );
+        await writeFile(
+          join(candidate, "dist/server/admin.js"),
+          `export {admin, updatePreparationProtocol} from ${JSON.stringify(pathToFileURL(resolve("dist/server/admin.js")).href)};`,
+        );
+        return candidate;
+      },
+      preflight: async (root) => {
+        if (root === candidateA) {
+          await chmod(join(candidateA, "dist"), 0o500);
+          await chmod(candidateA, 0o500);
+          await chmod(versions, 0o500);
+          throw new Error("EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED");
+        }
+        return undefined;
+      },
+    });
+    try {
+      const originalPid = owner.pid;
+      owner.updates.latest = a;
+      owner.updates.checkedAt = Date.now();
+      await assert.rejects(owner.updates.prepare(a), /UPDATE_CLEANUP_PENDING/);
+      assert.equal(owner.updates.snapshot().cleanupWarning, true);
+      const failedLease = await readFile(lease);
+      assert.equal(JSON.parse(failedLease.toString()).sha, a);
+      assert.equal(JSON.parse(failedLease.toString()).state, "removing");
+
+      // B must not replace A's authority while deletion still fails.
+      owner.updates.latest = b;
+      await assert.rejects(owner.updates.prepare(b));
+      assert.deepEqual(await readFile(lease), failedLease);
+      assert.deepEqual(prepared, [a]);
+      assert.equal(owner.pid, originalPid);
+      assert.deepEqual(await readFile(join(home, "active.json")), activeBefore);
+
+      await chmod(versions, 0o700);
+      await chmod(candidateA, 0o700);
+      await chmod(join(candidateA, "dist"), 0o700);
+      await owner.updates.prepare(b);
+      const attempt = owner.updates.preparationAttempt!;
+      assert.equal(attempt.state, "ready");
+      assert.equal(attempt.sha, b);
+      assert.equal(owner.updates.lastOperation, undefined);
+      assert.equal(owner.pid, originalPid);
+      assert.deepEqual(prepared, [a, b]);
+      await assert.rejects(access(candidateA), { code: "ENOENT" });
+      assert.equal(JSON.parse(await readFile(lease, "utf8")).sha, b);
+      if (transition === "cancel") {
+        await owner.updates.cancelPreparation(b, attempt.id);
+        await assert.rejects(access(join(versions, b)), { code: "ENOENT" });
+        await assert.rejects(access(lease), { code: "ENOENT" });
+        assert.deepEqual(
+          await readFile(join(home, "active.json")),
+          activeBefore,
+        );
+        assert.equal(owner.updates.lastOperation, undefined);
+      } else {
+        await owner.updates.apply(b, false, true, attempt.id);
+        assert.equal(owner.updates.installed, b);
+        assert.equal(
+          JSON.parse(await readFile(join(home, "active.json"), "utf8"))
+            .revision,
+          b,
+        );
+        assert.equal(
+          JSON.parse(await readFile(lease, "utf8")).state,
+          "retained",
+        );
+      }
+      assert.equal(
+        await owner.close(),
+        true,
+        "no stale A cleanup blocks shutdown after B",
+      );
+      assert.deepEqual(
+        await readFile(join(versions, initial, "dist/build.json")),
+        rollbackBefore,
+      );
+      assert.deepEqual(await readFile(join(home, "config.json")), configBefore);
+      if (transition === "activate")
+        await access(join(versions, b, "dist/build.json"));
+    } finally {
+      await chmod(versions, 0o700).catch(() => {});
+      await chmod(candidateA, 0o700).catch(() => {});
+      await chmod(join(candidateA, "dist"), 0o700).catch(() => {});
+      const pid = owner.pid;
+      if (!(await owner.close()) && pid) {
+        // The RED regression leaves its own runtime alive after close refuses.
+        // Terminate only this fixture child so failed tests cannot leak it.
+        process.kill(pid, "SIGTERM");
+        for (let retry = 0; retry < 100; retry++) {
+          try {
+            process.kill(pid, 0);
+          } catch {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+for (const adminProtocol of [undefined, 1])
+  test(`new owner explicitly supports stopped legacy admin protocol ${adminProtocol} but withholds running capability`, async () => {
+    const home = await mkdtemp(join(tmpdir(), "coach-new-owner-legacy-admin-"));
+    const store = new Store(home);
+    await store.init();
+    const initial = "1".repeat(40);
+    let latest = "a".repeat(40);
+    const currentStore = pathToFileURL(resolve("dist/config/store.js")).href;
+    const legacyAdmin = `
     import {createServer} from "node:http";
+    export const updatePreparationProtocol = ${adminProtocol};
     export async function admin(store, port = 0, _infer, _shutdown, updates) {
       let state = "stopped";
       const server = createServer(async (request, response) => {
@@ -381,8 +545,13 @@ test("new owner explicitly supports stopped legacy admin but withholds running c
           return send(200, updates.snapshot());
         }
         if (request.url === "/api/update/apply") {
+          if(updates.snapshot().preparationSupported) return send(500, {error:"legacy admin must not get prepared RPCs"});
           try { updates.validate(body.sha); }
           catch (error) { return send(400, {error:error.message}); }
+          if (body.forceResume) {
+            try { await updates.apply(body.sha, true); return send(202, {ok:true}); }
+            catch (error) { return send(409, {error:error.message}); }
+          }
           const wasRunning = state !== "stopped";
           if (wasRunning && !updates.snapshot().manualRestartSupported)
             return send(409, {error:"LAUNCHER_UPGRADE_REQUIRED"});
@@ -402,91 +571,106 @@ test("new owner explicitly supports stopped legacy admin but withholds running c
       return {origin, async close(){server.closeAllConnections(); await new Promise(resolve => server.close(resolve));}};
     }
   `;
-  const writeCandidate = async (revision: string) => {
-    const root = join(home, "versions", revision);
-    await mkdir(join(root, "dist/config"), { recursive: true });
-    await mkdir(join(root, "dist/server"), { recursive: true });
-    await writeFile(join(root, "package.json"), '{"type":"module"}');
+    const writeCandidate = async (revision: string) => {
+      const root = join(home, "versions", revision);
+      await mkdir(join(root, "dist/config"), { recursive: true, mode: 0o700 });
+      await mkdir(join(root, "dist/server"), { recursive: true, mode: 0o700 });
+      await writeFile(join(root, "package.json"), '{"type":"module"}');
+      await writeFile(
+        join(root, "dist/build.json"),
+        JSON.stringify({ revision, protocol: 1 }),
+      );
+      await writeFile(
+        join(root, "dist/config/store.js"),
+        `export {Store} from ${JSON.stringify(currentStore)};`,
+      );
+      await writeFile(join(root, "dist/server/admin.js"), legacyAdmin);
+      return root;
+    };
+    await writeCandidate(initial);
     await writeFile(
-      join(root, "dist/build.json"),
-      JSON.stringify({ revision, protocol: 1 }),
+      join(home, "active.json"),
+      JSON.stringify({ revision: initial }),
+      { mode: 0o600 },
     );
-    await writeFile(
-      join(root, "dist/config/store.js"),
-      `export {Store} from ${JSON.stringify(currentStore)};`,
+    const { supervise: currentSupervise } = await import(
+      "../src/update/supervisor.js"
     );
-    await writeFile(join(root, "dist/server/admin.js"), legacyAdmin);
-    return root;
-  };
-  await writeCandidate(initial);
-  await writeFile(
-    join(home, "active.json"),
-    JSON.stringify({ revision: initial }),
-  );
-  const { supervise: currentSupervise } = await import(
-    "../src/update/supervisor.js"
-  );
-  const owner = await currentSupervise(store, 0, undefined, {
-    prepare: writeCandidate,
-    request: async () =>
-      new Response(JSON.stringify({ object: { sha: latest } })),
-  });
-  const headers = {
-    Authorization: "Bearer " + store.secrets.admin,
-    Origin: owner.origin,
-    "Content-Type": "application/json",
-  };
-  const post = (path: string, body: unknown = {}) =>
-    fetch(owner.origin + path, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
+    const owner = await currentSupervise(store, 0, undefined, {
+      prepare: writeCandidate,
+      request: async () =>
+        new Response(JSON.stringify({ object: { sha: latest } })),
     });
-  try {
-    assert.equal((await post("/api/update/check")).status, 200);
-    assert.equal(
-      (
-        await post("/api/update/apply", {
-          sha: latest,
-          confirm: true,
-        })
-      ).status,
-      202,
-      "stopped legacy admin uses owner-side lazy preparation",
-    );
-    for (
-      let attempt = 0;
-      attempt < 200 &&
-      (owner.updates.installed !== latest || owner.updates.applying);
-      attempt++
-    )
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(owner.updates.installed, latest);
-    assert.equal(owner.updates.applying, false);
+    const headers = {
+      Authorization: "Bearer " + store.secrets.admin,
+      Origin: owner.origin,
+      "Content-Type": "application/json",
+    };
+    const post = (path: string, body: unknown = {}) =>
+      fetch(owner.origin + path, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+    try {
+      assert.equal((await post("/api/update/check")).status, 200);
+      assert.equal(
+        (
+          await post("/api/update/apply", {
+            sha: latest,
+            confirm: true,
+          })
+        ).status,
+        202,
+        "stopped legacy admin uses owner-side lazy preparation",
+      );
+      for (
+        let attempt = 0;
+        attempt < 200 &&
+        (owner.updates.installed !== latest || owner.updates.applying);
+        attempt++
+      )
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(owner.updates.installed, latest);
+      assert.equal(owner.updates.applying, false);
 
-    const installed = latest;
-    latest = "b".repeat(40);
-    owner.updates.checkedAt = 0;
-    assert.equal((await post("/api/update/check")).status, 200);
-    assert.equal((await post("/api/run")).status, 200);
-    const rejected = await post("/api/update/apply", {
-      sha: latest,
-      confirm: true,
-    });
-    assert.equal(rejected.status, 409);
-    assert.equal((await rejected.json()).error, "LAUNCHER_UPGRADE_REQUIRED");
-    assert.equal(owner.updates.installed, installed);
-    assert.equal(
-      (await (await fetch(owner.origin + "/api/status", { headers })).json())
-        .state,
-      "idle",
-      "legacy running worker was not silently stopped",
-    );
-  } finally {
-    await owner.close();
-    await rm(home, { recursive: true, force: true });
-  }
-});
+      const installed = latest;
+      latest = "b".repeat(40);
+      owner.updates.checkedAt = 0;
+      assert.equal((await post("/api/update/check")).status, 200);
+      assert.equal((await post("/api/run")).status, 200);
+      const rejected = await post("/api/update/apply", {
+        sha: latest,
+        confirm: true,
+      });
+      assert.equal(rejected.status, 409);
+      assert.equal((await rejected.json()).error, "LAUNCHER_UPGRADE_REQUIRED");
+      assert.equal(owner.updates.installed, installed);
+      assert.equal(
+        (await (await fetch(owner.origin + "/api/status", { headers })).json())
+          .state,
+        "idle",
+        "legacy running worker was not silently stopped",
+      );
+      const forcedResume = await post("/api/update/apply", {
+        sha: latest,
+        forceResume: true,
+      });
+      assert.equal(
+        forcedResume.status,
+        409,
+        "legacy resume must not be silently downgraded to stopped-only apply",
+      );
+      assert.equal(
+        (await forcedResume.json()).error,
+        "LAUNCHER_UPGRADE_REQUIRED",
+      );
+      assert.equal(owner.updates.installed, installed);
+    } finally {
+      await owner.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 
 test("manual cancellation and acceptance failures release their prepared reservations", async () => {
   const home = await mkdtemp(join(tmpdir(), "coach-auto-accept-release-"));
@@ -502,8 +686,8 @@ test("manual cancellation and acceptance failures release their prepared reserva
   const prepare = async (target: string) => {
     prepared.push(target);
     const root = join(home, "versions", target);
-    await mkdir(join(root, "dist/config"), { recursive: true });
-    await mkdir(join(root, "dist/server"), { recursive: true });
+    await mkdir(join(root, "dist/config"), { recursive: true, mode: 0o700 });
+    await mkdir(join(root, "dist/server"), { recursive: true, mode: 0o700 });
     await writeFile(join(root, "package.json"), '{"type":"module"}');
     await writeFile(
       join(root, "dist/build.json"),
@@ -520,7 +704,10 @@ test("manual cancellation and acceptance failures release their prepared reserva
     if (target === consentFailure)
       await writeFile(join(home, "auto-update.json"), "{invalid");
     if (target === acceptanceFailure)
-      await mkdir(join(home, "update-operation.json"), { recursive: true });
+      await mkdir(join(home, "update-operation.json"), {
+        recursive: true,
+        mode: 0o700,
+      });
     return root;
   };
   const owner = await supervise(store, 0, undefined, {
@@ -538,7 +725,10 @@ test("manual cancellation and acceptance failures release their prepared reserva
     owner.updates.installed = "c".repeat(40);
     await owner.updates.check();
     await owner.updates.prepare(latest);
-    await owner.updates.cancelPreparation(latest);
+    await owner.updates.cancelPreparation(
+      latest,
+      owner.updates.preparationAttempt!.id,
+    );
     await assert.rejects(access(join(home, "versions", consentFailure)), {
       code: "ENOENT",
     });
@@ -615,9 +805,15 @@ test("initial active native preflight drains retained cleanup before supervise r
   const currentStore = pathToFileURL(resolve("dist/config/store.js")).href;
   let stops = 0;
   try {
-    await mkdir(join(activeRoot, "dist/config"), { recursive: true });
-    await mkdir(join(activeRoot, "dist/server"), { recursive: true });
-    await mkdir(join(home, "native-artifacts"));
+    await mkdir(join(activeRoot, "dist/config"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await mkdir(join(activeRoot, "dist/server"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await mkdir(join(home, "native-artifacts"), { mode: 0o700 });
     await writeFile(join(activeRoot, "package.json"), '{"type":"module"}');
     await writeFile(
       join(activeRoot, "dist/build.json"),
@@ -634,6 +830,7 @@ test("initial active native preflight drains retained cleanup before supervise r
     await writeFile(
       join(home, "active.json"),
       JSON.stringify({ revision, image }),
+      { mode: 0o600 },
     );
     await writeFile(
       join(home, "native-artifacts", revision + ".json"),
@@ -643,6 +840,7 @@ test("initial active native preflight drains retained cleanup before supervise r
         image,
         platform: `linux/${architecture}`,
       }),
+      { mode: 0o600 },
     );
     const inspect = async () => ({
       stdout: JSON.stringify([
@@ -764,8 +962,8 @@ test("stable owner validates isolated candidate, switches same port and rolls ba
     native = "8".repeat(40);
   const prepare = async (target: string) => {
     const root = join(home, "versions", target);
-    await mkdir(join(root, "dist/server"), { recursive: true });
-    await mkdir(join(root, "dist/config"), { recursive: true });
+    await mkdir(join(root, "dist/server"), { recursive: true, mode: 0o700 });
+    await mkdir(join(root, "dist/config"), { recursive: true, mode: 0o700 });
     await writeFile(
       join(root, "dist/config/store.js"),
       target === badStore

@@ -99,6 +99,18 @@ test("old owner's candidate probe rejects the new catalog before update acceptan
       join(owner, "dist", "update", "capability.js"),
       "export const manualOnlySourceUpdates = 1;",
     );
+    const shaOnlyOwner = run();
+    assert.notEqual(
+      shaOnlyOwner.status,
+      0,
+      "SHA-only owner must reject token-aware candidate before acceptance",
+    );
+    assert.match(shaOnlyOwner.stderr, /LAUNCHER_UPGRADE_REQUIRED/);
+    assert.deepEqual(await readdir(home), []);
+    await writeFile(
+      join(owner, "dist", "update", "capability.js"),
+      "export const manualOnlySourceUpdates = 1; export const updatePreparationProtocol = 2;",
+    );
     const accepted = run();
     assert.equal(accepted.status, 0, accepted.stderr);
     assert.deepEqual(
@@ -114,6 +126,7 @@ async function coldChild(
   home: string,
   launcherSkillCatalog?: number,
   manualOnlySourceUpdates = launcherSkillCatalog === 2 ? 1 : undefined,
+  preparationProtocol = 2,
 ) {
   const child = fork(
     resolve("dist/update/runtime.js"),
@@ -143,6 +156,7 @@ async function coldChild(
           installed: null,
           launcherSkillCatalog,
           manualOnlySourceUpdates,
+          preparationProtocol,
         },
       });
     });
@@ -232,6 +246,15 @@ test("incompatible launcher denies legacy catalog migration without changing the
       await readFile(join(home, "skills-history", migrated.head)),
       migrated.record,
     );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("new runtime refuses SHA-only owner for token-aware admin with upgrade-required startup reason", async () => {
+  const home = await mkdtemp(join(tmpdir(), "coach-token-owner-gate-"));
+  try {
+    assert.equal(await coldChild(home, 2, 1, 1), "exit");
   } finally {
     await rm(home, { recursive: true, force: true });
   }

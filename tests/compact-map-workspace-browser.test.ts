@@ -1,7 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
-import { fixture, ledger } from "./helpers/exact-map-fixture.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import {
+  ada,
+  ev,
+  fixture,
+  ledger,
+  settleCompactMap,
+} from "./helpers/exact-map-fixture.js";
+import {
+  observeExactEventRead,
+  requestBoundary,
+} from "./helpers/exact-event-request-probe.js";
 
 test("served timeline omits the visible/loaded count row", async () => {
   await fixture(
@@ -365,7 +375,7 @@ for (const width of [320, 390]) {
     }));
     await fixture(
       async (page) => {
-        await page.locator(".dashboard-timeline-mark").first().focus();
+        await settleCompactMap(page);
         assert.equal(
           await page.locator(".dashboard-timeline-mark").count(),
           80,
@@ -380,8 +390,11 @@ for (const width of [320, 390]) {
             timeline: timeline.getBoundingClientRect().toJSON(),
             overflows: timeline.scrollHeight > timeline.clientHeight,
             pageOverflow: document.documentElement.scrollHeight > innerHeight,
+            viewportBottom: innerHeight - 8,
           };
         });
+        assert.ok(geometry.map.bottom <= geometry.viewportBottom);
+        await page.locator(".dashboard-timeline-mark").first().focus();
         assert.ok(geometry.map.height >= 110, JSON.stringify(geometry));
         assert.ok(geometry.map.height > geometry.timeline.height);
         if (geometry.overflows) {
@@ -427,10 +440,9 @@ for (const width of [320, 390]) {
           await page.locator(".dashboard-timeline-mark:focus").count(),
           1,
         );
-        assert.ok(
-          (await page.locator("#dashboardMap").boundingBox())!.height >=
-            geometry.map.height,
-        );
+        const finalMap = (await page.locator("#dashboardMap").boundingBox())!;
+        assert.ok(finalMap.height >= geometry.map.height);
+        assert.ok(finalMap.y + finalMap.height <= geometry.viewportBottom);
       },
       {
         document: true,
@@ -515,70 +527,203 @@ test("ordinary longitude fit uses one projected copy, not a duplicated world", a
   );
 });
 
-for (const status of [200, 403])
-  test(`dismiss fences held exact-event ${status} without suppressing late denial`, async () => {
-    let release!: () => void;
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    let started = false;
-    try {
-      await fixture(
-        async (page) => {
-          await page.locator(".dashboard-map-group").first().click();
-          await page.locator(".dashboard-map-choice").first().click();
-          await page.waitForFunction(
-            () =>
-              document.getElementById("dashboardMapSelection")!.childNodes
-                .length > 0,
-          );
-          assert.ok(started);
-          await page.locator("#dashboardInspectorClose").focus();
-          await page.keyboard.press("Escape");
-          assert.equal(
-            await page.locator("#dashboardMapSelection").textContent(),
-            "",
-          );
-          release();
-          await page.waitForTimeout(150);
-          assert.equal(
-            await page.locator("#dashboardMapSelection").textContent(),
-            "",
-          );
-          if (status === 403)
-            assert.equal(
-              await page
-                .locator(
-                  '.dashboard-event-dot[data-member-id="aaaaaaaaaaaaaaaaaaaaaaaa"]',
-                )
-                .count(),
-              0,
-            );
-        },
-        {
-          document: true,
-          viewport: { width: 390, height: 844 },
-          override: (url, events) => {
-            if (url.pathname !== "/api/dashboard/event") return;
-            started = true;
-            return {
-              status,
-              hold: held,
-              body: {
-                users: [],
-                events: events.filter(
-                  (e) => e.id === url.searchParams.get("event_id"),
+for (const delayedAdmission of [false, true])
+  for (const status of [200, 403])
+    test(`dismiss fences held exact-event ${status} without suppressing late denial${delayedAdmission ? " with delayed request admission" : ""}`, async () => {
+      const held = Promise.withResolvers<void>();
+      const admitted = Promise.withResolvers<string>();
+      const atBoundary = Promise.withResolvers<any>();
+      const trace: unknown[] = [];
+      let started = false;
+      let routed: any;
+      try {
+        await fixture(
+          async (page, { requests }) => {
+            try {
+              await observeExactEventRead(page, ev(1));
+              if (delayedAdmission)
+                await page.route("**/api/dashboard/event?*", (route: any) => {
+                  routed = route;
+                  atBoundary.resolve(route);
+                });
+              await page.locator(".dashboard-map-group").first().click();
+              const choice = page.locator(".dashboard-map-choice").first();
+              assert.equal(await choice.getAttribute("data-event-id"), ev(1));
+              await choice.click();
+              await page.waitForFunction(
+                () =>
+                  document.getElementById("dashboardMapSelection")!.childNodes
+                    .length > 0,
+              );
+              assert.match(
+                await page.locator("#dashboardMapSelection").textContent(),
+                /Checking current event access/,
+              );
+              if (delayedAdmission) {
+                const route = await requestBoundary(atBoundary.promise);
+                trace.push({
+                  phase: "inspector-before-server-admission",
+                  started,
+                  request: route.request().url(),
+                  inspector: await page
+                    .locator("#dashboardMapSelection")
+                    .textContent(),
+                });
+                assert.equal(started, false);
+                assert.equal(
+                  requests.filter((url) =>
+                    url.startsWith("/api/dashboard/event?"),
+                  ).length,
+                  0,
+                );
+                // Forward this same real request; do not fulfill a synthetic response.
+                await route.continue();
+                routed = undefined;
+              }
+              // The pending inspector is rendered before dispatch/admission.
+              // Only the fixture server's exact held request qualifies dismissal.
+              const admittedUrl = await requestBoundary(admitted.promise);
+              assert.ok(started);
+              const url = new URL(admittedUrl, "http://fixture");
+              assert.equal(url.searchParams.get("event_id"), ev(1));
+              assert.equal(url.searchParams.get("date"), "2026-09-28");
+              assert.equal(
+                url.searchParams.get("start"),
+                "2026-09-28T00:00:00.000Z",
+              );
+              assert.equal(
+                url.searchParams.get("end"),
+                "2026-09-29T00:00:00.000Z",
+              );
+              trace.push({
+                phase: "server-admitted-response-held",
+                admittedUrl,
+              });
+              await page.locator("#dashboardInspectorClose").focus();
+              await page.keyboard.press("Escape");
+              assert.equal(
+                await page.locator("#dashboardMapSelection").textContent(),
+                "",
+              );
+              assert.equal(
+                await page.locator("#dashboardInspectorClose").isVisible(),
+                false,
+              );
+              trace.push({ phase: "inspector-dismissed-response-held" });
+              held.resolve();
+              const completion: any = await requestBoundary(
+                page.evaluate(
+                  () => (window as any).exactEventReadProbe.finished,
                 ),
-                hasMore: false,
-              },
-            };
+              );
+              assert.equal(
+                new URL(completion.url).pathname +
+                  new URL(completion.url).search,
+                admittedUrl,
+              );
+              assert.equal(completion.status, status);
+              assert.deepEqual(completion.trace, [
+                "native-response-headers",
+                ...(status === 200 ? ["native-response-json"] : []),
+                "response-continuations-drained",
+              ]);
+              trace.push({ phase: "real-response-processed", ...completion });
+              assert.equal(
+                await page.locator("#dashboardMapSelection").textContent(),
+                "",
+              );
+              assert.equal(
+                await page.locator("#dashboardInspectorClose").isVisible(),
+                false,
+              );
+              // A stale success must not start optional enrichment or redisplay it.
+              assert.equal(
+                requests.filter((url) =>
+                  url.startsWith("/api/dashboard/activity?"),
+                ).length,
+                0,
+              );
+              if (status === 403) {
+                assert.equal(
+                  await page
+                    .locator(`.dashboard-event-dot[data-member-id="${ada}"]`)
+                    .count(),
+                  0,
+                );
+                assert.equal(
+                  await page
+                    .locator(
+                      `.dashboard-timeline-mark[data-member-id="${ada}"]`,
+                    )
+                    .count(),
+                  0,
+                );
+                const content = await page
+                  .locator("#dashboardMapPane")
+                  .textContent();
+                assert.doesNotMatch(
+                  content,
+                  /Synthetic Ada|40\.7|73\.9|Current subject/,
+                );
+                // The other member remains usable; a blank dashboard cannot pass purge.
+                assert.equal(
+                  await page.locator(".dashboard-event-dot").count(),
+                  2,
+                );
+                assert.equal(
+                  await page.locator(".dashboard-timeline-mark").count(),
+                  2,
+                );
+              }
+              trace.push({
+                phase: "strict-dismissal-and-privacy-assertions-passed",
+              });
+            } finally {
+              held.resolve();
+              await routed?.abort().catch(() => {});
+              await page.evaluate(() =>
+                (window as any).exactEventReadProbe?.restore(),
+              );
+              if (process.env.DASHBOARD_EVIDENCE_DIR) {
+                await mkdir(process.env.DASHBOARD_EVIDENCE_DIR, {
+                  recursive: true,
+                });
+                await writeFile(
+                  `${process.env.DASHBOARD_EVIDENCE_DIR}/request-admission-${status}-${delayedAdmission}.json`,
+                  JSON.stringify(trace, null, 2),
+                );
+              }
+            }
           },
-        },
-      );
-    } finally {
-      release();
-    }
-  });
+          {
+            document: true,
+            viewport: { width: 390, height: 844 },
+            override: (url, events) => {
+              if (
+                url.pathname !== "/api/dashboard/event" ||
+                url.searchParams.get("event_id") !== ev(1)
+              )
+                return;
+              started = true;
+              admitted.resolve(url.pathname + url.search);
+              return {
+                status,
+                hold: held.promise,
+                body: {
+                  users: [],
+                  events: events.filter(
+                    (e) => e.id === url.searchParams.get("event_id"),
+                  ),
+                  hasMore: false,
+                },
+              };
+            },
+          },
+        );
+      } finally {
+        held.resolve();
+      }
+    });
 
 test("entirely co-located events retain keyboard zoom across panes", async () => {
   const events = ledger()

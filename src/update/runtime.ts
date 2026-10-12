@@ -1,4 +1,4 @@
-import { Updates } from "./updates.js";
+import { Updates, validPreparationToken } from "./updates.js";
 
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
@@ -15,10 +15,33 @@ const rpc = (method: string, sha?: unknown) =>
     process.send?.({ type: "rpc", id: ref, method, sha });
   });
 class RemoteUpdates extends Updates {
+  override sourceChannel: "ready-releases-v1" | "legacy-or-unknown" =
+    "legacy-or-unknown";
   supported = false;
+  override preparationProtocol = 0;
+  override readinessProtocol = 0;
   private preparationAwareAdmin = false;
+  private receivedSequence = 0;
+  receiveState(state: any) {
+    if (Number.isSafeInteger(state?.stateSequence) && state.stateSequence > 0) {
+      if (state.stateSequence <= this.receivedSequence) return;
+      this.receivedSequence = state.stateSequence;
+    } else {
+      // A legacy or unknown owner cannot advertise local readiness.
+      state = {
+        ...state,
+        readinessProtocol: 0,
+        readinessSupported: false,
+        readiness: undefined,
+      };
+      if (this.receivedSequence) return;
+    }
+    Object.assign(this, state);
+  }
   configureAdmin(protocol: unknown) {
-    this.preparationAwareAdmin = protocol === 1;
+    if (protocol === 2 && this.preparationProtocol !== 2)
+      throw new Error("LAUNCHER_UPGRADE_REQUIRED");
+    this.preparationAwareAdmin = protocol === 2;
   }
   override snapshot() {
     const state = { ...super.snapshot(), supported: this.supported };
@@ -34,35 +57,60 @@ class RemoteUpdates extends Updates {
   }
   override async check() {
     const state = await rpc("check");
-    Object.assign(this, state);
+    this.receiveState(state);
     return this.snapshot();
   }
-  override async prepare(sha: unknown) {
-    if (!this.preparationAwareAdmin)
+  override async refreshReadiness(sha: unknown = this.latest) {
+    if (this.readinessProtocol !== 1 || !this.readinessSupported)
+      throw new Error("LAUNCHER_UPGRADE_REQUIRED");
+    const state = await rpc("readiness", sha);
+    this.receiveState(state);
+    return this.snapshot();
+  }
+  override async assertReady(sha: unknown, token?: string) {
+    if (this.readinessProtocol !== 1 || !this.readinessSupported)
+      throw new Error("LAUNCHER_UPGRADE_REQUIRED");
+    const state = await rpc("assertReady", { sha, token });
+    this.receiveState(state);
+  }
+  override async prepare(sha: unknown, token?: string) {
+    if (!this.preparationAwareAdmin || this.preparationProtocol !== 2)
       throw new Error("LAUNCHER_UPGRADE_REQUIRED");
     this.validate(sha);
+    if (!validPreparationToken(token)) throw new Error("TARGET_REJECTED");
     this.preparing = true;
     try {
-      const state = await rpc("prepare", sha);
-      Object.assign(this, state);
+      const state = await rpc("prepare", { sha, token });
+      this.receiveState(state);
     } finally {
       this.preparing = false;
     }
   }
-  override async cancelPreparation(sha: unknown) {
-    if (typeof sha !== "string") return;
-    const state = await rpc("cancelPreparation", sha);
-    Object.assign(this, state);
+  override async cancelPreparation(sha: unknown, token?: string) {
+    if (!this.preparationAwareAdmin || !validPreparationToken(token))
+      throw new Error("TARGET_REJECTED");
+    const state = await rpc("cancelPreparation", { sha, token });
+    this.receiveState(state);
   }
-  override async apply(sha: unknown, resume = false) {
-    if (this.preparationAwareAdmin) this.validatePrepared(sha);
-    else this.validate(sha);
+  override async apply(
+    sha: unknown,
+    resume = false,
+    _prepared = false,
+    token?: string,
+  ) {
+    if (this.preparationAwareAdmin) {
+      if (!validPreparationToken(token)) throw new Error("TARGET_REJECTED");
+      this.validatePrepared(sha);
+    } else {
+      if (resume) throw new Error("LAUNCHER_UPGRADE_REQUIRED");
+      this.validate(sha);
+    }
     this.applying = true;
     this.accepted = rpc(
       this.preparationAwareAdmin ? "apply" : "legacyApply",
-      resume ? { sha, resume: true } : sha,
+      this.preparationAwareAdmin ? { sha, resume, token } : sha,
     ).then((state) => {
-      Object.assign(this, state);
+      this.receiveState(state);
     });
     try {
       await this.accepted;
@@ -89,11 +137,13 @@ process.on("message", async (message: any) => {
   if (message?.type === "reply") {
     const waiting = pending.get(message.id);
     pending.delete(message.id);
-    if (message.error) waiting?.reject(new Error(message.error));
-    else waiting?.resolve(message.data);
+    if (message.error) {
+      if (message.data) updates.receiveState(message.data);
+      waiting?.reject(new Error(message.error));
+    } else waiting?.resolve(message.data);
   }
   if (message?.type !== "state") return;
-  Object.assign(updates, message.data);
+  updates.receiveState(message.data);
   if (initialized) return;
   initialized = true;
   try {

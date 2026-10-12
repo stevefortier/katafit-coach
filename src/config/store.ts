@@ -512,7 +512,10 @@ export class Store {
         const capability = await import(
           pathToFileURL(join(dirname(script), "capability.js")).href
         );
-        if (capability.manualOnlySourceUpdates !== 1)
+        if (
+          capability.manualOnlySourceUpdates !== 1 ||
+          capability.updatePreparationProtocol !== 2
+        )
           throw new Error("LAUNCHER_UPGRADE_REQUIRED");
         const ownerIds = module.stockSkills?.map(
           (skill: { id: string }) => skill.id,

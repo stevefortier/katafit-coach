@@ -1,11 +1,13 @@
 /** Fixed diagnostics only: never persist child output, paths, or exception text. */
 export const failureReasons = [
+  "PREPARATION_JOURNAL_UNAVAILABLE",
   "LAUNCHER_UPGRADE_REQUIRED",
   "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED",
   "INSUFFICIENT_DISK",
   "BUILD_TOOL_UNAVAILABLE",
   "BUILD_FAILED",
   "BUILD_CANCELLED",
+  "UPDATE_CLEANUP_PENDING",
   "INCOMPATIBLE_BUILD",
   "SOURCE_MISMATCH",
   "PACKAGE_REJECTED",
