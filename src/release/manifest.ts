@@ -44,8 +44,11 @@ export function parseManifest(value: unknown): Manifest {
     ]) ||
     m.version !== 1 ||
     m.repository !== releaseRepository ||
+    typeof m.revision !== "string" ||
     !/^[a-f0-9]{40}$/.test(m.revision) ||
+    typeof m.fingerprint !== "string" ||
     !/^[a-f0-9]{64}$/.test(m.fingerprint) ||
+    typeof m.image !== "string" ||
     !/^sha256:[a-f0-9]{64}$/.test(m.image) ||
     m.platform !== "linux/amd64" ||
     m.protocol !== 2 ||
@@ -63,6 +66,7 @@ export function parseManifest(value: unknown): Manifest {
       !Number.isSafeInteger(a.size) ||
       a.size < 1 ||
       a.size > (i === 0 ? 64 * 1024 ** 2 : 2 * 1024 ** 3) ||
+      typeof a.sha256 !== "string" ||
       !/^[a-f0-9]{64}$/.test(a.sha256)
     )
       throw Error("RELEASE_REJECTED");

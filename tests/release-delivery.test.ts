@@ -313,3 +313,16 @@ test("main membership provider rate limit revokes unsigned release approval", as
   assert.equal(updates.latest, null);
   assert.equal(updates.checkError, "RATE_LIMITED");
 });
+
+test("strict manifest rejects coercible arrays instead of treating them as digest strings", () => {
+  for (const key of ["revision", "fingerprint", "image"])
+    assert.throws(() =>
+      parseManifest({ ...fixture(), [key]: [(fixture() as any)[key]] }),
+    );
+  assert.throws(() =>
+    parseManifest({
+      ...fixture(),
+      artifacts: fixture().artifacts.map((a) => ({ ...a, sha256: [a.sha256] })),
+    }),
+  );
+});
