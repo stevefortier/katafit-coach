@@ -1,3 +1,4 @@
+import { command } from "./release-command.mjs";
 import { syntheticReleaseBoundary } from "./synthetic-release-boundary.mjs";
 // Packed legacy lifecycle with explicit synthetic release/native eligibility
 // and local Git boundaries. Production has no environment or HTTP bypass.
@@ -28,7 +29,7 @@ const env = {
 };
 let cli, preload, failure;
 const run = (...args) =>
-  execFileSync(process.execPath, ["--import", preload, cli, ...args], {
+  command(process.execPath, ["--import", preload, cli, ...args], {
     env,
     encoding: "utf8",
     timeout: 20000,
@@ -157,7 +158,7 @@ globalThis.fetch=(url,options)=>String(url)==='https://api.github.com/repos/stev
 Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8')).offset;`,
   );
   await writeFile(selection, JSON.stringify({ sha: good, offset: 0 }));
-  assert.match(run("start"), /started/);
+  assert.match(await run("start"), /started/);
   const info = JSON.parse(await readFile(join(home, "service.json"), "utf8"));
   const secrets = await readFile(join(home, "secrets.json"), "utf8");
   const config = await readFile(join(home, "config.json"), "utf8");
@@ -184,6 +185,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       if (
         lastState &&
         !lastState.applying &&
+        !lastState.recovering &&
         lastState.lastOperation?.state === "failed" &&
         lastState.lastOperation.sha === lastState.latest &&
         !lastState.manualQueue?.phase?.startsWith("waiting-")
@@ -234,14 +236,34 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
   const manualState = await (await api("update")).json();
   assert.equal("auto" in manualState, false);
   assert.equal("autoSchedule" in manualState, false);
+  const goodPointer = await readFile(join(home, "active.json"), "utf8");
   await apply(bad, 61000);
   const failed = await wait(
-    (s) => !s.applying && s.guidance.includes("failed"),
+    (s) =>
+      !s.applying &&
+      !s.recovering &&
+      s.lastOperation?.sha === bad &&
+      s.lastOperation.state === "failed" &&
+      s.lastOperation.phase === "activating",
   );
   assert.equal(failed.installed, good);
   assert.equal(
     JSON.parse(await readFile(join(home, "active.json"), "utf8")).revision,
     good,
+  );
+  assert.equal(await readFile(join(home, "active.json"), "utf8"), goodPointer);
+  assert.equal(await readFile(join(home, "config.json"), "utf8"), config);
+  assert.equal(await readFile(join(home, "secrets.json"), "utf8"), secrets);
+  console.log(
+    JSON.stringify({
+      rollbackObservation: {
+        installed: failed.installed,
+        operation: failed.lastOperation,
+        applying: failed.applying,
+        recovering: failed.recovering,
+        goodPointerConfigSecretsUnchanged: true,
+      },
+    }),
   );
   await apply(second, 122000);
   await wait((s) => !s.applying && s.installed === second);
@@ -253,8 +275,8 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
   );
   assert.equal((await readdir(join(home, "versions"))).length, 2);
   assert.equal((await readdir(home)).includes("update-staging"), false);
-  assert.match(run("stop"), /stopped/);
-  assert.match(run("start"), /started/);
+  assert.match(await run("stop"), /stopped/);
+  assert.match(await run("start"), /started/);
   const restarted = JSON.parse(
     await readFile(join(home, "service.json"), "utf8"),
   );
@@ -266,7 +288,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
   assert.equal(restartState.installed, second);
   process.kill(restarted.pid, "SIGKILL");
   await sleep(700);
-  assert.match(run("start"), /started/);
+  assert.match(await run("start"), /started/);
   console.log(
     JSON.stringify(
       {
@@ -300,7 +322,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     .catch(() => undefined);
   if (cli && preload)
     try {
-      run("stop");
+      await run("stop");
     } catch {}
   // A failed test can interrupt an accepted upgrade, which correctly fences the
   // public shutdown route. Terminate only this fixture's recorded processes.

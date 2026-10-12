@@ -1,3 +1,11 @@
+import { command } from "./release-command.mjs";
+import {
+  beginImageBuild,
+  reconcileImageBuild,
+  cleanupImageBuild,
+} from "./release-image-owner.mjs";
+import { releasePresenceFixture } from "./release-presence-fixture.mjs";
+import { roundtripChangedImage } from "./release-image-roundtrip.mjs";
 import { syntheticReleaseBoundary } from "./synthetic-release-boundary.mjs";
 // Real packed CLI/child lifecycle with synthetic release discovery and local Git.
 // The owner uses actual native readiness; this fixture makes no provenance claim.
@@ -31,9 +39,12 @@ const env = {
   KATAFIT_COACH_PORT: "0",
   TEST_BUILD_SECRET: "must-not-inherit",
 };
-let cli, preload, failure, backend;
+let cli, preload, failure, backend, presence, imagesBeforeBuild, imageOwner;
+const imageOwnerPath = join(root, "image-owner.json");
+const phase = (name, details = {}) =>
+  console.log(JSON.stringify({ phase: name, ...details }));
 const run = (...args) =>
-  execFileSync(process.execPath, ["--import", preload, cli, ...args], {
+  command(process.execPath, ["--import", preload, cli, ...args], {
     env,
     encoding: "utf8",
     timeout: 20000,
@@ -194,22 +205,10 @@ globalThis.fetch=(url,options)=>String(url)==='https://api.github.com/repos/stev
 Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8')).offset;`,
   );
   await writeFile(selection, JSON.stringify({ sha: good, offset: 0 }));
-  const { createServer } = await import("node:http");
-  backend = createServer(async (req, res) => {
-    let raw = "";
-    for await (const part of req) raw += part;
-    const msg = JSON.parse(raw);
-    if (msg.method === "notifications/initialized")
-      return void res.writeHead(202).end();
-    const result =
-      msg.method === "initialize"
-        ? { protocolVersion: "2025-03-26" }
-        : msg.method === "tools/list"
-          ? { tools: [] }
-          : { structuredContent: { requests: [] } };
-    res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+  presence = releasePresenceFixture({
+    fault: process.env.COACH_RELEASE_PRESENCE_FAULT,
   });
+  backend = presence.server;
   await new Promise((resolve) => backend.listen(0, "127.0.0.1", resolve));
   const { Store } = await import(
     join(root, "install/node_modules/@katafit/coach/dist/config/store.js")
@@ -224,7 +223,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     token: "synthetic-release-token",
     apiKey: "synthetic-release-key",
   });
-  assert.match(run("start"), /started/);
+  assert.match(await run("start"), /started/);
   const info = JSON.parse(await readFile(join(home, "service.json"), "utf8"));
   const secrets = await readFile(join(home, "secrets.json"), "utf8");
   const config = await readFile(join(home, "config.json"), "utf8");
@@ -251,6 +250,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       if (
         lastState &&
         !lastState.applying &&
+        !lastState.recovering &&
         lastState.lastOperation?.state === "failed" &&
         lastState.lastOperation.sha === lastState.latest &&
         !lastState.manualQueue?.phase?.startsWith("waiting-")
@@ -261,6 +261,8 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     const status = {
       installed: lastState?.installed,
       applying: lastState?.applying,
+      recovering: lastState?.recovering,
+      guidance: lastState?.guidance,
       operation: lastState?.lastOperation && {
         sha: lastState.lastOperation.sha,
         state: lastState.lastOperation.state,
@@ -293,6 +295,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
   };
   await apply(good, 0);
   await wait((s) => !s.applying && s.installed === good);
+  phase("initial-good-installed", { good });
   assert.equal(
     JSON.parse(await readFile(join(home, "active.json"), "utf8")).revision,
     good,
@@ -360,8 +363,19 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
           status.safeToReplace &&
           !update.applying &&
           !update.recovering
-        )
+        ) {
+          const observed = presence.snapshot();
+          if (expected === "idle") {
+            assert.equal(status.presence, "reported");
+            assert.equal(observed.running.length, 1);
+          } else {
+            assert.equal(status.stopConfirmed, true);
+            assert.equal(observed.running.length, 0);
+            assert.equal(observed.reports.at(-1)?.state, "stopped");
+            assert.equal(observed.reports.at(-1)?.accepted, true);
+          }
           return status;
+        }
         await sleep(50);
       }
       throw Error("WORKER_INTENT_NOT_RECOVERED");
@@ -369,16 +383,46 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     const runResponse = await api("run", {});
     assert.equal(runResponse.status, 200, await runResponse.text());
     await waitWorker("idle");
+    const goodPointer = await readFile(join(home, "active.json"), "utf8");
     await apply(bad, 61000);
     const failed = await wait(
-      (s) => !s.applying && s.guidance.includes("failed"),
+      (s) =>
+        !s.applying &&
+        !s.recovering &&
+        s.lastOperation?.sha === bad &&
+        s.lastOperation.state === "failed" &&
+        s.lastOperation.phase === "activating",
     );
     assert.equal(failed.installed, good);
+    assert.equal(
+      await readFile(join(home, "active.json"), "utf8"),
+      goodPointer,
+    );
     assert.equal(
       JSON.parse(await readFile(join(home, "active.json"), "utf8")).revision,
       good,
     );
-    await waitWorker("idle");
+    assert.equal(await readFile(join(home, "config.json"), "utf8"), config);
+    assert.equal(await readFile(join(home, "secrets.json"), "utf8"), secrets);
+    const restored = await waitWorker("idle");
+    console.log(
+      JSON.stringify({
+        rollbackObservation: {
+          installed: failed.installed,
+          operation: failed.lastOperation,
+          applying: failed.applying,
+          recovering: failed.recovering,
+          guidance: failed.guidance,
+          goodPointerConfigSecretsUnchanged: true,
+          worker: {
+            state: restored.state,
+            presence: restored.presence,
+            safeToReplace: restored.safeToReplace,
+          },
+        },
+      }),
+    );
+    assert.equal(restored.presence, "reported");
     await writeFile(selection, JSON.stringify({ sha: second, offset: 122000 }));
     assert.equal((await (await api("update/check", {})).json()).latest, second);
     // Actual local transport loss: destroy the accepted response before its body
@@ -403,6 +447,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     });
     await wait((s) => !s.applying && s.installed === second);
     await waitWorker("idle");
+    phase("lost-ack-subsequent-upgrade", { second, applyRequests: 1 });
     assert.equal(await readFile(join(home, "secrets.json"), "utf8"), secrets);
     assert.equal(await readFile(join(home, "config.json"), "utf8"), config);
     assert.equal(
@@ -418,8 +463,11 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
         await apply(target, offset);
         offset += 61000;
         await wait((s) => !s.applying && s.installed === target);
+        await waitWorker("idle");
       }
+      phase("reuse-cycle", { cycle: cycle + 1, installed: second });
     }
+    phase("reuse-complete", { cycles });
     await writeFile(selection, JSON.stringify({ sha: changed, offset }));
     offset += 61000;
     assert.equal(
@@ -437,17 +485,33 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       beforePointer,
     );
     assert.equal((await (await api("status")).json()).state, "idle");
+    phase("changed-image-missing-refused", { changed, pointerUnchanged: true });
+    imagesBeforeBuild = new Set(
+      (
+        await command(
+          "docker",
+          ["image", "ls", "--all", "--no-trunc", "--quiet"],
+          {
+            encoding: "utf8",
+          },
+        )
+      )
+        .trim()
+        .split("\n"),
+    );
     const buildRoot = join(root, "native-build");
     await mkdir(buildRoot);
-    execFileSync("tar", ["-xf", "-", "-C", buildRoot], {
-      input: execFileSync("git", ["archive", changed], {
-        cwd: source,
-        maxBuffer: 64 * 1024 ** 2,
-      }),
+    const archiveSource = await command("git", ["archive", changed], {
+      cwd: source,
+      encoding: null,
+      maxBuffer: 64 * 1024 ** 2,
+    });
+    await command("tar", ["-xf", "-", "-C", buildRoot], {
+      input: archiveSource,
     });
     const { symlink } = await import("node:fs/promises");
     await symlink(resolve("node_modules"), join(buildRoot, "node_modules"));
-    execFileSync("npm", ["run", "build"], {
+    await command("npm", ["run", "build"], {
       cwd: buildRoot,
       env: { ...process.env, KATAFIT_BUILD_REVISION: changed },
       stdio: "pipe",
@@ -457,10 +521,21 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       await readFile(join(buildRoot, "dist/build.json"), "utf8"),
     );
     assert.equal(build.revision, changed);
-    execFileSync(
+    imageOwner = await beginImageBuild(imageOwnerPath, {
+      build,
+      inputImage: process.env.NATIVE_TEST_IMAGE,
+      imagesBeforeBuild,
+    });
+    phase("image-build-owned", {
+      marker: imageOwner.marker,
+      recordPath: imageOwnerPath,
+    });
+    await command(
       "docker",
       [
         "build",
+        "--label",
+        `fit.kata.fixture.owner=${imageOwner.marker}`,
         "--pull=false",
         "-f",
         "sandbox/Dockerfile",
@@ -474,13 +549,29 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       ],
       { cwd: buildRoot, stdio: "pipe", timeout: 300000 },
     );
-    const image = (await readFile(join(root, "changed-image"), "utf8")).trim();
+    imageOwner = await reconcileImageBuild(
+      imageOwnerPath,
+      join(root, "changed-image"),
+    );
+    const image = imageOwner.image;
+    await roundtripChangedImage({
+      recordPath: imageOwnerPath,
+      image,
+      build,
+      root,
+      home,
+      imagesBeforeBuild,
+      inputImage: process.env.NATIVE_TEST_IMAGE,
+      evidence: process.env.COACH_RELEASE_EVIDENCE_DIR,
+    });
     const { provisionArtifact } = await import(
       join(buildRoot, "dist/sandbox/artifact.js")
     );
     await provisionArtifact(home, buildRoot, image);
     assert.equal((await api("stop", {})).status, 200);
-    await waitWorker("stopped");
+    const stoppedWorker = await waitWorker("stopped");
+    assert.equal(stoppedWorker.presence, "reported");
+    phase("reported-stop-settled");
     await apply(changed, offset);
     await wait((s) => !s.applying && s.installed === changed);
     await waitWorker("stopped");
@@ -488,11 +579,12 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       await readFile(join(home, "native-artifacts", changed + ".json"), "utf8"),
     );
     assert.equal(nativeReceipt.image, image);
+    phase("changed-image-activated-stopped", { changed, image });
     assert.equal(await readFile(join(home, "config.json"), "utf8"), config);
     assert.equal(await readFile(join(home, "secrets.json"), "utf8"), secrets);
     assert.equal((await readdir(home)).includes("update-staging"), false);
-    assert.match(run("stop"), /stopped/);
-    assert.match(run("start"), /started/);
+    assert.match(await run("stop"), /stopped/);
+    assert.match(await run("start"), /started/);
     const restarted = JSON.parse(
       await readFile(join(home, "service.json"), "utf8"),
     );
@@ -502,9 +594,31 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       })
     ).json();
     assert.equal(restartState.installed, changed);
+    phase("restart-installed", { changed });
     process.kill(restarted.pid, "SIGKILL");
     await sleep(700);
-    assert.match(run("start"), /started/);
+    assert.match(await run("start"), /started/);
+    const recovered = JSON.parse(
+      await readFile(join(home, "service.json"), "utf8"),
+    );
+    const recoveredUpdate = await (
+      await fetch(recovered.origin + "/api/update", {
+        headers: { Authorization: auth.Authorization },
+      })
+    ).json();
+    const recoveredWorker = await (
+      await fetch(recovered.origin + "/api/status", {
+        headers: { Authorization: auth.Authorization },
+      })
+    ).json();
+    assert.equal(recoveredUpdate.installed, changed);
+    assert.equal(recoveredUpdate.applying, false);
+    assert.equal(recoveredUpdate.recovering, false);
+    assert.equal(recoveredWorker.state, "stopped");
+    assert.equal(recoveredWorker.safeToReplace, true);
+    assert.equal(recoveredWorker.stopConfirmed, true);
+    assert.equal(presence.snapshot().running.length, 0);
+    phase("crash-recovery-installed-stopped", { changed });
     console.log(
       JSON.stringify(
         {
@@ -545,7 +659,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     .catch(() => undefined);
   if (cli && preload)
     try {
-      run("stop");
+      await run("stop");
     } catch {}
   // A failed test can interrupt an accepted upgrade, which correctly fences the
   // public shutdown route. Terminate only this fixture's recorded processes.
@@ -560,29 +674,58 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       } catch {}
   }
   if (backend) await new Promise((resolve) => backend.close(resolve));
-  const changedImage = await readFile(
-    join(root, "changed-image"),
-    "utf8",
-  ).catch(() => "");
-  if (
-    /^sha256:[a-f0-9]{64}$/.test(changedImage.trim()) &&
-    changedImage.trim() !== process.env.NATIVE_TEST_IMAGE
-  )
-    try {
-      execFileSync("docker", ["image", "rm", changedImage.trim()], {
-        stdio: "ignore",
-        timeout: 30000,
+  if (presence) phase("presence-rpc-ledger", presence.snapshot());
+  // Teardown must finish before dropping the private active/rollback references.
+  let live = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    live = false;
+    for (const pid of [owned?.pid, owned?.runtimePid]) {
+      if (!Number.isInteger(pid)) continue;
+      const cmd = await readFile("/proc/" + pid + "/cmdline", "utf8").catch(
+        () => "",
+      );
+      if (cmd.includes(root + "/")) live = true;
+    }
+    if (!live) break;
+    await sleep(50);
+  }
+  let cleanup = { state: "no-build" };
+  if (live)
+    cleanup = {
+      state: "retained",
+      reason: "FIXTURE_OWNER_STILL_LIVE",
+      recordPath: imageOwnerPath,
+    };
+  else {
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 100,
+    });
+    if (imageOwner)
+      cleanup = await cleanupImageBuild(imageOwnerPath, {
+        home,
+        iidfile: join(root, "changed-image"),
       });
-    } catch {}
-  await rm(root, {
-    recursive: true,
-    force: true,
-    maxRetries: 20,
-    retryDelay: 100,
-  }).catch((error) => {
-    if (!failure) throw error;
-    console.error(
-      "Fixture cleanup failed after the reported lifecycle failure.",
+  }
+  phase("task-image-cleanup", cleanup);
+  if (process.env.COACH_RELEASE_EVIDENCE_DIR && imageOwner) {
+    await mkdir(process.env.COACH_RELEASE_EVIDENCE_DIR, { recursive: true });
+    await cp(
+      imageOwnerPath,
+      join(process.env.COACH_RELEASE_EVIDENCE_DIR, "image-owner.json"),
     );
-  });
+  }
+  if (cleanup.state === "retained") {
+    // Root, unique marker, build context and any archive survive for reconciliation.
+    console.error("TASK_IMAGE_CLEANUP_RETAINED " + JSON.stringify(cleanup));
+    if (!failure) throw Error("TASK_IMAGE_CLEANUP_RETAINED");
+  } else
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 100,
+    });
 }
