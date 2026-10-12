@@ -11,7 +11,7 @@ function reviewed(revision: string, pr: any, run: any) {
     run?.head_sha !== pr.head.sha ||
     run.name !== "Verify coach pilot" ||
     run.path !== ".github/workflows/ci.yml" ||
-    run.event !== "pull_request" ||
+    !["pull_request", "workflow_dispatch"].includes(run.event) ||
     run.status !== "completed" ||
     run.conclusion !== "success"
   )
@@ -24,7 +24,7 @@ export function selectLatestRun(runs: any[], head: string) {
       r.head_sha === head &&
       r.name === "Verify coach pilot" &&
       r.path === ".github/workflows/ci.yml" &&
-      r.event === "pull_request",
+      ["pull_request", "workflow_dispatch"].includes(r.event),
   );
   return relevant.sort(
     (a, b) => b.id - a.id || b.run_attempt - a.run_attempt,

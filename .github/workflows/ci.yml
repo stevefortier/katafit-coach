@@ -84,7 +84,7 @@ jobs:
           npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/packed-release.json"
           export COACH_RELEASE_PACKAGE="$RUNNER_TEMP/$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/packed-release.json"))[0].filename')"
           export RELEASE_NATIVE_PACKAGE="$COACH_RELEASE_PACKAGE"
-          npx tsx --test tests/release-native.test.ts
+          npx tsx --test --test-concurrency=1 tests/release-native.test.ts tests/release-binding.test.ts
           COACH_RELEASE_CYCLES=1 node scripts/release-chain-smoke.mjs
   browser:
     runs-on: ubuntu-latest

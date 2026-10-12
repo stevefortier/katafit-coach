@@ -15,27 +15,56 @@ This is a launcher prerequisite change, not a data migration.
 Settings → Updates (including a deep link, unlock there, or history reentry) or
 pressing **Check for updates**. Unlocking Dashboard or other Settings, visibility
 return, startup, idle timers and status reads never query GitHub. Checks never
-install. There is no automatic install preference, source poller, ancestry
-comparison, readiness retry or failed-target installer. Legacy consent/failure
-files are ignored and left inert for full-home rollback safety, including enabled
-or corrupt records.
+install. There is no automatic install preference, daemon source poller or
+failed-target installer. Legacy consent/failure files are ignored and left inert
+for full-home rollback safety, including enabled or corrupt records.
 
-Checks use the compact fixed `git/ref/heads/main` endpoint with a ten-second
-deadline, bounded streaming, one-minute throttle and concurrent deduplication.
-Approval expires after five minutes. Confirmed rate limiting clears approval and
-sets `sourceRetryAt` to at least fifteen minutes, honoring later valid Retry-After
-or X-RateLimit-Reset deadlines. Malformed, past, nonfinite or timer-overflow values
-are ignored. The deadline is guidance for your next explicit Check, **not an armed
-source timer**. HTTP 429 and a 403 with rate-limit evidence report RATE_LIMITED;
-a plain 403 reports FORBIDDEN. A failed check is not “up to date”. No GitHub token
-or provider credential is used. Status/error/outcome readback performs no source
-request.
+**Current ready-source channel:** the new stable owner discovers the latest
+complete immutable release from the fixed public `stevefortier/katafit-coach`
+repository, not arbitrary unpublished main. It validates bounded metadata, strict
+manifest and asset names/sizes/SHA256. Before offering source it proves candidate
+is current main or an ancestor of the fixed compact `git/ref/heads/main`, then
+proves installed→candidate forward ancestry (identical is current; unknown,
+behind and divergent builds receive no upgrade approval). Release contents-write
+authority alone cannot authorize unreviewed branch code. The daemon builds only
+that reviewed exact Git source; it does not execute downloaded release artifacts.
+Cryptographic manifest/artifact provenance verification belongs in the external
+trusted provisioner before staging code or Docker load. No gh/login/token is
+needed in daemon or Pi; see [release delivery](release-delivery.md).
+
+Remote requests use ten-second deadlines, bounded streaming, a one-minute throttle
+and concurrent deduplication. Release metadata is capped at 64KiB, manifest at 8KiB,
+compact main ref at 100,000 bytes and each ancestry comparison at 256KiB. API
+redirects are rejected; manifest downloads permit only the fixed HTTPS GitHub
+release-assets redirect. Approval expires after five minutes. All metadata,
+manifest, main-membership and installed-ancestry requests share the same provider
+cooldown. Confirmed rate limiting clears approval and sets `sourceRetryAt` to at
+least fifteen minutes, honoring later valid Retry-After or X-RateLimit-Reset.
+Malformed, past, nonfinite or timer-overflow values are ignored. This is guidance
+for your next explicit Check, **not an armed daemon source timer**. HTTP429 and403
+with rate-limit evidence report RATE_LIMITED; plain403 reports FORBIDDEN. A failed
+check is not “up to date”. Status/error/outcome readback performs no source request.
+
+**Remaining local readiness deferral:** globally published artifacts may not yet
+be provisioned on this host. The external timer provisions only, never applies.
+The source-only protected same-fingerprint binding remains valid even if the
+published image differs: preserve/preflight the selected protected image instead
+of minting a conflicting exact receipt. This slice does not yet expose owner-owned
+read-only local readiness to defer/disable confirmation while delivery catches up;
+that IPC/admin/UI gate remains a blocker. Until completed, inspect the actual
+protected matching binding externally before confirmation. A missing image can
+still cause a preparation rejection before Stop; it is not an accepted failed
+installation, and publication alone does not fix first-click failures.
 
 Open **Settings → Updates**. The installed identifier is the exact source Git SHA,
 not npm `0.1.0` or a persona revision. Dirty/unknown builds remain unknown.
 
 1. Save or revert unsaved edits and finish/cancel any preview. No manual worker stop is required. Accepted worker work drains automatically; finish and close native Pi before installation can proceed.
-2. Check the displayed latest revision from the fixed public repository, `stevefortier/katafit-coach`, branch `main`.
+2. Check the latest immutable ready release from the fixed public repository,
+   `stevefortier/katafit-coach`. Verify the host has its actual protected compatible
+   native binding; global availability alone is not host readiness. Ready-source
+   policy is declared by owner `sourceChannel: ready-releases-v1`; absent/unknown
+   older owners show generic Latest source and may still use legacy main discovery.
 3. Click Upgrade and explicitly confirm the full displayed SHA and stop/apply/restart operation. This authorizes executing that trusted source and its pinned dependencies on your machine. Cancel performs no stop or apply. A running Coach is stopped safely, native sessions are closed, and actions/chat are never replayed.
 4. The stable owner stages, validates, native-preflights and probes the exact revision while Coach remains available. The child rechecks configuration/worker scope and reserves a manual queue: new worker claims and native starts are fenced synchronously, while already-dispatched polls/claims finish without abort or replay. Studio shows waiting-worker, waiting-publication or waiting-native. Native Pi is never interrupted by the upgrade; finish its turn and use supported Close / Stop Pi. Cancel is available while waiting, before safe worker Stop begins. After publication safety, native cleanup and confirmed backend Stop, the existing owner durably accepts installation and captured running intent.
 5. Wait for the installed SHA to match the confirmed target and the success result. The stable owner resumes a previously running Coach after activation or rollback; an intentionally stopped Coach stays stopped. Read Worker status separately from source success. Resume failure exposes **Retry Coach restart**, which starts the saved configuration only, without reinstalling or replaying work. Reload Studio to load its new UI assets. Closing the browser does not cancel an accepted upgrade.
@@ -44,7 +73,13 @@ Manual resume requires the explicitly advertised `manualRestartSupported` launch
 
 The admin credential stays in per-origin **sessionStorage**, not localStorage, after successful authentication so this tab can reload/reconnect across upgrades. **Lock studio** clears it and locks the UI; it does not stop the service, worker, or an in-progress upgrade. On a shared browser, lock the Studio and close the tab. Invalid credentials clear the saved session key. Credentials are never put into query strings or update requests.
 
-Checks use GitHub's compact `git/ref/heads/main` endpoint with a 10-second deadline, 100,000-byte streamed-response cap, no redirects, a one-minute cache/throttle, and deduplication of concurrent checks. Approval expires after five minutes. GitHub outages/rate limits clear the available target and show recovery guidance; a failed check is not “up to date.” No GitHub token is required. The server accepts only `{sha, confirm:true}`, not repository URLs, shell commands, branches or npm package names.
+**Legacy owner guidance:** an older stable owner can still discover arbitrary
+main through its compact ref endpoint. New child bytes do not replace that owner
+or establish ready-release/local-readiness policy. Bootstrap the reviewed complete
+owner separately; do not infer source policy from application SHA. All owners
+still require explicit `{sha, confirm:true}` rather than repository URLs, shell
+commands, branch names or npm packages. Normal preparation revalidates artifacts
+before replacing the healthy application; it never grants Docker authority to Pi.
 
 ## One-time bootstrap
 
@@ -105,14 +140,21 @@ be removed successfully before a later preflight can proceed.
 
 ### Compatibility and limits
 
-`dist/build.json` is `{revision: <40 lowercase hex|null>, protocol: 2, fingerprint: <64 lowercase hex>}` for native releases. The fingerprint binds the dependency lock, package, bridge and image recipe to native contract 2; the protected provisioning receipt additionally binds the exact application revision and local immutable image ID/platform. Protocol 1 remains accepted for legacy rollback. Both protocols retain immutable hash-linked skill history; the one-skill catalog transition requires a compatible stable owner before the child's Store can publish its new head. Native readiness runs before stopping the previous child and again before launch. `active.json` commits the native image ID with its application revision; image receipt drift on the active revision fails closed. Unknown/incompatible candidates fail before activation. The updater does not promise arbitrary migrations, signed release verification, automatic image publication, support for custom forks, or an npm registry release.
+`dist/build.json` is `{revision: <40 lowercase hex|null>, protocol: 2, fingerprint: <64 lowercase hex>}` for native releases. The fingerprint binds the dependency lock, package, bridge and image recipe to native contract 2; the protected provisioning receipt additionally binds the exact application revision and local immutable image ID/platform. Protocol 1 remains accepted for legacy rollback. Both protocols retain immutable hash-linked skill history; the one-skill catalog transition requires a compatible stable owner before the child's Store can publish its new head. Native readiness runs before stopping the previous child and again before launch. `active.json` commits the native image ID with its application revision; image receipt drift on the active revision fails closed. Unknown/incompatible candidates fail before activation. The daemon does not perform signed-artifact verification or image loading.
+The external release workflow/provisioner provides attested immutable publication
+and matching image delivery, not automatic installation. Arbitrary migrations,
+custom forks and npm registry releases are unsupported. Host-readiness deferral
+and the final prepared-source protocol2 owner rollout remain explicit gates.
 
 The installed stable launcher and protocol stay fixed while managed runtime source changes. Current source identity is the active runtime revision, not a claim that the global launcher package has been overwritten. Clean Git builds embed HEAD. Dirty builds embed null. Git-less builders can attest a clean exported tree through `KATAFIT_BUILD_REVISION`; do not set it for dirty exports.
 
-Application admin code advertises two-phase preparation with its numeric module
-export; a new owner deliberately supports a stopped legacy rollback admin while
-masking running-manual capabilities the legacy admin cannot implement. Source
-updates do not replace the resident owner. See the required migration below.
+Prepared-source admin protocol2 is independent of native protocol2. The composed
+new owner/admin contract binds prepare and cancel to a unique ownership nonce;
+protocol1 is stopped-only legacyApply, not prepared RPC authority. Old owner /
+new admin must block prepared/running upgrade, and compatible protocol2 ownership
+must be advertised explicitly before confirmation. Parent/B owns this negotiated
+interface and its final integrated qualification. Source updates do not replace
+the resident owner; see the required migration below.
 
 ## Troubleshooting and recovery
 
@@ -317,14 +359,21 @@ matrix separately verifies real native A→B pairing, missing artifacts, failed
 post-stop activation, restart and image-pointer drift, using synthetic candidate
 identities (not published releases). CI runs both matrices. Daemon-independent
 CLI/supervisor tests use explicit legacy fixtures, never a production bypass.
-The workflow builds an ephemeral sandbox image on the CI runner and passes its
-local ID through `NATIVE_TEST_IMAGE`; package smokes only consume such an already
-available ID and provision disposable homes. CI does not publish, sign, transfer,
-load, select or provision an image in a production Coach home, and there is no
-registry watcher or privileged artifact daemon in this repository. Production
-automation must remain an external trusted release/deployment step that supplies
-an approved local immutable image ID to `provisionArtifact`; the updater never
-gains image build/pull authority.
+PR verification builds an ephemeral immutable sandbox and passes its local ID
+through `NATIVE_TEST_IMAGE`; these smokes provision disposable homes only. The
+separate trusted merged-main release workflow produces exact-source app/native
+archive/manifest bytes, attests and verifies them, then exercises authenticated
+external provisioning and idempotent selected-image readback before immutable
+publication. No workflow touches a production Coach home. Native release-chain
+qualification retains protocol2 throughout good/rollback/later success, missing
+changed fingerprint → real provision → success, running/stopped intent and lost
+accepted-response recovery. New real binding controls cover already-active and
+nonactive compatible reuse plus fresh exact-image provisioning. Hosted twenty
+cycles and authenticated publication/provisioning remain unverified until run.
+There is no in-app registry watcher or privileged artifact daemon: the external
+trusted controller stages/provisions only, never applies. The updater never
+gains image build/pull authority. See [release delivery](release-delivery.md) for
+publication, operator, owner-bootstrap and remaining readiness/UI prerequisites.
 
 `npm test` builds and exercises revision checking, explicit confirmation/auth fences, metadata, isolated staging, child replacement, incompatible Store probing, immediate and delayed startup rollback, stable port/auth/data, disabled support and legacy-platform behavior. `npm run test:package` verifies the normal production-only package.
 

@@ -104,10 +104,10 @@ repeated scheduled operation the **parent-owned trusted controller/timer** must:
    files, checks size/digest caps/deadline, verifies all attestations, safely
    extracts a complete package, installs locked prod dependencies with scripts
    disabled, and stages side by side without a second owner.
-3. Join CLI JSON `{revision,image,root,phase:"provisioned",activated:false,
-   ownerReplaced:false}` with an independent read of protected
+3. Join CLI JSON `{revision,selectedImage,publishedImage,binding,root,phase:"ready",
+   activated:false,ownerReplaced:false}` with an independent read of protected
    `release-delivery/<SHA>.json`, `native-artifacts/<SHA>.json`, stage metadata,
-   and immutable Docker inspect. Only exact matching readback is success.
+   and immutable Docker inspect. Only exact matching actual-selected-image readback is success.
 4. After a lost acknowledgement, resume the same SHA/checkpoint. The per-home
    flock and fsynced phases prevent racing stage owners. Existing loaded image is
    reconciled before load; provisionArtifact owns probes/receipt. A previously
@@ -123,9 +123,46 @@ repeated scheduled operation the **parent-owned trusted controller/timer** must:
    change config or clear publication/history guards. Manual installation is
    still a separately authenticated confirmed user action.
 
+Existing protected same-fingerprint bindings are preferred before any exact
+receipt is minted or published image is loaded. The operator reads the actual
+active pair through `nativeImage`, preflights a valid compatible binding with
+`nativePreflight`, and preserves the active image/pointer/config. `binding:"reused"`
+reports the actual selected image separately from the published image; it never
+claims the published replacement was loaded/provisioned. The fresh-home path
+loads and provisions the exact published image and reports `binding:"provisioned"`.
+A protected active/compatible binding that cannot be validated is blocking, not
+permission to shadow it with a new exact receipt. A successful exact-release
+journal/selected-image readback avoids replaying the readiness probe after lost
+acknowledgement. None of these operations activates application code.
+
 The distributable CLI supplies actual idempotent provisioning, **not a Warden
 scheduler installation**. Parent owns durable timer deployment/credentials,
 privileged orchestration and host connection. Activation is not provisioning.
+
+## Remaining host-readiness/UI blocker
+
+Global immutable release availability is not yet an observed host-ready binding.
+This slice does **not** disable Upgrade while the external provisioning timer
+catches up. Normal preparation still fails safely before Stop/activation and B
+reports a distinct preparation outcome, but the first click can predictably fail
+for missing native artifacts. Do not describe the release pipeline alone as
+fixing that UX/reliability failure. Before declaring end-to-end release readiness,
+finish a separately reviewed owner-owned bounded read-only local readiness DTO
+from protected matching-fingerprint receipts and immutable Docker inspect (no
+native probe in source/read-only checks), preserve it through IPC/admin, and defer
+confirmation until ready. Distinguish global availability, local readiness and
+source approval freshness; local refresh must not extend remote approval or force
+remote source polling. Valid source-only protected fingerprint reuse is ready
+without loading a different published image. This cross-owner/UI integration is
+an explicit remaining blocker, not an implemented feature here.
+
+Preparation RPC protocol2/unique ownership nonce is independent of native
+protocol2 and source-channel v1. Parent/B owns that negotiation and final composed
+qualification: old prepared protocol1 is stopped-only legacyApply, and old owner /
+new prepared admin must not perform prepared/running upgrades. The native-chain
+script copies the actual application admin, so the integrated protocol2 admin
+must be qualified with its matching new packed owner. Prior protocol1 owner
+running-chain evidence is historical, not proof of the new nonce interface.
 
 ## Stable-owner bootstrap
 

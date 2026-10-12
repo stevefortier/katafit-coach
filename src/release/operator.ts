@@ -133,7 +133,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (e.code !== "EEXIST") throw e;
     }
   }
-  const root = await provisionRelease(
+  const selected = await provisionRelease(
     ready.manifest,
     downloads,
     home,
@@ -143,9 +143,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   console.log(
     JSON.stringify({
       revision: expected,
-      image: ready.manifest.image,
-      root,
-      phase: "provisioned",
+      ...selected,
       activated: false,
       ownerReplaced: false,
     }),

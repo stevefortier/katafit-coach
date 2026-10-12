@@ -121,3 +121,25 @@ test("reviewed green first-parent advances permit qualified composed merge trees
     "failure",
   );
 });
+
+test("newer same-head manual CI qualification supersedes older PR success", async () => {
+  const { selectLatestRun } = await import("../src/release/qualification.js");
+  const head = "b".repeat(40);
+  const old = {
+    id: 1,
+    run_attempt: 1,
+    head_sha: head,
+    name: "Verify coach pilot",
+    path: ".github/workflows/ci.yml",
+    event: "pull_request",
+    status: "completed",
+    conclusion: "success",
+  };
+  const latest = {
+    ...old,
+    id: 2,
+    event: "workflow_dispatch",
+    conclusion: "failure",
+  };
+  assert.equal(selectLatestRun([old, latest], head), latest);
+});

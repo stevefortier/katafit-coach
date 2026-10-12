@@ -20,7 +20,7 @@ test(
       );
       await writeFile(
         join(folder, "dist/server/admin.js"),
-        'export const updatePreparationProtocol=1; export async function admin(store,port,unused,close,updates){process.send({type:"fixtureSnapshot",state:updates.snapshot()});return {origin:"http://127.0.0.1:1",async close(){}}}',
+        'export const updatePreparationProtocol=2; export async function admin(store,port,unused,close,updates){process.send({type:"fixtureSnapshot",state:updates.snapshot()});return {origin:"http://127.0.0.1:1",async close(){}}}',
       );
       for (const channel of [undefined, "ready-releases-v1", "invalid"]) {
         const child = fork(
