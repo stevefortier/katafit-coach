@@ -109,13 +109,16 @@ test(
         [url("manifest.json"), manifest],
         [`${api}/git/ref/heads/main`, { object: { sha: selected } }],
         [
-          `${api}/compare/${installed}...${selected}`,
+          `${api}/compare/${installed}...${selected}?per_page=1&page=2`,
           {
+            url: `${api}/compare/${installed}...${selected}`,
+            total_commits: 1,
+            behind_by: 0,
             status: "ahead",
             base_commit: { sha: installed },
             merge_base_commit: { sha: installed },
             ahead_by: 1,
-            commits: [{ sha: selected }],
+            commits: [],
           },
         ],
       ]);
