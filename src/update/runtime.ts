@@ -15,6 +15,8 @@ const rpc = (method: string, sha?: unknown) =>
     process.send?.({ type: "rpc", id: ref, method, sha });
   });
 class RemoteUpdates extends Updates {
+  override sourceChannel: "ready-releases-v1" | "legacy-or-unknown" =
+    "legacy-or-unknown";
   supported = false;
   private preparationAwareAdmin = false;
   configureAdmin(protocol: unknown) {

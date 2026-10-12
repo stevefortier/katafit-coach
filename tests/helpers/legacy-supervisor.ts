@@ -8,6 +8,7 @@ import {
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { legacyReadyRelease } from "../fixtures/legacy-source-check.js";
 import type { supervise as realSupervise } from "../../src/update/supervisor.js";
 
 /** Explicit protocol-1 bootstrap fixture for daemon-independent lifecycle tests.
@@ -53,5 +54,9 @@ export async function supervise(...args: Parameters<typeof realSupervise>) {
   const module = await import(
     pathToFileURL(join(root, "src/update/supervisor.ts")).href
   );
+  const { Updates } = await import(
+    pathToFileURL(join(root, "src/update/updates.ts")).href
+  );
+  Updates.prototype.readyRelease = legacyReadyRelease;
   return module.supervise(...args) as ReturnType<typeof realSupervise>;
 }

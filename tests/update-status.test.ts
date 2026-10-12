@@ -1,3 +1,4 @@
+import "./fixtures/legacy-source-check.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Updates } from "../src/update/updates.js";

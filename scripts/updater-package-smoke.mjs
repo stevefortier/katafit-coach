@@ -137,6 +137,8 @@ try {
     `import cp from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {readFileSync,appendFileSync,existsSync,statSync} from 'node:fs';
+import {Updates} from ${JSON.stringify(join(root, 'install/node_modules/@katafit/coach/dist/update/updates.js'))};
+Updates.prototype.readyRelease=async(request)=>{const r=await request('https://api.github.com/repos/stevefortier/katafit-coach/git/ref/heads/main'); if(!r.ok)throw Error('UNAVAILABLE');return (await r.json()).object.sha;};
 const now=Date.now.bind(Date), tracePath=${JSON.stringify(trace)};
 const record=(row)=>{try{if(!existsSync(tracePath)||statSync(tracePath).size<16384)appendFileSync(tracePath,JSON.stringify(row)+'\\n');}catch{}};
 const original=cp.spawn;

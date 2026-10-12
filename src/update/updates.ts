@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import {
+  discoverRelease,
+  boundedBytes,
+  requestOptions,
+} from "../release/manifest.js";
 import { failureReason, type FailureReason } from "./failure.js";
 export interface LastOperation {
   id: string;
@@ -12,6 +17,8 @@ export const repository = "https://github.com/stevefortier/katafit-coach.git";
 export const validSha = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 export class Updates {
+  sourceChannel: "ready-releases-v1" | "legacy-or-unknown" =
+    "ready-releases-v1";
   latest: string | null = null;
   checkedAt = 0;
   checking = false;
@@ -93,6 +100,10 @@ export class Updates {
   snapshot() {
     return {
       serverNow: Date.now(),
+      sourceChannel:
+        this.sourceChannel === "ready-releases-v1"
+          ? ("ready-releases-v1" as const)
+          : ("legacy-or-unknown" as const),
       installed: this.installed,
       latest: this.latest,
       checkedAt: this.checkedAt,
@@ -233,6 +244,34 @@ export class Updates {
       this.applying = false;
     }
   }
+  /** Fixed HTTPS immutable published-source channel. Artifact provenance is
+   * verified externally before Docker/code staging; no daemon gh/credentials. */
+  async readyRelease(request: typeof fetch): Promise<string> {
+    const sha = (await discoverRelease(request)).manifest.revision;
+    if (!validSha(this.installed)) throw Error("INSTALLED_SOURCE_UNKNOWN");
+    if (sha === this.installed) return sha;
+    const installed = this.installed;
+    const response = await request(
+      `https://api.github.com/repos/stevefortier/katafit-coach/compare/${installed}...${sha}`,
+      requestOptions(),
+    );
+    const comparison = JSON.parse(
+      (await boundedBytes(response, 256 * 1024)).toString(),
+    );
+    if (
+      this.installed !== installed ||
+      comparison.status !== "ahead" ||
+      comparison.base_commit?.sha !== installed ||
+      comparison.merge_base_commit?.sha !== installed ||
+      !Number.isSafeInteger(comparison.ahead_by) ||
+      comparison.ahead_by < 1 ||
+      !Array.isArray(comparison.commits) ||
+      comparison.commits.length < 1 ||
+      comparison.commits.at(-1)?.sha !== sha
+    )
+      throw Error("READY_SOURCE_NOT_AHEAD");
+    return sha;
+  }
   async check() {
     if (this.pending) return this.pending;
     if (this.sourceRetryAt && Date.now() < this.sourceRetryAt)
@@ -245,38 +284,10 @@ export class Updates {
     const generation = this.cooldownGeneration;
     this.pending = (async () => {
       try {
-        const response = await this.sourceRequest(
-          "https://api.github.com/repos/stevefortier/katafit-coach/git/ref/heads/main",
-          {
-            headers: {
-              Accept: "application/vnd.github+json",
-              "User-Agent": "katafit-coach",
-            },
-            signal: AbortSignal.timeout(10000),
-            redirect: "error",
-          },
-        );
-        const chunks: Uint8Array[] = [];
-        let size = 0;
-        if (!response.body) throw new Error();
-        const reader = response.body.getReader();
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            size += value.byteLength;
-            if (size > 100000) throw new Error();
-            chunks.push(value);
-          }
-        } finally {
-          await reader.cancel();
-        }
-        const text = Buffer.concat(chunks).toString("utf8");
-        const data = JSON.parse(text) as { object?: { sha: unknown } };
-        if (!response.ok || !validSha(data.object?.sha)) throw new Error();
+        const sha = await this.readyRelease(this.sourceRequest);
         if (generation !== this.cooldownGeneration)
           throw new Error("RATE_LIMITED");
-        this.latest = data.object.sha;
+        this.latest = sha;
         this.sourceRetryAt = null;
         this.checkError = null;
         this.guidance = this.applyTarget

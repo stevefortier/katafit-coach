@@ -1,0 +1,31 @@
+import { execFileSync, spawn } from "node:child_process";
+import { readFile, writeFile, mkdir, open } from "node:fs/promises";
+import { resolve, join } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
+import { createWriteStream } from "node:fs";
+import { parseManifest } from "../dist/release/manifest.js";
+import { fileDigest } from "../dist/release/provision.js";
+const git=(...args)=>execFileSync("git",args,{encoding:"utf8"}).trim();
+if(git("status","--porcelain","--untracked-files=all","--",".",":(exclude)dist",":(exclude)node_modules")) throw Error("RELEASE_CLEAN_SOURCE_REQUIRED");
+const sha=git("rev-parse","HEAD"), out=resolve(process.argv[2]??"");
+if(!process.argv[2] || out===process.cwd() || out.startsWith(process.cwd()+"/")) throw Error("RELEASE_OUTPUT_OUTSIDE_SOURCE_REQUIRED");
+const build=JSON.parse(await readFile("dist/build.json","utf8"));
+if(build.revision!==sha || build.protocol!==2 || !build.capabilities?.includes("ready-releases-v1") || !/^[a-f0-9]{64}$/.test(build.fingerprint)) throw Error("RELEASE_CLEAN_SOURCE_REQUIRED");
+const image=process.env.NATIVE_TEST_IMAGE;
+if(!/^sha256:[a-f0-9]{64}$/.test(image??"")) throw Error("RELEASE_IMMUTABLE_IMAGE_REQUIRED");
+const [found]=JSON.parse(execFileSync("docker",["--host=unix:///var/run/docker.sock","image","inspect",image],{encoding:"utf8"}));
+if(found.Id!==image || found.Os!=="linux" || found.Architecture!=="amd64" || found.Config?.Labels?.["fit.kata.native.revision"]!==sha || found.Config?.Labels?.["fit.kata.native.fingerprint"]!==build.fingerprint) throw Error("RELEASE_IMAGE_BINDING_REJECTED");
+await mkdir(out,{recursive:true,mode:0o700});
+const packed=JSON.parse(execFileSync("npm",["pack","--ignore-scripts","--json","--pack-destination",out],{encoding:"utf8"}));
+const {rename}=await import("node:fs/promises");
+const app=`coach-${sha}.tgz`, native=`native-${sha}.tar.gz`;
+await rename(join(out,packed[0].filename),join(out,app));
+const child=spawn("docker",["--host=unix:///var/run/docker.sock","image","save",image],{stdio:["ignore","pipe","inherit"]});
+const ended=new Promise((resolve,reject)=>{child.once("error",reject);child.once("close",code=>code===0?resolve():reject(Error("RELEASE_EXPORT_FAILED")));});
+try {await Promise.all([pipeline(child.stdout,createGzip({level:6}),createWriteStream(join(out,native),{flags:"wx",mode:0o600})),ended]);} catch(e) {child.kill("SIGTERM"); throw e;}
+const artifacts=[]; for(const name of [app,native]) artifacts.push({name,...await fileDigest(join(out,name),name===app?64*1024**2:2*1024**3)});
+const manifest=parseManifest({version:1,repository:"stevefortier/katafit-coach",revision:sha,fingerprint:build.fingerprint,platform:"linux/amd64",image,protocol:2,launcher:"manual-only-ready-releases-1",node:"26.10.0",artifacts});
+await writeFile(join(out,"manifest.json"),JSON.stringify(manifest)+"\n",{flag:"wx",mode:0o600});
+for(const name of [app,native,"manifest.json"]) {const f=await open(join(out,name),"r");try{await f.sync();}finally{await f.close();}}
+console.log(JSON.stringify(manifest));

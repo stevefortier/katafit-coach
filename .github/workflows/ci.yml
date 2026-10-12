@@ -77,6 +77,15 @@ jobs:
       - uses: ./.github/actions/native-image
       - name: Verify packed source upgrade, rollback and restart
         run: node scripts/updater-package-smoke.mjs
+      - name: Qualify protocol-2 published-package full chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/packed-release.json"
+          export COACH_RELEASE_PACKAGE="$RUNNER_TEMP/$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/packed-release.json"))[0].filename')"
+          export RELEASE_NATIVE_PACKAGE="$COACH_RELEASE_PACKAGE"
+          npx tsx --test tests/release-native.test.ts
+          COACH_RELEASE_CYCLES=1 node scripts/release-chain-smoke.mjs
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 40

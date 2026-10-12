@@ -1,0 +1,80 @@
+name: Publish ready Coach release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: coach-ready-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.repository == 'stevefortier/katafit-coach' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+      - name: Require latest green reviewed head and bounded merge composition
+        run: node scripts/release-qualify.mjs "$RUNNER_TEMP/source-qualification.json"
+      - uses: ./.github/actions/native-image
+      - name: Produce immutable exact-source artifacts
+        run: node scripts/release-build.mjs "$RUNNER_TEMP/coach-release"
+      - name: Qualify the actual package bytes and native image
+        env:
+          COACH_RELEASE_CYCLES: '20'
+        run: |
+          export COACH_RELEASE_PACKAGE="$RUNNER_TEMP/coach-release/coach-${GITHUB_SHA}.tgz"
+          node scripts/release-chain-smoke.mjs
+      - name: Qualify real immutable isolation
+        run: NATIVE_DOCKER_TEST=1 npx tsx --test --test-concurrency=1 tests/native-deployment.test.ts tests/native-runtime.test.ts
+      - name: Attest every published byte to this main source/workflow
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ runner.temp }}/coach-release/*
+      - name: Verify attestations and ensure source is still current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in "$RUNNER_TEMP/coach-release/"*; do
+            gh attestation verify "$asset" --repo stevefortier/katafit-coach \
+              --signer-workflow stevefortier/katafit-coach/.github/workflows/release.yml \
+              --source-ref refs/heads/main --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
+          done
+          test "$(gh api repos/stevefortier/katafit-coach/git/ref/heads/main --jq .object.sha)" = "$GITHUB_SHA"
+      - name: Publish complete release then require GitHub immutable readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="coach-${GITHUB_SHA}"
+          # No tag-only eligibility, no mutable overwrite, no arbitrary dispatch.
+          # GitHub freezes the complete release on publication when immutable
+          # releases is enabled by the repository administrator.
+          if gh release view "$TAG" --repo stevefortier/katafit-coach >/dev/null 2>&1; then
+            echo 'Existing tag/release requires independent reconciliation; never overwrite.' >&2
+            exit 1
+          fi
+          gh release create "$TAG" --repo stevefortier/katafit-coach --target "$GITHUB_SHA" \
+            --draft --title "Coach ${GITHUB_SHA}" --notes "Exact-source protocol-2 ready pair. Manual installation confirmation remains required."
+          gh release upload "$TAG" "$RUNNER_TEMP/coach-release/"* --repo stevefortier/katafit-coach
+          test "$(gh api repos/stevefortier/katafit-coach/git/ref/heads/main --jq .object.sha)" = "$GITHUB_SHA"
+          gh release edit "$TAG" --repo stevefortier/katafit-coach --draft=false --latest
+          gh api "repos/stevefortier/katafit-coach/releases/tags/$TAG" > "$RUNNER_TEMP/published.json"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const r=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/published.json"));
+            if(r.immutable!==true) throw Error("Repository administrator must ENABLE IMMUTABLE RELEASES. Published release is NOT eligible; publication gate failed.");
+            if(r.draft || r.prerelease || r.target_commitish!==process.env.GITHUB_SHA || r.assets.length!==3 || r.assets.some(a=>!/^sha256:[a-f0-9]{64}$/.test(a.digest))) throw Error("Published artifacts incomplete or mismatched");'
+      - name: Verify public ready-source readback
+        run: node --input-type=module -e 'import {discoverRelease} from "./dist/release/manifest.js"; const r=await discoverRelease(); if(r.manifest.revision!==process.env.GITHUB_SHA) throw Error("Published release not advertised exactly");'
