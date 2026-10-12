@@ -1,3 +1,4 @@
+import "../tests/fixtures/legacy-source-check.js";
 import { settingsTab } from "../tests/helpers/settings-navigation.js";
 import { chromium } from "playwright-core";
 import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
