@@ -62,13 +62,16 @@ export async function readyUpdates(apply: (sha: string) => Promise<void>) {
     [assetUrl("manifest.json"), manifest],
     [`${api}/git/ref/heads/main`, { object: { sha } }],
     [
-      `${api}/compare/${installed}...${sha}`,
+      `${api}/compare/${installed}...${sha}?per_page=1&page=2`,
       {
+        url: `${api}/compare/${installed}...${sha}`,
+        total_commits: 1,
+        behind_by: 0,
         status: "ahead",
         base_commit: { sha: installed },
         merge_base_commit: { sha: installed },
         ahead_by: 1,
-        commits: [{ sha }],
+        commits: [],
       },
     ],
   ]);

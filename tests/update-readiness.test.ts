@@ -72,11 +72,14 @@ function source(installed = old, published = manifest) {
             ? { object: { sha } }
             : url.includes("/compare/")
               ? {
+                  url: url.split("?")[0],
+                  total_commits: 1,
+                  behind_by: 0,
                   status: "ahead",
                   base_commit: { sha: installed },
                   merge_base_commit: { sha: installed },
                   ahead_by: 1,
-                  commits: [{ sha }],
+                  commits: [],
                 }
               : published,
       ),

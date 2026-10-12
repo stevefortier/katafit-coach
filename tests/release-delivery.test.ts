@@ -132,11 +132,14 @@ test("production ready channel offers only proven ahead source, never behind/div
             }
           : url.includes("/compare/")
             ? {
+                url: url.split("?")[0],
+                total_commits: status === "ahead" ? 1 : 0,
+                behind_by: 0,
                 status,
                 base_commit: { sha: installed },
                 merge_base_commit: { sha: installed },
                 ahead_by: status === "ahead" ? 1 : 0,
-                commits: [{ sha }],
+                commits: [],
               }
             : fixture();
       return new Response(JSON.stringify(data));
@@ -146,7 +149,7 @@ test("production ready channel offers only proven ahead source, never behind/div
     assert.equal(updates.latest, status === "ahead" ? sha : null);
     assert.ok(
       calls.includes(
-        `https://api.github.com/repos/stevefortier/katafit-coach/compare/${installed}...${sha}`,
+        `https://api.github.com/repos/stevefortier/katafit-coach/compare/${installed}...${sha}?per_page=1&page=2`,
       ),
     );
   }
@@ -241,7 +244,9 @@ test("unsigned immutable branch release cannot bypass reviewed fixed-main member
     const request: typeof fetch = async (input) => {
       const url = String(input);
       calls.push(url);
-      const mainCompare = url.endsWith(`/compare/${sha}...${main}`);
+      const mainCompare = url.endsWith(
+        `/compare/${sha}...${main}?per_page=1&page=2`,
+      );
       const data =
         url === releaseApi
           ? {
@@ -256,11 +261,14 @@ test("unsigned immutable branch release cannot bypass reviewed fixed-main member
             ? { object: { sha: main } }
             : url.includes("/compare/")
               ? {
+                  url: url.split("?")[0],
+                  total_commits: 1,
+                  behind_by: 0,
                   status: mainCompare ? mainRelation : "ahead",
                   base_commit: { sha: mainCompare ? sha : installed },
                   merge_base_commit: { sha: mainCompare ? sha : installed },
                   ahead_by: 1,
-                  commits: [{ sha: mainCompare ? main : sha }],
+                  commits: [],
                 }
               : fixture();
       return new Response(JSON.stringify(data));
@@ -270,7 +278,7 @@ test("unsigned immutable branch release cannot bypass reviewed fixed-main member
     assert.equal(updates.latest, mainRelation === "ahead" ? sha : null);
     assert.ok(
       calls.includes(
-        `https://api.github.com/repos/stevefortier/katafit-coach/compare/${sha}...${main}`,
+        `https://api.github.com/repos/stevefortier/katafit-coach/compare/${sha}...${main}?per_page=1&page=2`,
       ),
     );
     if (mainRelation === "diverged")
@@ -298,11 +306,14 @@ test("main membership provider rate limit revokes unsigned release approval", as
             }
           : url.includes("/compare/")
             ? {
+                url: url.split("?")[0],
+                total_commits: 1,
+                behind_by: 0,
                 status: "ahead",
                 base_commit: { sha: "a".repeat(40) },
                 merge_base_commit: { sha: "a".repeat(40) },
                 ahead_by: 1,
-                commits: [{ sha }],
+                commits: [],
               }
             : fixture(),
       ),

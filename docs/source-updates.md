@@ -35,7 +35,12 @@ needed in daemon or Pi; see [release delivery](release-delivery.md).
 
 Remote requests use ten-second deadlines, bounded streaming, a one-minute throttle
 and concurrent deduplication. Release metadata is capped at 64KiB, manifest at 8KiB,
-compact main ref at 100,000 bytes and each ancestry comparison at 256KiB. API
+compact main ref at 100,000 bytes and each ancestry comparison at 256KiB. Ancestry
+uses the fixed immutable compare URL with `per_page=1&page=2`: GitHub includes
+changed files only on page one. Strict comparison-wide status/counts, exact
+base/merge SHAs and the exact canonical comparison URL prove the forward relation,
+including one-commit comparisons whose second page has no commits. No pagination
+links or file patches are needed, and oversized metadata still fails closed. API
 redirects are rejected; manifest downloads permit only the fixed HTTPS GitHub
 release-assets redirect. Approval expires after five minutes. All metadata,
 manifest, main-membership and installed-ancestry requests share the same provider

@@ -498,6 +498,41 @@ export class Updates {
       this.applying = false;
     }
   }
+  private async sourceIsAhead(
+    request: typeof fetch,
+    base: string,
+    head: string,
+  ): Promise<boolean> {
+    if (!validSha(base) || !validSha(head) || base === head) return false;
+    const url = `https://api.github.com/repos/stevefortier/katafit-coach/compare/${base}...${head}`;
+    // GitHub includes up to 300 file patches on page one, even with per_page=1.
+    // Page two retains comparison-wide metadata without those patches. For a
+    // one-commit relation it has no commits; on longer histories its last commit
+    // need not be head. The exact immutable comparison URL binds the head instead.
+    // https://docs.github.com/en/rest/commits/commits#compare-two-commits
+    const comparison = JSON.parse(
+      (
+        await boundedBytes(
+          await request(`${url}?per_page=1&page=2`, requestOptions()),
+          256 * 1024,
+        )
+      ).toString(),
+    );
+    return (
+      comparison !== null &&
+      typeof comparison === "object" &&
+      !Array.isArray(comparison) &&
+      comparison.url === url &&
+      comparison.status === "ahead" &&
+      comparison.base_commit?.sha === base &&
+      comparison.merge_base_commit?.sha === base &&
+      Number.isSafeInteger(comparison.ahead_by) &&
+      comparison.ahead_by > 0 &&
+      comparison.behind_by === 0 &&
+      Number.isSafeInteger(comparison.total_commits) &&
+      comparison.total_commits === comparison.ahead_by
+    );
+  }
   /** Fixed HTTPS immutable published-source channel. Artifact provenance is
    * verified externally before Docker/code staging; no daemon gh/credentials. */
   async readyRelease(request: typeof fetch): Promise<string> {
@@ -518,53 +553,17 @@ export class Updates {
     );
     const main = ref.object?.sha;
     if (!validSha(main)) throw Error("MAIN_SOURCE_UNKNOWN");
-    if (sha !== main) {
-      const mainComparison = JSON.parse(
-        (
-          await boundedBytes(
-            await request(
-              `https://api.github.com/repos/stevefortier/katafit-coach/compare/${sha}...${main}`,
-              requestOptions(),
-            ),
-            256 * 1024,
-          )
-        ).toString(),
-      );
-      if (
-        mainComparison.status !== "ahead" ||
-        mainComparison.base_commit?.sha !== sha ||
-        mainComparison.merge_base_commit?.sha !== sha ||
-        !Number.isSafeInteger(mainComparison.ahead_by) ||
-        mainComparison.ahead_by < 1 ||
-        !Array.isArray(mainComparison.commits) ||
-        mainComparison.commits.length < 1 ||
-        mainComparison.commits.at(-1)?.sha !== main
-      )
-        throw Error("READY_SOURCE_NOT_REVIEWED_MAIN");
-    }
+    if (sha !== main && !(await this.sourceIsAhead(request, sha, main)))
+      throw Error("READY_SOURCE_NOT_REVIEWED_MAIN");
     if (!validSha(this.installed)) throw Error("INSTALLED_SOURCE_UNKNOWN");
     if (sha === this.installed) {
       this.releaseTarget = manifest;
       return sha;
     }
     const installed = this.installed;
-    const response = await request(
-      `https://api.github.com/repos/stevefortier/katafit-coach/compare/${installed}...${sha}`,
-      requestOptions(),
-    );
-    const comparison = JSON.parse(
-      (await boundedBytes(response, 256 * 1024)).toString(),
-    );
     if (
-      this.installed !== installed ||
-      comparison.status !== "ahead" ||
-      comparison.base_commit?.sha !== installed ||
-      comparison.merge_base_commit?.sha !== installed ||
-      !Number.isSafeInteger(comparison.ahead_by) ||
-      comparison.ahead_by < 1 ||
-      !Array.isArray(comparison.commits) ||
-      comparison.commits.length < 1 ||
-      comparison.commits.at(-1)?.sha !== sha
+      !(await this.sourceIsAhead(request, installed, sha)) ||
+      this.installed !== installed
     )
       throw Error("READY_SOURCE_NOT_AHEAD");
     this.releaseTarget = manifest;
