@@ -53,6 +53,31 @@ jobs:
               --source-ref refs/heads/main --source-digest "$GITHUB_SHA" --deny-self-hosted-runners
           done
           test "$(gh api repos/stevefortier/katafit-coach/git/ref/heads/main --jq .object.sha)" = "$GITHUB_SHA"
+      - name: Exercise authenticated operator on attested bytes before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This runner's exact QA image only. No force: retained containers fail
+          # the gate instead of broad cleanup. Force the actual archive-load path.
+          docker --host=unix:///var/run/docker.sock image rm "$NATIVE_TEST_IMAGE"
+          node --input-type=module -e '
+            import fs from "node:fs/promises";
+            import assert from "node:assert/strict";
+            import {provisionRelease} from "./dist/release/provision.js";
+            import {nativeImage} from "./dist/sandbox/artifact.js";
+            const artifacts=process.env.RUNNER_TEMP+"/coach-release";
+            const bytes=await fs.readFile(artifacts+"/manifest.json");
+            const manifest=JSON.parse(bytes);
+            const home=process.env.RUNNER_TEMP+"/release-operator-home";
+            const staging=process.env.RUNNER_TEMP+"/release-operator-stage";
+            const root=await provisionRelease(manifest,artifacts,home,staging,bytes);
+            assert.equal(await nativeImage(home,root),manifest.image);
+            assert.equal(await provisionRelease(manifest,artifacts,home,staging,bytes),root);
+            const state=JSON.parse(await fs.readFile(home+"/release-delivery/"+manifest.revision+".json"));
+            assert.equal(state.phase,"provisioned");
+            for(const name of ["active.json","config.json","service.json","native-probe-cleanup.json"]) {
+              await assert.rejects(fs.readFile(home+"/"+name),{code:"ENOENT"});
+            }'
       - name: Publish complete release then require GitHub immutable readback
         shell: bash
         run: |

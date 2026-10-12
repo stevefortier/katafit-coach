@@ -57,7 +57,14 @@ real native artifact, protocol2 upgrades/rollback/subsequent success, missing
 changed fingerprint then external provisioning, and twenty reuse cycles.
 
 The builder produces `coach-<SHA>.tgz`, `native-<SHA>.tar.gz`, `manifest.json`
-outside the clean source. All three are attested. Only after all gates pass does
+outside the clean source. All three are attested. The workflow then exercises the
+real authenticated operator against those attested bytes on a fresh runner-owned
+home/stage: remove only its unreferenced exact QA image without force, verify all
+provenance/digests, load the actual compressed archive, stage locked dependencies,
+run real provisionArtifact, repeat to prove durable idempotence, independently
+read native binding/journal, and assert no active/config/service/probe leftovers.
+This gate is unverified locally until main-hosted attestations exist; no verifier
+stub substitutes for success. Only after all gates pass does
 the workflow upload a complete draft, check that source is still current main,
 publish and verify public manifest/asset readback. Earlier/out-of-order main
 runs cannot intentionally publish stale current candidates. Serialization and
