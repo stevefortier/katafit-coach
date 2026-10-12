@@ -94,6 +94,8 @@ test("reviewed green first-parent advances permit qualified composed merge trees
         {
           revision: parent,
           parent: base,
+          tree,
+          headTree: tree,
           pr: pr(parent, "1".repeat(40)),
           run: run("1".repeat(40), 2),
         },
@@ -142,4 +144,44 @@ test("newer same-head manual CI qualification supersedes older PR success", asyn
     conclusion: "failure",
   };
   assert.equal(selectLatestRun([old, latest], head), latest);
+});
+
+test("metadata-only intervening advance is not qualified tree evidence", () => {
+  const h = "a".repeat(40),
+    revision = "b".repeat(40),
+    parent = "c".repeat(40),
+    base = "d".repeat(40),
+    tree = "e".repeat(40);
+  const evidence = (revision: string) => ({
+    revision,
+    pr: {
+      merged: true,
+      merge_commit_sha: revision,
+      head: { sha: h },
+      base: { ref: "main", repo: { full_name: "stevefortier/katafit-coach" } },
+    },
+    run: {
+      head_sha: h,
+      name: "Verify coach pilot",
+      path: ".github/workflows/ci.yml",
+      event: "pull_request",
+      status: "completed",
+      conclusion: "success",
+    },
+  });
+  assert.throws(
+    () =>
+      qualifySource({
+        ...evidence(revision),
+        tree,
+        headTree: h,
+        composition: {
+          firstParent: parent,
+          mergeBase: base,
+          computedTree: tree,
+          advances: [{ ...evidence(parent), parent: base }],
+        },
+      }),
+    /TREE_PROOF/,
+  );
 });

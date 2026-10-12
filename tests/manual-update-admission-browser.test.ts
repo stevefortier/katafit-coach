@@ -1,4 +1,4 @@
-import "./fixtures/legacy-source-check.js";
+import { readyBrowserFixture } from "./fixtures/legacy-source-check.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -70,6 +70,7 @@ test(
       },
     );
     updates.manualRestartSupported = true;
+    readyBrowserFixture(updates);
     const app = await admin(store, 0, undefined, undefined, updates);
     let browser;
     const headers = {

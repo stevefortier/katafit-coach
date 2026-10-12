@@ -68,6 +68,61 @@ export function ledger(): Event[] {
   ];
 }
 
+/** Acquire responsive geometry before focus can schedule another layout pass.
+ * A fresh resize delivery followed by animation frames lets viewport locking
+ * and Leaflet's map observer finish. Invariants reject transient clipped maps.
+ */
+export async function settleCompactMap(page: any) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const pane = document.getElementById("dashboardMapPane")!;
+        const map = document.getElementById("dashboardMap")!;
+        let first = 0,
+          second = 0;
+        const finish = () => {
+          observer.disconnect();
+          cancelAnimationFrame(first);
+          cancelAnimationFrame(second);
+          clearTimeout(deadline);
+        };
+        const observer = new ResizeObserver(() => {
+          cancelAnimationFrame(first);
+          cancelAnimationFrame(second);
+          first = requestAnimationFrame(() => {
+            second = requestAnimationFrame(() => {
+              const bounds = map.getBoundingClientRect();
+              const frame = pane.getBoundingClientRect();
+              const size = (window as any).fixtureMap?.getSize();
+              if (
+                document.documentElement.classList.contains("compact-map") &&
+                frame.bottom === innerHeight - 8 &&
+                bounds.height > 0 &&
+                bounds.top >= frame.top &&
+                bounds.bottom <= frame.bottom &&
+                bounds.left >= 0 &&
+                bounds.right <= innerWidth &&
+                document.documentElement.scrollHeight <= innerHeight &&
+                size?.x === map.clientWidth &&
+                size?.y === map.clientHeight
+              ) {
+                finish();
+                resolve();
+              }
+            });
+          });
+        });
+        // Failure bound only: never use elapsed time as layout readiness.
+        const deadline = setTimeout(() => {
+          finish();
+          reject(new Error("Compact map did not settle inside the viewport"));
+        }, 5000);
+        observer.observe(pane);
+        observer.observe(map);
+      }),
+  );
+}
+
 export async function fixture(
   run: (
     page: any,
@@ -86,6 +141,8 @@ export async function fixture(
     ready?: string;
     // Wait for this many timeline marks; null skips (failure-path tests).
     marks?: number | null;
+    // Install deterministic browser instrumentation before application startup.
+    beforeLoad?: (page: any) => Promise<void>;
   } = {},
 ) {
   const events = options.events || ledger();
@@ -213,6 +270,7 @@ export async function fixture(
         ),
       }),
     );
+    await options.beforeLoad?.(page);
     await page.goto(`http://127.0.0.1:${(server.address() as any).port}`);
     await page.evaluate(async (date: string) => {
       if (document.getElementById("studio")) {

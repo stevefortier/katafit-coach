@@ -1,5 +1,7 @@
 /** Compiled stable-owner contract, independent of native sandbox protocol. */
 export const manualOnlySourceUpdates = 1;
+/** Token-bound preparation/admin IPC; unrelated to native artifact protocol. */
+export const updatePreparationProtocol = 2;
 
 /**
  * Application capability declared in `dist/build.json` `capabilities`: the

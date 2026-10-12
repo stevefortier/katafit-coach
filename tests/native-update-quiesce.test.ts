@@ -269,8 +269,8 @@ async function supervised(
   const prepare = async (target: string) => {
     prepares++;
     const root = join(home, "versions", target);
-    await mkdir(join(root, "dist/config"), { recursive: true });
-    await mkdir(join(root, "dist/server"), { recursive: true });
+    await mkdir(join(root, "dist/config"), { recursive: true, mode: 0o700 });
+    await mkdir(join(root, "dist/server"), { recursive: true, mode: 0o700 });
     await writeFile(join(root, "package.json"), '{"type":"module"}');
     await writeFile(
       join(root, "dist/build.json"),

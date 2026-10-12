@@ -64,8 +64,8 @@ async function fixture(previousCapable: boolean) {
   // its startup durably begins an effectful write and then fails.
   const prepare = async () => {
     const root = join(home, "versions", target);
-    await mkdir(join(root, "dist/server"), { recursive: true });
-    await mkdir(join(root, "dist/config"), { recursive: true });
+    await mkdir(join(root, "dist/server"), { recursive: true, mode: 0o700 });
+    await mkdir(join(root, "dist/config"), { recursive: true, mode: 0o700 });
     await writeFile(join(root, "package.json"), '{"type":"module"}');
     await writeFile(
       join(root, "dist/build.json"),

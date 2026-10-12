@@ -20,7 +20,7 @@ test(
       );
       await writeFile(
         join(folder, "dist/server/admin.js"),
-        'export const updatePreparationProtocol=2; export async function admin(store,port,unused,close,updates){process.send({type:"fixtureSnapshot",state:updates.snapshot()});return {origin:"http://127.0.0.1:1",async close(){}}}',
+        'export const updatePreparationProtocol=2; export async function admin(store,port,unused,close,updates){process.send({type:"fixtureSnapshot",state:updates.snapshot()});process.on("message",m=>{if(m.type==="fixtureRead")process.send({type:"fixtureRead",state:updates.snapshot()});});return {origin:"http://127.0.0.1:1",async close(){}}}',
       );
       for (const channel of [undefined, "ready-releases-v1", "invalid"]) {
         const child = fork(
@@ -40,16 +40,58 @@ test(
             type: "state",
             data: {
               supported: true,
+              preparationProtocol: 2,
+              readinessSupported: true,
+              readinessProtocol: 1,
+              readiness: { sha: "b".repeat(40), state: "ready" },
               installed: "a".repeat(40),
               manualOnlySourceUpdates: 1,
               sourceChannel: channel,
             },
           });
           const state = await result;
+          assert.equal(state.readinessSupported, false);
+          assert.equal(state.readiness, undefined);
           assert.equal(
             state.sourceChannel,
             channel === "ready-releases-v1" ? channel : "legacy-or-unknown",
           );
+          const checkedAt = Date.now();
+          const newer = {
+            stateSequence: 2,
+            latest: "c".repeat(40),
+            checkedAt,
+            readinessSupported: true,
+            readinessProtocol: 1,
+            readiness: {
+              sha: "c".repeat(40),
+              checkedAt,
+              state: "delivery-pending",
+            },
+          };
+          child.send({ type: "state", data: newer });
+          child.send({
+            type: "state",
+            data: {
+              ...newer,
+              stateSequence: 1,
+              latest: "b".repeat(40),
+              readiness: { sha: "b".repeat(40), checkedAt, state: "ready" },
+            },
+          });
+          const observed = new Promise<any>((resolve) => {
+            const listener = (m: any) => {
+              if (m.type === "fixtureRead") {
+                child.off("message", listener);
+                resolve(m.state);
+              }
+            };
+            child.on("message", listener);
+          });
+          child.send({ type: "fixtureRead" });
+          const current = await observed;
+          assert.equal(current.latest, "c".repeat(40));
+          assert.equal(current.readiness.state, "delivery-pending");
         } finally {
           const exit = once(child, "exit");
           child.kill("SIGTERM");

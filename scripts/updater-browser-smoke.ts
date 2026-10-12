@@ -1,4 +1,4 @@
-import "../tests/fixtures/legacy-source-check.js";
+import { readyBrowserFixture } from "../tests/fixtures/legacy-source-check.js";
 import { settingsTab } from "../tests/helpers/settings-navigation.js";
 import { chromium } from "playwright-core";
 import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
@@ -40,6 +40,7 @@ const updates = new BrowserUpdates(
     return new Response(JSON.stringify({ object: { sha: latest } }));
   },
 );
+readyBrowserFixture(updates);
 const app = await admin(store, 0, undefined, undefined, updates);
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {

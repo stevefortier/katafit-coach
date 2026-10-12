@@ -5,8 +5,9 @@ transaction](native-bootstrap.md) before cutover. Old protocol-1 launchers rejec
 native candidates before stopping their healthy application. New launchers accept
 legacy rollback applications, but require a preinstalled exact immutable sandbox
 artifact and successful synthetic relay/TUI preflight for every native candidate.
-No image is pulled or built by the source updater. Missing prerequisites report
-**external artifact or native bootstrap required**; provision outside Pi and retry.
+No image is pulled or built by the source updater. Missing local artifacts defer
+confirmation as **delivery pending** before staging or Stop; provision outside Pi
+and refresh host readiness. Later preflight failures retain separate preparation diagnostics.
 This is a launcher prerequisite change, not a data migration.
 
 ## User workflow
@@ -45,16 +46,16 @@ for your next explicit Check, **not an armed daemon source timer**. HTTP429 and4
 with rate-limit evidence report RATE_LIMITED; plain403 reports FORBIDDEN. A failed
 check is not “up to date”. Status/error/outcome readback performs no source request.
 
-**Remaining local readiness deferral:** globally published artifacts may not yet
-be provisioned on this host. The external timer provisions only, never applies.
-The source-only protected same-fingerprint binding remains valid even if the
-published image differs: preserve/preflight the selected protected image instead
-of minting a conflicting exact receipt. This slice does not yet expose owner-owned
-read-only local readiness to defer/disable confirmation while delivery catches up;
-that IPC/admin/UI gate remains a blocker. Until completed, inspect the actual
-protected matching binding externally before confirmation. A missing image can
-still cause a preparation rejection before Stop; it is not an accepted failed
-installation, and publication alone does not fix first-click failures.
+**Local readiness deferral:** published artifacts may not yet be provisioned on
+this host. The stable owner observes protected matching-fingerprint receipts and
+immutable Docker image identity without staging, probing, or activating. Updates
+shows Published release separately from Host readiness and defers confirmation
+until the host is ready. **Refresh host readiness** is local; it does not renew
+source approval or contact GitHub. The external timer provisions only. A valid
+protected older same-fingerprint binding remains ready even if the published
+image differs. Confirmation rechecks readiness before preparation and Stop;
+preparation/native and publication safety fences still apply. Unknown older
+owners require reviewed launcher replacement before this capability is available.
 
 Open **Settings → Updates**. The installed identifier is the exact source Git SHA,
 not npm `0.1.0` or a persona revision. Dirty/unknown builds remain unknown.
@@ -65,6 +66,20 @@ not npm `0.1.0` or a persona revision. Dirty/unknown builds remain unknown.
    native binding; global availability alone is not host readiness. Ready-source
    policy is declared by owner `sourceChannel: ready-releases-v1`; absent/unknown
    older owners show generic Latest source and may still use legacy main discovery.
+   The owner separately reports `readinessProtocol: 1`, `readinessSupported`,
+   and a target/fingerprint/source-check-bound local observation. Published source
+   is executable only when the host has a compatible protected native receipt and
+   immutable Docker image. Older same-fingerprint images are eligible; the published
+   image need not be loaded again. Missing receipts/images show delivery pending;
+   invalid bindings or unavailable Docker show bounded blocked reasons. Checks only
+   read metadata and inspect an image (10-second Docker limit, 1,024-entry receipt
+   scan); they never probe, pull, load, build or create native resources.
+   Use **Refresh host readiness** after external provisioning. This refresh and a
+   cached Check do not contact GitHub or renew source approval/cooldown. Status GETs
+   reuse the observation. Unknown owners cannot claim readiness. Confirmation
+   rechecks on the stable owner before preparation and before safe Stop/admission;
+   delivery-pending responses are deferrals, not accepted failed installations.
+   Already prepared long-running work retains only its exact token-bound approval.
 3. Click Upgrade and explicitly confirm the full displayed SHA and stop/apply/restart operation. This authorizes executing that trusted source and its pinned dependencies on your machine. Cancel performs no stop or apply. A running Coach is stopped safely, native sessions are closed, and actions/chat are never replayed.
 4. The stable owner stages, validates, native-preflights and probes the exact revision while Coach remains available. The child rechecks configuration/worker scope and reserves a manual queue: new worker claims and native starts are fenced synchronously, while already-dispatched polls/claims finish without abort or replay. Studio shows waiting-worker, waiting-publication or waiting-native. Native Pi is never interrupted by the upgrade; finish its turn and use supported Close / Stop Pi. Cancel is available while waiting, before safe worker Stop begins. After publication safety, native cleanup and confirmed backend Stop, the existing owner durably accepts installation and captured running intent.
 5. Wait for the installed SHA to match the confirmed target and the success result. The stable owner resumes a previously running Coach after activation or rollback; an intentionally stopped Coach stays stopped. Read Worker status separately from source success. Resume failure exposes **Retry Coach restart**, which starts the saved configuration only, without reinstalling or replaying work. Reload Studio to load its new UI assets. Closing the browser does not cancel an accepted upgrade.

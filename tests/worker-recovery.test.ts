@@ -6,7 +6,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
-import { Updates } from "../src/update/updates.js";
+import { readyUpdates } from "./helpers/ready-updates.js";
 import { NativeTerminal } from "../src/server/terminal.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -32,15 +32,7 @@ test("manual update queues an in-flight claim and fences late claims and native 
     token: "synthetic-token",
     apiKey: "synthetic-key",
   });
-  const updates = new Updates(
-    "a".repeat(40),
-    async () => {},
-    fetch,
-    undefined,
-    async () => {},
-  );
-  updates.latest = "b".repeat(40);
-  updates.checkedAt = Date.now();
+  const updates = await readyUpdates(async () => {});
   updates.manualRestartSupported = true;
   const start = Worker.prototype.start,
     stopNative = NativeTerminal.prototype.stop;
@@ -127,17 +119,9 @@ test("actual admin queues idle-unsafe manual apply without stopping and supports
     token: "synthetic-token",
     apiKey: "synthetic-key",
   });
-  const updates = new Updates(
-    "a".repeat(40),
-    async () => {
-      throw new Error("must not apply");
-    },
-    fetch,
-    undefined,
-    async () => {},
-  );
-  updates.latest = "b".repeat(40);
-  updates.checkedAt = Date.now();
+  const updates = await readyUpdates(async () => {
+    throw new Error("must not apply");
+  });
   updates.manualRestartSupported = true;
   const start = Worker.prototype.start;
   let owned: Worker | undefined;

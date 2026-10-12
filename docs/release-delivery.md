@@ -47,8 +47,11 @@ head (a newer failed/pending run supersedes any older success). Identical trees
 are the fast path. For a composed tree, it computes the **actual** source commit's
 first parent and `git merge-base` with the reviewed head, walks at most twenty
 actual first-parent advances, and requires each advance to be an independently
-merged/reviewed PR with latest exact-head green CI. `git merge-tree --write-tree`
-must cleanly reproduce the final source tree. It never trusts stale PR.base.sha,
+merged/reviewed PR with latest exact-head green CI and qualified tree evidence.
+Each advance must match its green head tree or carry the same recursive clean
+composition proof. A shared budget allows at most twenty advances across the
+whole proof. `git merge-tree --write-tree` must cleanly reproduce every composed
+tree, including intervening advances and the final source tree. It never trusts stale PR.base.sha,
 unqualified/direct pushes, missing evidence, or bound exhaustion. This preserves
 the accepted unchanged-green-head/conflict-free main-advance policy without
 repeating all CI. Necessary
@@ -139,22 +142,22 @@ The distributable CLI supplies actual idempotent provisioning, **not a Warden
 scheduler installation**. Parent owns durable timer deployment/credentials,
 privileged orchestration and host connection. Activation is not provisioning.
 
-## Remaining host-readiness/UI blocker
+## Host readiness and confirmation
 
-Global immutable release availability is not yet an observed host-ready binding.
-This slice does **not** disable Upgrade while the external provisioning timer
-catches up. Normal preparation still fails safely before Stop/activation and B
-reports a distinct preparation outcome, but the first click can predictably fail
-for missing native artifacts. Do not describe the release pipeline alone as
-fixing that UX/reliability failure. Before declaring end-to-end release readiness,
-finish a separately reviewed owner-owned bounded read-only local readiness DTO
-from protected matching-fingerprint receipts and immutable Docker inspect (no
-native probe in source/read-only checks), preserve it through IPC/admin, and defer
-confirmation until ready. Distinguish global availability, local readiness and
-source approval freshness; local refresh must not extend remote approval or force
-remote source polling. Valid source-only protected fingerprint reuse is ready
-without loading a different published image. This cross-owner/UI integration is
-an explicit remaining blocker, not an implemented feature here.
+Global immutable availability and host readiness are separate observations. The
+stable owner now checks bounded protected receipts and immutable Docker identity,
+without a native probe in source/read-only checks, and carries readiness through
+IPC/admin to the UI. Confirmation is disabled/deferred until ready and rechecks
+before preparation/Stop. Local refresh does not renew source approval or trigger
+remote polling. Valid source-only protected fingerprint reuse is ready without
+loading a different published image. This implemented gate still needs final
+composed package/native and independent deployment qualification; an older owner
+needs reviewed replacement to expose it.
+
+The workflow verifies immutable public readback **after publication**. Failure at
+that gate can leave a mutable public release already published; it is not evidence
+that no external side effect occurred. Repository configuration and live hosted
+publication/provenance remain separate qualification gates.
 
 Preparation RPC protocol2/unique ownership nonce is independent of native
 protocol2 and source-channel v1. Parent/B owns that negotiation and final composed

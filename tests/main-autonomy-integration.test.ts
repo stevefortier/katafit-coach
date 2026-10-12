@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { NativeTerminal } from "../src/server/terminal.js";
-import { Updates } from "../src/update/updates.js";
+import { readyUpdates } from "./helpers/ready-updates.js";
 import {
   autonomyAdmin,
   holdingProxy,
@@ -25,17 +25,9 @@ test(
     const entered = deferred(),
       release = deferred();
     let applications = 0;
-    const updates = new Updates(
-      "a".repeat(40),
-      async () => {
-        applications++;
-      },
-      fetch,
-      undefined,
-      async () => {},
-    );
-    updates.latest = "b".repeat(40);
-    updates.checkedAt = Date.now();
+    const updates = await readyUpdates(async () => {
+      applications++;
+    });
     const env = await autonomyAdmin({ updates });
     const reconcile = AutonomyHost.prototype.reconcile;
     let applying: ReturnType<typeof env.call> | undefined;
@@ -53,7 +45,12 @@ test(
         confirm: true,
         sha: updates.latest,
       });
-      await entered.promise;
+      const earlyResponse = await Promise.race([entered.promise, applying]);
+      assert.equal(
+        earlyResponse,
+        undefined,
+        `update returned before autonomy proof: ${JSON.stringify(earlyResponse)}`,
+      );
       const config = env.store.publicConfig();
       const changed = await env.call("POST", "/api/config", {
         ...config,
@@ -90,17 +87,9 @@ test(
       stops++;
       return originalStop.call(this);
     };
-    const updates = new Updates(
-      "a".repeat(40),
-      async () => {
-        applications++;
-      },
-      fetch,
-      undefined,
-      async () => {},
-    );
-    updates.latest = "b".repeat(40);
-    updates.checkedAt = Date.now();
+    const updates = await readyUpdates(async () => {
+      applications++;
+    });
     const env = await autonomyAdmin({
       updates,
       proofThrottleMs: 0,
@@ -183,17 +172,9 @@ test(
       get: () => false,
     });
     let applications = 0;
-    const updates = new Updates(
-      "a".repeat(40),
-      async () => {
-        applications++;
-      },
-      fetch,
-      undefined,
-      async () => {},
-    );
-    updates.latest = "b".repeat(40);
-    updates.checkedAt = Date.now();
+    const updates = await readyUpdates(async () => {
+      applications++;
+    });
     updates.manualRestartSupported = true;
     const env = await autonomyAdmin({
       updates,

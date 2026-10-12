@@ -1,9 +1,9 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { lstat, open, rm } from "node:fs/promises";
+import { lstat, open, rm, opendir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { directory, managedFile } from "../update/managed.js";
@@ -250,6 +250,11 @@ export async function drainNativePreflightCleanup(
     boundary.signal,
   );
 }
+import {
+  artifactFailure,
+  artifactReason,
+  type ArtifactReason,
+} from "../update/preparation.js";
 export const artifactRequired = "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED";
 export async function provisionArtifact(
   home: string,
@@ -313,6 +318,79 @@ export async function provisionArtifact(
     boundary.signal,
   );
 }
+/** Native authority belongs to the service, unlike immutable package metadata.
+ * Do not chmod/chown or repair evidence while observing it. Root-owned sticky
+ * temporary ancestors are safe anchors; the home and receipt directory are not
+ * allowed that exception. All other ancestors must exclude foreign writers. */
+async function nativeAuthorityDirectory(path: string, privatePath: boolean) {
+  await directory(path);
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("UNSAFE_NATIVE_AUTHORITY");
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    const opened = await handle.stat(),
+      linked = await lstat(path);
+    for (const info of [opened, linked]) {
+      const stickyRoot =
+        !privatePath && info.uid === 0 && (info.mode & 0o1000) !== 0;
+      if (
+        !info.isDirectory() ||
+        info.isSymbolicLink() ||
+        (privatePath ? info.uid !== uid : info.uid !== uid && info.uid !== 0) ||
+        ((info.mode & 0o022) !== 0 && !stickyRoot)
+      )
+        throw new Error("UNSAFE_NATIVE_AUTHORITY");
+    }
+    if (opened.dev !== linked.dev || opened.ino !== linked.ino)
+      throw new Error("UNSAFE_NATIVE_AUTHORITY");
+  } finally {
+    await handle.close();
+  }
+}
+async function nativeAuthorityFile(
+  home: string,
+  path: string,
+): Promise<Buffer> {
+  const root = resolve(home);
+  for (let parent = root; ; parent = dirname(parent)) {
+    await nativeAuthorityDirectory(parent, parent === root);
+    if (dirname(parent) === parent) break;
+  }
+  if (dirname(path) !== root)
+    await nativeAuthorityDirectory(dirname(path), true);
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const check = (info: import("node:fs").Stats) => {
+      if (
+        !info.isFile() ||
+        info.uid !== process.getuid?.() ||
+        info.nlink !== 1 ||
+        (info.mode & 0o022) !== 0 ||
+        info.size > 2048
+      )
+        throw new Error("UNSAFE_NATIVE_AUTHORITY");
+    };
+    const opened = await handle.stat();
+    check(opened);
+    const linked = await lstat(path);
+    check(linked);
+    if (opened.dev !== linked.dev || opened.ino !== linked.ino)
+      throw new Error("UNSAFE_NATIVE_AUTHORITY");
+    const bytes = Buffer.alloc(2049);
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+    check(await handle.stat());
+    if (bytesRead > 2048) throw new Error("UNSAFE_NATIVE_AUTHORITY");
+    return bytes.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
 /**
  * Exact-revision receipt first. Otherwise reuse a protected receipt with the
  * same native fingerprint: identical fingerprinted inputs build an identical
@@ -324,7 +402,9 @@ async function nativeReceipt(
 ): Promise<any> {
   const folder = join(home, "native-artifacts");
   const read = async (name: string) =>
-    JSON.parse((await managedFile(join(folder, name), 2048)).toString());
+    JSON.parse(
+      (await nativeAuthorityFile(home, join(folder, name))).toString(),
+    );
   try {
     const exact = await read(build.revision + ".json");
     if (exact.revision !== build.revision) throw new Error();
@@ -332,8 +412,14 @@ async function nativeReceipt(
   } catch (error: any) {
     if (error.code !== "ENOENT") throw error;
   }
-  const { readdir } = await import("node:fs/promises");
-  for (const name of (await readdir(folder)).sort()) {
+  // Finite metadata scan. Never enumerate an unbounded artifact history.
+  const names: string[] = [];
+  const entries = await opendir(folder);
+  for await (const entry of entries) {
+    if (names.length >= 1024) throw new Error("NATIVE_RECEIPT_LIMIT");
+    names.push(entry.name);
+  }
+  for (const name of names.sort()) {
     if (!/^[a-f0-9]{40}\.json$/.test(name)) continue;
     const candidate = await read(name);
     if (
@@ -342,7 +428,7 @@ async function nativeReceipt(
     )
       return candidate;
   }
-  throw new Error();
+  throw artifactFailure("MISSING_MATCHING_ARTIFACT");
 }
 /** Protected host provisioning receipt, never a caller-selected tag or pull. */
 export async function nativeImage(
@@ -358,24 +444,74 @@ export async function nativeImage(
     const build = JSON.parse(
       (await managedFile(join(root, "dist/build.json"), 2048)).toString(),
     );
+    return await nativeImageForBuild(home, build, inspect);
+  } catch (error) {
+    throw artifactFailure(artifactReason(error) ?? "INVALID_BINDING");
+  }
+}
+/** Bounded read-only receipt/image observation; no staging, probe or receipt write. */
+export async function nativeImageForBuild(
+  home: string,
+  build: { protocol: number; revision: string; fingerprint: string },
+  inspect: Parameters<typeof nativeImage>[2] = exec,
+): Promise<string> {
+  try {
     if (
       build.protocol !== 2 ||
+      typeof build.revision !== "string" ||
       !/^[a-f0-9]{40}$/.test(build.revision) ||
+      typeof build.fingerprint !== "string" ||
       !/^[a-f0-9]{64}$/.test(build.fingerprint)
     )
       throw new Error();
-    const binding = await nativeReceipt(home, build);
+    let binding: any;
+    try {
+      binding = await nativeReceipt(home, build);
+    } catch (error: any) {
+      throw artifactFailure(
+        error.code === "ENOENT" ||
+          artifactReason(error) === "MISSING_MATCHING_ARTIFACT"
+          ? "MISSING_MATCHING_ARTIFACT"
+          : "INVALID_BINDING",
+      );
+    }
     if (
       !/^[a-f0-9]{40}$/.test(binding.revision) ||
       binding.fingerprint !== build.fingerprint ||
       !/^sha256:[a-f0-9]{64}$/.test(binding.image)
     )
       throw new Error();
-    const result = await inspect(
-      "docker",
-      ["--host=unix:///var/run/docker.sock", "image", "inspect", binding.image],
-      { timeout: 10000, maxBuffer: 65536 },
-    );
+    try {
+      const active = JSON.parse(
+        (await nativeAuthorityFile(home, join(home, "active.json"))).toString(),
+      );
+      if (active.revision === build.revision && active.image !== binding.image)
+        throw new Error();
+    } catch (error: any) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    let result: { stdout: string };
+    try {
+      result = await inspect(
+        "docker",
+        [
+          "--host=unix:///var/run/docker.sock",
+          "image",
+          "inspect",
+          binding.image,
+        ],
+        { timeout: 10000, maxBuffer: 65536 },
+      );
+    } catch (error: any) {
+      const absent =
+        error?.code === 1 &&
+        typeof error.stderr === "string" &&
+        error.stderr.trim() ===
+          `Error response from daemon: No such image: ${binding.image}`;
+      throw artifactFailure(
+        absent ? "MISSING_MATCHING_ARTIFACT" : "DOCKER_UNAVAILABLE",
+      );
+    }
     const [image] = JSON.parse(result.stdout);
     const architecture =
       process.arch === "x64"
@@ -393,18 +529,9 @@ export async function nativeImage(
         build.fingerprint
     )
       throw new Error();
-    try {
-      const active = JSON.parse(
-        (await managedFile(join(home, "active.json"), 2048)).toString(),
-      );
-      if (active.revision === build.revision && active.image !== binding.image)
-        throw new Error();
-    } catch (error: any) {
-      if (error.code !== "ENOENT") throw error;
-    }
     return binding.image;
-  } catch {
-    throw new Error(artifactRequired);
+  } catch (error) {
+    throw artifactFailure(artifactReason(error) ?? "INVALID_BINDING");
   }
 }
 export async function nativePreflight(
@@ -428,14 +555,14 @@ export async function nativePreflight(
       try {
         await drainDurableCleanup(home, boundary.engine);
       } catch {
-        throw new Error(artifactRequired);
+        throw artifactFailure("CLEANUP_PENDING");
       }
       const build = await metadata(root);
       if (build.protocol === 1) return undefined;
       try {
         await drainOwnedCleanup(key);
       } catch {
-        throw new Error(artifactRequired);
+        throw artifactFailure("CLEANUP_PENDING");
       }
       boundary.signal?.throwIfAborted();
       const image = await nativeImage(home, root, boundary.inspect);
@@ -514,9 +641,10 @@ export async function nativePreflight(
         )
           throw new Error("NATIVE_PREFLIGHT_FAILED");
         return image;
-      } catch {
-        if (boundary.signal?.aborted) throw new Error("BUILD_CANCELLED");
-        throw new Error(artifactRequired);
+      } catch (error) {
+        if (boundary.signal?.aborted && error === boundary.signal.reason)
+          throw new Error("BUILD_CANCELLED");
+        throw artifactFailure("PROBE_FAILED");
       } finally {
         try {
           await runtime.stop();
@@ -525,8 +653,7 @@ export async function nativePreflight(
           const owned = pendingCleanup.get(key) ?? new Set<PreflightRuntime>();
           owned.add(runtime);
           pendingCleanup.set(key, owned);
-          if (boundary.signal?.aborted) throw new Error("BUILD_CANCELLED");
-          throw new Error(artifactRequired);
+          throw artifactFailure("CLEANUP_PENDING");
         }
       }
     },

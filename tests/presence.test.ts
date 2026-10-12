@@ -1018,8 +1018,14 @@ test("manual preparation preserves source and presence safety on refused stop", 
     prepare: async (target) => {
       prepares++;
       const candidate = join(dir, "versions", target);
-      await mkdir(join(candidate, "dist/config"), { recursive: true });
-      await mkdir(join(candidate, "dist/server"), { recursive: true });
+      await mkdir(join(candidate, "dist/config"), {
+        recursive: true,
+        mode: 0o700,
+      });
+      await mkdir(join(candidate, "dist/server"), {
+        recursive: true,
+        mode: 0o700,
+      });
       await writeFile(join(candidate, "package.json"), '{"type":"module"}');
       await writeFile(
         join(candidate, "dist/build.json"),

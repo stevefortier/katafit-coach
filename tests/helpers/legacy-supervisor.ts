@@ -20,7 +20,7 @@ async function legacyRoot(home: string) {
   try {
     await access(join(root, "package.json"));
   } catch {
-    await mkdir(root, { recursive: true });
+    await mkdir(root, { recursive: true, mode: 0o700 });
     for (const name of ["src", "dist", "ui", "sandbox"])
       await cp(resolve(name), join(root, name), { recursive: true });
     await symlink(resolve("node_modules"), join(root, "node_modules"));
@@ -44,6 +44,7 @@ export async function prepareLegacyNativeGateway(home: string) {
 export async function activateLegacyFixture(home: string) {
   const root = await legacyRoot(home),
     revision = "1".repeat(40);
+  await mkdir(join(home, "versions"), { recursive: true, mode: 0o700 });
   await cp(root, join(home, "versions", revision), { recursive: true });
   await writeFile(join(home, "active.json"), JSON.stringify({ revision }), {
     mode: 0o600,
@@ -58,5 +59,7 @@ export async function supervise(...args: Parameters<typeof realSupervise>) {
     pathToFileURL(join(root, "src/update/updates.ts")).href
   );
   Updates.prototype.readyRelease = legacyReadyRelease;
+  Updates.prototype.assertReady = async function () {};
+  Updates.prototype.validateReadiness = function () {};
   return module.supervise(...args) as ReturnType<typeof realSupervise>;
 }

@@ -1,5 +1,6 @@
-// Real packed CLI/child lifecycle. Only GitHub fetch and Git remote are replaced
-// by a code-loaded, local synthetic trust boundary; production has no URL override.
+import { syntheticReleaseBoundary } from "./synthetic-release-boundary.mjs";
+// Packed legacy lifecycle with explicit synthetic release/native eligibility
+// and local Git boundaries. Production has no environment or HTTP bypass.
 import {
   mkdtemp,
   mkdir,
@@ -137,8 +138,8 @@ try {
     `import cp from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {readFileSync,appendFileSync,existsSync,statSync} from 'node:fs';
-import {Updates} from ${JSON.stringify(join(root, 'install/node_modules/@katafit/coach/dist/update/updates.js'))};
-Updates.prototype.readyRelease=async(request)=>{const r=await request('https://api.github.com/repos/stevefortier/katafit-coach/git/ref/heads/main'); if(!r.ok)throw Error('UNAVAILABLE');return (await r.json()).object.sha;};
+import {Updates} from ${JSON.stringify(join(root, "install/node_modules/@katafit/coach/dist/update/updates.js"))};
+${syntheticReleaseBoundary({ installedRoot: join(root, "install/node_modules/@katafit/coach"), source, legacy: true })}
 const now=Date.now.bind(Date), tracePath=${JSON.stringify(trace)};
 const record=(row)=>{try{if(!existsSync(tracePath)||statSync(tracePath).size<16384)appendFileSync(tracePath,JSON.stringify(row)+'\\n');}catch{}};
 const original=cp.spawn;
@@ -208,11 +209,12 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
   };
   const apply = async (sha, offset) => {
     await writeFile(selection, JSON.stringify({ sha, offset }));
-    assert.equal((await (await api("update/check", {})).json()).latest, sha);
-    assert.equal(
-      (await api("update/apply", { sha, confirm: true }, 180000)).status,
-      202,
-    );
+    const checked = await (await api("update/check", {})).json();
+    assert.equal(checked.latest, sha);
+    assert.equal(checked.sourceChannel, "legacy-or-unknown");
+    assert.equal(checked.readiness?.state, "ready");
+    const response = await api("update/apply", { sha, confirm: true }, 180000);
+    assert.equal(response.status, 202, await response.text());
   };
   await apply(good, 0);
   await wait((s) => !s.applying && s.installed === good);

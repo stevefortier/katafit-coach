@@ -30,7 +30,14 @@ export function selectLatestRun(runs: any[], head: string) {
     (a, b) => b.id - a.id || b.run_attempt - a.run_attempt,
   )[0];
 }
-export function qualifySource(proof: any) {
+export function qualifySource(
+  proof: any,
+  budget = { remaining: 21 },
+  ancestors = new Set<string>(),
+) {
+  if (--budget.remaining < 0 || ancestors.has(proof.revision))
+    throw Error("RELEASE_COMPOSITION_BOUND_EXCEEDED");
+  const path = new Set(ancestors).add(proof.revision);
   const { revision, tree, pr, headTree, run, composition } = proof;
   reviewed(revision, pr, run);
   if (!sha(tree) || !sha(headTree)) throw Error("RELEASE_TREE_PROOF_REQUIRED");
@@ -52,7 +59,12 @@ export function qualifySource(proof: any) {
   for (const advance of composition.advances) {
     if (advance.parent !== parent || seen.has(advance.revision))
       throw Error("RELEASE_COMPOSITION_PROOF_REQUIRED");
-    reviewed(advance.revision, advance.pr, advance.run);
+    qualifySource(advance, budget, path);
+    if (
+      advance.composition &&
+      advance.composition.firstParent !== advance.parent
+    )
+      throw Error("RELEASE_COMPOSITION_PROOF_REQUIRED");
     seen.add(advance.revision);
     parent = advance.revision;
   }

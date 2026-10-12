@@ -33,7 +33,10 @@ test(
           target = "b".repeat(40),
           published = "sha256:" + "f".repeat(64);
         await mkdir(join(root, "dist"), { recursive: true });
-        await mkdir(join(home, "native-artifacts"), { recursive: true });
+        await mkdir(join(home, "native-artifacts"), {
+          recursive: true,
+          mode: 0o700,
+        });
         await writeFile(
           join(root, "dist/build.json"),
           JSON.stringify({ revision: target, protocol: 2, fingerprint }),

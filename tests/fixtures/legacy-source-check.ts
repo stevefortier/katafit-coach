@@ -1,4 +1,4 @@
-/** Existing lifecycle fixtures replace the published-source boundary only.
+/** Existing lifecycle fixtures replace published-source and native readiness boundaries.
  * Release eligibility/provenance itself is exercised in release-delivery.test.ts.
  * This preserves legacy protocol-1, cooldown and lifecycle tests without adding
  * a production main fallback or labeling their synthetic source as a release.
@@ -15,3 +15,30 @@ export async function legacyReadyRelease(request: typeof fetch) {
   return data.object.sha;
 }
 Updates.prototype.readyRelease = legacyReadyRelease;
+
+// Legacy lifecycle fixtures intentionally hold native eligibility outside their
+// scope. Production readiness is covered through real source/owner/API tests.
+Updates.prototype.assertReady = async function () {};
+Updates.prototype.validateReadiness = function () {};
+
+/** Explicit ready native boundary for legacy browser lifecycle fixtures only. */
+export function readyBrowserFixture(updates: Updates) {
+  const snapshot = updates.snapshot.bind(updates);
+  updates.snapshot = () => {
+    const state = snapshot();
+    return {
+      ...state,
+      readinessProtocol: 1,
+      readinessSupported: true,
+      readiness: state.latest
+        ? {
+            sha: state.latest,
+            fingerprint: "c".repeat(64),
+            checkedAt: state.checkedAt,
+            observedAt: Date.now(),
+            state: "ready" as const,
+          }
+        : undefined,
+    };
+  };
+}
