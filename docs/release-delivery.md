@@ -21,7 +21,13 @@ owner attribution and label old owners honestly until managed bootstrap.
 
 Daemon source discovery uses the existing fixed GitHub HTTPS source trust. It
 reads only bounded release metadata and an 8KiB manifest, not executable release
-archives. It never needs GitHub CLI/login/token. This is **not cryptographic
+archives. Before granting source approval, the daemon reads the fixed compact
+`git/ref/heads/main` and proves candidate=current-main or candidate→main exact
+ancestry through the fixed bounded compare endpoint. Release contents-write
+permission cannot authorize an unreviewed same-fingerprint branch for source
+build/activation. Main membership AND installed→candidate forward ancestry are
+required, under the same cooldown, without any signature-verification fallback
+that needs daemon credentials. It never needs GitHub CLI/login/token. This is **not cryptographic
 artifact verification**: artifacts must be verified by the external operator
 before npm/code staging or Docker load. The operator uses modern `gh attestation
 verify` with the fixed repository AND signer workflow

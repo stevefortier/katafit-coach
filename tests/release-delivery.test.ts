@@ -72,16 +72,18 @@ test("external discovery verifier binds provenance to exact manifest and fails c
   const request: typeof fetch = async (input) =>
     new Response(
       JSON.stringify(
-        String(input) === releaseApi
-          ? {
-              tag_name: `coach-${sha}`,
-              target_commitish: sha,
-              draft: false,
-              prerelease: false,
-              immutable: true,
-              assets: assets(),
-            }
-          : fixture(),
+        String(input).endsWith("/git/ref/heads/main")
+          ? { object: { sha } }
+          : String(input) === releaseApi
+            ? {
+                tag_name: `coach-${sha}`,
+                target_commitish: sha,
+                draft: false,
+                prerelease: false,
+                immutable: true,
+                assets: assets(),
+              }
+            : fixture(),
       ),
     );
   const found = await discoverRelease(request, async (bytes, revision) => {
@@ -117,8 +119,9 @@ test("production ready channel offers only proven ahead source, never behind/div
     const request: typeof fetch = async (input) => {
       const url = String(input);
       calls.push(url);
-      const data =
-        url === releaseApi
+      const data = url.endsWith("/git/ref/heads/main")
+        ? { object: { sha } }
+        : url === releaseApi
           ? {
               tag_name: `coach-${sha}`,
               target_commitish: sha,
@@ -153,16 +156,18 @@ test("production ready channel offers only proven ahead source, never behind/div
     async (input) =>
       new Response(
         JSON.stringify(
-          String(input) === releaseApi
-            ? {
-                tag_name: `coach-${sha}`,
-                target_commitish: sha,
-                draft: false,
-                prerelease: false,
-                immutable: true,
-                assets: assets(),
-              }
-            : fixture(),
+          String(input).endsWith("/git/ref/heads/main")
+            ? { object: { sha } }
+            : String(input) === releaseApi
+              ? {
+                  tag_name: `coach-${sha}`,
+                  target_commitish: sha,
+                  draft: false,
+                  prerelease: false,
+                  immutable: true,
+                  assets: assets(),
+                }
+              : fixture(),
         ),
       ),
   );
@@ -174,16 +179,18 @@ test("production ready channel offers only proven ahead source, never behind/div
     async (input) =>
       new Response(
         JSON.stringify(
-          String(input) === releaseApi
-            ? {
-                tag_name: `coach-${sha}`,
-                target_commitish: sha,
-                draft: false,
-                prerelease: false,
-                immutable: true,
-                assets: assets(),
-              }
-            : fixture(),
+          String(input).endsWith("/git/ref/heads/main")
+            ? { object: { sha } }
+            : String(input) === releaseApi
+              ? {
+                  tag_name: `coach-${sha}`,
+                  target_commitish: sha,
+                  draft: false,
+                  prerelease: false,
+                  immutable: true,
+                  assets: assets(),
+                }
+              : fixture(),
         ),
       ),
   );
@@ -202,16 +209,18 @@ test("compare and manifest metadata share the source cooldown and revoke eligibi
       });
     return new Response(
       JSON.stringify(
-        url === releaseApi
-          ? {
-              tag_name: `coach-${sha}`,
-              target_commitish: sha,
-              draft: false,
-              prerelease: false,
-              immutable: true,
-              assets: assets(),
-            }
-          : fixture(),
+        url.endsWith("/git/ref/heads/main")
+          ? { object: { sha } }
+          : url === releaseApi
+            ? {
+                tag_name: `coach-${sha}`,
+                target_commitish: sha,
+                draft: false,
+                prerelease: false,
+                immutable: true,
+                assets: assets(),
+              }
+            : fixture(),
       ),
     );
   };
@@ -222,4 +231,85 @@ test("compare and manifest metadata share the source cooldown and revoke eligibi
   const before = calls;
   await updates.check();
   assert.equal(calls, before);
+});
+
+test("unsigned immutable branch release cannot bypass reviewed fixed-main membership using same fingerprint", async () => {
+  const installed = "a".repeat(40),
+    main = "d".repeat(40);
+  for (const mainRelation of ["ahead", "diverged"]) {
+    const calls: string[] = [];
+    const request: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      const mainCompare = url.endsWith(`/compare/${sha}...${main}`);
+      const data =
+        url === releaseApi
+          ? {
+              tag_name: `coach-${sha}`,
+              target_commitish: sha,
+              draft: false,
+              prerelease: false,
+              immutable: true,
+              assets: assets(),
+            }
+          : url.endsWith("/git/ref/heads/main")
+            ? { object: { sha: main } }
+            : url.includes("/compare/")
+              ? {
+                  status: mainCompare ? mainRelation : "ahead",
+                  base_commit: { sha: mainCompare ? sha : installed },
+                  merge_base_commit: { sha: mainCompare ? sha : installed },
+                  ahead_by: 1,
+                  commits: [{ sha: mainCompare ? main : sha }],
+                }
+              : fixture();
+      return new Response(JSON.stringify(data));
+    };
+    const updates = new Updates(installed, async () => {}, request);
+    await updates.check();
+    assert.equal(updates.latest, mainRelation === "ahead" ? sha : null);
+    assert.ok(
+      calls.includes(
+        `https://api.github.com/repos/stevefortier/katafit-coach/compare/${sha}...${main}`,
+      ),
+    );
+    if (mainRelation === "diverged")
+      await assert.rejects(updates.prepare(sha), /CHECK_FIRST/);
+  }
+});
+test("main membership provider rate limit revokes unsigned release approval", async () => {
+  const request: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/git/ref/heads/main"))
+      return new Response("", {
+        status: 429,
+        headers: { "retry-after": "900" },
+      });
+    return new Response(
+      JSON.stringify(
+        url === releaseApi
+          ? {
+              tag_name: `coach-${sha}`,
+              target_commitish: sha,
+              draft: false,
+              prerelease: false,
+              immutable: true,
+              assets: assets(),
+            }
+          : url.includes("/compare/")
+            ? {
+                status: "ahead",
+                base_commit: { sha: "a".repeat(40) },
+                merge_base_commit: { sha: "a".repeat(40) },
+                ahead_by: 1,
+                commits: [{ sha }],
+              }
+            : fixture(),
+      ),
+    );
+  };
+  const updates = new Updates("a".repeat(40), async () => {}, request);
+  await updates.check();
+  assert.equal(updates.latest, null);
+  assert.equal(updates.checkError, "RATE_LIMITED");
 });

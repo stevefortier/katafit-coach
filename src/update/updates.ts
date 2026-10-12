@@ -248,6 +248,45 @@ export class Updates {
    * verified externally before Docker/code staging; no daemon gh/credentials. */
   async readyRelease(request: typeof fetch): Promise<string> {
     const sha = (await discoverRelease(request)).manifest.revision;
+    // Release contents-write authority is not reviewed-main authority. An
+    // unsigned manifest may select source, never authorize branch execution.
+    const ref = JSON.parse(
+      (
+        await boundedBytes(
+          await request(
+            "https://api.github.com/repos/stevefortier/katafit-coach/git/ref/heads/main",
+            requestOptions(),
+          ),
+          100000,
+        )
+      ).toString(),
+    );
+    const main = ref.object?.sha;
+    if (!validSha(main)) throw Error("MAIN_SOURCE_UNKNOWN");
+    if (sha !== main) {
+      const mainComparison = JSON.parse(
+        (
+          await boundedBytes(
+            await request(
+              `https://api.github.com/repos/stevefortier/katafit-coach/compare/${sha}...${main}`,
+              requestOptions(),
+            ),
+            256 * 1024,
+          )
+        ).toString(),
+      );
+      if (
+        mainComparison.status !== "ahead" ||
+        mainComparison.base_commit?.sha !== sha ||
+        mainComparison.merge_base_commit?.sha !== sha ||
+        !Number.isSafeInteger(mainComparison.ahead_by) ||
+        mainComparison.ahead_by < 1 ||
+        !Array.isArray(mainComparison.commits) ||
+        mainComparison.commits.length < 1 ||
+        mainComparison.commits.at(-1)?.sha !== main
+      )
+        throw Error("READY_SOURCE_NOT_REVIEWED_MAIN");
+    }
     if (!validSha(this.installed)) throw Error("INSTALLED_SOURCE_UNKNOWN");
     if (sha === this.installed) return sha;
     const installed = this.installed;
