@@ -1,8 +1,9 @@
+import type { NativeBinding } from "../sandbox/binding.js";
 import { Actions } from "../chat/actions.js";
 import type { Store } from "../config/store.js";
 import type { LogInput } from "../diagnostics/log.js";
 import type { Admission } from "../runtime/admission.js";
-import { nativeImage } from "../sandbox/artifact.js";
+import { nativeBinding } from "../sandbox/artifact.js";
 import type { NativeProbeEngine } from "../sandbox/runtime.js";
 import { CleanupRegistry } from "./cleanup.js";
 import { AutonomyBackend, AutonomyFailure, type Effect } from "./backend.js";
@@ -44,11 +45,11 @@ export interface RuntimeContext {
 export async function productionRuntimes(
   home: string,
   o: Partial<RuntimeContext> & {
-    image?: (home: string) => Promise<string>;
+    image?: (home: string) => Promise<string | NativeBinding>;
     engine?: Engine;
   } = {},
 ): Promise<AutonomyRuntimes> {
-  const image = await (o.image ?? nativeImage)(home);
+  const image = await (o.image ?? nativeBinding)(home);
   if (!o.owner || !o.cleanup || o.cleanup.owner !== o.owner)
     throw new Error("HEADLESS_OWNER_REQUIRED");
   const planner = new HeadlessCycleRuntime({

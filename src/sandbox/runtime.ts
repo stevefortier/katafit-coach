@@ -1,4 +1,11 @@
 import {
+  asNativeBinding,
+  recordEngine,
+  nativeEngineSocket,
+  type NativeBinding,
+  type NativeEngine,
+} from "./binding.js";
+import {
   execFile,
   spawn,
   type ChildProcessWithoutNullStreams,
@@ -30,15 +37,18 @@ export interface NativeProbeOwnership {
   revision: string;
   fingerprint: string;
   image: string;
+  engine?: NativeEngine;
   labels: Record<string, string>;
   containerId: string | null;
 }
 /** The exact identity `cleanupNativeProbe` matches (probe or headless). */
 export type NativeOwnership = Pick<
   NativeProbeOwnership,
-  "name" | "image" | "labels" | "containerId"
+  "name" | "image" | "engine" | "labels" | "containerId"
 >;
 export interface NativeProbeEngine {
+  /** Missing only for legacy code-only fixtures. */
+  engine?: NativeEngine;
   inspect(reference: string): Promise<any | undefined>;
   remove(id: string): Promise<void>;
 }
@@ -50,7 +60,10 @@ export function dockerProbeEngine(
     options: any,
   ) => Promise<{ stdout: string }>,
   socketPath: string,
+  engine: NativeEngine = "legacy",
 ): NativeProbeEngine {
+  if (engine !== "legacy" && socketPath !== nativeEngineSocket(engine))
+    throw Error("NATIVE_ENGINE_MISMATCH");
   let version: Promise<string> | undefined;
   const apiVersion = () =>
     (version ??= run(
@@ -69,6 +82,7 @@ export function dockerProbeEngine(
       return "/v1." + Math.min(52, Number(match[1]));
     }));
   return {
+    engine,
     async inspect(reference) {
       const prefix = await apiVersion();
       return new Promise<any | undefined>((resolve, reject) => {
@@ -121,8 +135,13 @@ export function dockerProbeEngine(
 /** Remove only a container that exactly matches a durable probe receipt. */
 export async function cleanupNativeProbe(
   ownership: NativeOwnership,
-  engine: NativeProbeEngine = dockerProbeEngine(exec, "/var/run/docker.sock"),
+  engine?: NativeProbeEngine,
 ) {
+  const selectedEngine = recordEngine(ownership);
+  const socket = nativeEngineSocket(selectedEngine);
+  if (engine && recordEngine(engine) !== selectedEngine)
+    throw Error("NATIVE_ENGINE_MISMATCH");
+  engine ??= dockerProbeEngine(exec, socket, selectedEngine);
   let found: any;
   try {
     found = await engine.inspect(ownership.name);
@@ -295,8 +314,10 @@ export class NativeRuntime {
   private mode: "interactive" | "rpc" = "interactive";
   private readonly ownership?: NativeOwnership;
   private readonly probeEngine?: NativeProbeEngine;
+  readonly image: string;
+  readonly binding: NativeBinding;
   constructor(
-    readonly image: string,
+    image: string | NativeBinding,
     engine: {
       socketPath?: string;
       exec?: (
@@ -317,17 +338,40 @@ export class NativeRuntime {
       ) => ChildProcessWithoutNullStreams;
     } = {},
   ) {
+    this.binding =
+      typeof image === "string"
+        ? { image, engine: "legacy" }
+        : asNativeBinding(image);
+    this.image = this.binding.image;
+    const socket = nativeEngineSocket(this.binding.engine);
+    if (
+      this.binding.engine !== "legacy" &&
+      engine.socketPath !== undefined &&
+      engine.socketPath !== socket
+    )
+      throw Error("NATIVE_ENGINE_MISMATCH");
+    if (
+      engine.ownership &&
+      (recordEngine(engine.ownership) !== this.binding.engine ||
+        engine.ownership.image !== this.image)
+    )
+      throw Error("NATIVE_ENGINE_MISMATCH");
+    if (
+      engine.probeEngine &&
+      recordEngine(engine.probeEngine) !== this.binding.engine
+    )
+      throw Error("NATIVE_ENGINE_MISMATCH");
     this.run = engine.exec ?? exec;
     this.spawnRelay = engine.spawn ?? spawn;
     this.labels = engine.labels ?? {};
-    this.socketPath = engine.socketPath ?? "/var/run/docker.sock";
+    this.socketPath = engine.socketPath ?? socket;
     this.ownership = engine.ownership;
     this.name =
       engine.ownership?.name ?? engine.name ?? "katafit-pi-" + randomUUID();
     this.probeEngine =
       engine.probeEngine ??
       (engine.ownership
-        ? dockerProbeEngine(this.run, this.socketPath)
+        ? dockerProbeEngine(this.run, this.socketPath, this.binding.engine)
         : undefined);
   }
   private gateway?: NativeGateway;

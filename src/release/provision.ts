@@ -1,3 +1,13 @@
+import { artifactReason } from "../update/preparation.js";
+import {
+  engineField,
+  nativeEngine,
+  recordEngine,
+  nativeEngineHost,
+  sameNativeBinding,
+  type NativeBinding,
+  type NativeEngine,
+} from "../sandbox/binding.js";
 import {
   open,
   lstat,
@@ -24,8 +34,8 @@ import {
 import { atomicWrite } from "../update/journal.js";
 import {
   provisionArtifact,
-  nativeImage,
-  nativePreflight,
+  nativeBinding,
+  nativeBindingPreflight,
 } from "../sandbox/artifact.js";
 import {
   parseManifest,
@@ -169,15 +179,21 @@ export async function unpackPackage(path: string, dest: string) {
     throw Error("RELEASE_REJECTED");
 }
 export interface NativeBindingSelection {
+  engine?: NativeEngine;
   selectedImage: string;
   publishedImage: string;
   binding: "reused" | "provisioned";
   identity?: NativeReleaseIdentity;
 }
 type LoadedNativeImage = {
+  engine?: NativeEngine;
   selectedImage: string;
   identity?: NativeReleaseIdentity;
 };
+
+export interface NativeReleaseOptions extends NativeArchiveReadOptions {
+  engine?: NativeEngine;
+}
 
 /** Keep config-ID Docker stores working unchanged. On containerd, select only
  * the manifest derived from signed archive bytes and confirmed by image inspect
@@ -190,8 +206,9 @@ export async function loadNativeReleaseImage(
     args: string[],
     options: any,
   ) => Promise<{ stdout: string }> = exec,
-  options: NativeArchiveReadOptions = {},
+  options: NativeReleaseOptions = {},
 ): Promise<LoadedNativeImage> {
+  nativeEngineHost(recordEngine(options)); // authority before any archive open
   return withNativeSnapshot(archive, m, options, (snapshot, signal) =>
     loadVerifiedNativeReleaseImage(m, snapshot, run, { ...options, signal }),
   );
@@ -204,18 +221,20 @@ async function loadVerifiedNativeReleaseImage(
     args: string[],
     options: any,
   ) => Promise<{ stdout: string }>,
-  options: NativeArchiveReadOptions,
+  options: NativeReleaseOptions,
 ): Promise<LoadedNativeImage> {
+  const engine = recordEngine(options),
+    host = nativeEngineHost(engine);
   // Integrity is mandatory even when an exact classic image is already loaded.
   const proof = await readNativeArchive(archive, m, options);
   const inspect = async (image: string): Promise<string | undefined> => {
     options.signal?.throwIfAborted();
     try {
-      const result = await run(
-        "docker",
-        ["--host=unix:///var/run/docker.sock", "image", "inspect", image],
-        { timeout: 10000, maxBuffer: 65536, signal: options.signal },
-      );
+      const result = await run("docker", [host, "image", "inspect", image], {
+        timeout: 10000,
+        maxBuffer: 65536,
+        signal: options.signal,
+      });
       options.signal?.throwIfAborted();
       if (typeof result?.stdout !== "string")
         throw Error("RELEASE_IMAGE_IDENTITY_REJECTED");
@@ -240,12 +259,14 @@ async function loadVerifiedNativeReleaseImage(
     const classic = await inspect(m.image);
     if (classic !== undefined)
       return {
+        ...engineField(engine),
         selectedImage: verifyNativeConfigInspection(proof, m.image, classic),
       };
     if (proof.identity) {
       const found = await inspect(proof.identity.manifest.digest);
       if (found !== undefined)
         return {
+          ...engineField(engine),
           selectedImage: verifyNativeArchiveInspection(
             proof as import("./native-identity.js").NativeArchiveIdentity,
             found,
@@ -258,11 +279,11 @@ async function loadVerifiedNativeReleaseImage(
   const selected = await reconcile();
   if (selected) return selected;
   options.signal?.throwIfAborted();
-  await run(
-    "docker",
-    ["--host=unix:///var/run/docker.sock", "image", "load", "--input", archive],
-    { timeout: 180000, maxBuffer: 65536, signal: options.signal },
-  );
+  await run("docker", [host, "image", "load", "--input", archive], {
+    timeout: 180000,
+    maxBuffer: 65536,
+    signal: options.signal,
+  });
   const loaded = await reconcile();
   if (!loaded) throw Error("RELEASE_IMAGE_IDENTITY_REJECTED");
   return loaded;
@@ -286,12 +307,48 @@ export async function ensureNativeReleaseBinding(
 ): Promise<NativeBindingSelection> {
   if (!/^sha256:[a-f0-9]{64}$/.test(publishedImage))
     throw Error("RELEASE_REJECTED");
+  const requestedEngine = recordEngine(boundary);
+  nativeEngineHost(requestedEngine);
+  if (previouslyReady) {
+    recordEngine(previouslyReady);
+    if (Object.hasOwn(previouslyReady, "identity"))
+      validateNativeReleaseIdentity(
+        previouslyReady.identity,
+        previouslyReady.selectedImage,
+      );
+    if (
+      Object.keys(previouslyReady).some(
+        (k) =>
+          ![
+            "selectedImage",
+            "publishedImage",
+            "binding",
+            "identity",
+            "engine",
+          ].includes(k),
+      ) ||
+      typeof previouslyReady.selectedImage !== "string" ||
+      !/^sha256:[a-f0-9]{64}$/.test(previouslyReady.selectedImage) ||
+      previouslyReady.publishedImage !== publishedImage ||
+      !["reused", "provisioned"].includes(previouslyReady.binding)
+    )
+      throw Error("RELEASE_REJECTED");
+  }
   const build = await metadata(root);
-  let selected: string | undefined;
+  let selectedBinding: NativeBinding | undefined;
+  let bindingObservationError: unknown;
   try {
-    selected = await nativeImage(home, root, boundary.inspect);
-  } catch {}
-  if (selected) {
+    selectedBinding = await nativeBinding(home, root, boundary.inspect);
+  } catch (error) {
+    bindingObservationError = error;
+  }
+  if (selectedBinding) {
+    const selected = selectedBinding.image;
+    if (
+      previouslyReady &&
+      recordEngine(previouslyReady) !== selectedBinding.engine
+    )
+      throw Error("RELEASE_BINDING_CHANGED");
     const priorIdentity = previouslyReady?.identity;
     if (priorIdentity) {
       validateNativeReleaseIdentity(priorIdentity, selected);
@@ -305,14 +362,20 @@ export async function ensureNativeReleaseBinding(
       (selected === publishedImage || !!priorIdentity);
     const choice: NativeBindingSelection = {
       selectedImage: selected,
+      ...engineField(selectedBinding.engine),
       publishedImage,
       binding: provisioned ? "provisioned" : "reused",
       ...(provisioned && priorIdentity ? { identity: priorIdentity } : {}),
     };
     if (previouslyReady?.selectedImage !== selected) {
       await checkpoint("validating-reuse", choice);
-      await (boundary.probe ?? nativePreflight)(root, home);
-      if ((await nativeImage(home, root, boundary.inspect)) !== selected)
+      await (boundary.probe ?? nativeBindingPreflight)(root, home);
+      if (
+        !sameNativeBinding(
+          await nativeBinding(home, root, boundary.inspect),
+          selectedBinding,
+        )
+      )
         throw Error("RELEASE_BINDING_CHANGED");
     }
     await checkpoint("ready", choice);
@@ -329,25 +392,39 @@ export async function ensureNativeReleaseBinding(
   } catch (e: any) {
     if (e.code !== "ENOENT") throw e;
   }
-  let names: string[] = [];
-  try {
-    names = await readdir(join(home, "native-artifacts"));
-  } catch (e: any) {
-    if (e.code !== "ENOENT") throw e;
+  let scanned = 0;
+  for (const engine of ["legacy", "bounded-v1"] as const) {
+    const folder =
+      engine === "legacy"
+        ? join(home, "native-artifacts")
+        : join(home, "native-artifacts", engine);
+    let names: string[] = [];
+    try {
+      names = await readdir(folder);
+    } catch (error: any) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if ((scanned += names.length) > 512)
+      throw Error("RELEASE_BINDING_SCAN_EXHAUSTED");
+    for (const name of names) {
+      if (!/^[a-f0-9]{40}\.json$/.test(name)) continue;
+      const receipt = JSON.parse(
+        (await managedFile(join(folder, name), 2048)).toString(),
+      );
+      if (recordEngine(receipt) !== engine)
+        throw Error("RELEASE_BINDING_CHANGED");
+      if (receipt.fingerprint === build.fingerprint)
+        throw Error("RELEASE_COMPATIBLE_BINDING_UNAVAILABLE");
+    }
   }
-  if (names.length > 512) throw Error("RELEASE_BINDING_SCAN_EXHAUSTED");
-  for (const name of names) {
-    if (!/^[a-f0-9]{40}\.json$/.test(name)) continue;
-    const receipt = JSON.parse(
-      (
-        await managedFile(join(home, "native-artifacts", name), 2048)
-      ).toString(),
-    );
-    if (receipt.fingerprint === build.fingerprint)
-      throw Error("RELEASE_COMPATIBLE_BINDING_UNAVAILABLE");
-  }
+  // Only a positively missing binding permits fresh load. Unsafe authority or
+  // malformed engine metadata must not become absence after an empty scan.
+  if (artifactReason(bindingObservationError) !== "MISSING_MATCHING_ARTIFACT")
+    throw bindingObservationError;
   await checkpoint("loading");
   const loaded = await loadPublished();
+  const loadedEngine = recordEngine(loaded ?? {});
+  if (loadedEngine !== requestedEngine) throw Error("RELEASE_BINDING_CHANGED");
   const image = loaded?.selectedImage ?? publishedImage;
   const identity = loaded?.identity;
   if (identity) {
@@ -361,10 +438,16 @@ export async function ensureNativeReleaseBinding(
     ...boundary,
     releaseIdentity: identity,
   });
-  if ((await nativeImage(home, root, boundary.inspect)) !== image)
+  if (
+    !sameNativeBinding(await nativeBinding(home, root, boundary.inspect), {
+      image,
+      engine: loadedEngine,
+    })
+  )
     throw Error("RELEASE_REJECTED");
   const choice: NativeBindingSelection = {
     selectedImage: image,
+    ...engineField(loadedEngine),
     publishedImage,
     binding: "provisioned",
     ...(identity ? { identity } : {}),
@@ -433,10 +516,11 @@ export async function provisionRelease(
   home: string,
   staging: string,
   manifestBytes?: Buffer,
-  archiveOptions: NativeArchiveReadOptions = {},
+  archiveOptions: NativeReleaseOptions = {},
 ) {
   if (!manifestBytes || manifestBytes.length > 8192)
     throw Error("RELEASE_MANIFEST_PROVENANCE_REQUIRED");
+  nativeEngineHost(recordEngine(archiveOptions));
   return superviseNativeWorker(
     {
       manifest,
@@ -445,6 +529,7 @@ export async function provisionRelease(
       staging,
       manifestBytes: manifestBytes.toString("base64"),
       archiveTimeoutMs: archiveOptions.timeoutMs ?? 60000,
+      ...engineField(recordEngine(archiveOptions)),
     },
     { signal: archiveOptions.signal },
   ) as Promise<{ root: string; phase: "ready" } & NativeBindingSelection>;
@@ -458,10 +543,11 @@ export async function provisionReleaseOwned(
   home: string,
   staging: string,
   manifestBytes?: Buffer,
-  archiveOptions: NativeArchiveReadOptions = {},
+  archiveOptions: NativeReleaseOptions = {},
 ) {
   if (!manifestBytes || manifestBytes.length > 8192)
     throw Error("RELEASE_MANIFEST_PROVENANCE_REQUIRED");
+  nativeEngineHost(recordEngine(archiveOptions));
   const m = parseManifest(manifest);
   if (
     JSON.stringify(parseManifest(JSON.parse(manifestBytes.toString()))) !==
@@ -489,15 +575,6 @@ export async function provisionReleaseOwned(
   return withReleaseOperatorLock(state, async () => {
     archiveOptions = { ...archiveOptions, snapshotParent: state };
     archiveOptions.signal?.throwIfAborted();
-    // Explicit startup capability probe under the real flock, before any archive open.
-    await exec("/usr/bin/true", [], {
-      timeout: 5000,
-      signal: archiveOptions.signal,
-    });
-    // Manifest and artifact attestation clients share this actual lock owner.
-    await verifyProvenance(manifestBytes, m.revision, exec);
-    await recoverNativeSnapshots(state);
-    await validateReleaseFiles(m, artifacts);
     const key = m.revision + ".json";
     const root = join(staging, m.revision, "package");
     let prior: any;
@@ -509,8 +586,11 @@ export async function provisionReleaseOwned(
       if (e.code !== "ENOENT") throw e;
     }
     if (
-      prior &&
-      (JSON.stringify(prior.manifest) !== JSON.stringify(m) ||
+      prior !== undefined &&
+      (!prior ||
+        typeof prior !== "object" ||
+        Array.isArray(prior) ||
+        JSON.stringify(prior.manifest) !== JSON.stringify(m) ||
         prior.root !== root ||
         ![
           "staging",
@@ -520,18 +600,102 @@ export async function provisionReleaseOwned(
           "provisioned",
           "validating-reuse",
           "ready",
-        ].includes(prior.phase))
+        ].includes(prior.phase) ||
+        Object.keys(prior).some(
+          (k) =>
+            ![
+              "manifest",
+              "importEngine",
+              "root",
+              "phase",
+              "selectedImage",
+              "publishedImage",
+              "binding",
+              "identity",
+              "engine",
+            ].includes(k),
+        ))
     )
       throw Error("RELEASE_STATE_CONFLICT");
+    const importEngine = recordEngine(archiveOptions);
+    let priorSelection: NativeBindingSelection | undefined;
+    if (prior !== undefined) {
+      const selectedEngine = recordEngine(prior);
+      const hasImportEngine = Object.hasOwn(prior, "importEngine");
+      // The old implementation could lose bounded authority after dispatch.
+      // Missing authority is legacy only in unambiguous pre-import/completed
+      // legacy state; an interrupted load cannot safely be guessed or replayed.
+      if (
+        (!hasImportEngine &&
+          (["loading", "provisioning", "provisioned"].includes(prior.phase) ||
+            selectedEngine !== "legacy")) ||
+        (hasImportEngine ? nativeEngine(prior.importEngine) : "legacy") !==
+          importEngine
+      )
+        throw Error("RELEASE_STATE_CONFLICT");
+      const selectionKeys = [
+        "selectedImage",
+        "publishedImage",
+        "binding",
+        "identity",
+        "engine",
+      ];
+      const hasSelection = selectionKeys.some((key) =>
+        Object.hasOwn(prior, key),
+      );
+      const needsSelection = ["validating-reuse", "ready"].includes(
+        prior.phase,
+      );
+      if (hasSelection !== needsSelection)
+        throw Error("RELEASE_STATE_CONFLICT");
+      if (hasSelection) {
+        if (
+          typeof prior.selectedImage !== "string" ||
+          !/^sha256:[a-f0-9]{64}$/.test(prior.selectedImage) ||
+          prior.publishedImage !== m.image ||
+          !["reused", "provisioned"].includes(prior.binding)
+        )
+          throw Error("RELEASE_STATE_CONFLICT");
+        if (Object.hasOwn(prior, "identity")) {
+          validateNativeReleaseIdentity(prior.identity, prior.selectedImage);
+          if (prior.identity.publishedImage !== m.image)
+            throw Error("RELEASE_STATE_CONFLICT");
+        }
+        priorSelection = {
+          selectedImage: prior.selectedImage,
+          publishedImage: prior.publishedImage,
+          binding: prior.binding,
+          ...engineField(selectedEngine),
+          ...(Object.hasOwn(prior, "identity")
+            ? { identity: prior.identity }
+            : {}),
+        };
+      }
+    }
     const save = async (phase: string, selection?: NativeBindingSelection) => {
       archiveOptions.signal?.throwIfAborted();
       return atomicWrite(state, key, {
         manifest: m,
         root,
         phase,
+        importEngine,
         ...(selection ?? {}),
       });
     };
+    // Resolve/reject durable operation authority before capability, attestation,
+    // inspection or import commands. Upgrade safe old journals through the same
+    // fsynced atomic boundary before any command can follow that authority.
+    if (prior && !Object.hasOwn(prior, "importEngine"))
+      await save(prior.phase, priorSelection);
+    // Explicit startup capability probe under the real flock, before any archive open.
+    await exec("/usr/bin/true", [], {
+      timeout: 5000,
+      signal: archiveOptions.signal,
+    });
+    // Manifest and artifact attestation clients share this actual lock owner.
+    await verifyProvenance(manifestBytes, m.revision, exec);
+    await recoverNativeSnapshots(state);
+    await validateReleaseFiles(m, artifacts);
     const binding = async () => {
       const b = await metadata(root);
       if (
@@ -594,16 +758,13 @@ export async function provisionReleaseOwned(
           archiveOptions,
         ),
       save,
-      prior?.phase === "ready" &&
-        /^sha256:[a-f0-9]{64}$/.test(prior.selectedImage ?? "") &&
-        ["reused", "provisioned"].includes(prior.binding)
-        ? (prior as NativeBindingSelection)
-        : undefined,
+      prior?.phase === "ready" ? priorSelection : undefined,
       {
         inspect: exec,
+        ...engineField(recordEngine(archiveOptions)),
         signal: archiveOptions.signal,
         probe: (root, home) =>
-          nativePreflight(root, home, {
+          nativeBindingPreflight(root, home, {
             inspect: exec,
             commands: { exec, spawn: nativeOwnedSpawn },
             signal: archiveOptions.signal,

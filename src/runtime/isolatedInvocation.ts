@@ -1,7 +1,7 @@
 import type { Store } from "../config/store.js";
 import type { RuntimeContext } from "../autonomy/host.js";
 import { HeadlessCycleRuntime } from "../autonomy/headless.js";
-import { nativeImage } from "../sandbox/artifact.js";
+import { nativeBinding } from "../sandbox/artifact.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
 import type { WorkerOptions } from "../worker/runner.js";
 
@@ -17,7 +17,7 @@ export function isolatedWorkerCompletion(
   return async (message, signal, prompt, tools, _ref, budget) => {
     signal.throwIfAborted();
     const owner = await context();
-    const image = await nativeImage(store.dir);
+    const image = await nativeBinding(store.dir);
     signal.throwIfAborted();
     const runtime = new HeadlessCycleRuntime({ image, cleanup: owner.cleanup });
     await runtime.sweep();

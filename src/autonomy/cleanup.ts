@@ -1,3 +1,4 @@
+import { recordEngine, type NativeEngine } from "../sandbox/binding.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readdir, rename, rm } from "node:fs/promises";
@@ -5,7 +6,6 @@ import { join } from "node:path";
 import { managedFile } from "../update/managed.js";
 import {
   cleanupNativeProbe,
-  dockerProbeEngine,
   type NativeProbeEngine,
 } from "../sandbox/runtime.js";
 import {
@@ -14,8 +14,6 @@ import {
   syncDirectory,
   type SyncDirectory,
 } from "./ledger.js";
-import { promisify } from "node:util";
-import { execFile } from "node:child_process";
 import { HEADLESS_NAME, HEADLESS_OWNER_LABEL } from "./headless.js";
 
 const IMAGE = /^sha256:[a-f0-9]{64}$/;
@@ -30,6 +28,7 @@ export const CLEANUP_MAX_RECORDS = 16;
 export interface OwnedContainer {
   name: string;
   image: string;
+  engine?: NativeEngine;
   labels: Record<string, string>;
   containerId: string | null;
 }
@@ -39,7 +38,13 @@ function valid(value: unknown, owner: string): value is OwnedContainer {
   const v = value as Record<string, unknown>;
   const labels = v.labels as Record<string, unknown> | undefined;
   return (
-    Object.keys(v).sort().join(",") === "containerId,image,labels,name" &&
+    [
+      "containerId,image,labels,name",
+      "containerId,engine,image,labels,name",
+    ].includes(Object.keys(v).sort().join(",")) &&
+    (!Object.hasOwn(v, "engine") ||
+      v.engine === "legacy" ||
+      v.engine === "bounded-v1") &&
     typeof v.name === "string" &&
     HEADLESS_NAME.test(v.name) &&
     typeof v.image === "string" &&
@@ -75,7 +80,7 @@ export class CleanupRegistry {
     private readonly folder: string,
     readonly owner: string,
     private readonly sync: SyncDirectory,
-    readonly probe: NativeProbeEngine,
+    readonly probe?: NativeProbeEngine,
   ) {}
 
   static async open(
@@ -88,13 +93,7 @@ export class CleanupRegistry {
       join(home, LEDGER_DIR, DIR),
       owner,
       options.sync ?? syncDirectory,
-      options.probe ??
-        dockerProbeEngine(
-          promisify(execFile) as unknown as Parameters<
-            typeof dockerProbeEngine
-          >[0],
-          "/var/run/docker.sock",
-        ),
+      options.probe,
     );
     await registry.load();
     return registry;
@@ -154,12 +153,20 @@ export class CleanupRegistry {
    * here; a record goes only after confirmed absence. Single-flight.
    * Returns the number still pending.
    */
-  drain(probe: NativeProbeEngine = this.probe): Promise<number> {
+  drain(
+    probe:
+      | NativeProbeEngine
+      | ((engine: NativeEngine) => NativeProbeEngine | undefined)
+      | undefined = this.probe,
+  ): Promise<number> {
     this.draining ??= (async () => {
       for (const [name, record] of [...this.records]) {
         if (this.active.has(name)) continue;
         try {
-          await cleanupNativeProbe(record, probe);
+          await cleanupNativeProbe(
+            record,
+            typeof probe === "function" ? probe(recordEngine(record)) : probe,
+          );
           await this.forget(name);
         } catch {
           // Retained: still unconfirmed.

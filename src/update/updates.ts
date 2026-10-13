@@ -132,7 +132,9 @@ export class Updates {
     private readonly persistPreparation?: (
       attempt: PreparationAttempt,
     ) => Promise<void>,
-    private readonly observeReadiness?: (target: Manifest) => Promise<string>,
+    private readonly observeReadiness?: (
+      target: Manifest,
+    ) => Promise<string | import("../sandbox/binding.js").NativeBinding>,
   ) {
     this.readinessSupported = !!observeReadiness;
     if (applyTarget) this.guidance = "Check for source updates.";

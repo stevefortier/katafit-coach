@@ -1,10 +1,17 @@
+import {
+  asNativeBinding,
+  recordEngine,
+  sameNativeBinding,
+  engineField,
+  type NativeBinding,
+} from "../sandbox/binding.js";
 import { CandidateOwnership } from "./candidate.js";
 import { fork, type ChildProcess } from "node:child_process";
 import {
   artifactRequired,
   drainNativePreflightCleanup,
-  nativePreflight,
-  nativeImageForBuild,
+  nativeBindingPreflight,
+  nativeBindingForBuild,
 } from "../sandbox/artifact.js";
 import { Store } from "../config/store.js";
 import { launcherSkillCatalog } from "../config/skills.js";
@@ -42,7 +49,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 interface Boundary {
   readiness?: (
     target: import("../release/manifest.js").Manifest,
-  ) => Promise<string>;
+  ) => Promise<string | NativeBinding>;
   housekeeping?: () => Promise<void>;
   prepare?: (
     sha: string,
@@ -53,7 +60,7 @@ interface Boundary {
     root: string,
     home: string,
     signal: AbortSignal,
-  ) => Promise<string | undefined>;
+  ) => Promise<string | NativeBinding | undefined>;
   recoveryTimer?: typeof setTimeout;
   request?: typeof fetch;
 }
@@ -72,6 +79,7 @@ export async function supervise(
       (await managedFile(join(home, "active.json"), 1024)).toString("utf8"),
     );
     if (!validSha(active?.revision)) throw new Error("INVALID_ACTIVE");
+    recordEngine(active as { engine?: unknown });
   } catch (e: any) {
     if (e.code !== "ENOENT") throw e;
   }
@@ -124,7 +132,7 @@ export async function supervise(
     path: string,
     revision: string | null,
     wantedPort: number,
-    preparedImage?: string,
+    preparedImage?: string | NativeBinding,
   ) {
     if (revision && (await metadata(path)).revision !== revision)
       throw new Error("INVALID_ACTIVE");
@@ -143,9 +151,16 @@ export async function supervise(
     if (revision) {
       const image = await (
         boundary.preflight ??
-        ((r, h, signal) => nativePreflight(r, h, { signal }))
+        ((r, h, signal) => nativeBindingPreflight(r, h, { signal }))
       )(path, home, controller.signal);
-      if (preparedImage !== undefined && image !== preparedImage)
+      if (
+        preparedImage !== undefined &&
+        (image === undefined ||
+          !sameNativeBinding(
+            asNativeBinding(image),
+            asNativeBinding(preparedImage),
+          ))
+      )
         throw new Error(artifactRequired);
     }
     const nonce = randomUUID();
@@ -401,7 +416,7 @@ export async function supervise(
     token: string;
     sha: string;
     candidate: string;
-    image?: string;
+    image?: string | NativeBinding;
   };
   type CandidateCleanup = {
     sha: string;
@@ -486,7 +501,7 @@ export async function supervise(
         await updates.preparationStage("artifact");
         const image = await (
           boundary.preflight ??
-          ((r, h, signal) => nativePreflight(r, h, { signal }))
+          ((r, h, signal) => nativeBindingPreflight(r, h, { signal }))
         )(candidate, home, controller.signal);
         await rm(probeHome, { recursive: true, force: true });
         await mkdir(probeHome, { mode: 0o700 });
@@ -568,7 +583,15 @@ export async function supervise(
           try {
             await writeFile(
               pointer,
-              JSON.stringify({ revision: sha, ...(image ? { image } : {}) }),
+              JSON.stringify({
+                revision: sha,
+                ...(image
+                  ? {
+                      image: asNativeBinding(image).image,
+                      ...engineField(asNativeBinding(image).engine),
+                    }
+                  : {}),
+              }),
               { mode: 0o600, flag: "wx" },
             );
             await candidateOwnership.retain(sha);
@@ -626,7 +649,7 @@ export async function supervise(
     (sha, token) => prepareReservation(sha, token),
     (sha, token) => releaseReservation(sha, token),
     (attempt) => preparationJournal.write(attempt),
-    boundary.readiness ?? ((target) => nativeImageForBuild(home, target)),
+    boundary.readiness ?? ((target) => nativeBindingForBuild(home, target)),
   );
   const journal = new UpdateJournal(home);
   const preparationJournal = new PreparationJournal(home);
