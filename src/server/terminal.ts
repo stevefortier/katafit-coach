@@ -1,9 +1,10 @@
+import type { NativeBinding } from "../sandbox/binding.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { Server } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Store } from "../config/store.js";
 import { NativeRuntime } from "../sandbox/runtime.js";
-import { nativeImage } from "../sandbox/artifact.js";
+import { nativeBinding } from "../sandbox/artifact.js";
 import { openNativeGateway, type NativeGateway } from "../sandbox/gateway.js";
 import { AttachmentFailure } from "../sandbox/attachments.js";
 import type { MemoryNotice } from "../memory/native.js";
@@ -272,7 +273,7 @@ export class NativeTerminal {
           void this.stop().catch(() => {});
         },
       });
-      let image: string;
+      let image: string | NativeBinding;
       try {
         image = await this.resolveImage();
       } catch (error) {
@@ -377,11 +378,11 @@ export class NativeTerminal {
   protected openGateway(...args: Parameters<typeof openNativeGateway>) {
     return openNativeGateway(...args);
   }
-  protected createRuntime(image: string) {
+  protected createRuntime(image: string | NativeBinding) {
     return new NativeRuntime(image);
   }
-  protected resolveImage() {
-    return nativeImage(this.store.dir);
+  protected resolveImage(): Promise<string | NativeBinding> {
+    return nativeBinding(this.store.dir);
   }
   /**
    * Fenced attachment bytes for the exact current native session. Unknown,

@@ -1,3 +1,14 @@
+import {
+  asNativeBinding,
+  recordEngine,
+  engineField,
+  nativeEngineHost,
+  nativeEngineSocket,
+  sameNativeBinding,
+  legacyImage,
+  type NativeBinding,
+  type NativeEngine,
+} from "./binding.js";
 import { execFile, spawn } from "node:child_process";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -48,8 +59,10 @@ function validateOwnership(value: unknown): NativeProbeOwnership {
       : "";
   const labels = ownership?.labels;
   if (
-    keys !==
-      "containerId,fingerprint,image,labels,name,protocol,revision,token" ||
+    ![
+      "containerId,fingerprint,image,labels,name,protocol,revision,token",
+      "containerId,engine,fingerprint,image,labels,name,protocol,revision,token",
+    ].includes(keys) ||
     ownership.protocol !== 1 ||
     !uuid.test(ownership.token) ||
     ownership.name !== "katafit-pi-probe-" + ownership.token ||
@@ -69,6 +82,7 @@ function validateOwnership(value: unknown): NativeProbeOwnership {
     labels["fit.kata.native.fingerprint"] !== ownership.fingerprint
   )
     throw new Error("NATIVE_CLEANUP_RECORD_INVALID");
+  recordEngine(ownership);
   return structuredClone(ownership);
 }
 
@@ -102,10 +116,22 @@ async function removeOwnership(home: string, expected: NativeProbeOwnership) {
   }
 }
 
-async function drainDurableCleanup(home: string, engine?: NativeProbeEngine) {
+async function drainDurableCleanup(
+  home: string,
+  engine?: NativeProbeEngine,
+  run: Parameters<typeof dockerProbeEngine>[0] = exec,
+) {
   const ownership = await readOwnership(home);
   if (!ownership) return;
-  await cleanupNativeProbe(ownership, engine);
+  await cleanupNativeProbe(
+    ownership,
+    engine ??
+      dockerProbeEngine(
+        run,
+        nativeEngineSocket(recordEngine(ownership)),
+        recordEngine(ownership),
+      ),
+  );
   await removeOwnership(home, ownership);
 }
 
@@ -272,11 +298,17 @@ export async function provisionArtifact(
       args: string[],
       options: any,
     ) => Promise<{ stdout: string }>;
-    probe?: typeof nativePreflight;
+    probe?: (
+      root: string,
+      home: string,
+    ) => Promise<string | NativeBinding | undefined>;
     signal?: AbortSignal;
     releaseIdentity?: NativeReleaseIdentity;
+    engine?: NativeEngine;
   } = {},
 ): Promise<void> {
+  const wanted = { image, engine: recordEngine(boundary) };
+  const host = nativeEngineHost(wanted.engine);
   boundary.signal?.throwIfAborted();
   await directory(home, true);
   return withCleanupLock(
@@ -292,7 +324,7 @@ export async function provisionArtifact(
       const inspect = boundary.inspect ?? exec;
       const result = await inspect(
         "docker",
-        ["--host=unix:///var/run/docker.sock", "image", "inspect", image],
+        [host, "image", "inspect", image],
         { timeout: 10000, maxBuffer: 65536 },
       );
       const [found] = JSON.parse(result.stdout);
@@ -301,7 +333,10 @@ export async function provisionArtifact(
         !isDeepStrictEqual(found.Descriptor, boundary.releaseIdentity.manifest)
       )
         throw new Error(artifactRequired);
-      const folder = join(home, "native-artifacts");
+      const base = join(home, "native-artifacts");
+      await directory(base, true);
+      const folder =
+        wanted.engine === "legacy" ? base : join(base, wanted.engine);
       await directory(folder, true);
       const path = join(folder, build.revision + ".json");
       let created = false;
@@ -313,6 +348,7 @@ export async function provisionArtifact(
               revision: build.revision,
               fingerprint: build.fingerprint,
               image,
+              ...engineField(wanted.engine),
               platform: `${found.Os}/${found.Architecture}`,
               ...(boundary.releaseIdentity
                 ? { releaseIdentity: boundary.releaseIdentity }
@@ -324,9 +360,11 @@ export async function provisionArtifact(
         } catch (error: any) {
           if (error.code !== "EEXIST") throw error;
         }
-        if ((await nativeImage(home, root, inspect)) !== image)
+        if (
+          !sameNativeBinding(await nativeBinding(home, root, inspect), wanted)
+        )
           throw new Error(artifactRequired);
-        await (boundary.probe ?? nativePreflight)(root, home);
+        await (boundary.probe ?? nativeBindingPreflight)(root, home);
       } catch (error) {
         if (created) await rm(path);
         throw error;
@@ -376,8 +414,10 @@ async function nativeAuthorityFile(
     await nativeAuthorityDirectory(parent, parent === root);
     if (dirname(parent) === parent) break;
   }
-  if (dirname(path) !== root)
-    await nativeAuthorityDirectory(dirname(path), true);
+  for (let parent = dirname(path); parent !== root; parent = dirname(parent)) {
+    if (!parent.startsWith(root + "/")) throw Error("UNSAFE_NATIVE_AUTHORITY");
+    await nativeAuthorityDirectory(parent, true);
+  }
   const handle = await open(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -417,38 +457,82 @@ async function nativeReceipt(
   home: string,
   build: { revision: string; fingerprint: string },
 ): Promise<any> {
-  const folder = join(home, "native-artifacts");
-  const read = async (name: string) =>
-    JSON.parse(
+  const folders = [
+    join(home, "native-artifacts"),
+    join(home, "native-artifacts", "bounded-v1"),
+  ];
+  const read = async (folder: string, name: string) => {
+    const receipt = JSON.parse(
       (await nativeAuthorityFile(home, join(folder, name))).toString(),
     );
-  try {
-    const exact = await read(build.revision + ".json");
-    if (exact.revision !== build.revision) throw new Error();
-    return exact;
-  } catch (error: any) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  // Finite metadata scan. Never enumerate an unbounded artifact history.
-  const names: string[] = [];
-  const entries = await opendir(folder);
-  for await (const entry of entries) {
-    if (names.length >= 1024) throw new Error("NATIVE_RECEIPT_LIMIT");
-    names.push(entry.name);
-  }
-  for (const name of names.sort()) {
-    if (!/^[a-f0-9]{40}\.json$/.test(name)) continue;
-    const candidate = await read(name);
     if (
-      candidate.revision + ".json" === name &&
-      candidate.fingerprint === build.fingerprint
+      !receipt ||
+      typeof receipt !== "object" ||
+      Array.isArray(receipt) ||
+      Object.keys(receipt).some(
+        (k) =>
+          ![
+            "revision",
+            "fingerprint",
+            "image",
+            "platform",
+            "releaseIdentity",
+            "engine",
+          ].includes(k),
+      ) ||
+      typeof receipt.revision !== "string" ||
+      !/^[a-f0-9]{40}$/.test(receipt.revision) ||
+      typeof receipt.fingerprint !== "string" ||
+      !/^[a-f0-9]{64}$/.test(receipt.fingerprint) ||
+      typeof receipt.image !== "string" ||
+      !/^sha256:[a-f0-9]{64}$/.test(receipt.image) ||
+      typeof receipt.platform !== "string" ||
+      !/^linux\/(amd64|arm64)$/.test(receipt.platform) ||
+      receipt.revision + ".json" !== name ||
+      recordEngine(receipt) !==
+        (folder === folders[0] ? "legacy" : "bounded-v1")
     )
-      return candidate;
+      throw Error("NATIVE_BINDING_INVALID");
+    return receipt;
+  };
+  const exact = [];
+  for (const folder of folders) {
+    try {
+      exact.push(await read(folder, build.revision + ".json"));
+    } catch (error: any) {
+      if (error.code !== "ENOENT") throw error;
+    }
   }
+  if (exact.length > 1) throw Error("NATIVE_ENGINE_CONFLICT");
+  if (exact.length) return exact[0];
+  const matches = [];
+  let count = 0;
+  for (const folder of folders) {
+    let entries;
+    try {
+      entries = await opendir(folder);
+    } catch (error: any) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    const names = [];
+    for await (const entry of entries) {
+      if (++count > 1024) throw Error("NATIVE_RECEIPT_LIMIT");
+      names.push(entry.name);
+    }
+    for (const name of names.sort()) {
+      if (!/^[a-f0-9]{40}\.json$/.test(name)) continue;
+      const candidate = await read(folder, name);
+      if (candidate.fingerprint === build.fingerprint) matches.push(candidate);
+    }
+  }
+  if (new Set(matches.map(recordEngine)).size > 1)
+    throw Error("NATIVE_ENGINE_CONFLICT");
+  if (matches.length) return matches[0];
   throw artifactFailure("MISSING_MATCHING_ARTIFACT");
 }
 /** Protected host provisioning receipt, never a caller-selected tag or pull. */
-export async function nativeImage(
+export async function nativeBinding(
   home: string,
   root = fileURLToPath(new URL("../../", import.meta.url)),
   inspect: (
@@ -456,22 +540,24 @@ export async function nativeImage(
     args: string[],
     options: any,
   ) => Promise<{ stdout: string }> = exec,
-): Promise<string> {
+  legacyOnly = false,
+): Promise<NativeBinding> {
   try {
     const build = JSON.parse(
       (await managedFile(join(root, "dist/build.json"), 2048)).toString(),
     );
-    return await nativeImageForBuild(home, build, inspect);
+    return await nativeBindingForBuild(home, build, inspect, legacyOnly);
   } catch (error) {
     throw artifactFailure(artifactReason(error) ?? "INVALID_BINDING");
   }
 }
 /** Bounded read-only receipt/image observation; no staging, probe or receipt write. */
-export async function nativeImageForBuild(
+export async function nativeBindingForBuild(
   home: string,
   build: { protocol: number; revision: string; fingerprint: string },
-  inspect: Parameters<typeof nativeImage>[2] = exec,
-): Promise<string> {
+  inspect: Parameters<typeof nativeBinding>[2] = exec,
+  legacyOnly = false,
+): Promise<NativeBinding> {
   try {
     if (
       build.protocol !== 2 ||
@@ -498,13 +584,23 @@ export async function nativeImageForBuild(
       !/^sha256:[a-f0-9]{64}$/.test(binding.image)
     )
       throw new Error();
+    const selected = asNativeBinding({
+      image: binding.image,
+      engine: recordEngine(binding),
+    });
+    if (legacyOnly) legacyImage(selected);
+    const host = nativeEngineHost(selected.engine);
     if (binding.releaseIdentity !== undefined)
       validateNativeReleaseIdentity(binding.releaseIdentity, binding.image);
     try {
       const active = JSON.parse(
         (await nativeAuthorityFile(home, join(home, "active.json"))).toString(),
       );
-      if (active.revision === build.revision && active.image !== binding.image)
+      if (
+        active.revision === build.revision &&
+        (active.image !== binding.image ||
+          recordEngine(active) !== selected.engine)
+      )
         throw new Error();
     } catch (error: any) {
       if (error.code !== "ENOENT") throw error;
@@ -513,12 +609,7 @@ export async function nativeImageForBuild(
     try {
       result = await inspect(
         "docker",
-        [
-          "--host=unix:///var/run/docker.sock",
-          "image",
-          "inspect",
-          binding.image,
-        ],
+        [host, "image", "inspect", binding.image],
         { timeout: 10000, maxBuffer: 65536 },
       );
     } catch (error: any) {
@@ -553,16 +644,43 @@ export async function nativeImageForBuild(
         build.fingerprint
     )
       throw new Error();
-    return binding.image;
+    return selected;
   } catch (error) {
     throw artifactFailure(artifactReason(error) ?? "INVALID_BINDING");
   }
 }
+/** Frozen image-only interfaces fail closed for bounded bindings. */
+export async function nativeImage(
+  home: string,
+  root?: string,
+  inspect: Parameters<typeof nativeBinding>[2] = exec,
+): Promise<string> {
+  return legacyImage(await nativeBinding(home, root, inspect, true));
+}
+export async function nativeImageForBuild(
+  home: string,
+  build: Parameters<typeof nativeBindingForBuild>[1],
+  inspect: Parameters<typeof nativeBinding>[2] = exec,
+): Promise<string> {
+  return legacyImage(await nativeBindingForBuild(home, build, inspect, true));
+}
 export async function nativePreflight(
   root: string,
   home: string,
+  boundary: Parameters<typeof nativeBindingPreflight>[2] = {},
+): Promise<string | undefined> {
+  const binding = await nativeBindingPreflight(root, home, {
+    ...boundary,
+    legacyOnly: true,
+  });
+  return binding && legacyImage(binding);
+}
+export async function nativeBindingPreflight(
+  root: string,
+  home: string,
   boundary: {
-    inspect?: Parameters<typeof nativeImage>[2];
+    legacyOnly?: boolean;
+    inspect?: Parameters<typeof nativeBinding>[2];
     commands?: Pick<
       NonNullable<ConstructorParameters<typeof NativeRuntime>[1]>,
       "exec" | "spawn"
@@ -574,19 +692,18 @@ export async function nativePreflight(
     ) => PreflightRuntime;
     engine?: NativeProbeEngine;
   } = {},
-): Promise<string | undefined> {
+): Promise<NativeBinding | undefined> {
   const { metadata } = await import("../update/managed.js");
   const key = resolve(home);
-  const engine =
-    boundary.engine ??
-    (boundary.commands?.exec
-      ? dockerProbeEngine(boundary.commands.exec, "/var/run/docker.sock")
-      : undefined);
   return withCleanupLock(
     home,
     async () => {
       try {
-        await drainDurableCleanup(home, engine);
+        await drainDurableCleanup(
+          home,
+          boundary.engine,
+          boundary.commands?.exec,
+        );
       } catch {
         throw artifactFailure("CLEANUP_PENDING");
       }
@@ -598,7 +715,24 @@ export async function nativePreflight(
         throw artifactFailure("CLEANUP_PENDING");
       }
       boundary.signal?.throwIfAborted();
-      const image = await nativeImage(home, root, boundary.inspect);
+      const binding = await nativeBinding(
+        home,
+        root,
+        boundary.inspect,
+        boundary.legacyOnly,
+      );
+      const { image } = binding;
+      if (boundary.engine && recordEngine(boundary.engine) !== binding.engine)
+        throw Error("NATIVE_ENGINE_MISMATCH");
+      const engine =
+        boundary.engine ??
+        (boundary.commands?.exec
+          ? dockerProbeEngine(
+              boundary.commands.exec,
+              nativeEngineSocket(binding.engine),
+              binding.engine,
+            )
+          : undefined);
       const { NativeRuntime } = await import("./runtime.js");
       const token = randomUUID();
       const ownership: NativeProbeOwnership = {
@@ -608,6 +742,7 @@ export async function nativePreflight(
         revision: build.revision,
         fingerprint: build.fingerprint!,
         image,
+        ...engineField(binding.engine),
         labels: {
           "fit.kata.native.probe": "1",
           "fit.kata.native.probe-owner": token,
@@ -621,7 +756,7 @@ export async function nativePreflight(
       if (durable) await atomicWrite(home, cleanupRecord, ownership);
       const runtime =
         boundary.runtime?.(image, ownership) ??
-        new NativeRuntime(image, {
+        new NativeRuntime(binding, {
           ...boundary.commands,
           ownership,
           probeEngine: engine,
@@ -677,7 +812,7 @@ export async function nativePreflight(
           )
         )
           throw new Error("NATIVE_PREFLIGHT_FAILED");
-        return image;
+        return binding;
       } catch (error) {
         if (boundary.signal?.aborted && error === boundary.signal.reason)
           throw new Error("BUILD_CANCELLED");

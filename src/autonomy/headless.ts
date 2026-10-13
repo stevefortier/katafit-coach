@@ -1,3 +1,9 @@
+import {
+  asNativeBinding,
+  engineField,
+  nativeEngineSocket,
+  type NativeBinding,
+} from "../sandbox/binding.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -109,23 +115,39 @@ export class HeadlessCycleRuntime {
   private invocation = 0;
   private readonly onDiagnostic?: (event: LogInput) => void;
   private readonly image: string;
+  readonly binding: NativeBinding;
   private readonly engine: Engine;
   private readonly cleanup?: CleanupRegistry;
   private readonly probe: NativeProbeEngine;
   constructor(options: {
-    image: string;
+    image: string | NativeBinding;
     engine?: Engine;
     cleanup?: CleanupRegistry;
     onDiagnostic?: (event: LogInput) => void;
   }) {
-    this.image = options.image;
-    this.engine = options.engine ?? {};
+    this.binding =
+      typeof options.image === "string"
+        ? { image: options.image, engine: "legacy" }
+        : asNativeBinding(options.image);
+    this.image = this.binding.image;
+    const socket = nativeEngineSocket(this.binding.engine);
+    if (
+      this.binding.engine !== "legacy" &&
+      options.engine?.socketPath !== undefined &&
+      options.engine.socketPath !== socket
+    )
+      throw Error("NATIVE_ENGINE_MISMATCH");
+    this.engine = {
+      ...options.engine,
+      socketPath: options.engine?.socketPath ?? socket,
+    };
     this.cleanup = options.cleanup;
     this.onDiagnostic = options.onDiagnostic;
     this.probe = dockerProbeEngine(
       this.engine.exec ??
         (promisify(execFile) as unknown as NonNullable<Engine["exec"]>),
-      this.engine.socketPath ?? "/var/run/docker.sock",
+      this.engine.socketPath!,
+      this.binding.engine,
     );
   }
   get active() {
@@ -211,12 +233,16 @@ export class HeadlessCycleRuntime {
       try {
         if (
           !cleanup.healthy ||
-          (cleanup.pending > 0 && (await cleanup.drain(this.probe)) > 0)
+          (cleanup.pending > 0 &&
+            (await cleanup.drain((engine) =>
+              engine === this.binding.engine ? this.probe : undefined,
+            )) > 0)
         )
           throw new Error("HEADLESS_CLEANUP_PENDING");
         ownership = await cleanup.begin({
           name,
           image: this.image,
+          ...engineField(this.binding.engine),
           labels: {
             [HEADLESS_ROLE_LABEL]: HEADLESS_ROLE,
             [HEADLESS_OWNER_LABEL]: cleanup.owner,
@@ -244,7 +270,7 @@ export class HeadlessCycleRuntime {
         run.signal?.aborted ? "HEADLESS_ABORTED" : "HEADLESS_TIMEOUT",
       );
     }
-    runtime = new NativeRuntime(this.image, {
+    runtime = new NativeRuntime(this.binding, {
       ...this.engine,
       ...(ownership
         ? { ownership, probeEngine: this.probe }
@@ -449,12 +475,13 @@ export class HeadlessCycleRuntime {
   async sweep(): Promise<number> {
     const cleanup = this.cleanup;
     if (!cleanup) throw new Error("HEADLESS_OWNER_REQUIRED");
-    await cleanup.drain(this.probe);
+    await cleanup.drain((engine) =>
+      engine === this.binding.engine ? this.probe : undefined,
+    );
     const run =
       this.engine.exec ??
       (promisify(execFile) as unknown as NonNullable<Engine["exec"]>);
-    const host =
-      "--host=unix://" + (this.engine.socketPath ?? "/var/run/docker.sock");
+    const host = "--host=unix://" + this.engine.socketPath!;
     const { stdout } = await run(
       "docker",
       [
