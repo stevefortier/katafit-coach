@@ -14,12 +14,18 @@ test("build receipt identifies clean source; dirty/unknown builds never claim ex
       env: { PATH: process.env.PATH },
     });
   try {
-    await mkdir(join(root, "dist"));
+    await mkdir(join(root, "dist/release"), { recursive: true });
     await writeFile(join(root, "source"), "one");
-    for (const name of ["package.json", "package-lock.json", "sandbox"])
+    await mkdir(join(root, "src/release"), { recursive: true });
+    for (const name of [
+      "package.json",
+      "package-lock.json",
+      "sandbox",
+      "src/release/native-subreaper.py",
+    ])
       await cp(name, join(root, name), { recursive: true });
     git("init", "-q");
-    git("add", "source", "package.json", "package-lock.json", "sandbox");
+    git("add", "source", "package.json", "package-lock.json", "sandbox", "src");
     git(
       "-c",
       "user.name=Test",

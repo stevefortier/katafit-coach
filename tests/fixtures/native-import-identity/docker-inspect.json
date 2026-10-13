@@ -1,0 +1,57 @@
+[
+    {
+        "Id": "sha256:6b4d68913401e581a18677a26989bdfdc5a189eca65e9e3603ef68ceeb0b126d",
+        "RepoTags": [],
+        "RepoDigests": [],
+        "Comment": "buildkit.dockerfile.v0",
+        "Created": "2026-10-12T22:06:16.432288253Z",
+        "Config": {
+            "User": "1000:1000",
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "NODE_VERSION=26.10.0",
+                "HOME=/home/node",
+                "TERM=xterm-256color",
+                "PI_OFFLINE=1",
+                "PI_SKIP_VERSION_CHECK=1"
+            ],
+            "Entrypoint": [
+                "node",
+                "/opt/coach/sandbox/launch.mjs"
+            ],
+            "WorkingDir": "/workspace",
+            "Labels": {
+                "fit.kata.native.fingerprint": "f0ef9fe9c511592b40e1d8b6a5c700964326573630ced0c0d51647fa9ff6bba7",
+                "fit.kata.native.revision": "adb14edd1ab1aa40f380e5df51cf20af69baac82"
+            }
+        },
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Size": 419341931,
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:34467cc93912af891dfee8a3902adf9b4f355a9bca4eaa46f658d1181a21de0d",
+                "sha256:6fea54f89d9c43f60e065ccf60dd378d7d7d4470e75120078b60928c0ff92c21",
+                "sha256:b29b9e260fac9019d1b044847ddc5ceb23d4b2c855c073667b5e133a599639c8",
+                "sha256:65aeb815991e1bbcdd3bed475de7e30f92f8e7699b73ed2ba0062fce1183193d",
+                "sha256:cc609064eb12e9c8761d1b2200149084d1ef111530c6975a1c6a23b362506808",
+                "sha256:5af90691678cc6d267d3d9ae69cb496dcf848ccac5c2e284909f433d52d44e90",
+                "sha256:edaecf8dac8b51b649047aea63e631383d5351e8b815e038892cbd530a45b862",
+                "sha256:3b0f1d2f88bbf39ae841c1c344869e2e44dff857d6628514f6361064005ce228",
+                "sha256:c787fff3d747cac06a6faf1bc2496d119c7c9120b2e4805fb95c585dae549980",
+                "sha256:a06b9fd982c893b4f0cc28b4fe3d8fdb1e95e1fb026101cb22db5b013f85fb1a",
+                "sha256:82fde23dcb2faa05b2c13b5812b60ad9eb7804f2533c0d530c8ba8f02827fc0f",
+                "sha256:0a8514ec707593f8579c5e6533c786f1a3402da1d8596486392054c8868f3833"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-10-12T22:57:09.673171742Z"
+        },
+        "Descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:6b4d68913401e581a18677a26989bdfdc5a189eca65e9e3603ef68ceeb0b126d",
+            "size": 2072
+        }
+    }
+]

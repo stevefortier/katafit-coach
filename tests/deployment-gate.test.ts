@@ -17,8 +17,14 @@ import { metadata } from "../src/update/managed.js";
 test("native build advertises a protocol real prior metadata rejects", async () => {
   const dir = await mkdtemp(join(tmpdir(), "native-gate-"));
   try {
-    await mkdir(join(dir, "dist"));
-    for (const name of ["package.json", "package-lock.json", "sandbox"])
+    await mkdir(join(dir, "dist/release"), { recursive: true });
+    await mkdir(join(dir, "src/release"), { recursive: true });
+    for (const name of [
+      "package.json",
+      "package-lock.json",
+      "sandbox",
+      "src/release/native-subreaper.py",
+    ])
       await cp(name, join(dir, name), { recursive: true });
     execFileSync(
       process.execPath,

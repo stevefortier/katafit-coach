@@ -12,8 +12,8 @@ import {
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
-import { execFile, spawnSync } from "node:child_process";
-import { promisify } from "node:util";
+import { spawnSync } from "node:child_process";
+
 import { createGunzip } from "node:zlib";
 import {
   directory,
@@ -33,7 +33,26 @@ import {
   verifyProvenanceFile,
   type Manifest,
 } from "./manifest.js";
-const exec = promisify(execFile);
+import {
+  readNativeArchive,
+  verifyNativeConfigInspection,
+  type NativeArchiveReadOptions,
+  verifyNativeArchiveInspection,
+  validateNativeReleaseIdentity,
+  type NativeReleaseIdentity,
+} from "./native-identity.js";
+import {
+  withNativeSnapshot,
+  recoverNativeSnapshots,
+} from "./native-snapshot.js";
+import {
+  nativeOwnedExec as exec,
+  nativeLockContext,
+  nativeOwnedSpawn,
+  NativeOwnershipUncertain,
+  retainNativeOwnership,
+} from "./native-ownership.js";
+import { superviseNativeWorker } from "./native-supervisor.js";
 export async function fileDigest(path: string, cap: number) {
   await directory(dirname(path));
   const handle = await open(
@@ -52,13 +71,18 @@ export async function fileDigest(path: string, cap: number) {
     }
     return { size, sha256: hash.digest("hex") };
   } finally {
-    await handle.close();
+    try {
+      await handle.close();
+    } catch (error) {
+      throw new NativeOwnershipUncertain(handle, error);
+    }
   }
 }
 export async function validateReleaseFiles(
   manifest: Manifest,
   folder: string,
-  verify = verifyProvenanceFile,
+  verify = (path: string, revision: string) =>
+    verifyProvenanceFile(path, revision, exec),
 ) {
   const m = parseManifest(manifest);
   // Verify every digest before any attestation query or side effect.
@@ -89,7 +113,11 @@ export async function unpackPackage(path: string, dest: string) {
     }
     bytes = Buffer.concat(chunks);
   } finally {
-    await handle.close();
+    try {
+      await handle.close();
+    } catch (error) {
+      throw new NativeOwnershipUncertain(handle, error);
+    }
   }
   let offset = 0;
   const seen = new Set<string>();
@@ -144,43 +172,147 @@ export interface NativeBindingSelection {
   selectedImage: string;
   publishedImage: string;
   binding: "reused" | "provisioned";
+  identity?: NativeReleaseIdentity;
+}
+type LoadedNativeImage = {
+  selectedImage: string;
+  identity?: NativeReleaseIdentity;
+};
+
+/** Keep config-ID Docker stores working unchanged. On containerd, select only
+ * the manifest derived from signed archive bytes and confirmed by image inspect
+ * on the same pinned daemon. Load output and mutable tags are not authorities. */
+export async function loadNativeReleaseImage(
+  m: Manifest,
+  archive: string,
+  run: (
+    file: string,
+    args: string[],
+    options: any,
+  ) => Promise<{ stdout: string }> = exec,
+  options: NativeArchiveReadOptions = {},
+): Promise<LoadedNativeImage> {
+  return withNativeSnapshot(archive, m, options, (snapshot, signal) =>
+    loadVerifiedNativeReleaseImage(m, snapshot, run, { ...options, signal }),
+  );
+}
+async function loadVerifiedNativeReleaseImage(
+  m: Manifest,
+  archive: string,
+  run: (
+    file: string,
+    args: string[],
+    options: any,
+  ) => Promise<{ stdout: string }>,
+  options: NativeArchiveReadOptions,
+): Promise<LoadedNativeImage> {
+  // Integrity is mandatory even when an exact classic image is already loaded.
+  const proof = await readNativeArchive(archive, m, options);
+  const inspect = async (image: string): Promise<string | undefined> => {
+    options.signal?.throwIfAborted();
+    try {
+      const result = await run(
+        "docker",
+        ["--host=unix:///var/run/docker.sock", "image", "inspect", image],
+        { timeout: 10000, maxBuffer: 65536, signal: options.signal },
+      );
+      options.signal?.throwIfAborted();
+      if (typeof result?.stdout !== "string")
+        throw Error("RELEASE_IMAGE_IDENTITY_REJECTED");
+      return result.stdout;
+    } catch (error: any) {
+      options.signal?.throwIfAborted();
+      if (
+        error?.code === 1 &&
+        error.killed === false &&
+        error.signal === null &&
+        typeof error.stderr === "string" &&
+        error.stderr.trim() ===
+          `Error response from daemon: No such image: ${image}` &&
+        typeof error.stdout === "string" &&
+        ["", "[]"].includes(error.stdout.trim())
+      )
+        return undefined;
+      throw error;
+    }
+  };
+  const reconcile = async (): Promise<LoadedNativeImage | undefined> => {
+    const classic = await inspect(m.image);
+    if (classic !== undefined)
+      return {
+        selectedImage: verifyNativeConfigInspection(proof, m.image, classic),
+      };
+    if (proof.identity) {
+      const found = await inspect(proof.identity.manifest.digest);
+      if (found !== undefined)
+        return {
+          selectedImage: verifyNativeArchiveInspection(
+            proof as import("./native-identity.js").NativeArchiveIdentity,
+            found,
+          ),
+          identity: proof.identity,
+        };
+    }
+    return undefined;
+  };
+  const selected = await reconcile();
+  if (selected) return selected;
+  options.signal?.throwIfAborted();
+  await run(
+    "docker",
+    ["--host=unix:///var/run/docker.sock", "image", "load", "--input", archive],
+    { timeout: 180000, maxBuffer: 65536, signal: options.signal },
+  );
+  const loaded = await reconcile();
+  if (!loaded) throw Error("RELEASE_IMAGE_IDENTITY_REJECTED");
+  return loaded;
 }
 /** Called only after outer manifest/artifact provenance and stage validation.
+ * A substituted runnable ID must come from loadNativeReleaseImage's verified
+ * archive/daemon relation; loadPublished is an internal trusted boundary.
  * Never shadow a valid protected fingerprint binding with a new exact receipt.
  */
 export async function ensureNativeReleaseBinding(
   home: string,
   root: string,
   publishedImage: string,
-  loadPublished: () => Promise<void>,
+  loadPublished: () => Promise<void | LoadedNativeImage>,
   checkpoint: (
     phase: string,
     selected?: NativeBindingSelection,
   ) => Promise<void> = async () => {},
   previouslyReady?: NativeBindingSelection,
+  boundary: Parameters<typeof provisionArtifact>[3] = {},
 ): Promise<NativeBindingSelection> {
   if (!/^sha256:[a-f0-9]{64}$/.test(publishedImage))
     throw Error("RELEASE_REJECTED");
   const build = await metadata(root);
   let selected: string | undefined;
   try {
-    selected = await nativeImage(home, root);
+    selected = await nativeImage(home, root, boundary.inspect);
   } catch {}
   if (selected) {
+    const priorIdentity = previouslyReady?.identity;
+    if (priorIdentity) {
+      validateNativeReleaseIdentity(priorIdentity, selected);
+      if (priorIdentity.publishedImage !== publishedImage)
+        throw Error("RELEASE_REJECTED");
+    }
+    const provisioned =
+      previouslyReady?.binding === "provisioned" &&
+      previouslyReady.selectedImage === selected &&
+      previouslyReady.publishedImage === publishedImage &&
+      (selected === publishedImage || !!priorIdentity);
     const choice: NativeBindingSelection = {
       selectedImage: selected,
       publishedImage,
-      binding:
-        previouslyReady?.binding === "provisioned" &&
-        previouslyReady.selectedImage === selected &&
-        selected === publishedImage
-          ? "provisioned"
-          : "reused",
+      binding: provisioned ? "provisioned" : "reused",
+      ...(provisioned && priorIdentity ? { identity: priorIdentity } : {}),
     };
     if (previouslyReady?.selectedImage !== selected) {
       await checkpoint("validating-reuse", choice);
-      await nativePreflight(root, home);
-      if ((await nativeImage(home, root)) !== selected)
+      await (boundary.probe ?? nativePreflight)(root, home);
+      if ((await nativeImage(home, root, boundary.inspect)) !== selected)
         throw Error("RELEASE_BINDING_CHANGED");
     }
     await checkpoint("ready", choice);
@@ -215,18 +347,84 @@ export async function ensureNativeReleaseBinding(
       throw Error("RELEASE_COMPATIBLE_BINDING_UNAVAILABLE");
   }
   await checkpoint("loading");
-  await loadPublished();
+  const loaded = await loadPublished();
+  const image = loaded?.selectedImage ?? publishedImage;
+  const identity = loaded?.identity;
+  if (identity) {
+    validateNativeReleaseIdentity(identity, image);
+    if (identity.publishedImage !== publishedImage)
+      throw Error("RELEASE_REJECTED");
+  } else if (image !== publishedImage)
+    throw Error("RELEASE_IMAGE_IDENTITY_REJECTED");
   await checkpoint("provisioning");
-  await provisionArtifact(home, root, publishedImage);
-  if ((await nativeImage(home, root)) !== publishedImage)
+  await provisionArtifact(home, root, image, {
+    ...boundary,
+    releaseIdentity: identity,
+  });
+  if ((await nativeImage(home, root, boundary.inspect)) !== image)
     throw Error("RELEASE_REJECTED");
   const choice: NativeBindingSelection = {
-    selectedImage: publishedImage,
+    selectedImage: image,
     publishedImage,
     binding: "provisioned",
+    ...(identity ? { identity } : {}),
   };
   await checkpoint("ready", choice);
   return choice;
+}
+
+/** Worker-only ownership scope, also used by local process controls. Ordinary
+ * settled outcomes close the flock; uncertain closure retains the live owner. */
+export async function withReleaseOperatorLock<T>(
+  state: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const lock = await open(
+    join(state, "operator.lock"),
+    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+    0o600,
+  );
+  const owner = {
+    fd: lock.fd,
+    uncertain: [] as unknown[],
+    pending: new Set<Promise<void>>(),
+    closed: false,
+  };
+  try {
+    const stat = await lock.stat();
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      stat.uid !== process.getuid?.() ||
+      stat.size !== 0 ||
+      (stat.mode & 0o777) !== 0o600
+    )
+      throw Error("RELEASE_REJECTED");
+    const locked = spawnSync(
+      "/usr/bin/flock",
+      ["--exclusive", "--nonblock", "3"],
+      { stdio: ["ignore", "ignore", "ignore", lock.fd], env: {} },
+    );
+    if (locked.status !== 0) throw Error("RELEASE_BUSY");
+    try {
+      return await nativeLockContext.run(owner, work);
+    } catch (error) {
+      if (error instanceof NativeOwnershipUncertain || owner.uncertain.length)
+        return await retainNativeOwnership(lock, owner, error);
+      throw error;
+    }
+  } finally {
+    // Exit handlers may register another owned command while draining.
+    while (owner.pending.size) await Promise.all(owner.pending);
+    if (owner.uncertain.length) await retainNativeOwnership(lock, owner);
+    // Async callbacks must never use this descriptor after close/reuse.
+    owner.closed = true;
+    try {
+      await lock.close();
+    } catch (error) {
+      await retainNativeOwnership(lock, error);
+    }
+  }
 }
 
 export async function provisionRelease(
@@ -235,6 +433,32 @@ export async function provisionRelease(
   home: string,
   staging: string,
   manifestBytes?: Buffer,
+  archiveOptions: NativeArchiveReadOptions = {},
+) {
+  if (!manifestBytes || manifestBytes.length > 8192)
+    throw Error("RELEASE_MANIFEST_PROVENANCE_REQUIRED");
+  return superviseNativeWorker(
+    {
+      manifest,
+      artifacts,
+      home,
+      staging,
+      manifestBytes: manifestBytes.toString("base64"),
+      archiveTimeoutMs: archiveOptions.timeoutMs ?? 60000,
+    },
+    { signal: archiveOptions.signal },
+  ) as Promise<{ root: string; phase: "ready" } & NativeBindingSelection>;
+}
+
+/** Internal worker entry. The supervisor owns deadline/cancellation; this
+ * function never releases a lock over unsettled filesystem/child work. */
+export async function provisionReleaseOwned(
+  manifest: Manifest,
+  artifacts: string,
+  home: string,
+  staging: string,
+  manifestBytes?: Buffer,
+  archiveOptions: NativeArchiveReadOptions = {},
 ) {
   if (!manifestBytes || manifestBytes.length > 8192)
     throw Error("RELEASE_MANIFEST_PROVENANCE_REQUIRED");
@@ -244,7 +468,6 @@ export async function provisionRelease(
     JSON.stringify(m)
   )
     throw Error("RELEASE_REJECTED");
-  await verifyProvenance(manifestBytes, m.revision);
   if (
     process.platform !== "linux" ||
     process.arch !== "x64" ||
@@ -261,30 +484,20 @@ export async function provisionRelease(
     if (stat.uid !== process.getuid() || stat.mode & 0o022)
       throw Error("RELEASE_SERVICE_UID_REQUIRED");
   }
-  await validateReleaseFiles(m, artifacts);
   const state = join(home, "release-delivery");
   await directory(state, true);
-  const lock = await open(
-    join(state, "operator.lock"),
-    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
-    0o600,
-  );
-  try {
-    const stat = await lock.stat();
-    if (
-      !stat.isFile() ||
-      stat.nlink !== 1 ||
-      stat.uid !== process.getuid() ||
-      stat.size !== 0 ||
-      (stat.mode & 0o777) !== 0o600
-    )
-      throw Error("RELEASE_REJECTED");
-    const locked = spawnSync(
-      "/usr/bin/flock",
-      ["--exclusive", "--nonblock", "3"],
-      { stdio: ["ignore", "ignore", "ignore", lock.fd], env: {} },
-    );
-    if (locked.status !== 0) throw Error("RELEASE_BUSY");
+  return withReleaseOperatorLock(state, async () => {
+    archiveOptions = { ...archiveOptions, snapshotParent: state };
+    archiveOptions.signal?.throwIfAborted();
+    // Explicit startup capability probe under the real flock, before any archive open.
+    await exec("/usr/bin/true", [], {
+      timeout: 5000,
+      signal: archiveOptions.signal,
+    });
+    // Manifest and artifact attestation clients share this actual lock owner.
+    await verifyProvenance(manifestBytes, m.revision, exec);
+    await recoverNativeSnapshots(state);
+    await validateReleaseFiles(m, artifacts);
     const key = m.revision + ".json";
     const root = join(staging, m.revision, "package");
     let prior: any;
@@ -310,13 +523,15 @@ export async function provisionRelease(
         ].includes(prior.phase))
     )
       throw Error("RELEASE_STATE_CONFLICT");
-    const save = async (phase: string, selection?: NativeBindingSelection) =>
-      atomicWrite(state, key, {
+    const save = async (phase: string, selection?: NativeBindingSelection) => {
+      archiveOptions.signal?.throwIfAborted();
+      return atomicWrite(state, key, {
         manifest: m,
         root,
         phase,
         ...(selection ?? {}),
       });
+    };
     const binding = async () => {
       const b = await metadata(root);
       if (
@@ -371,44 +586,30 @@ export async function provisionRelease(
       home,
       root,
       m.image,
-      async () => {
-        // Reconcile immutable image before content-addressed load after lost ACK.
-        let loaded = false;
-        try {
-          const { stdout } = await exec(
-            "docker",
-            ["--host=unix:///var/run/docker.sock", "image", "inspect", m.image],
-            { timeout: 10000, maxBuffer: 65536 },
-          );
-          const [i] = JSON.parse(stdout);
-          loaded =
-            i.Id === m.image &&
-            `${i.Os}/${i.Architecture}` === m.platform &&
-            i.Config?.Labels?.["fit.kata.native.revision"] === m.revision &&
-            i.Config?.Labels?.["fit.kata.native.fingerprint"] === m.fingerprint;
-        } catch {}
-        if (!loaded)
-          await exec(
-            "docker",
-            [
-              "--host=unix:///var/run/docker.sock",
-              "image",
-              "load",
-              "--input",
-              join(artifacts, m.artifacts[1].name),
-            ],
-            { timeout: 180000, maxBuffer: 65536 },
-          );
-      },
+      () =>
+        loadNativeReleaseImage(
+          m,
+          join(artifacts, m.artifacts[1].name),
+          exec,
+          archiveOptions,
+        ),
       save,
       prior?.phase === "ready" &&
         /^sha256:[a-f0-9]{64}$/.test(prior.selectedImage ?? "") &&
         ["reused", "provisioned"].includes(prior.binding)
         ? (prior as NativeBindingSelection)
         : undefined,
+      {
+        inspect: exec,
+        signal: archiveOptions.signal,
+        probe: (root, home) =>
+          nativePreflight(root, home, {
+            inspect: exec,
+            commands: { exec, spawn: nativeOwnedSpawn },
+            signal: archiveOptions.signal,
+          }),
+      },
     );
     return { root, ...selected, phase: "ready" as const };
-  } finally {
-    await lock.close();
-  }
+  });
 }

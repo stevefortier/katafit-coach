@@ -94,8 +94,18 @@ export async function boundedBytes(
   return Buffer.concat(chunks);
 }
 export type Verify = (bytes: Buffer, revision: string) => Promise<void>;
-export async function verifyProvenanceFile(path: string, revision: string) {
-  await promisify(execFile)(
+export type ProvenanceExec = (
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number },
+) => Promise<unknown>;
+const provenanceExec = promisify(execFile);
+export async function verifyProvenanceFile(
+  path: string,
+  revision: string,
+  run: ProvenanceExec = provenanceExec,
+) {
+  await run(
     "gh",
     [
       "attestation",
@@ -114,12 +124,16 @@ export async function verifyProvenanceFile(path: string, revision: string) {
     { timeout: 30000, maxBuffer: 65536 },
   );
 }
-export async function verifyProvenance(bytes: Buffer, revision: string) {
+export async function verifyProvenance(
+  bytes: Buffer,
+  revision: string,
+  run: ProvenanceExec = provenanceExec,
+) {
   const folder = await mkdtemp(join(tmpdir(), "coach-provenance-"));
   try {
     const path = join(folder, "subject");
     await writeFile(path, bytes, { mode: 0o600 });
-    await verifyProvenanceFile(path, revision);
+    await verifyProvenanceFile(path, revision, run);
   } finally {
     await rm(folder, { recursive: true, force: true });
   }

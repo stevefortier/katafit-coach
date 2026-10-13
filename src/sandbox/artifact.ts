@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { promisify, isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -9,7 +9,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { directory, managedFile } from "../update/managed.js";
 import { atomicWrite } from "../update/journal.js";
 import {
+  validateNativeReleaseIdentity,
+  type NativeReleaseIdentity,
+} from "../release/native-identity.js";
+import {
   cleanupNativeProbe,
+  dockerProbeEngine,
+  type NativeRuntime,
   type NativeProbeEngine,
   type NativeProbeOwnership,
 } from "./runtime.js";
@@ -268,6 +274,7 @@ export async function provisionArtifact(
     ) => Promise<{ stdout: string }>;
     probe?: typeof nativePreflight;
     signal?: AbortSignal;
+    releaseIdentity?: NativeReleaseIdentity;
   } = {},
 ): Promise<void> {
   boundary.signal?.throwIfAborted();
@@ -280,6 +287,8 @@ export async function provisionArtifact(
       const build = await metadata(root);
       if (build.protocol !== 2 || !/^sha256:[a-f0-9]{64}$/.test(image))
         throw new Error(artifactRequired);
+      if (boundary.releaseIdentity)
+        validateNativeReleaseIdentity(boundary.releaseIdentity, image);
       const inspect = boundary.inspect ?? exec;
       const result = await inspect(
         "docker",
@@ -287,6 +296,11 @@ export async function provisionArtifact(
         { timeout: 10000, maxBuffer: 65536 },
       );
       const [found] = JSON.parse(result.stdout);
+      if (
+        boundary.releaseIdentity &&
+        !isDeepStrictEqual(found.Descriptor, boundary.releaseIdentity.manifest)
+      )
+        throw new Error(artifactRequired);
       const folder = join(home, "native-artifacts");
       await directory(folder, true);
       const path = join(folder, build.revision + ".json");
@@ -300,6 +314,9 @@ export async function provisionArtifact(
               fingerprint: build.fingerprint,
               image,
               platform: `${found.Os}/${found.Architecture}`,
+              ...(boundary.releaseIdentity
+                ? { releaseIdentity: boundary.releaseIdentity }
+                : {}),
             }) + "\n",
             { mode: 0o600, flag: "wx" },
           );
@@ -481,6 +498,8 @@ export async function nativeImageForBuild(
       !/^sha256:[a-f0-9]{64}$/.test(binding.image)
     )
       throw new Error();
+    if (binding.releaseIdentity !== undefined)
+      validateNativeReleaseIdentity(binding.releaseIdentity, binding.image);
     try {
       const active = JSON.parse(
         (await nativeAuthorityFile(home, join(home, "active.json"))).toString(),
@@ -513,6 +532,11 @@ export async function nativeImageForBuild(
       );
     }
     const [image] = JSON.parse(result.stdout);
+    if (
+      binding.releaseIdentity &&
+      !isDeepStrictEqual(image.Descriptor, binding.releaseIdentity.manifest)
+    )
+      throw new Error();
     const architecture =
       process.arch === "x64"
         ? "amd64"
@@ -539,6 +563,10 @@ export async function nativePreflight(
   home: string,
   boundary: {
     inspect?: Parameters<typeof nativeImage>[2];
+    commands?: Pick<
+      NonNullable<ConstructorParameters<typeof NativeRuntime>[1]>,
+      "exec" | "spawn"
+    >;
     signal?: AbortSignal;
     runtime?: (
       image: string,
@@ -549,11 +577,16 @@ export async function nativePreflight(
 ): Promise<string | undefined> {
   const { metadata } = await import("../update/managed.js");
   const key = resolve(home);
+  const engine =
+    boundary.engine ??
+    (boundary.commands?.exec
+      ? dockerProbeEngine(boundary.commands.exec, "/var/run/docker.sock")
+      : undefined);
   return withCleanupLock(
     home,
     async () => {
       try {
-        await drainDurableCleanup(home, boundary.engine);
+        await drainDurableCleanup(home, engine);
       } catch {
         throw artifactFailure("CLEANUP_PENDING");
       }
@@ -588,7 +621,11 @@ export async function nativePreflight(
       if (durable) await atomicWrite(home, cleanupRecord, ownership);
       const runtime =
         boundary.runtime?.(image, ownership) ??
-        new NativeRuntime(image, { ownership, probeEngine: boundary.engine });
+        new NativeRuntime(image, {
+          ...boundary.commands,
+          ownership,
+          probeEngine: engine,
+        });
       let catalog = false,
         output = "";
       runtime.onOutput = (chunk) => {
