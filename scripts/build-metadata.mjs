@@ -65,3 +65,9 @@ writeFileSync(
     capabilities: ["autonomy-ledger-1", "ready-releases-v1"],
   }) + "\n",
 );
+// Fixed trusted release-only launcher; Python stdlib is an explicit Linux prerequisite.
+writeFileSync(
+  "dist/release/native-subreaper.py",
+  readFileSync("src/release/native-subreaper.py"),
+  { mode: 0o644 },
+);

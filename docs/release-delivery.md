@@ -132,11 +132,148 @@ active pair through `nativeImage`, preflights a valid compatible binding with
 `nativePreflight`, and preserves the active image/pointer/config. `binding:"reused"`
 reports the actual selected image separately from the published image; it never
 claims the published replacement was loaded/provisioned. The fresh-home path
-loads and provisions the exact published image and reports `binding:"provisioned"`.
+loads and proves the published image's runnable identity and reports `binding:"provisioned"`.
 A protected active/compatible binding that cannot be validated is blocking, not
 permission to shadow it with a new exact receipt. A successful exact-release
 journal/selected-image readback avoids replaying the readiness probe after lost
 acknowledgement. None of these operations activates application code.
+
+The signed version-1 manifest's `image` remains the published config digest.
+Classic Docker stores can resolve that exact digest directly. Docker 29's
+containerd store may instead identify the loaded image by its OCI manifest
+digest. For that case the operator reads the already provenance-verified archive,
+rehashes its compressed bytes and every blob, and verifies a single OCI manifest,
+its config descriptor, platform, and ordered uncompressed layer descriptors and
+DiffIDs. The Docker compatibility record must name the same config and layers.
+Only the observed dual Docker-save/OCI layout with uncompressed layers is accepted
+by this fallback; an unsupported layout cannot supply a substitute image ID.
+
+Archive integrity is mandatory before either classic or OCI reconciliation,
+including when an exact config ID is already loaded. A classic Docker-save
+layout is a positive verified result: a single `manifest.json` record, the
+signed config bytes and their ordered uncompressed layer DiffIDs must agree,
+and both OCI markers must be absent. Missing proof, unsupported layout, read
+failure, truncation or signed size/hash mismatch stops the operation before
+any daemon call. A file that changed after earlier release validation gets
+the same full size/hash recheck; parser exceptions never mean “legacy.”
+
+Only a failed inspect with the exact requested full digest in Docker's
+`No such image` error, exit code 1, `killed: false`, no signal, and empty/`[]`
+stdout permits load. Contradictory descriptors/DiffIDs, malformed responses,
+transport errors and timeouts stop without loading, including on retry after
+a lost load acknowledgement. Successful classic and OCI observations must
+agree with the verified archive's platform and ordered layers. The classic
+response has no descriptor; the OCI response has the complete proven descriptor.
+OS/architecture must be literal strings. Variant and OS version allow only
+absence or the empty string; config OS features allow absence or an empty array.
+False, zero, null and array lookalikes cannot stand in for platform strings.
+
+Provisioning runs in a local worker that acquires the existing operator flock
+before opening release archives. The supervisor allows ten minutes of work and
+five seconds of cancellation drain. If settlement remains unknown, the parent
+returns `RELEASE_NATIVE_OWNERSHIP_RETAINED` with `cleanup: "unconfirmed"` and may
+exit; the detached worker keeps the actual lock and its owned resources alive.
+The supervisor never claims that a timeout closed a descriptor. Parent IPC loss
+also requests cancellation. An unexpected worker exit reports
+`RELEASE_WORKER_EXIT_UNCONFIRMED`; it is not a successful cleanup receipt.
+
+The native archive is streamed in 64 KiB chunks into a new private directory
+under protected release state. Signed compressed size is a hard write cap and
+the complete compressed hash must match. The writer closes before the copy is
+made read-only and receives the full identity proof. Docker's ordinary `--input`
+argument names this same protected copy, never the original download pathname.
+Replacement, in-place mutation or extra content at the original pathname cannot
+change the import input. Snapshot preparation/verification has a 60-second work
+deadline, configurable from 1 to 180,000 milliseconds. Uninterruptible filesystem
+work remains in the worker after cancellation; the parent bound is separate.
+
+Each provisioning client (including manifest and artifact attestation, npm,
+NativeRuntime version/create/inspect, probe cleanup and the streaming relay) runs through a trusted Node wrapper and a Linux child
+subreaper. Both inherit explicit duplicates of the actual operator flock. The
+client inherits only stdin/stdout/stderr, never the lock or private control and
+receipt channels. The subreaper uses `waitpid(-1)` until `ECHILD`, including
+adopted descendants that detach and close stdio. Direct client exit, process
+sets/groups and `/proc` scans are not settlement evidence. Streaming relay
+settlement is tracked in the release lock scope even when runtime.stop returns.
+The scope drains commands added by exit handlers and rejects late launches from
+retired async contexts before a closed descriptor can be reused.
+Normal nonrelease runtime behavior and the pinned Docker socket remain unchanged.
+
+The worker verifies original manifest bytes inside the operator lock, before
+artifact validation or staging. `validateReleaseFiles` defaults to the owned
+attestation runner in that scope. Both provenance functions retain ordinary
+execFile defaults for other callers. The `gh attestation verify` arguments still
+pin the repository, release workflow, `refs/heads/main`, source revision and
+non-self-hosted runners; timeout remains 30 seconds and maxBuffer 65,536 bytes.
+Only structural manifest/platform checks and protected lock-directory preparation
+precede manifest attestation; no archive validation, extraction or install does.
+
+Captured command output has a combined 65,536-byte retained limit and one fixed
+131,072-byte backing allocation split between stdout/stderr. Excess data is
+drained and discarded while cancellation requests the direct client's exit.
+A valid private settlement receipt plus clean helper exit reports
+`RELEASE_CHILD_OUTPUT_LIMIT`, never success with truncated output, and releases
+ownership after descendants are reaped. Malformed/missing settlement or helper
+failure still retains uncertainty. Capture counters describe stored client
+bytes, not total process RSS or a daemon-side transaction result.
+
+The packaged `dist/release/native-subreaper.py` requires Linux and the root-owned,
+non-writable-by-group/others `/usr/bin/python3`, invoked with `-I -S`. The helper
+must be a regular package file owned by root or the service UID, without group or
+other write access. No interpreter or helper path comes from a release manifest,
+PATH search or environment override. Before archive opens, the worker performs a
+local capability launch under its flock. Every launch also probes and reads back
+`PR_SET_CHILD_SUBREAPER` before accepting a command. Missing prerequisites fail
+closed; there is no direct-child fallback. Build copies the helper into dist;
+no installation or new dependency is performed by provisioning.
+
+Private pipe EOF cancels the launcher. Cancellation signals only its exact,
+unreaped direct child; descendants that do not settle keep a live lock owner.
+A worker crash leaves both launchers alive. A Node wrapper crash leaves the
+subreaper reaping. A subreaper crash without a positive receipt leaves the Node
+wrapper live and uncertain. Unexpected wrapper exit also marks the worker lock
+scope uncertain even if another layer catches its error. The bounded supervisor
+reports uncertainty and may exit; it does not force-kill owners or claim cleanup.
+A failed close is not retried. Settled work removes its snapshot; later operators
+discard validated private leftovers only after acquiring the same flock.
+Leftovers are never signed provenance. Durable probe cleanup receipts retain
+all their existing exact ownership checks and ambiguous-removal behavior.
+
+These guarantees cover the tested single-owner failures under ordinary OS
+scheduling. A live advisory lock cannot survive forcibly destroying every trusted
+owner while a client remains. A failed final lock close also cannot prove the
+kernel retained that descriptor. The protocol assumes a trusted service UID,
+protected package/state ancestors and a functioning kernel; it is not a same-UID
+hostile-process boundary. Local client/descendant reaping does **not** establish
+Docker daemon transaction completion after a lost connection. Reconciliation
+still requires exact immutable observations with the prior no-replay fences.
+Parent review and dedicated daemon qualification remain necessary. These bounds
+do not replace storage isolation or authorize deleting a retained operator lock.
+
+The trusted daemon seam remains `docker --host=unix:///var/run/docker.sock image
+inspect <full-digest>`. Its `Id` and complete `Descriptor` must match the verified
+archive manifest, and platform, RootFS DiffIDs and release labels must agree.
+No ID is taken from load output, tags, label search, registry metadata or a guessed
+containerd socket. Docker's `Descriptor` field is documented as experimental;
+the fallback requires the exact supported response shape and fails closed when
+it is absent or differs. See the [Docker 29.1.3 response type](https://github.com/moby/moby/blob/docker-v29.1.3/api/types/image/image_inspect.go)
+and [containerd inspect implementation](https://github.com/moby/moby/blob/docker-v29.1.3/daemon/containerd/image_inspect.go).
+
+`selectedImage` and the protected native receipt's `image` contain the runnable
+ID; `publishedImage` remains the signed config ID. New OCI bindings also retain
+`identity` in the release journal and `releaseIdentity` in the native receipt:
+the archive hash and exact manifest/config descriptors. This optional evidence
+does not change the service-owned receipt authority or invalidate legacy receipts.
+Receipt reads check its structure and the daemon descriptor. A ready journal
+retains the relation on retry; a loaded manifest without a receipt can be
+reconciled by exact digest without repeating load. Same-fingerprint reuse still
+prefers the existing protected image and never invents a relation to a different
+published replacement.
+
+This source repair does not qualify a daemon or storage deployment. Saved Docker
+29/containerd receipts and local archive verification are distinct from mocked
+unit controls and a new live import/probe. Dedicated-store execution, controller
+integration and removal of `STORAGE_ISOLATION_REQUIRED` require separate work.
 
 The distributable CLI supplies actual idempotent provisioning, **not a Warden
 scheduler installation**. Parent owns durable timer deployment/credentials,
