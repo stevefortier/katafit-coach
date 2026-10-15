@@ -158,7 +158,7 @@ test("R4: activation failure after a candidate-created unknown refuses the pre-l
   }
 });
 
-test("R4: a ledger-capable previous application is admitted and reports the obligation unsafe", async () => {
+test("R4: a ledger-capable previous application is admitted and reports the obligation, pausing new autonomous action", async () => {
   const f = await fixture(true);
   let owner: Awaited<ReturnType<typeof supervise>> | undefined;
   try {
@@ -172,7 +172,11 @@ test("R4: a ledger-capable previous application is admitted and reports the obli
       headers: { Authorization: "Bearer " + f.store.secrets.admin },
     });
     assert.equal(status.status, 200);
-    assert.equal((await status.json()).safeToReplace, false);
+    const body = await status.json();
+    assert.equal(body.autonomyUnresolvedWrites, 1, "retained, never cleared");
+    assert.equal(body.autonomySafeToAct, false);
+    // Idle durable history does not itself block a later replacement.
+    assert.equal(body.safeToReplace, true);
   } finally {
     await owner?.close();
     await rm(f.home, { recursive: true, force: true });

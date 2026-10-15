@@ -162,7 +162,7 @@ for (const v of VARIANTS) {
       assert.equal(s.participate, true);
       assert.equal(s.local.unresolvedWrites, 1);
       assert.equal(s.local.unresolved[0].reason, v.reason);
-      assert.equal(s.local.safeToReplace, false);
+      assert.equal(s.local.safeToAct, false);
       assert.equal(env.fake.state.work.get(second).status, "queued");
       if (v.completion !== "lost_ack") return;
       // Exact settlement (the committed receipt becomes readable) is the only

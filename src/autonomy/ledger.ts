@@ -306,6 +306,29 @@ export class WriteLedger {
     });
   }
 
+  /**
+   * Read the stored ledger back before a process replacement relies on it:
+   * every retained entry must still be on disk with its exact identity and
+   * digest. A mismatch or unreadable file fails closed (unhealthy).
+   */
+  confirmDurable(): Promise<boolean> {
+    return this.serialize(async () => {
+      if (!this.healthy) return false;
+      try {
+        const stored = parseLedger(
+          await managedFile(join(this.folder, FILE), LIMIT_BYTES),
+        );
+        const identity = (e: LedgerEntry) => `${e.id}:${key(e)}`;
+        const held = this.entries.map(identity).sort().join(",");
+        if (stored.map(identity).sort().join(",") === held) return true;
+      } catch (error: any) {
+        if (error?.code === "ENOENT" && !this.entries.length) return true;
+      }
+      this.healthy = false;
+      return false;
+    });
+  }
+
   /** Exact committed result or proven nonpublication: forget it. */
   resolve(id: string): Promise<void> {
     return this.serialize(async () => {

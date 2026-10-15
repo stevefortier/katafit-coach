@@ -258,7 +258,7 @@ test("F3: a pause interrupts a held effectful write; its outcome stays unknown i
     await until(() => proxy.state.entered.length === 1, "action write held");
     const s = await pauseDrains(env);
     assert.equal(s.local.unresolvedWrites, 1, "never assumed unsent");
-    assert.equal(s.local.safeToReplace, false);
+    assert.equal(s.local.safeToAct, false);
     assert.deepEqual(
       s.local.unresolved.map((u: any) => [u.op, u.work_id, u.slot]),
       [["act", id, "r1"]],

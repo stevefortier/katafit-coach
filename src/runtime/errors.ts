@@ -6,6 +6,8 @@ export const hints = {
     "Confirm to pause Coach, apply this operation and restart it only if it was running. Native sessions close; actions and chat are never replayed.",
   AUTONOMY_WRITE_UNRESOLVED:
     "An autonomy write's outcome is still unproven. Nothing was changed. Keep this connection and account until Coach proves the write from Kata.fit, then retry.",
+  AUTONOMY_REPLACEMENT_UNCONFIRMED:
+    "Background autonomy could not confirm its write journal on disk or the cleanup of its own containers. Nothing was installed. Check protected-home storage and Docker access, then check autonomy status before retrying. Unknown earlier writes are kept and never replayed.",
   WORKER_STOP_UNCONFIRMED:
     "Coach stopped locally but backend stop or publication safety is unconfirmed. Nothing was applied. Check backend connectivity and canonical receipts before restarting.",
   DISCOVERY_REJECTED:

@@ -311,6 +311,23 @@ lifecycle signaling; until then, native session closure is required.
 historical `lastError`. An old delivery error is not itself live uncertainty;
 retained unresolved task/request identities are.
 
+Background autonomy separates replacement from new action. A durably recorded
+autonomy write whose outcome is unknown (for example a lost completion answer
+whose exact receipt still reads `pending`) is recoverable history: while the
+host is idle it does not block an upgrade (`safeToReplace` stays true;
+`autonomySafeToAct`/`local.safeToAct` is false). Admission and Stop never wait
+for that receipt. The record stays under `<home>/autonomy/` (outside the
+rollback snapshot) with its original identity and digest; the stable owner
+still refuses to launch a pre-ledger application over it. The next process
+reloads it, pauses new autonomous claims and effects, and proves it
+read-only in the background—it is never replayed. An active cycle or
+dispatched write still drains or rejects as `UPDATE_BUSY`; a journal that
+cannot be read back exactly or unconfirmed owned container cleanup rejects
+as `AUTONOMY_REPLACEMENT_UNCONFIRMED` (`local.replacementBlocker` names
+which). `WORKER_STOP_UNCONFIRMED` is reserved for worker presence,
+publication safety and native teardown. Configuration changes that rebind
+origin/account still wait for exact proof (`AUTONOMY_WRITE_UNRESOLVED`).
+
 For an intentionally stopped worker on a build supporting this endpoint, an
 authenticated, same-origin `POST /api/worker/reconcile` with `{}` performs only
 bounded backend receipt reads against the **same Worker instance**. It never

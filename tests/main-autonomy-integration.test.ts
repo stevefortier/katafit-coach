@@ -19,7 +19,7 @@ function deferred() {
 }
 
 test(
-  "manual queue rechecks configuration after asynchronous autonomy proof",
+  "manual queue rechecks configuration after asynchronous autonomy replacement check",
   { timeout: 15000 },
   async (t) => {
     const entered = deferred(),
@@ -29,16 +29,16 @@ test(
       applications++;
     });
     const env = await autonomyAdmin({ updates });
-    const reconcile = AutonomyHost.prototype.reconcile;
+    const prepare = AutonomyHost.prototype.prepareReplacement;
     let applying: ReturnType<typeof env.call> | undefined;
     try {
       t.mock.method(
         AutonomyHost.prototype,
-        "reconcile",
+        "prepareReplacement",
         async function (this: AutonomyHost) {
           entered.resolve();
           await release.promise;
-          return reconcile.call(this);
+          return prepare.call(this);
         },
       );
       applying = env.call("POST", "/api/update/apply", {
@@ -49,7 +49,7 @@ test(
       assert.equal(
         earlyResponse,
         undefined,
-        `update returned before autonomy proof: ${JSON.stringify(earlyResponse)}`,
+        `update returned before autonomy check: ${JSON.stringify(earlyResponse)}`,
       );
       const config = env.store.publicConfig();
       const changed = await env.call("POST", "/api/config", {
@@ -63,7 +63,7 @@ test(
       assert.equal(
         result.status,
         409,
-        "a changed configuration must not queue after proof await",
+        "a changed configuration must not queue after the check's await",
       );
       assert.equal(result.body.error, "OPERATION_IN_PROGRESS");
       assert.equal(applications, 0);
@@ -77,7 +77,7 @@ test(
 );
 
 test(
-  "manual apply refuses active autonomy and unknown action before Stop or activation",
+  "manual apply refuses active autonomy before Stop, then accepts with the abandoned action retained as unknown history",
   { timeout: 15000 },
   async () => {
     let applications = 0,
@@ -137,18 +137,29 @@ test(
         () => env.fake.state.work.get(id).actions.length === 1,
         "action committed after abort",
       );
-      const unknown = await env.call("POST", "/api/update/apply", {
+      // The receipt is unreadable; the idle host's durable unknown action
+      // neither blocks nor delays the upgrade, and is not replayed.
+      const accepted = await env.call("POST", "/api/update/apply", {
         confirm: true,
         sha: updates.latest,
       });
-      assert.equal(unknown.status, 409);
-      assert.equal(unknown.body.error, "WORKER_STOP_UNCONFIRMED");
-      assert.equal((await env.status()).local.unknownOutcome, true);
-      assert.equal(stops, 0);
-      assert.equal(applications, 0);
+      assert.equal(accepted.status, 202, JSON.stringify(accepted.body));
+      const queue = await until(async () => {
+        const q = (await env.call("GET", "/api/update")).body.manualQueue;
+        return ["accepted", "failed"].includes(q?.phase) && q;
+      }, "manual queue settles");
+      assert.equal(queue.phase, "accepted", JSON.stringify(queue));
+      assert.equal(applications, 1);
+      assert.ok(stops >= 1, "native teardown after admission");
+      const local = (await env.status()).local;
+      assert.equal(local.unknownOutcome, true, "retained, not settled");
+      assert.equal(local.safeToAct, false);
       assert.equal(
-        (await env.call("GET", "/api/update")).body.manualQueue,
-        undefined,
+        env.fake.calls.filter(
+          (c) => c.method === "PUT" && c.path.includes("/actions/"),
+        ).length,
+        1,
+        "the uncertain action was never replayed",
       );
     } finally {
       proxy.release();
