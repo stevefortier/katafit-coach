@@ -470,14 +470,14 @@ test("duplicate authenticated HTTP confirmation cannot release the first owner r
       join(active, "dist/autonomy/host.js"),
       `
       const fixtureFS = await import('node:fs');
-      const fixtureReconcile = AutonomyHost.prototype.reconcile;
-      AutonomyHost.prototype.reconcile = async function(){
+      const fixturePrepareReplacement = AutonomyHost.prototype.prepareReplacement;
+      AutonomyHost.prototype.prepareReplacement = async function(){
         const p = ${JSON.stringify(join(home, "update-preparation.json"))};
         if(fixtureFS.existsSync(p) && JSON.parse(fixtureFS.readFileSync(p)).state === 'ready') {
           fixtureFS.writeFileSync(${JSON.stringify(held)}, 'held');
           while(!fixtureFS.existsSync(${JSON.stringify(release)})) await new Promise(r=>setTimeout(r,10));
         }
-        return fixtureReconcile.call(this);
+        return fixturePrepareReplacement.call(this);
       };
     `,
     );
