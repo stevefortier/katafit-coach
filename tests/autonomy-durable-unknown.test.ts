@@ -17,8 +17,10 @@ import { MEMBER } from "./helpers/autonomy-fake.js";
 // write whose outcome is unknown is a durable, exactly bound ledger entry.
 // It survives restart, opt-out, origin/account switch and acknowledged
 // blocked/uncertain_write completion, covers typed response validation, and
-// is cleared only by an exact read (or proven nonpublication). Every
-// replacement gate consumes it independently of participation.
+// is cleared only by an exact read (or proven nonpublication). It pauses
+// every new autonomous action independently of participation; once idle it
+// is retained history that does not block replacement (and is never a
+// pre-replacement receipt wait). The release recovery route proves it.
 
 after(closeLeaked);
 
@@ -53,11 +55,18 @@ async function proxied(planners: ScriptedRuntime[]) {
   await env.store.save({ ...env.store.publicConfig(), origin: proxy.origin });
   const quiesce = () =>
     env.call("POST", "/api/update/quiesce", { confirm: true });
+  /** Supported recovery route: awaits one bounded read-only proof. */
+  const prove = async () => {
+    const released = await env.call("POST", "/api/update/release", {});
+    assert.equal(released.status, 200, JSON.stringify(released.body));
+    return (await env.status()).local;
+  };
   const ownerStatus = async () => (await env.call("GET", "/api/status")).body;
   return {
     env,
     proxy,
     quiesce,
+    prove,
     ownerStatus,
     async close() {
       await env.close();
@@ -78,11 +87,12 @@ async function abandonHeldWrite(t: Awaited<ReturnType<typeof proxied>>) {
   });
   assert.equal(off.status, 200);
   assert.equal(off.body.local.unresolvedWrites, 1);
-  assert.equal(off.body.local.safeToReplace, false);
+  assert.equal(off.body.local.safeToAct, false);
+  assert.equal(off.body.local.safeToReplace, true, "idle durable history");
   return id;
 }
 
-test("F1: an unknown write survives an opted-out restart and blocks every replacement gate until its exact receipt", async () => {
+test("F1: an unknown write survives an opted-out restart and replacement, and blocks new action until its exact receipt", async () => {
   const t = await proxied([reporting()]);
   const { env, proxy } = t;
   try {
@@ -94,28 +104,32 @@ test("F1: an unknown write survives an opted-out restart and blocks every replac
     assert.equal(s.local.state, "stopped");
     assert.equal(s.local.unresolvedWrites, 1, "reloaded from durable storage");
     assert.equal(s.local.unknownOutcome, true);
-    assert.equal(s.local.safeToReplace, false);
+    assert.equal(s.local.safeToAct, false);
+    assert.equal(s.local.safeToReplace, true);
     assert.deepEqual(
       s.local.unresolved.map((u: any) => [u.op, u.work_id, u.slot]),
       [["act", id, "r1"]],
     );
     const owner = await t.ownerStatus();
-    assert.equal(owner.safeToReplace, false, "/api/status combines autonomy");
-    const refused = await t.quiesce();
-    assert.equal(refused.status, 409);
-    assert.equal(refused.body.error, "WORKER_STOP_UNCONFIRMED");
+    assert.equal(owner.autonomySafeToAct, false, "/api/status reports it");
+    assert.equal(owner.safeToReplace, true, "idle history is not current work");
+    // Legacy owner quiesce is accepted without waiting for any receipt; the
+    // entry is retained, not proven or cleared, by quiescing.
+    const quiesced = await t.quiesce();
+    assert.equal(quiesced.status, 200, JSON.stringify(quiesced.body));
+    assert.equal((await t.ownerStatus()).updateQuiesceReady, true);
+    assert.equal((await env.status()).local.unresolvedWrites, 1);
+    // Recovery proves it read-only; the held write has not committed yet.
+    assert.equal((await t.prove()).unresolvedWrites, 1);
     // The held write now commits upstream; the exact receipt proves it.
     proxy.release();
     await until(
       () => env.fake.state.work.get(id).actions.length === 1,
       "write committed upstream",
     );
-    const quiesced = await t.quiesce();
-    assert.equal(quiesced.status, 200, JSON.stringify(quiesced.body));
-    const after = await env.status();
-    assert.equal(after.local.unresolvedWrites, 0);
-    assert.equal(after.local.safeToReplace, true);
-    assert.equal((await t.ownerStatus()).updateQuiesceReady, true);
+    const after = await t.prove();
+    assert.equal(after.unresolvedWrites, 0);
+    assert.equal(after.safeToAct, true);
     const puts = env.fake.calls.filter(
       (c) => c.method === "PUT" && c.path.includes("/actions/"),
     );
@@ -136,12 +150,9 @@ test("F1: proven nonpublication (fenced lease + exact absent receipt) clears the
     proxy.state.hold = false;
     for (const go of proxy.state.held.splice(0)) go();
     // Lease still live at our generation: absence is not yet proof.
-    const early = await t.quiesce();
-    assert.equal(early.status, 409);
-    assert.equal((await env.status()).local.unresolvedWrites, 1);
+    assert.equal((await t.prove()).unresolvedWrites, 1);
     env.fake.advance(LEASE_MS);
-    const quiesced = await t.quiesce();
-    assert.equal(quiesced.status, 200, JSON.stringify(quiesced.body));
+    assert.equal((await t.prove()).unresolvedWrites, 0);
     assert.equal(env.fake.state.work.get(id).actions.length, 0);
   } finally {
     await t.close();
@@ -176,19 +187,17 @@ test("F1: an origin or account switch keeps the original binding; only the origi
     // origin cannot prove it, even though that origin could read a receipt.
     await env.store.save({ ...config, origin: env.fake.origin });
     await env.restart();
-    assert.equal((await t.quiesce()).status, 409);
-    let s = await env.status();
-    assert.equal(s.local.unresolvedWrites, 1);
-    assert.equal(s.local.unresolved[0].reason, "binding_unavailable");
+    let s = await t.prove();
+    assert.equal(s.unresolvedWrites, 1);
+    assert.equal(s.unresolved[0].reason, "binding_unavailable");
     // The same origin with a different account is also not the binding.
     await env.store.save({ ...config, origin: proxy.origin });
     env.fake.state.mandate.chief_id = "6a0000000000000000000099";
-    assert.equal((await t.quiesce()).status, 409);
-    s = await env.status();
-    assert.equal(s.local.unresolved[0].reason, "binding_unavailable");
+    s = await t.prove();
+    assert.equal(s.unresolvedWrites, 1);
+    assert.equal(s.unresolved[0].reason, "binding_unavailable");
     env.fake.state.mandate.chief_id = env.fake.chief;
-    const quiesced = await t.quiesce();
-    assert.equal(quiesced.status, 200, JSON.stringify(quiesced.body));
+    assert.equal((await t.prove()).unresolvedWrites, 0);
   } finally {
     await t.close();
   }
@@ -216,12 +225,11 @@ test("F1/F2: a wrong-digest 2xx with denied readback completes blocked/uncertain
       return v.local.state === "idle" && v;
     }, "cycle settled");
     assert.equal(s.local.unresolvedWrites, 1, "completion is not a receipt");
-    assert.equal(s.local.safeToReplace, false);
-    assert.equal((await t.quiesce()).status, 409);
+    assert.equal(s.local.safeToAct, false);
+    assert.equal((await t.prove()).unresolvedWrites, 1);
     proxy.state.rewrite = undefined;
     proxy.state.intercept = undefined;
-    const quiesced = await t.quiesce();
-    assert.equal(quiesced.status, 200, JSON.stringify(quiesced.body));
+    assert.equal((await t.prove()).unresolvedWrites, 0);
   } finally {
     await t.close();
   }
@@ -266,17 +274,14 @@ for (const [name, rewrite] of [
         participate: false,
       });
       env.fake.advance(LEASE_MS);
-      assert.equal((await t.quiesce()).status, 409);
-      const s = await env.status();
+      const s = await t.prove();
       assert.deepEqual(
-        s.local.unresolved.map((u: any) => [u.op, u.work_id, u.reason]),
+        s.unresolved.map((u: any) => [u.op, u.work_id, u.reason]),
         [["complete", id, "unavailable"]],
       );
       proxy.state.intercept = undefined;
       proxy.state.rewrite = undefined;
-      const q = await t.quiesce();
-      assert.equal(q.status, 200, JSON.stringify(q.body));
-      const settled = (await env.status()).local.settled;
+      const settled = (await t.prove()).settled;
       assert.deepEqual(
         settled.map((x: any) => [x.op, x.work_id, x.proof, x.attribution]),
         [["complete", id, "committed", "this_credential"]],

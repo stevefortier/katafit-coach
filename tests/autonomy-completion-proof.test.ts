@@ -47,7 +47,12 @@ async function proxied(planners: ScriptedRuntime[]) {
   return {
     env,
     proxy,
-    quiesce: () => env.call("POST", "/api/update/quiesce", { confirm: true }),
+    /** Supported recovery route: awaits one bounded read-only proof. */
+    async prove() {
+      const released = await env.call("POST", "/api/update/release", {});
+      assert.equal(released.status, 200, JSON.stringify(released.body));
+      return (await env.status()).local;
+    },
     async close() {
       await env.close();
       await proxy.close();
@@ -88,15 +93,14 @@ test("R1: an earlier attempt's equal report projection never proves a later unkn
     await env.call("POST", "/api/autonomy/participate", { participate: false });
     assert.equal(env.fake.state.reports.length, 1, "attempt 2 never committed");
     env.fake.advance(LEASE_MS);
-    const q = await t.quiesce();
-    assert.equal(q.status, 409, "the older report proves nothing");
-    const s = await env.status();
+    const s = await t.prove();
     // Generation 2's lease expired but was never reclaimed: exactly pending.
+    // The older report proves nothing.
     assert.deepEqual(
-      s.local.unresolved.map((u: any) => [u.op, u.work_id, u.reason]),
+      s.unresolved.map((u: any) => [u.op, u.work_id, u.reason]),
       [["complete", id, "pending"]],
     );
-    assert.equal(s.local.safeToReplace, false);
+    assert.equal(s.safeToAct, false);
     const sent = env.fake.calls.filter((c) => /\/complete$/.test(c.path));
     assert.equal(sent.length, 1, "never replayed as proof");
   } finally {
@@ -124,14 +128,13 @@ test("R1: a committed completion whose answer was lost stays unresolved while it
     env.fake.advance(LEASE_MS);
     // Its report is readable, which proves nothing.
     assert.equal(env.fake.state.reports.length, 1);
-    assert.equal((await t.quiesce()).status, 409);
-    const s = await env.status();
+    const s = await t.prove();
     assert.deepEqual(
-      s.local.unresolved.map((u: any) => [u.op, u.reason]),
+      s.unresolved.map((u: any) => [u.op, u.reason]),
       [["complete", "unavailable"]],
     );
     env.fake.state.completionFault = undefined;
-    assert.equal((await t.quiesce()).status, 200, "exact receipt settles it");
+    assert.equal((await t.prove()).unresolvedWrites, 0, "exact receipt");
   } finally {
     await t.close();
   }
@@ -153,16 +156,13 @@ test("R1: a completion that never arrived is pending while its generation may st
     proxy.state.intercept = undefined;
     // An expired lease is not absence: the generation is still pending.
     env.fake.advance(LEASE_MS);
-    assert.equal((await t.quiesce()).status, 409);
     assert.deepEqual(
-      (await env.status()).local.unresolved.map((u: any) => u.reason),
+      (await t.prove()).unresolved.map((u: any) => u.reason),
       ["pending"],
     );
     // Another installation reclaims: that generation can never commit.
     assert.ok(await env.fake.client("installation-b").claim());
-    const q = await t.quiesce();
-    assert.equal(q.status, 200, JSON.stringify(q.body));
-    assert.equal((await env.status()).local.unresolvedWrites, 0);
+    assert.equal((await t.prove()).unresolvedWrites, 0);
   } finally {
     await t.close();
   }
@@ -188,10 +188,9 @@ test("R2: after a same-account mandate replacement, an old-mandate completion is
     // the old mandate's work or reports.
     env.fake.state.mandate.mandate_id = "64b7f0c2a1b2c3d4e5f6aaaa";
     env.fake.advance(LEASE_MS);
-    assert.equal((await t.quiesce()).status, 200);
-    const s = await env.status();
+    const s = await t.prove();
     assert.deepEqual(
-      s.local.settled.map((u: any) => [u.op, u.work_id, u.proof]),
+      s.settled.map((u: any) => [u.op, u.work_id, u.proof]),
       [["complete", id, "committed"]],
     );
   } finally {

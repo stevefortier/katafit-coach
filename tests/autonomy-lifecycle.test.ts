@@ -224,7 +224,7 @@ test("C5: update quiesce refuses while an autonomy action is in flight, then qui
   }
 });
 
-test("C5/R4: an unknown action outcome blocks replacement and every new claim until an exact receipt read proves it; participation then resumes", async () => {
+test("C5/R4: an unknown action outcome blocks every new claim (not idle replacement) until an exact receipt read proves it; participation then resumes", async () => {
   const planner = new ScriptedRuntime([
     async ({ call }) => {
       await call(REPORT_TOOL, { slot: "r1", text: "Private." });
@@ -253,7 +253,8 @@ test("C5/R4: an unknown action outcome blocks replacement and every new claim un
     assert.equal(off.status, 200);
     assert.equal(off.body.local.state, "stopped");
     assert.equal(off.body.local.unknownOutcome, true);
-    assert.equal(off.body.local.safeToReplace, false);
+    assert.equal(off.body.local.safeToAct, false);
+    assert.equal(off.body.local.safeToReplace, true, "retained history");
     // The held write commits upstream after the client gave up on it, while
     // its exact receipt read is unavailable.
     proxy.state.intercept = (method, url) =>
@@ -265,11 +266,9 @@ test("C5/R4: an unknown action outcome blocks replacement and every new claim un
       () => env.fake.state.work.get(id).actions.length === 1,
       "the write committed upstream",
     );
-    const refused = await env.call("POST", "/api/update/quiesce", {
-      confirm: true,
-    });
-    assert.equal(refused.status, 409);
-    assert.equal(refused.body.error, "WORKER_STOP_UNCONFIRMED");
+    const owner = (await env.call("GET", "/api/status")).body;
+    assert.equal(owner.autonomySafeToAct, false);
+    assert.equal(owner.autonomyUnresolvedWrites, 1);
     // Participating again with the work due again: nothing is claimed while
     // the write is unresolved (R4), however often the scheduler looks.
     await env.call("POST", "/api/autonomy/participate", { participate: true });
@@ -285,7 +284,7 @@ test("C5/R4: an unknown action outcome blocks replacement and every new claim un
     );
     const held = await env.status();
     assert.equal(held.local.unknownOutcome, true);
-    assert.equal(held.local.safeToReplace, false);
+    assert.equal(held.local.safeToAct, false);
     assert.equal(
       env.fake.calls.slice(mark).filter((c) => /\/work\/claim$/.test(c.path))
         .length,

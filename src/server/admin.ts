@@ -78,8 +78,11 @@ export async function admin(
   let nextPublicationRecovery = 0;
   // Child-owned compatibility path: existing stable owners already call
   // quiesce/release. Never stop an idle worker just to inspect a receipt.
-  const reconcileForUpdate = async () => {
-    await autonomy.reconcile().catch(() => false);
+  // Quiesce (pre-replacement) never awaits an autonomy receipt: retained
+  // unknown history is proven by the next process. Release still proves.
+  const reconcileForUpdate = async (proveAutonomy: boolean) => {
+    if (proveAutonomy) await autonomy.reconcile().catch(() => false);
+    else await autonomy.prepareReplacement().catch(() => false);
     if (
       updateQuiesced &&
       worker &&
@@ -467,6 +470,16 @@ export async function admin(
       settled();
     }
   };
+  // Replacement readiness: autonomy's own blockers (active cycle, unconfirmed
+  // journal or owned cleanup) are reported apart from worker presence,
+  // publication safety and native teardown.
+  const replacementBlocked = () =>
+    !autonomy.safeToReplace
+      ? ("AUTONOMY_REPLACEMENT_UNCONFIRMED" as const)
+      : !terminal.idle ||
+          (worker && (!worker.stopConfirmed || !worker.safeToReplace))
+        ? ("WORKER_STOP_UNCONFIRMED" as const)
+        : undefined;
 
   // Child-owned admission observation: old launchers understand cancellation,
   // but cannot journal a rejection that occurs inside the selected admin.
@@ -476,6 +489,8 @@ export async function admin(
       "Upgrade not accepted: an active worker poll or task prevented safe admission. Stop Coach, wait for confirmed stopped presence and publication safety, then check and confirm again. Nothing was installed; no actions will be replayed.",
     WORKER_STOP_UNCONFIRMED:
       "Upgrade not accepted: stopped presence or publication safety is unconfirmed. Use supported Stop/recovery and verify worker status before confirming again.",
+    AUTONOMY_REPLACEMENT_UNCONFIRMED:
+      "Upgrade not accepted: background autonomy could not confirm its write journal on disk or the cleanup of its own containers. Nothing was stopped or installed. Check protected-home storage and Docker access, then autonomy status, before confirming again.",
     LAUNCHER_UPGRADE_REQUIRED:
       "Upgrade not accepted: replace the reviewed stable launcher before retrying. Nothing was installed.",
     OPERATION_IN_PROGRESS:
@@ -1275,10 +1290,13 @@ export async function admin(
           presence: worker?.presence ?? "unconfirmed",
           presenceStopRecovery: worker?.presenceStopRecovery ?? "none",
           preview: !!preview,
-          // Autonomy writes fence replacement independent of participation.
+          // Autonomy fences replacement independent of participation. Durable
+          // unknown writes are retained history: they pause new autonomous
+          // actions (autonomySafeToAct) but not replacement of an idle host.
           safeToReplace:
             (worker?.safeToReplace ?? true) && autonomy.safeToReplace,
           autonomyUnresolvedWrites: autonomy.unresolvedWrites,
+          autonomySafeToAct: autonomy.safeToAct,
           stopConfirmed: worker?.stopConfirmed ?? true,
           nativeActive: terminal.active,
           lastError: logs.lastError,
@@ -1402,14 +1420,9 @@ export async function admin(
         if (Object.keys(body).length)
           return send(400, { error: "ARGUMENTS_REJECTED" });
         await updateQuiescePending?.catch(() => {});
-        await reconcileForUpdate();
-        if (
-          updateQuiesced &&
-          (!terminal.idle ||
-            !autonomy.safeToReplace ||
-            (worker && (!worker.stopConfirmed || !worker.safeToReplace)))
-        )
-          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+        await reconcileForUpdate(true);
+        const blocked = updateQuiesced && replacementBlocked();
+        if (blocked) return send(409, { error: blocked });
         updateQuiesced = false;
         updateWasRunning = false;
         worker?.releaseUpdateQuiesce();
@@ -1419,20 +1432,15 @@ export async function admin(
       if (path === "/api/update/quiesce" && updates.snapshot().supported) {
         if (body.confirm !== true || Object.keys(body).join(",") !== "confirm")
           return send(400, { error: "CONFIRM_REQUIRED" });
-        await reconcileForUpdate();
+        await reconcileForUpdate(false);
         if (updateQuiesced) {
-          try {
-            await updateQuiescePending;
-            if (
-              !terminal.idle ||
-              !autonomy.safeToReplace ||
-              (worker && (!worker.stopConfirmed || !worker.safeToReplace))
-            )
-              throw new Error("WORKER_STOP_UNCONFIRMED");
-            return send(200, { wasRunning: updateWasRunning });
-          } catch {
-            return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
-          }
+          let failed = false;
+          await updateQuiescePending?.catch(() => (failed = true));
+          const blocked =
+            replacementBlocked() ?? (failed ? "WORKER_STOP_UNCONFIRMED" : null);
+          return blocked
+            ? send(409, { error: blocked })
+            : send(200, { wasRunning: updateWasRunning });
         }
         // Fence new native admission before stopping Pi. The sandbox and its
         // gateway must finish teardown (including action reconciliation) before
@@ -1447,33 +1455,36 @@ export async function admin(
           (worker && worker.state !== "stopped" && !worker.quiesceForUpdate())
         )
           return send(409, { error: "UPDATE_BUSY" });
-        // An abandoned autonomy write must be settled before replacement.
+        // A durable unknown autonomy write is retained across replacement; an
+        // unconfirmed journal or owned cleanup is not.
         if (!autonomy.safeToReplace) {
           worker?.releaseUpdateQuiesce();
-          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+          return send(409, { error: "AUTONOMY_REPLACEMENT_UNCONFIRMED" });
         }
         updateQuiesced = true;
         updateWasRunning = !!worker && worker.state !== "stopped";
         const stopping = (async () => {
           await autonomy.stop();
-          await autonomy.reconcile();
+          await autonomy.prepareReplacement();
           await terminal.stop();
           if (updateWasRunning) await worker!.stop();
-          if (
-            !terminal.idle ||
-            !autonomy.safeToReplace ||
-            (worker && (!worker.stopConfirmed || !worker.safeToReplace))
-          )
-            throw new Error("WORKER_STOP_UNCONFIRMED");
+          const blocked = replacementBlocked();
+          if (blocked) throw new Error(blocked);
         })();
         updateQuiescePending = stopping;
         try {
           await stopping;
           return send(200, { wasRunning: updateWasRunning });
-        } catch {
+        } catch (error) {
           // Keep the admission barrier and pre-stop intent until the owner
           // reads status and explicitly releases it, including lost replies.
-          return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+          return send(409, {
+            error:
+              error instanceof Error &&
+              error.message === "AUTONOMY_REPLACEMENT_UNCONFIRMED"
+                ? error.message
+                : "WORKER_STOP_UNCONFIRMED",
+          });
         } finally {
           if (updateQuiescePending === stopping)
             updateQuiescePending = undefined;
@@ -1768,8 +1779,10 @@ export async function admin(
               hint: "Finish or cancel the other operation, then retry the upgrade.",
             });
           }
-          await autonomy.reconcile().catch(() => false);
-          // Exact proof may await HTTP/storage. Main's captured admission scope
+          // Local only: owned cleanup retry and journal readback, never a
+          // backend receipt read (retained history is proven after restart).
+          await autonomy.prepareReplacement().catch(() => false);
+          // That may await Docker/storage. Main's captured admission scope
           // must still hold before either lane is synchronously reserved.
           if (
             updateQuiesced ||
@@ -1791,10 +1804,14 @@ export async function admin(
               hint: admissionHelp.UPDATE_BUSY,
             });
           }
-          // Reject before native teardown or irreversible Worker.stop().
+          // Reject before native teardown or irreversible Worker.stop(). An
+          // idle host's durable unknown history does not block; it is kept.
           if (!autonomy.safeToReplace) {
-            await cancelPrepared("WORKER_STOP_UNCONFIRMED");
-            return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
+            await cancelPrepared("AUTONOMY_REPLACEMENT_UNCONFIRMED");
+            return send(409, {
+              error: "AUTONOMY_REPLACEMENT_UNCONFIRMED",
+              hint: admissionHelp.AUTONOMY_REPLACEMENT_UNCONFIRMED,
+            });
           }
           if (wasRunning && !updates.snapshot().manualRestartSupported) {
             await cancelPrepared("LAUNCHER_UPGRADE_REQUIRED");
@@ -1882,9 +1899,9 @@ export async function admin(
               updates.validatePrepared(queued.sha);
               queued.phase = "stopping"; // Cancel is now refused, before any await.
               await autonomy.stop();
-              await autonomy.reconcile().catch(() => false);
+              await autonomy.prepareReplacement().catch(() => false);
               if (!autonomy.safeToReplace)
-                throw new SafeError("WORKER_STOP_UNCONFIRMED");
+                throw new SafeError("AUTONOMY_REPLACEMENT_UNCONFIRMED");
               await terminal.stop();
               if (!terminal.idle)
                 throw new SafeError("WORKER_STOP_UNCONFIRMED");
@@ -1915,8 +1932,9 @@ export async function admin(
               queued.reason = controller.signal.aborted
                 ? "CANCELLED"
                 : error instanceof SafeError &&
-                    error.code === "WORKER_STOP_UNCONFIRMED"
-                  ? "WORKER_STOP_UNCONFIRMED"
+                    (error.code === "WORKER_STOP_UNCONFIRMED" ||
+                      error.code === "AUTONOMY_REPLACEMENT_UNCONFIRMED")
+                  ? error.code
                   : "UPDATE_NOT_ACCEPTED";
               if (controller.signal.aborted) {
                 if (prepared)

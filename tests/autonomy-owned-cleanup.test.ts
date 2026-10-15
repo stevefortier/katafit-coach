@@ -276,6 +276,14 @@ test("F5: the real host stays unsafe, refuses quiesce and claims nothing more un
     const reloaded = await env.status();
     assert.equal(reloaded.local.cleanupPending, 1, "durable across restart");
     assert.equal(reloaded.local.safeToReplace, false);
+    assert.equal(reloaded.local.safeToAct, false);
+    assert.equal(reloaded.local.replacementBlocker, "cleanup_pending");
+    // Accurately attributed to autonomy cleanup, not worker presence.
+    const unconfirmed = await env.call("POST", "/api/update/quiesce", {
+      confirm: true,
+    });
+    assert.equal(unconfirmed.status, 409);
+    assert.equal(unconfirmed.body.error, "AUTONOMY_REPLACEMENT_UNCONFIRMED");
     fake.daemon.failRm = 0;
     const quiesced = await env.call("POST", "/api/update/quiesce", {
       confirm: true,

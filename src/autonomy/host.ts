@@ -272,8 +272,10 @@ const PROOF_THROTTLE_MS = 30000;
  * Worker, the native terminal and any browser. It shares only the inference
  * admission slot. Stopping aborts an active cycle without a local release;
  * an effectful write abandoned mid-flight stays a durable ledger entry that
- * blocks process replacement (independent of participation) until an exact
- * read-only proof settles it.
+ * blocks every new claim and effect (independent of participation) until an
+ * exact read-only proof settles it. Once idle, that durable entry no longer
+ * blocks process replacement: it is retained on disk across the upgrade and
+ * proven (never replayed) by the next process.
  */
 export class AutonomyHost {
   private scheduler?: AutonomyScheduler;
@@ -322,14 +324,54 @@ export class AutonomyHost {
   get unresolvedWrites() {
     return this.ledger?.unresolved.length ?? 0;
   }
+  /**
+   * What prevents replacing this process now. A durably recorded unknown
+   * write is recoverable history, not a blocker: it stays on disk, the next
+   * process reloads it and proves it read-only. An active cycle, an
+   * unreadable/unconfirmed journal or unconfirmed owned cleanup still blocks.
+   */
+  get replacementBlocker():
+    | "busy"
+    | "ledger_unavailable"
+    | "cleanup_pending"
+    | null {
+    // A dispatched write is current execution, never history.
+    if (this.busy || this.backend?.dispatched.size) return "busy";
+    if (!this.ledger?.healthy) return "ledger_unavailable";
+    if (!this.cleanup?.healthy || this.cleanup.pending)
+      return "cleanup_pending";
+    return null;
+  }
   get safeToReplace() {
+    return this.replacementBlocker === null;
+  }
+  /**
+   * Strict: new autonomous work may be issued only with a healthy journal,
+   * no unresolved write and no unconfirmed owned cleanup (see `admissible`).
+   */
+  get safeToAct() {
     return (
-      !this.busy &&
       !!this.ledger?.healthy &&
       this.ledger.unresolved.length === 0 &&
       !!this.cleanup?.healthy &&
       this.cleanup.pending === 0
     );
+  }
+
+  /**
+   * Local-only replacement check: retry owned cleanup and read the stored
+   * journal back. Never reads a backend receipt, so retained unknown history
+   * cannot become an upgrade-admission wait; it is proven after restart.
+   */
+  async prepareReplacement(): Promise<boolean> {
+    try {
+      await this.init();
+    } catch {
+      return false;
+    }
+    if (this.cleanup?.pending) await this.cleanup.drain();
+    if (this.ledger!.unresolved.length) await this.ledger!.confirmDurable();
+    return this.safeToReplace;
   }
 
   /** Synchronous idle reservation: never interrupt an admitted active cycle. */
@@ -365,6 +407,8 @@ export class AutonomyHost {
       })),
       settled: this.settled,
       safeToReplace: this.safeToReplace,
+      replacementBlocker: this.replacementBlocker,
+      safeToAct: this.safeToAct,
       lastOutcome: this.last.outcome ?? null,
       lastWorkId: this.last.workId ?? null,
       lastCycleAt: this.last.at ?? null,

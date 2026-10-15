@@ -143,6 +143,8 @@ test("R3: when the home sync fails, the real host sends nothing and stays unsafe
     const s = await env.status();
     assert.equal(s.local.ledgerHealthy, false);
     assert.equal(s.local.safeToReplace, false);
+    assert.equal(s.local.safeToAct, false);
+    assert.equal(s.local.replacementBlocker, "ledger_unavailable");
     const owner = (await env.call("GET", "/api/status")).body;
     assert.equal(owner.safeToReplace, false);
   } finally {

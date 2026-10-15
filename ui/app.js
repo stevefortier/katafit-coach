@@ -1713,7 +1713,7 @@ function renderAutonomyStatus(view, presence) {
         ")"
       : "") +
     (local.unknownOutcome
-      ? " · an interrupted write's outcome is unknown; replacement waits until it settles"
+      ? " · an earlier background write's outcome is unknown; it is kept (across upgrades) and never replayed, and new autonomous work is paused until Coach proves it"
       : "") +
     (local.lastError ? " · " + local.lastError : "");
   const b = view.backend;
@@ -3512,6 +3512,8 @@ const updateFailureHelp = {
     "Stop Coach, wait for confirmed stopped presence and publication safety, then check and confirm again. No installation was accepted and no actions will be replayed.",
   WORKER_STOP_UNCONFIRMED:
     "Verify stopped presence and publication safety using supported Stop/recovery before confirming again.",
+  AUTONOMY_REPLACEMENT_UNCONFIRMED:
+    "Background autonomy could not confirm its write journal on disk or the cleanup of its own containers. Check protected-home storage and Docker access, then autonomy status, before confirming again.",
   OPERATION_IN_PROGRESS:
     "Finish or cancel the other operation before confirming again.",
   UPDATE_NOT_ACCEPTED:
