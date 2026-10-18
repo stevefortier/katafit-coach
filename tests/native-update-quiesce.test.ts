@@ -132,7 +132,7 @@ test("confirmed quiesce closes a starting Pi under the admission fence", async (
   }
 });
 
-test("confirmed manual update waits for supported native session teardown after source validation", async () => {
+test("confirmed manual update automatically closes native session after source validation", async () => {
   const h = held();
   heldStartup = h;
   const f = await fixture();
@@ -161,18 +161,6 @@ test("confirmed manual update waits for supported native session teardown after 
     pending = post("/api/update/apply", { confirm: true, sha: updates.latest });
     const response = await pending;
     assert.equal(response.status, 202);
-    const queued = await (
-      await fetch(app.origin + "/api/update", { headers })
-    ).json();
-    assert.equal(queued.manualQueue.phase, "waiting-native");
-    assert.equal(
-      ws.readyState,
-      WebSocket.OPEN,
-      "queue does not abort native startup",
-    );
-    assert.equal(updates.snapshot().lastOperation, undefined);
-    // Explicit human lifecycle action, not an upgrade-owned interrupt.
-    assert.equal((await post("/api/terminal/stop")).status, 200);
     assert.equal(await starting.closed, 1008);
     for (let i = 0; i < 100 && updates.installed !== updates.latest; i++)
       await new Promise((r) => setTimeout(r, 20));

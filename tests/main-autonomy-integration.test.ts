@@ -171,17 +171,15 @@ test(
 );
 
 test(
-  "manual queue reserves idle autonomy until cancel then resumes participation",
+  "manual queue reserves idle autonomy during automatic native closure then installs",
   { timeout: 15000 },
   async () => {
-    const idle = Object.getOwnPropertyDescriptor(
-      NativeTerminal.prototype,
-      "idle",
-    )!;
-    Object.defineProperty(NativeTerminal.prototype, "idle", {
-      configurable: true,
-      get: () => false,
-    });
+    const originalStop = NativeTerminal.prototype.stop;
+    const nativeClosure = deferred();
+    NativeTerminal.prototype.stop = async function () {
+      await nativeClosure.promise;
+      await originalStop.call(this);
+    };
     let applications = 0;
     const updates = await readyUpdates(async () => {
       applications++;
@@ -207,8 +205,8 @@ test(
       await until(
         async () =>
           (await env.call("GET", "/api/update")).body.manualQueue?.phase ===
-          "waiting-native",
-        "native wait",
+          "stopping-native",
+        "automatic native closure",
       );
       const mark = env.fake.calls.length;
       const id = env.fake.enqueue({ kind: "reconcile", subject_ids: [MEMBER] });
@@ -225,14 +223,19 @@ test(
       const cancel = await env.call("POST", "/api/update/cancel", {
         id: response.body.id,
       });
-      assert.equal(cancel.status, 200, JSON.stringify(cancel.body));
+      assert.equal(cancel.status, 409, "cannot undo native interruption");
+      nativeClosure.resolve();
       await until(
-        () => env.fake.state.work.get(id).status === "completed",
-        "cancel resumes autonomy",
+        async () =>
+          (await env.call("GET", "/api/update")).body.manualQueue?.phase ===
+          "accepted",
+        "installation accepted after native closure",
       );
-      assert.equal(applications, 0);
+      assert.equal(applications, 1);
+      assert.equal((await env.status()).participate, true);
     } finally {
-      Object.defineProperty(NativeTerminal.prototype, "idle", idle);
+      nativeClosure.resolve();
+      NativeTerminal.prototype.stop = originalStop;
       await env.close();
     }
   },

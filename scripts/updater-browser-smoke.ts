@@ -119,7 +119,7 @@ try {
   await page.locator("#updateConfirm").waitFor({ state: "visible" });
   assert.match(
     await page.locator("#updates").innerText(),
-    /restarts it if it was/,
+    /Coach resumes only if it was running/,
   );
   await page.setViewportSize({ width: 360, height: 800 });
   assert.equal(

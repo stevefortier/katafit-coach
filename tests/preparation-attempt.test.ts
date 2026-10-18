@@ -312,6 +312,23 @@ async function candidate(home: string, sha: string) {
   return root;
 }
 
+// Synthetic worker-drain boundary in the supervised child. Native Pi is
+// automatically closed now and must no longer be used to hold a cancellable queue.
+async function waitingWorkerFixture(store: Store) {
+  await store.save({
+    ...store.publicConfig(),
+    token: "synthetic-queue-token",
+    apiKey: "synthetic-queue-key",
+  });
+  await appendFile(
+    join(store.dir, "versions", "1".repeat(40), "dist/worker/runner.js"),
+    `
+    Worker.prototype.start = async function(){ this.state = 'idle'; return 'unsupported'; };
+    Worker.prototype.drainForUpdate = async function(){ await new Promise(()=>{}); };
+  `,
+  );
+}
+
 test("authenticated waiting cancellation reaches owner journal and survives restart", async () => {
   const home = await mkdtemp(join(tmpdir(), "preparation-rpc-cancel-"));
   const store = new Store(home);
@@ -320,10 +337,7 @@ test("authenticated waiting cancellation reaches owner journal and survives rest
   try {
     await store.init();
     await activateLegacyFixture(home);
-    await appendFile(
-      join(home, "versions", "1".repeat(40), "dist/server/terminal.js"),
-      '\nObject.defineProperty(NativeTerminal.prototype, "idle", {get(){return false;}});\n',
-    );
+    await waitingWorkerFixture(store);
     const receipt = {
       id: "12345678-1234-1234-1234-123456789abc",
       sha: "1".repeat(40),
@@ -346,6 +360,7 @@ test("authenticated waiting cancellation reaches owner journal and survives rest
         headers,
         body: JSON.stringify(body),
       });
+    assert.equal((await post("/api/run")).status, 200);
     await post("/api/update/check");
     const queued = await post("/api/update/apply", { sha, confirm: true });
     assert.equal(queued.status, 202, await queued.clone().text());
@@ -481,10 +496,7 @@ test("duplicate authenticated HTTP confirmation cannot release the first owner r
       };
     `,
     );
-    await appendFile(
-      join(active, "dist/server/terminal.js"),
-      '\nObject.defineProperty(NativeTerminal.prototype, "idle", {get(){return false;}});\n',
-    );
+    await waitingWorkerFixture(store);
     let preparations = 0;
     owner = await supervise(store, 0, undefined, {
       prepare: (s) => {
@@ -504,6 +516,7 @@ test("duplicate authenticated HTTP confirmation cannot release the first owner r
         headers,
         body: JSON.stringify(body),
       });
+    assert.equal((await post("/api/run")).status, 200);
     await post("/api/update/check");
     const first = post("/api/update/apply", { sha, confirm: true });
     void first.catch(() => {});
@@ -567,10 +580,7 @@ test("owner retains cancellation cleanup ownership on failure and drains on shut
   try {
     await store.init();
     await activateLegacyFixture(home);
-    await appendFile(
-      join(versions, "1".repeat(40), "dist/server/terminal.js"),
-      '\nObject.defineProperty(NativeTerminal.prototype, "idle", {get(){return false;}});\n',
-    );
+    await waitingWorkerFixture(store);
     let preparations = 0;
     owner = await supervise(store, 0, undefined, {
       prepare: (s) => {
@@ -590,6 +600,7 @@ test("owner retains cancellation cleanup ownership on failure and drains on shut
         headers,
         body: JSON.stringify(body),
       });
+    assert.equal((await post("/api/run")).status, 200);
     await post("/api/update/check");
     const queued = await post("/api/update/apply", { sha, confirm: true });
     assert.equal(queued.status, 202);

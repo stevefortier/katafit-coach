@@ -1251,30 +1251,47 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
                 >
               </div>
               <p class="hint">
-                Confirming an upgrade stops Coach safely and restarts it if it
-                was running. A stopped Coach stays stopped. Accepted worker work
-                finishes before installation; new claims wait. Native sessions
-                must finish and close before installation; upgrades never abort
-                an in-progress Pi turn. Actions are never replayed.
+                Upgrades automatically close Studio Pi; reconnect afterward.
+                Coach resumes only if it was running. Other host Pi sessions are
+                unaffected. In-flight actions are never replayed automatically.
               </p>
               <p id="updateQueueStatus" role="status" hidden></p>
-              <button id="updateQueueCancel" class="secondary" hidden>
-                Cancel queued upgrade
-              </button>
+              <div class="log-controls">
+                <button id="updateQueueForce" hidden>Force upgrade now…</button>
+                <button id="updateQueueCancel" class="secondary" hidden>
+                  Cancel queued upgrade
+                </button>
+              </div>
+              <div id="updateForceConfirm" class="update-confirm" hidden>
+                <h3>Interrupt waiting work and upgrade now?</h3>
+                <code id="updateForceTarget"></code>
+                <p>
+                  Interrupt accepted Coach work and install this prepared update
+                  now? In-flight actions may already have happened: check
+                  Kata.fit before repeating them. Nothing is replayed
+                  automatically. If shutdown or action receipts cannot be
+                  confirmed, you will get an error and nothing is installed
+                  instead of an endless wait.
+                </p>
+                <button id="updateForceConfirmApply">
+                  Interrupt work and upgrade
+                </button>
+                <button id="updateForceCancel" class="secondary">
+                  Keep waiting
+                </button>
+              </div>
               <div id="updateConfirm" class="update-confirm" hidden>
                 <h3>Install this source revision?</h3>
                 <code id="updateTarget"></code>
                 <p>
-                  This downloads and builds code from the official repository,
-                  then briefly restarts Studio. Coach is stopped safely and
-                  restarted only if it was running; a stopped Coach stays
-                  stopped. Accepted work drains first. Finish and close native
-                  Pi to let installation proceed; no turn is interrupted. You
-                  can cancel while waiting, before safe worker Stop begins.
-                  Waiting intent survives tab closure but not service restart;
-                  it is process-local until the launcher durably accepts the
-                  installation. Actions are never replayed. Only continue if you
-                  trust this source. A disconnect is not proof of success.
+                  This restarts Studio and automatically closes its Pi session.
+                  Active turn output and unsent work may be lost; reconnect
+                  afterward. Coach resumes only if it was running. Other Pi
+                  sessions on this host are unaffected. Accepted Coach work
+                  normally finishes before installation; use Force upgrade now
+                  if it gets stuck. Check Kata.fit before repeating any
+                  in-flight action — nothing is replayed automatically. Cancel
+                  cancels installation, not Pi closure.
                 </p>
                 <button id="updateConfirmApply">
                   Queue install and restart
