@@ -454,10 +454,14 @@ export class HeadlessCycleRuntime {
     const acknowledged = response(id);
     let grace: NodeJS.Timeout | undefined;
     try {
-      await runtime.rpc({ id, type: "abort" });
       await Promise.race([
-        acknowledged,
+        // One grace covers both attach-channel flush and Pi acknowledgement.
+        // A wedged write must not prevent finally from removing this runtime.
         new Promise((resolve) => (grace = setTimeout(resolve, ABORT_GRACE_MS))),
+        (async () => {
+          await runtime.rpc({ id, type: "abort" });
+          await acknowledged;
+        })(),
       ]);
     } catch {
       // The container is removed regardless.

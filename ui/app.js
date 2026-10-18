@@ -3579,6 +3579,7 @@ let updateData,
   updateController,
   updateTarget,
   updateForceRequest = false,
+  updateForceController,
   updateForceQueue,
   updateInitialRevision;
 const sourceSha = (value) =>
@@ -4190,18 +4191,38 @@ action("updateForceConfirmApply", async () => {
     queue.sha !== target.sha
   )
     return;
+  const generation = authGeneration;
+  const controller = new AbortController();
+  updateForceController = controller;
   updateForceRequest = true;
   $("updateForceConfirm").hidden = true;
   renderUpdate();
   try {
-    await api("update/force", { ...target, confirm: true });
+    await api(
+      "update/force",
+      { ...target, confirm: true },
+      AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+    );
   } catch (error) {
-    if (!error.stale) notice(error.message, "error");
+    if (generation !== authGeneration || updateForceController !== controller)
+      return;
+    if (!error.stale)
+      notice(
+        error.status
+          ? error.message
+          : "Force response unavailable. Checking queue status; nothing was resent.",
+        "error",
+      );
   } finally {
+    if (generation !== authGeneration || updateForceController !== controller)
+      return;
     updateForceRequest = false;
+    updateForceController = undefined;
     updateForceQueue = undefined;
+    renderUpdate();
   }
-  await refreshUpdate();
+  if (generation === authGeneration && !controller.signal.aborted)
+    await refreshUpdate();
 });
 action("updateReadinessRefresh", async () => {
   $("updateConfirm").hidden = true;
@@ -4336,6 +4357,9 @@ function lockSession(message, severity) {
   native.reset();
   authGeneration++;
   updateApplyRequest = false;
+  updateForceController?.abort();
+  updateForceController = undefined;
+  updateForceRequest = false;
   key = "";
   lifecycleBusy = false;
   serverTransition = false;
