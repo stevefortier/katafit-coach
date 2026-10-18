@@ -8,6 +8,7 @@ import {
   taskContext,
   taskSchema,
   parseTaskResult,
+  validateTaskReactionCoverage,
   TaskOutputError,
   verifyTaskReceipt,
   verifyTaskFailure,
@@ -1514,6 +1515,9 @@ export class Worker {
         (task.kind === "daily_insight"
           ? "\nDaily insight fixed constraints (these override conflicting editable or disabled skill guidance): The Current status evidence is the requester's saved check-in for today. Acknowledge that saved status, and its note when present, and never ask how they feel or ask them to check in as if no status was supplied. A self-reported status is not measured recovery: do not call it full recovery, though you may ask one genuinely additional, safety-specific question when relevant. generation_task.requester identifies the requester; attribute only that requester's facts to them. Use Requester nutrition targets only when its status is available, and never attribute the REST principal's account targets to a different requester."
           : "") +
+        (task.kind === "exercise_suggestions"
+          ? "\nCompleted-set acknowledgment: when Eligible reaction targets are supplied, return exactly one reaction for each offered completed-set target using its exact key. Choose praise only when supported by evidence, or eyes for a neutral acknowledgment. Do not invent targets, duplicates, or generic prose; a reaction does not require a verbal reply."
+          : "") +
         (task.kind === "workout_suggestions"
           ? '\nWorkout output: recommendations is an object keyed by the exact exercise IDs from the workout context, not an array or a single summary. Cover each exercise in that workout using its exact key (1 to 40 entries); never use the workout ID as an exercise key. Do not invent IDs, history, or evidence. Shape template only: {"recommendations":{"<exact exercise ID from context>":{"summary":"","target_weight":null}}}. Replace the placeholder with a context exercise ID; do not output the placeholder. Each entry requires summary (string, at most 1000 characters). Optional numeric targets must be JSON numbers within the schema bounds, or null when unknown; sets/reps/duration must be integers. Intensity is low, moderate, high, or null. Omit unsupported optional fields; no extra fields. Use evidence-grounded advice, not example claims or invented loads. Return the actual complete JSON object, at most 24000 UTF-8 bytes, not a description of it.'
           : "");
@@ -1545,6 +1549,7 @@ export class Worker {
         phase = "output";
         try {
           result = parseTaskResult(task.kind, text, secrets);
+          validateTaskReactionCoverage(task.kind, result, context.evidence);
           break;
         } catch (error) {
           if (!(error instanceof TaskOutputError)) throw error;
