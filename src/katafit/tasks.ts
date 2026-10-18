@@ -490,6 +490,66 @@ function schemaRepairHint(kind: string, errors: any[] = []): string {
 }
 const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
+// Validate against the actual backend-delivered inventory, not model-invented
+// keys. Keep legacy contexts without an inventory compatible. No emoji or prose
+// is synthesized: omission enters the existing bounded model-correction path.
+export function validateTaskReactionCoverage(
+  kind: string,
+  result: any,
+  evidence: any,
+) {
+  if (kind !== "exercise_suggestions") return;
+  const inventories =
+    evidence?.observations?.filter(
+      (item: any) => item.label === "Eligible reaction targets",
+    ) ?? [];
+  if (!inventories.length) return;
+  if (inventories.length !== 1) throw new Error("TASK_CONTEXT_INVALID");
+  let targets: any;
+  try {
+    targets = JSON.parse(inventories[0].text);
+  } catch {
+    throw new Error("TASK_CONTEXT_INVALID");
+  }
+  if (
+    !Array.isArray(targets) ||
+    targets.length > 40 ||
+    targets.some(
+      (target: any) =>
+        !target ||
+        typeof target.target_event_key !== "string" ||
+        !target.target_event_key.length ||
+        target.target_event_key.length > 240 ||
+        !["set_completed", "user_message"].includes(target.target_type),
+    )
+  )
+    throw new Error("TASK_CONTEXT_INVALID");
+  const allowed = new Set(
+    targets.map((target: any) => target.target_event_key),
+  );
+  if (allowed.size !== targets.length) throw new Error("TASK_CONTEXT_INVALID");
+  const counts = new Map<string, number>();
+  for (const reaction of result.reactions)
+    counts.set(
+      reaction.target_event_key,
+      (counts.get(reaction.target_event_key) ?? 0) + 1,
+    );
+  if (
+    [...counts].some(([key, count]) => !allowed.has(key) || count !== 1) ||
+    targets.some(
+      (target: any) =>
+        target.target_type === "set_completed" &&
+        counts.get(target.target_event_key) !== 1,
+    )
+  ) {
+    throw new TaskOutputError(
+      "SEMANTIC",
+      "Completed-set reaction coverage does not match the offered inventory",
+      "Return exactly one reaction for each offered completed-set target, using its exact target_event_key. No duplicate or unoffered keys. Choose an evidence-grounded reaction; eyes is a neutral acknowledgment. Prose may remain empty.",
+    );
+  }
+}
+
 export function parseTaskResult(kind: string, text: string, secrets: string[]) {
   if (typeof text !== "string" || Buffer.byteLength(text) > limits.result_bytes)
     throw new TaskOutputError(
