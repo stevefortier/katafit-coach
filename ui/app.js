@@ -3578,6 +3578,9 @@ let updateData,
   updateTimer,
   updateController,
   updateTarget,
+  updateForceRequest = false,
+  updateForceController,
+  updateForceQueue,
   updateInitialRevision;
 const sourceSha = (value) =>
   typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
@@ -3722,6 +3725,7 @@ function manualUpdateQueue(data = updateData) {
       "waiting-worker",
       "waiting-publication",
       "waiting-native",
+      "stopping-native",
       "stopping",
       "installing",
       "accepted",
@@ -3739,13 +3743,16 @@ function manualUpdateActive(data = updateData) {
   return (
     !!queue &&
     (queue.phase.startsWith("waiting-") ||
-      ["stopping", "installing"].includes(queue.phase))
+      ["stopping-native", "stopping", "installing"].includes(queue.phase))
   );
 }
 function renderHeaderStatus() {
   if (!key || $("studio").hidden) return;
   if (manualUpdateWaiting()) {
     $("state").textContent = "QUEUED";
+    $("state").dataset.tone = "busy";
+  } else if (manualUpdateActive()) {
+    $("state").textContent = "UPGRADING";
     $("state").dataset.tone = "busy";
   } else if (lifecycleBusy || serverTransition) {
     $("state").textContent = "APPLYING";
@@ -3840,23 +3847,44 @@ function renderUpdate() {
     "waiting-publication":
       "Waiting for authoritative publication receipts; nothing will be discarded or replayed.",
     "waiting-native":
-      "Waiting for native Pi to finish and close. Finish the turn, then use Close / Stop Pi.",
+      "Closing Coach Studio native Pi automatically; reconnect after the upgrade.",
+    "stopping-native":
+      "Closing Coach Studio native Pi automatically. This interruption cannot be cancelled; reconnect after the upgrade.",
     stopping:
       "Confirming safe worker Stop. Installation can no longer be cancelled.",
     installing: "Submitting the prepared installation to the launcher.",
     accepted:
       "Launcher accepted the installation. Verify installed revision and restart status.",
     cancelled:
-      "Cancelled queued upgrade. New worker claims may resume; accepted work was not aborted.",
+      "Cancelled queued installation. Studio Pi was already closed; reconnect to open a new session. New worker claims may resume; accepted worker work was not aborted.",
     failed:
       "Queued upgrade could not be admitted. Verify worker safety and launcher status before retrying.",
   };
+  if (queue?.forced === true) {
+    queueLabels.stopping =
+      "Force requested: interrupting accepted worker work and confirming safe Stop. Installation can no longer be cancelled.";
+    queueLabels.accepted =
+      "Launcher accepted the forced installation. Native Pi was interrupted; check Kata.fit for the outcome of any action that was in flight. Nothing was replayed. Verify installed revision and restart status.";
+  }
+  if (queue?.reason === "NATIVE_STOP_UNCONFIRMED")
+    queueLabels.failed =
+      "Upgrade stopped: native Pi teardown was not confirmed in time. Nothing was installed. Use Close / Stop Pi or check Docker access, then choose Upgrade again.";
+  if (queue?.reason === "WORKER_STOP_UNCONFIRMED")
+    queueLabels.failed =
+      "Upgrade stopped: worker cleanup or authoritative publication receipts remain unconfirmed. Nothing was installed. Use Worker Stop/recovery, check backend and Docker access, then choose Upgrade again. Unresolved identities are retained; nothing is replayed.";
   $("updateQueueStatus").hidden = !queue;
   $("updateQueueStatus").textContent = queue
     ? `${queueLabels[queue.phase]} Target ${queue.sha.slice(0, 12)}. Waiting intent is process-local and does not survive service restart.`
     : "";
   $("updateQueueCancel").hidden = !manualUpdateWaiting(data);
-  $("updateQueueCancel").disabled = updateRequest;
+  $("updateQueueCancel").disabled = updateRequest || updateForceRequest;
+  // Offered immediately during cancellable worker/publication waits.
+  const forceAvailable = manualUpdateWaiting(data);
+  $("updateQueueForce").hidden = !forceAvailable;
+  $("updateQueueForce").disabled = updateRequest || updateForceRequest;
+  if (!forceAvailable || queue.id !== updateForceQueue?.id)
+    $("updateForceConfirm").hidden = true;
+  $("updateForceConfirmApply").disabled = updateForceRequest;
   const locked =
     manualUpdateActive(data) ||
     updatePending ||
@@ -4080,7 +4108,10 @@ async function refreshUpdate(check = false, local = false) {
     if (controller.signal.aborted || generation !== authGeneration) return;
     if (updateInitialRevision === undefined)
       updateInitialRevision = data.installed;
+    const queueEnded = manualUpdateActive() && !manualUpdateActive(data);
     updateData = data;
+    // The queue's own transition fence just ended; refresh the header now.
+    if (queueEnded) void status();
 
     updatePending =
       updateApplyRequest ||
@@ -4137,6 +4168,62 @@ action("updateQueueCancel", async () => {
   await status();
   await refreshUpdate();
 });
+action("updateQueueForce", async () => {
+  const queue = manualUpdateQueue();
+  if (!queue || !manualUpdateWaiting()) return;
+  updateForceQueue = { id: queue.id, sha: queue.sha };
+  $("updateForceTarget").textContent = queue.sha;
+  $("updateForceConfirm").hidden = false;
+  $("updateForceConfirmApply").focus();
+});
+action("updateForceCancel", async () => {
+  $("updateForceConfirm").hidden = true;
+  updateForceQueue = undefined;
+});
+action("updateForceConfirmApply", async () => {
+  const target = updateForceQueue,
+    queue = manualUpdateQueue();
+  // One request per confirmation; the server also coalesces repeats.
+  if (
+    updateForceRequest ||
+    !target ||
+    queue?.id !== target.id ||
+    queue.sha !== target.sha
+  )
+    return;
+  const generation = authGeneration;
+  const controller = new AbortController();
+  updateForceController = controller;
+  updateForceRequest = true;
+  $("updateForceConfirm").hidden = true;
+  renderUpdate();
+  try {
+    await api(
+      "update/force",
+      { ...target, confirm: true },
+      AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+    );
+  } catch (error) {
+    if (generation !== authGeneration || updateForceController !== controller)
+      return;
+    if (!error.stale)
+      notice(
+        error.status
+          ? error.message
+          : "Force response unavailable. Checking queue status; nothing was resent.",
+        "error",
+      );
+  } finally {
+    if (generation !== authGeneration || updateForceController !== controller)
+      return;
+    updateForceRequest = false;
+    updateForceController = undefined;
+    updateForceQueue = undefined;
+    renderUpdate();
+  }
+  if (generation === authGeneration && !controller.signal.aborted)
+    await refreshUpdate();
+});
 action("updateReadinessRefresh", async () => {
   $("updateConfirm").hidden = true;
   await refreshUpdate(false, true);
@@ -4168,7 +4255,7 @@ action("updateApply", async () => {
   }
   if (updateWorkerBlocked) {
     notice(
-      "Finish or cancel preview before queuing an upgrade. Accepted worker work drains first; native Pi must finish and close before installation.",
+      "Finish or cancel preview before queuing an upgrade. Accepted worker work drains first; Studio native Pi is automatically interrupted and closed.",
       "warning",
     );
     return;
@@ -4270,6 +4357,9 @@ function lockSession(message, severity) {
   native.reset();
   authGeneration++;
   updateApplyRequest = false;
+  updateForceController?.abort();
+  updateForceController = undefined;
+  updateForceRequest = false;
   key = "";
   lifecycleBusy = false;
   serverTransition = false;
@@ -4320,6 +4410,8 @@ function lockSession(message, severity) {
   updatesEntryCheckPending = false;
   updateTarget = undefined;
   $("updateConfirm").hidden = true;
+  updateForceQueue = undefined;
+  $("updateForceConfirm").hidden = true;
   clearTimeout(logTimer);
   logController?.abort();
   logController = undefined;

@@ -39,6 +39,8 @@ export async function admin(
   updates = new Updates(null, null),
   options: {
     autonomy?: Pick<AutonomyHostOptions, "runtimes" | "scheduler">;
+    /** Bound on supported upgrade teardown waits (test seam). */
+    nativeForceStopMs?: number;
   } = {},
 ) {
   const logs = new Diagnostics(store.dir);
@@ -663,6 +665,7 @@ export async function admin(
           | "waiting-worker"
           | "waiting-publication"
           | "waiting-native"
+          | "stopping-native"
           | "stopping"
           | "installing"
           | "accepted"
@@ -670,11 +673,18 @@ export async function admin(
           | "failed";
         persistence: "process-local";
         wasRunning: boolean;
+        // Explicit human Force interrupts accepted work, never discards receipts.
+        forced?: true;
         reason?: string;
       }
     | undefined;
   let preparationInFlight = false;
   let manualQueueController: AbortController | undefined;
+  let manualQueueForce: (() => void) | undefined;
+  // Covers supported native teardown's own bounded Docker steps (start, rm,
+  // absence probe). Beyond it the lifecycle keeps ownership and fences
+  // admission; the upgrade reports failure instead of waiting forever.
+  const nativeForceStopMs = options.nativeForceStopMs ?? 60000;
   let manualQueueDone = Promise.resolve();
   const queueActive = () => !!manualQueueController;
   const updateSnapshot = async () => {
@@ -1550,6 +1560,41 @@ export async function admin(
         await manualQueueDone;
         return send(200, { ok: true, manualQueue });
       }
+      // Explicit interruption authority for this exact waiting queue. Artifact
+      // checks and receipt identity preservation remain mandatory.
+      if (path === "/api/update/force") {
+        if (
+          body.confirm !== true ||
+          Object.keys(body).sort().join(",") !== "confirm,id,sha"
+        )
+          return send(400, { error: "CONFIRM_FORCE_REQUIRED" });
+        if (
+          !manualQueue ||
+          body.id !== manualQueue.id ||
+          body.sha !== manualQueue.sha
+        )
+          return send(409, { error: "QUEUE_ID_MISMATCH" });
+        // Repeated clicks coalesce onto the one accepted force.
+        if (!manualQueue.forced) {
+          if (
+            !queueActive() ||
+            !manualQueue.phase.startsWith("waiting-") ||
+            !manualQueueForce
+          )
+            return send(409, { error: "FORCE_UNAVAILABLE" });
+          // Synchronous: Cancel is refused and native admission stays fenced
+          // (busy) before the queue wakes to interrupt worker work.
+          manualQueue.forced = true;
+          manualQueue.phase = "stopping";
+          manualQueueForce();
+        }
+        return send(202, {
+          ok: true,
+          forced: true,
+          id: manualQueue.id,
+          manualQueue,
+        });
+      }
       if (
         queueActive() &&
         path === "/api/update/apply" &&
@@ -1999,10 +2044,13 @@ export async function admin(
           busy = true;
           const controller = new AbortController();
           manualQueueController = controller;
+          const forced = new Promise<void>((r) => (manualQueueForce = r));
           const queued: NonNullable<typeof manualQueue> = (manualQueue = {
             id: ref,
             sha: body.sha,
-            phase: "waiting-worker" as NonNullable<typeof manualQueue>["phase"],
+            phase: "stopping-native" as NonNullable<
+              typeof manualQueue
+            >["phase"],
             persistence: "process-local" as const,
             wasRunning,
           });
@@ -2023,34 +2071,59 @@ export async function admin(
             });
           manualQueueDone = (async () => {
             try {
-              if (wasRunning) {
+              // Stop only this Studio's owned native lifecycle, even for an
+              // ordinary confirmed upgrade. The lifecycle retains late cleanup
+              // ownership and its admission fence after our finite deadline.
+              const boundedStop = async (
+                stop: Promise<unknown>,
+                code: "NATIVE_STOP_UNCONFIRMED" | "WORKER_STOP_UNCONFIRMED",
+              ) => {
+                let timer: NodeJS.Timeout | undefined;
+                try {
+                  await Promise.race([
+                    stop,
+                    new Promise((_, reject) => {
+                      timer = setTimeout(
+                        () => reject(new SafeError(code)),
+                        nativeForceStopMs,
+                      );
+                    }),
+                  ]);
+                } catch {
+                  throw new SafeError(code);
+                } finally {
+                  clearTimeout(timer);
+                }
+              };
+              await boundedStop(terminal.stop(), "NATIVE_STOP_UNCONFIRMED");
+              if (!terminal.idle)
+                throw new SafeError("NATIVE_STOP_UNCONFIRMED");
+              controller.signal.throwIfAborted();
+              queued.phase = "waiting-worker";
+              if (wasRunning && !queued.forced) {
                 let drained = false;
                 const drain = worker!.drainForUpdate().then(() => {
                   drained = true;
                 });
-                // Observe rejection even if cancellation wins; never cancel the
-                // accepted execution just because waiting intent was cancelled.
                 void drain.catch(() => {});
-                while (!drained) {
-                  await Promise.race([drain, wait()]);
-                }
+                while (!drained && !queued.forced)
+                  await Promise.race([drain, wait(), forced]);
               }
               controller.signal.throwIfAborted();
-              queued.phase = "waiting-publication";
+              if (!queued.forced) queued.phase = "waiting-publication";
               let nextReceiptPass = 0;
-              while (worker && !worker.safeToReplace) {
+              while (worker && !worker.safeToReplace && !queued.forced) {
                 if (Date.now() >= nextReceiptPass) {
                   nextReceiptPass = Date.now() + 60000;
-                  await worker.reconcilePublications(true).catch(() => {});
+                  await Promise.race([
+                    worker.reconcilePublications(true).catch(() => {}),
+                    forced,
+                  ]);
                 }
-                if (!worker.safeToReplace) await wait();
+                if (!worker.safeToReplace && !queued.forced)
+                  await Promise.race([wait(), forced]);
                 controller.signal.throwIfAborted();
               }
-              queued.phase = "waiting-native";
-              // No reliable PTY turn-complete signal exists. Never infer completion
-              // from silence or stop a running native turn. Wait for supported
-              // session teardown (human Stop/normal exit), including its journal.
-              while (!terminal.idle) await wait();
               controller.signal.throwIfAborted();
               updates.validatePrepared(queued.sha);
               await updates.assertReady(queued.sha, preparationToken);
@@ -2061,10 +2134,11 @@ export async function admin(
               await autonomy.prepareReplacement().catch(() => false);
               if (!autonomy.safeToReplace)
                 throw new SafeError("AUTONOMY_REPLACEMENT_UNCONFIRMED");
-              await terminal.stop();
-              if (!terminal.idle)
-                throw new SafeError("WORKER_STOP_UNCONFIRMED");
-              if (wasRunning) await worker!.stop();
+              // Check forced intent here, after the last cancellable await:
+              // Force can arrive during readiness as well as drain/receipts.
+              // Supported Stop retains unresolved identities and late cleanup.
+              if (worker && (wasRunning || queued.forced))
+                await boundedStop(worker.stop(), "WORKER_STOP_UNCONFIRMED");
               if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
                 throw new SafeError("WORKER_STOP_UNCONFIRMED");
               queued.phase = "installing";
@@ -2092,6 +2166,7 @@ export async function admin(
                 ? "CANCELLED"
                 : error instanceof SafeError &&
                     (error.code === "WORKER_STOP_UNCONFIRMED" ||
+                      error.code === "NATIVE_STOP_UNCONFIRMED" ||
                       error.code === "AUTONOMY_REPLACEMENT_UNCONFIRMED")
                   ? error.code
                   : "UPDATE_NOT_ACCEPTED";
@@ -2116,6 +2191,7 @@ export async function admin(
               worker?.releaseUpdateQuiesce();
               autonomy.releaseUpdateQuiesce();
               manualQueueController = undefined;
+              manualQueueForce = undefined;
               busy = false;
               if (!updates.applying && !closing) await startAutonomy();
             }

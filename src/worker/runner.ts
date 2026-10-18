@@ -403,6 +403,9 @@ export class Worker {
   get stopConfirmed() {
     return (
       this.state === "stopped" &&
+      // The loop may stop before the current presence Stop reply arrives.
+      // A prior "reported" presence must not certify a still-pending Stop.
+      (!this.stopping || this.stopSettled) &&
       this.invocations.size === 0 &&
       (!this.presenceAttempted || this.presence === "reported")
     );

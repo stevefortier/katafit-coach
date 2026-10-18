@@ -68,17 +68,19 @@ test("manual update queues an in-flight claim and fences late claims and native 
       "idle",
       "visible idle alone hides an in-flight claim",
     );
+    // Native closure now begins immediately, before waiting for the claim.
+    // Hold that same owned-stop boundary before submitting the upgrade.
+    NativeTerminal.prototype.stop = async function () {
+      enterStop();
+      await stopGate;
+      return stopNative.call(this);
+    };
     assert.equal(
       (await post("/api/update/apply", { confirm: true, sha: updates.latest }))
         .status,
       202,
     );
     assert.equal(owned.state, "idle");
-    NativeTerminal.prototype.stop = async function () {
-      enterStop();
-      await stopGate;
-      return stopNative.call(this);
-    };
     release();
     await polling;
     await stopEntered;
