@@ -325,8 +325,10 @@ dispatched write still drains or rejects as `UPDATE_BUSY`; a journal that
 cannot be read back exactly or unconfirmed owned container cleanup rejects
 as `AUTONOMY_REPLACEMENT_UNCONFIRMED` (`local.replacementBlocker` names
 which). `WORKER_STOP_UNCONFIRMED` is reserved for worker presence,
-publication safety and native teardown. Configuration changes that rebind
-origin/account still wait for exact proof (`AUTONOMY_WRITE_UNRESOLVED`).
+publication safety and native teardown. Configuration changes never wait for
+that proof: a rebinding save is applied with an `AUTONOMY_WRITE_REBOUND`
+warning and the entry stays bound to its original origin/account (see
+[apply-restart](apply-restart.md#unresolved-earlier-work-never-blocks-a-valid-save)).
 
 For an intentionally stopped worker on a build supporting this endpoint, an
 authenticated, same-origin `POST /api/worker/reconcile` with `{}` performs only

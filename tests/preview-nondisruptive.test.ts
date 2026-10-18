@@ -201,7 +201,7 @@ test("Run and Stop during a preview neither cancel it nor are undone by it", asy
   }
 });
 
-test("preview keeps exclusive settings/update safety and a coherent saved snapshot", async () => {
+test("a settings save cancels a running preview; the stale answer is never published", async () => {
   const gate = held();
   const seen: any[] = [];
   const h = await harness(async (signal, provider) => {
@@ -215,32 +215,26 @@ test("preview keeps exclusive settings/update safety and a coherent saved snapsh
     const pending = h.post("preview", { text: PREVIEW });
     await bounded(gate.started, "preview start");
     const saved = h.store.publicConfig();
+    // Settings policy: the valid save is not refused for the preview.
     const save = await h.post("config", {
       ...saved,
       persona: { ...saved.persona, name: "Changed during preview" },
       apiKey: "synthetic-preview-provider-key-2",
     });
-    assert.equal(save.status, 409);
-    const saveBody = (await save.json()) as any;
-    assert.equal(saveBody.error, "OPERATION_IN_PROGRESS");
-    assert.match(saveBody.hint, /preview/i);
-    assert.equal(h.store.publicConfig().revision, revision);
-    const restore = await h.post("persona-restore", { revision: 1 });
-    assert.equal(restore.status, 409);
-    assert.equal(h.store.publicConfig().revision, revision);
+    assert.equal(save.status, 200, await save.clone().text());
+    assert.equal(h.store.publicConfig().revision, revision + 1);
     gate.release();
     const response = await pending;
     const data = (await response.json()) as any;
-    assert.equal(response.status, 200);
-    assert.equal(data.revision, revision);
+    assert.notEqual(response.status, 200);
+    assert.equal(data.error, "CANCELLED");
+    assert.equal(data.text, undefined, "no stale answer");
     assert.equal(seen[0].apiKey, "synthetic-preview-provider-key");
     assert.equal(seen[0].model, "synthetic-model");
-    // Once the preview settles, settings save normally again.
-    const after = await h.post("config", {
-      ...saved,
-      persona: { ...saved.persona, name: "Saved after preview" },
-    });
-    assert.equal(after.status, 200, await after.clone().text());
+    const current = h.store.publicConfig();
+    const restore = await h.post("persona-restore", { revision: 1 });
+    assert.equal(restore.status, 200, await restore.clone().text());
+    assert.equal(h.store.publicConfig().revision, current.revision + 1);
   } finally {
     gate.release();
     await h.close();

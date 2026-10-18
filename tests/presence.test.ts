@@ -238,6 +238,22 @@ async function backend(
     },
   };
 }
+/** One saved operation's background stop/restart, once it settles. */
+async function settledLifecycle(
+  origin: string,
+  headers: Record<string, string>,
+  id: string,
+) {
+  for (let i = 0; i < 1500; i++) {
+    const { lifecycle } = await (
+      await fetch(origin + "/api/status", { headers })
+    ).json();
+    if (lifecycle?.id === id && lifecycle.phase === "complete")
+      return lifecycle;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.fail("lifecycle " + id + " did not settle");
+}
 function worker(origin: string, options: Record<string, unknown> = {}) {
   return new Worker({
     origin,
@@ -789,6 +805,333 @@ test("Studio Stop exposes refused backend stop as unconfirmed", async () => {
   }
 });
 
+test("running save is acknowledged while a slow, refused backend stop is held; restart stays pending", async () => {
+  const options = { refuseStopped: true };
+  const f = await backend(options);
+  const dir = await mkdtemp(tmpdir() + "/coach-presence-save-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-key",
+  });
+  const app = await admin(store, 0, async () => "reply");
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = (path: string, body: unknown = {}) =>
+    fetch(app.origin + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  const instances = () =>
+    new Set(
+      f.accepted.filter((r) => r.state === "running").map((r) => r.instance_id),
+    ).size;
+  try {
+    assert.equal((await post("/api/run")).status, 200);
+    // The backend stop report is now slow (held) and then refused.
+    f.delays.presence = 1500;
+    const config = store.publicConfig();
+    const started = Date.now();
+    const saved = await post("/api/config", {
+      ...config,
+      persona: { ...config.persona, name: "Saved after refused stop" },
+      confirmRestart: true,
+    });
+    const result = await saved.json();
+    const elapsed = Date.now() - started;
+    assert.equal(saved.status, 200, JSON.stringify(result));
+    assert.ok(elapsed < 1000, `acknowledged in ${elapsed} ms`);
+    assert.equal(result.lifecycle.applied, true);
+    assert.equal(result.lifecycle.resumed, false, "no restart claimed");
+    assert.notEqual(result.lifecycle.phase, "complete");
+    assert.equal(store.publicConfig().revision, config.revision + 1);
+    assert.equal(
+      (await post("/api/run")).status,
+      409,
+      "Run waits for the held stop (OPERATION_IN_PROGRESS)",
+    );
+    const lifecycle = await settledLifecycle(
+      app.origin,
+      headers,
+      result.lifecycle.id,
+    );
+    f.delays.presence = 0;
+    assert.equal(lifecycle.resumed, false, "no fictional restart");
+    assert.equal(lifecycle.running, false);
+    assert.equal(lifecycle.restartPending, true);
+    assert.equal(lifecycle.error, undefined, "not a failed save");
+    assert.deepEqual(
+      lifecycle.warnings.map((w: any) => w.code),
+      ["WORKER_STOP_UNCONFIRMED"],
+    );
+    assert.equal(instances(), 1, "no replacement before stop is confirmed");
+    // Retry checks the same instance first and still refuses replacement.
+    const refused = await post("/api/run");
+    assert.equal(refused.status, 400);
+    assert.equal((await refused.json()).error, "WORKER_STOP_UNCONFIRMED");
+    assert.equal(instances(), 1);
+    // Once the original stop is acknowledged, Retry starts the saved revision.
+    options.refuseStopped = false;
+    assert.equal((await post("/api/run")).status, 200);
+    assert.equal(instances(), 2);
+    const status = await (
+      await fetch(app.origin + "/api/status", { headers })
+    ).json();
+    assert.equal(status.state !== "stopped", true);
+    assert.equal(status.lifecycle.restartPending, undefined);
+    assert.equal(status.lifecycle.resumed, true);
+  } finally {
+    await app.close();
+    await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a rejected worker stop after save is a warning; the original worker is never replaced", async () => {
+  const f = await backend();
+  const dir = await mkdtemp(tmpdir() + "/coach-presence-reject-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-key",
+  });
+  const app = await admin(store, 0, async () => "reply");
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const stop = Worker.prototype.stop;
+  try {
+    const run = await fetch(app.origin + "/api/run", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    assert.equal(run.status, 200);
+    Worker.prototype.stop = () =>
+      Promise.reject(new Error("synthetic stop failure"));
+    const config = store.publicConfig();
+    const saved = await fetch(app.origin + "/api/config", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        ...config,
+        persona: { ...config.persona, name: "Saved despite stop failure" },
+        confirmRestart: true,
+      }),
+    });
+    const result = await saved.json();
+    assert.equal(saved.status, 200, JSON.stringify(result));
+    assert.equal(
+      store.publicConfig().persona.name,
+      "Saved despite stop failure",
+    );
+    const lifecycle = await settledLifecycle(
+      app.origin,
+      headers,
+      result.lifecycle.id,
+    );
+    assert.equal(lifecycle.applied, true);
+    assert.equal(lifecycle.resumed, false);
+    assert.equal(lifecycle.restartPending, true);
+    assert.deepEqual(
+      lifecycle.warnings.map((w: any) => w.code),
+      ["WORKER_STOP_UNCONFIRMED"],
+    );
+    assert.equal(
+      new Set(
+        f.accepted
+          .filter((r) => r.state === "running")
+          .map((r) => r.instance_id),
+      ).size,
+      1,
+      "no replacement worker",
+    );
+  } finally {
+    Worker.prototype.stop = stop;
+    await app.close();
+    await f.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function runningStudio(options: Parameters<typeof backend>[0] = {}) {
+  const f = await backend(options);
+  const dir = await mkdtemp(tmpdir() + "/coach-presence-intent-");
+  const store = new Store(dir);
+  await store.init();
+  await store.save({
+    ...store.publicConfig(),
+    origin: f.origin,
+    token: "synthetic-token",
+    apiKey: "synthetic-key",
+  });
+  const app = await admin(store, 0, async () => "reply");
+  const headers = {
+    Authorization: "Bearer " + store.secrets.admin,
+    Origin: app.origin,
+    "Content-Type": "application/json",
+  };
+  const post = async (path: string, body: unknown = {}) => {
+    const response = await fetch(app.origin + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: (await response.json()) as any };
+  };
+  const status = async () =>
+    (await fetch(app.origin + "/api/status", { headers })).json();
+  const rename = (name: string) => {
+    const config = store.publicConfig();
+    // Legacy clients still send consent; it is accepted and ignored.
+    return post("/api/config", {
+      ...config,
+      persona: { ...config.persona, name },
+      confirmRestart: true,
+    });
+  };
+  assert.equal((await post("/api/run")).status, 200);
+  return {
+    f,
+    store,
+    app,
+    headers,
+    post,
+    status,
+    rename,
+    async close() {
+      await app.close();
+      await f.close();
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+test("running Coach: config, persona and skill saves need no restart consent", async () => {
+  const t = await runningStudio();
+  try {
+    const revision = t.store.publicConfig().revision;
+    const config = t.store.publicConfig();
+    const saved = await t.post("/api/config", {
+      ...config,
+      persona: { ...config.persona, name: "Saved without consent" },
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(t.store.publicConfig().revision, revision + 1);
+    const restored = await t.post("/api/persona-restore", { revision: 1 });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    const skill: any = (t.store.skills.view() as any).skills[0];
+    const skillSaved = await t.post("/api/skills/" + skill.id, {
+      enabled: skill.enabled,
+      purpose: skill.purpose + " Synthetic.",
+      triggers: skill.triggers,
+      instructions: skill.instructions,
+      expectedRevision: t.store.skills.runtime().revision,
+    });
+    assert.equal(skillSaved.status, 200, JSON.stringify(skillSaved.body));
+    const done = await settledLifecycle(
+      t.app.origin,
+      t.headers,
+      skillSaved.body.lifecycle.id,
+    );
+    assert.equal(done.wasRunning, true);
+    assert.equal(done.resumed, true, "latest revision runs");
+  } finally {
+    await t.close();
+  }
+});
+
+test("B3: a save during a held restart inherits running intent; the latest revision runs", async () => {
+  const t = await runningStudio({ holdRunning: true });
+  try {
+    const first = await t.rename("First during running");
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    // The continuation stopped the worker; its replacement start is held.
+    await t.f.entered;
+    const second = await t.rename("Second during held start");
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(second.body.lifecycle.wasRunning, true, "inherited intent");
+    t.f.release();
+    const done = await settledLifecycle(
+      t.app.origin,
+      t.headers,
+      second.body.lifecycle.id,
+    );
+    assert.equal(done.wasRunning, true);
+    assert.equal(done.resumed, true, JSON.stringify(done));
+    const s = await t.status();
+    assert.notEqual(s.state, "stopped", "latest revision is running");
+    assert.equal(s.revision, t.store.publicConfig().revision);
+    assert.equal(
+      t.store.publicConfig().persona.name,
+      "Second during held start",
+    );
+    // Run, the first restart, then the latest save's own restart.
+    assert.equal(
+      new Set(
+        t.f.accepted
+          .filter((r) => r.state === "running")
+          .map((r) => r.instance_id),
+      ).size,
+      3,
+    );
+  } finally {
+    await t.close();
+  }
+});
+
+test("B3: an older stop released while a newer local write is held never strands intent", async () => {
+  const t = await runningStudio();
+  const save = t.store.save.bind(t.store);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  try {
+    t.f.delays.presence = 600;
+    const first = await t.rename("First, slow stop");
+    assert.equal(first.status, 200);
+    let writing = false;
+    t.store.save = async (input: any) => {
+      writing = true;
+      await gate;
+      return save(input);
+    };
+    const second = t.rename("Second, held write");
+    await waitFor(() => writing);
+    // The first continuation's stop settles while the second write is held.
+    await new Promise((r) => setTimeout(r, 1500));
+    t.f.delays.presence = 0;
+    release();
+    const result = await second;
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const done = await settledLifecycle(
+      t.app.origin,
+      t.headers,
+      result.body.lifecycle.id,
+    );
+    assert.equal(done.wasRunning, true);
+    assert.equal(done.resumed, true, JSON.stringify(done));
+    const s = await t.status();
+    assert.notEqual(s.state, "stopped");
+    assert.equal(s.revision, t.store.publicConfig().revision);
+  } finally {
+    release();
+    t.store.save = save;
+    await t.close();
+  }
+});
+
 test("Studio on old backend marks presence unsupported but remains runnable", async () => {
   const f = await backend({ supported: false });
   const dir = await mkdtemp(tmpdir() + "/coach-presence-old-");
@@ -1152,18 +1495,24 @@ for (const refuseStopped of [false, true])
           name: "Synthetic replacement",
         },
       };
-      assert.equal((await post("config", payload)).status, 409);
-      assert.equal(store.publicConfig().revision, revision);
-      assert.equal(
-        f.reports.filter((r) => r.state === "stopped").length,
-        0,
-        "no stop without confirmation",
-      );
-      const result = await post("config", { ...payload, confirmRestart: true });
+      // Settings policy: no restart consent precondition.
+      const result = await post("config", payload);
       if (refuseStopped) {
-        assert.equal(result.status, 400);
-        assert.equal((await result.json()).error, "WORKER_STOP_UNCONFIRMED");
-        assert.equal(store.publicConfig().revision, revision);
+        // Settings policy: saved with a warning; replacement stays fenced.
+        assert.equal(result.status, 200);
+        const lifecycle = await settledLifecycle(
+          app.origin,
+          headers,
+          (await result.json()).lifecycle.id,
+        );
+        assert.equal(lifecycle.applied, true);
+        assert.equal(lifecycle.resumed, false);
+        assert.equal(lifecycle.restartPending, true);
+        assert.deepEqual(
+          lifecycle.warnings.map((w: any) => w.code),
+          ["WORKER_STOP_UNCONFIRMED"],
+        );
+        assert.equal(store.publicConfig().revision, revision + 1);
         assert.equal(
           (await post("run")).status,
           400,
@@ -1172,7 +1521,12 @@ for (const refuseStopped of [false, true])
         assert.equal(f.reports.filter((r) => r.state === "running").length, 1);
       } else {
         assert.equal(result.status, 200);
-        assert.equal((await result.json()).lifecycle.resumed, true);
+        const lifecycle = await settledLifecycle(
+          app.origin,
+          headers,
+          (await result.json()).lifecycle.id,
+        );
+        assert.equal(lifecycle.resumed, true);
         assert.deepEqual(
           f.reports.map((r) => r.state),
           ["running", "stopped", "running"],

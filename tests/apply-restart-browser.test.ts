@@ -8,7 +8,7 @@ import { chromium } from "playwright-core";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
 
-test("real Studio confirms save restart, cancel retains draft, and resume failure retries without resaving", async () => {
+test("real Studio saves without consent, restarts, and resume failure retries without resaving", async () => {
   const dir = await mkdtemp(tmpdir() + "/apply-browser-");
   let fail = false;
   const backend = createServer(async (req, res) => {
@@ -65,34 +65,27 @@ test("real Studio confirms save restart, cancel retains draft, and resume failur
     await settingsTab(page, "Persona");
     await page.locator("#name").fill("Synthetic retained draft");
     const revision = store.publicConfig().revision;
+    // Settings policy: Save asks no restart consent, even with Coach running.
     let dialogs = 0;
-    page.once("dialog", async (d) => {
+    page.on("dialog", async (d) => {
       dialogs++;
-      assert.match(d.message(), /restart/i);
       await d.dismiss();
     });
-    await page.locator("#save").click();
-    await page.waitForFunction(() =>
-      document.querySelector("#notice")?.textContent?.includes("cancelled"),
-    );
-    assert.equal(dialogs, 1);
-    assert.equal(store.publicConfig().revision, revision);
-    assert.equal(
-      await page.locator("#name").inputValue(),
-      "Synthetic retained draft",
-    );
-    page.once("dialog", (d) => d.accept());
     await page.locator("#save").click();
     await page.waitForFunction(
       () =>
         document.querySelector("#revision")?.textContent === "Saved revision 3",
     );
     assert.equal(store.publicConfig().persona.name, "Synthetic retained draft");
+    assert.equal(dialogs, 0);
+    // Wait for the restart continuation before making the backend fail.
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#restartStatus")
+        ?.textContent?.includes("Coach restarted with the saved configuration"),
+    );
     await page.locator("#name").fill("Synthetic applied but stopped");
-    page.once("dialog", async (d) => {
-      fail = true;
-      await d.accept();
-    });
+    fail = true;
     await page.locator("#save").click();
     await page.locator("#restartRetry").waitFor({ state: "visible" });
     assert.equal(store.publicConfig().revision, revision + 2);
@@ -108,8 +101,8 @@ test("real Studio confirms save restart, cancel retains draft, and resume failur
       revision + 2,
       "Retry never saves again",
     );
-    // Response loss after a real accepted write: retain the draft, reconcile the
-    // operation ID via status, never POST the save again.
+    // Response loss after a real accepted write: retain the draft, read the
+    // saved revision back, never POST the save again and never lock Save.
     let saves = 0;
     await page.route("**/api/config", async (route) => {
       if (route.request().method() !== "POST") return route.continue();
@@ -118,15 +111,16 @@ test("real Studio confirms save restart, cancel retains draft, and resume failur
       await route.abort();
     });
     await page.locator("#name").fill("Synthetic lost response");
-    page.once("dialog", (d) => d.accept());
     await page.locator("#save").click();
-    await page.locator("#restartCheck").waitFor({ state: "visible" });
+    await page.waitForFunction(() =>
+      document.querySelector("#notice")?.textContent?.includes("readback"),
+    );
+    assert.match(await page.locator("#notice").innerText(), /is saved/);
     assert.equal(
       await page.locator("#name").inputValue(),
       "Synthetic lost response",
     );
-    await page.locator("#restartCheck").click();
-    await page.locator("#restartCheck").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#save").isDisabled(), false);
     assert.equal(saves, 1);
     assert.equal(store.publicConfig().revision, revision + 3);
     await page.unroute("**/api/config");
@@ -143,7 +137,6 @@ test("real Studio confirms save restart, cancel retains draft, and resume failur
       await route.fulfill({ response });
     });
     await page.locator("#name").fill("Synthetic late save");
-    page.once("dialog", (d) => d.accept());
     await page.locator("#save").click();
     await started;
     await page.locator("#lockStudio").click();
@@ -158,6 +151,7 @@ test("real Studio confirms save restart, cancel retains draft, and resume failur
     await page.locator("#unlock").click();
     await page.locator("#studio").waitFor({ state: "visible" });
     assert.equal(store.publicConfig().revision, revision + 4);
+    assert.equal(dialogs, 0);
     if (process.env.APPLY_RESTART_EVIDENCE) {
       await mkdir(process.env.APPLY_RESTART_EVIDENCE, { recursive: true });
       await page.screenshot({

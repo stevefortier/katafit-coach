@@ -212,10 +212,13 @@ try {
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
   const savedBeforeReset = store.publicConfig();
-  assert.match(
-    await page.locator("#restartStatus").innerText(),
-    /remains stopped/,
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#restartStatus")
+      ?.textContent?.includes("remains stopped"),
   );
+  assert.equal(await page.locator("#save").isEnabled(), true);
+  assert.equal(savedBeforeReset.persona.name, "Sage");
   await page.locator("#name").fill("Unsaved name");
   await page.getByText("Advanced Markdown", { exact: true }).click();
   await page.locator("#markdown").fill("Unsaved custom instruction");

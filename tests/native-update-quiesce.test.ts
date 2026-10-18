@@ -478,7 +478,7 @@ test("failed supervised activation keeps the original uncertain native action id
   }
 });
 
-test("confirmed configuration revokes a starting native session and its spare admission ticket", async () => {
+test("a settings save revokes a starting native session and its spare admission ticket", async () => {
   const hold = held();
   heldStartup = hold;
   const f = await fixture();
@@ -502,22 +502,23 @@ test("confirmed configuration revokes a starting native session and its spare ad
     sockets.push(session.ws);
     await hold.started;
     const revision = f.store.publicConfig().revision;
-    assert.equal((await post("config", f.store.publicConfig())).status, 409);
-    assert.equal(f.store.publicConfig().revision, revision);
-    assert.equal(session.ws.readyState, WebSocket.OPEN);
-    const saving = post("config", {
-      ...f.store.publicConfig(),
-      confirmRestart: true,
-    });
+    // Settings policy: no consent; durable save before native teardown.
+    const result = await post("config", f.store.publicConfig());
+    assert.equal(result.status, 200, await result.clone().text());
+    assert.equal(f.store.publicConfig().revision, revision + 1);
+    const { lifecycle } = await result.json();
     assert.equal(await session.closed, 1008);
     hold.release();
-    const result = await saving;
-    assert.equal(result.status, 200, await result.clone().text());
-    assert.equal(
-      (await result.json()).lifecycle.resumed,
-      false,
-      "native Pi input is never replayed",
-    );
+    let done: any;
+    for (let i = 0; i < 1500; i++) {
+      done = (
+        await (await fetch(app.origin + "/api/status", { headers })).json()
+      ).lifecycle;
+      if (done?.id === lifecycle.id && done.phase === "complete") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(done.phase, "complete");
+    assert.equal(done.resumed, false, "native Pi input is never replayed");
     const late = await connect(app.origin, spare.ticket);
     sockets.push(late.ws);
     assert.equal(await late.closed, 1008);
@@ -530,13 +531,11 @@ test("confirmed configuration revokes a starting native session and its spare ad
   }
 });
 
-test("confirmed settings apply awaits native startup teardown and fences spare tickets", async () => {
-  const starting = held(),
-    saving = held();
+test("a settings save is durable before held native startup teardown, which still fences tickets", async () => {
+  const starting = held();
   heldStartup = starting;
   const f = await fixture();
   const app = await admin(f.store, 0);
-  const save = f.store.save.bind(f.store);
   const headers = {
     Authorization: "Bearer " + f.store.secrets.admin,
     Origin: app.origin,
@@ -549,7 +548,6 @@ test("confirmed settings apply awaits native startup teardown and fences spare t
       body: JSON.stringify(body),
     });
   const sockets: WebSocket[] = [];
-  let request: Promise<Response> | undefined;
   try {
     const first = await (await post("/api/terminal/ticket")).json(),
       spare = await (await post("/api/terminal/ticket")).json();
@@ -557,40 +555,19 @@ test("confirmed settings apply awaits native startup teardown and fences spare t
     sockets.push(live.ws);
     await starting.started;
     const revision = f.store.publicConfig().revision;
-    assert.equal(
-      (await post("/api/config", f.store.publicConfig())).status,
-      409,
-    );
-    assert.equal(live.ws.readyState, WebSocket.OPEN);
-    assert.equal(f.store.publicConfig().revision, revision);
-    f.store.save = async (...args) => {
-      saving.entered();
-      await saving.gate;
-      return save(...args);
-    };
-    request = post("/api/config", {
-      ...f.store.publicConfig(),
-      confirmRestart: true,
-    });
-    await saving.started;
-    assert.equal(
-      await live.closed,
-      1008,
-      "native shutdown completes before Store save",
-    );
+    // Settings policy: saved and acknowledged while native startup is held.
+    const saved = await post("/api/config", f.store.publicConfig());
+    assert.equal(saved.status, 200, await saved.clone().text());
+    assert.equal(f.store.publicConfig().revision, revision + 1);
+    // The background teardown still closes and fences native admission.
+    assert.equal(await live.closed, 1008);
     assert.equal((await post("/api/terminal/ticket")).status, 409);
     const late = await connect(app.origin, spare.ticket);
     sockets.push(late.ws);
     assert.equal(await late.closed, 1008);
-    saving.release();
-    assert.equal((await request).status, 200);
-    assert.equal(f.store.publicConfig().revision, revision + 1);
   } finally {
     starting.release();
     heldStartup = undefined;
-    saving.release();
-    await request;
-    f.store.save = save;
     for (const ws of sockets) ws.terminate();
     await app.close();
     await f.close();

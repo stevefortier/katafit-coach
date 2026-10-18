@@ -71,6 +71,7 @@ test("Skills API rejects stale, unauthenticated, busy, and update-locked mutatio
 
     const preview = post("preview", { text: "synthetic" });
     await started;
+    // Settings policy: a valid save cancels the running preview.
     assert.equal(
       (
         await post("skills/" + skill.id, {
@@ -78,11 +79,11 @@ test("Skills API rejects stale, unauthenticated, busy, and update-locked mutatio
           ...input(skill),
         })
       ).status,
-      409,
+      200,
     );
-    assert.equal((store.skills.view() as any).revision, 1);
+    assert.equal((store.skills.view() as any).revision, 2);
     release();
-    await preview;
+    assert.equal((await (await preview).json()).error, "CANCELLED");
   } finally {
     release();
     await app.close();
@@ -103,11 +104,11 @@ test("Skills API rejects stale, unauthenticated, busy, and update-locked mutatio
         Origin: lockedApp.origin,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ expectedRevision: 1, ...input(skill) }),
+      body: JSON.stringify({ expectedRevision: 2, ...input(skill) }),
     });
     assert.equal(response.status, 409);
     assert.equal((await response.json()).error, "UPDATE_IN_PROGRESS");
-    assert.equal((store.skills.view() as any).revision, 1);
+    assert.equal((store.skills.view() as any).revision, 2);
   } finally {
     await lockedApp.close();
     backend.closeAllConnections();
@@ -147,26 +148,30 @@ test("confirmed Skills mutation restarts a running Coach with the new pinned rev
       purpose: skill.purpose + " Synthetic lifecycle edit.",
       expectedRevision: 1,
     };
-    const unconfirmed = await post("skills/" + skill.id, changed);
-    assert.equal(unconfirmed.status, 409);
-    assert.equal(
-      (await unconfirmed.json()).error,
-      "RESTART_CONFIRMATION_REQUIRED",
-    );
-    assert.equal(store.skills.runtime().revision, 1);
     const initialConnections = fixture.calls.filter(
       (call) => call.name === "initialize",
     ).length;
-
-    const confirmed = await post("skills/" + skill.id, {
-      ...changed,
-      confirmRestart: true,
-    });
+    // Settings policy: no restart consent precondition for a running Coach.
+    const confirmed = await post("skills/" + skill.id, changed);
     assert.equal(confirmed.status, 200, await confirmed.clone().text());
     const result = await confirmed.json();
     assert.equal(result.lifecycle.applied, true);
-    assert.equal(result.lifecycle.resumed, true);
     assert.equal(store.skills.runtime().revision, 2);
+    // The restart continues after the acknowledged save.
+    let lifecycle;
+    for (let i = 0; i < 500; i++) {
+      lifecycle = (
+        await (await fetch(app.origin + "/api/status", { headers })).json()
+      ).lifecycle;
+      if (
+        lifecycle.id === result.lifecycle.id &&
+        lifecycle.phase === "complete"
+      )
+        break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(lifecycle.phase, "complete");
+    assert.equal(lifecycle.resumed, true);
     assert.ok(
       fixture.calls.filter((call) => call.name === "initialize").length >
         initialConnections,

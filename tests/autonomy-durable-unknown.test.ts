@@ -1,5 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { REPORT_TOOL } from "../src/autonomy/tools.js";
 import {
   closeLeaked,
@@ -172,20 +174,29 @@ test("F1: an origin or account switch keeps the original binding; only the origi
       () => env.fake.state.work.get(id).actions.length === 1,
       "write committed upstream",
     );
-    // A configuration transition is refused while the write is unresolved.
+    // Settings policy: the rebinding save is never refused by the unresolved
+    // write. It saves with a continuity warning; the entry keeps its binding.
     const config = env.store.publicConfig();
-    const refused = await env.call("POST", "/api/config", {
+    const journal = () =>
+      readFile(join(env.store.dir, "autonomy", "writes.json"), "utf8");
+    const before = await journal();
+    const rebound = await env.call("POST", "/api/config", {
       ...config,
       origin: env.fake.origin,
       expectedRevision: config.revision,
     });
-    assert.equal(refused.status, 409, JSON.stringify(refused.body));
-    assert.equal(refused.body.error, "AUTONOMY_WRITE_UNRESOLVED");
-    assert.equal(env.store.publicConfig().origin, proxy.origin);
+    assert.equal(rebound.status, 200, JSON.stringify(rebound.body));
+    assert.equal(rebound.body.lifecycle.rebinding, true);
+    assert.deepEqual(
+      rebound.body.lifecycle.warnings.map((w: any) => w.code),
+      ["AUTONOMY_WRITE_REBOUND"],
+    );
+    assert.equal(env.store.publicConfig().origin, env.fake.origin);
+    assert.equal(await journal(), before, "original identity and binding");
+    assert.equal(JSON.parse(before).entries[0].origin, proxy.origin);
     proxy.state.intercept = undefined;
-    // An out-of-band switch (another process, older launcher) to a different
-    // origin cannot prove it, even though that origin could read a receipt.
-    await env.store.save({ ...config, origin: env.fake.origin });
+    // The new origin cannot prove it, even though it could read a receipt;
+    // nor can a later process on that origin.
     await env.restart();
     let s = await t.prove();
     assert.equal(s.unresolvedWrites, 1);
@@ -198,6 +209,7 @@ test("F1: an origin or account switch keeps the original binding; only the origi
     assert.equal(s.unresolved[0].reason, "binding_unavailable");
     env.fake.state.mandate.chief_id = env.fake.chief;
     assert.equal((await t.prove()).unresolvedWrites, 0);
+    assert.equal(env.fake.state.work.get(id).actions.length, 1, "no replay");
   } finally {
     await t.close();
   }

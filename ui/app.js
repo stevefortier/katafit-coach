@@ -165,83 +165,114 @@ if (typeof ResizeObserver === "function") {
   stickyObserver.observe($("noticeBar"));
 }
 syncStickyOffsets();
+// A settings mutation POST of this tab is outstanding (local serialization).
 let lifecycleBusy = false;
-let lifecycleUncertain = false;
-let lifecycleOperation;
+let settingsIntent = 0;
 let serverTransition = false;
 let statusEpoch = 0;
 let updateRecoveryVisible = false;
-const restartExplanation =
-  "Coach will stop safely, apply this operation, then restart only if it was running. A stopped Coach stays stopped. Native sessions close; chat and actions are never replayed.";
+// Earlier unresolved work never blocks a save; the server reports it as
+// warnings that stay attached to the operation's canonical lifecycle.
+const lifecycleWarnings = (value) =>
+  (value?.warnings ?? []).map((warning) => "Warning: " + warning.hint);
 function showLifecycle(value) {
   if (!value) return;
   const complete = value.phase === "complete";
   const failedRestart =
     complete && value.wasRunning && !value.resumed && !value.running;
-  $("restartStatus").textContent = value.applicationUncertain
+  // Saved, but the previous Coach never confirmed its stop: it may still be
+  // running and no replacement was started. Run cannot replace it.
+  const stillRunning =
+    complete && value.applied && value.restartPending && value.running;
+  const outcome = value.applicationUncertain
     ? "Application outcome is unconfirmed. " + value.hint
-    : !complete
-      ? "Coach operation in progress: " +
-        value.phase +
-        ". Closing this tab does not cancel it."
-      : failedRestart
+    : stillRunning
+      ? "Saved. The previous Coach may still be running: its stop is unconfirmed and the saved revision was not started. " +
+        (value.hint || "")
+      : !complete
         ? (value.applied
-            ? "Applied, but Coach is not running. "
-            : "Nothing applied; Coach is not running. ") +
-          (value.hint || "Check Worker status before restarting.")
-        : value.error && value.running && !value.resumed
-          ? "Nothing applied. Coach is still running the previous saved configuration. " +
-            (value.hint ||
-              "Safe shutdown failed; check Worker and native session status before retrying.")
-          : value.error
-            ? "Nothing applied. " +
-              (value.resumed
-                ? "The previous configuration is running again. "
-                : "") +
-              (value.hint || "Check the retained draft.")
-            : value.resumed
-              ? value.applied
-                ? "Operation complete. Coach restarted with the saved configuration."
-                : "The change was not applied. Coach is running the previous saved configuration."
-              : "Operation complete. Coach remains stopped.";
+            ? "Saved. Coach stop/restart continues in the background: "
+            : "Coach operation in progress: ") +
+          value.phase +
+          ". Closing this tab does not cancel it."
+        : failedRestart
+          ? (value.applied
+              ? value.restartPending
+                ? "Saved. Coach restart pending; Coach is not running. "
+                : "Applied, but Coach is not running. "
+              : "Nothing applied; Coach is not running. ") +
+            (value.hint || "Check Worker status before restarting.")
+          : value.error && value.running && !value.resumed
+            ? "Nothing applied. Coach is still running the previous saved configuration. " +
+              (value.hint ||
+                "Safe shutdown failed; check Worker and native session status before retrying.")
+            : value.error
+              ? "Nothing applied. " +
+                (value.resumed
+                  ? "The previous configuration is running again. "
+                  : "") +
+                (value.hint || "Check the retained draft.")
+              : value.resumed
+                ? value.applied
+                  ? "Operation complete. Coach restarted with the saved configuration."
+                  : "The change was not applied. Coach is running the previous saved configuration."
+                : "Operation complete. Coach remains stopped.";
+  $("restartStatus").textContent = [outcome, ...lifecycleWarnings(value)].join(
+    " ",
+  );
   $("restartRetry").hidden =
-    !failedRestart || value.error !== "COACH_RESTART_FAILED";
+    !failedRestart ||
+    (value.error !== "COACH_RESTART_FAILED" && !value.restartPending);
 }
+// A saved operation's notice: never a seamless-restart claim the lifecycle
+// does not support; warnings and a failed refresh never hide "Saved".
+function lifecycleNotice(result, message, refreshFailure) {
+  const lifecycle = result?.lifecycle;
+  const extra = [
+    ...(lifecycle?.restartPending
+      ? ["Coach was not restarted: restart pending. " + lifecycle.hint]
+      : []),
+    ...lifecycleWarnings(lifecycle),
+    ...(refreshFailure
+      ? [
+          "Could not refresh the saved settings view (" +
+            refreshFailure +
+            "). Nothing needs saving again; reload before further edits.",
+        ]
+      : []),
+  ];
+  if (extra.length) notice([message, ...extra].join(" "), "warning");
+  else notice(message, "success");
+}
+// Acknowledge the committed save first, then refresh the canonical view.
+async function acknowledgeSaved(result, message, refresh) {
+  lifecycleNotice(result, message);
+  try {
+    await refresh();
+  } catch (error) {
+    if (error.stale) throw error;
+    lifecycleNotice(result, message, error.message);
+  }
+}
+// Settings mutations are sent at once: no status preflight, no consent.
+// Only a dispatched POST whose reply was lost is uncertain; it is checked by
+// readback and never resent automatically (the revision CAS fences repeats).
 async function lifecycleApi(
   path,
   body,
-  alreadyConfirmed = false,
-  expectedRevision = config.revision,
+  expectedRevision,
+  readRevision,
+  adoptRevision,
 ) {
-  if (lifecycleBusy || lifecycleUncertain) return null;
+  if (lifecycleBusy) return null;
   const generation = authGeneration;
+  const intent = ++settingsIntent;
   lifecycleBusy = true;
   renderUpdate();
   try {
-    const state = await api("status", undefined, AbortSignal.timeout(10000));
-    let accepted = alreadyConfirmed;
-    if (
-      !alreadyConfirmed &&
-      (state.state !== "stopped" || state.nativeActive)
-    ) {
-      if (!confirm(restartExplanation + " Apply now?")) {
-        notice(
-          "Operation cancelled. No settings changed and Coach was not stopped.",
-          "info",
-        );
-        return null;
-      }
-      accepted = true;
-    }
-    lifecycleOperation = crypto.randomUUID();
     const result = await api(
       path,
-      {
-        ...body,
-        confirmRestart: accepted,
-        operationId: lifecycleOperation,
-        expectedRevision,
-      },
+      { ...body, operationId: crypto.randomUUID(), expectedRevision },
       AbortSignal.timeout(90000),
     );
     showLifecycle(result.lifecycle);
@@ -249,18 +280,40 @@ async function lifecycleApi(
   } catch (error) {
     if (generation !== authGeneration) throw error;
     if (error.lifecycle) showLifecycle(error.lifecycle);
-    if (!error.status) {
-      lifecycleUncertain = true;
-      $("restartCheck").hidden = false;
+    if (error.status) throw error;
+    // The POST has settled. Optional readback must never keep editors locked.
+    lifecycleBusy = false;
+    renderUpdate();
+    notice(
+      "Connection lost after sending. The save outcome is unknown; nothing was resent. Your draft is retained while the saved revision is checked.",
+      "warning",
+    );
+    let saved;
+    try {
+      saved = await readRevision(AbortSignal.timeout(5000));
+    } catch {
+      if (generation !== authGeneration || intent !== settingsIntent)
+        return null;
       notice(
-        "Connection lost. The server may still apply and restart Coach. Your draft is retained; check operation status before saving again.",
+        "Connection lost after sending. The save outcome is unknown and the readback failed; nothing was resent. Your draft is retained; reload to check the saved revision.",
         "warning",
       );
       return null;
     }
-    throw error;
+    if (generation !== authGeneration || intent !== settingsIntent) return null;
+    // Adopt the read-back revision so a deliberate next save is not refused
+    // as stale; the draft stays in the editor.
+    if (saved > expectedRevision) adoptRevision(saved);
+    notice(
+      saved > expectedRevision
+        ? `Connection lost after sending, but the readback shows revision ${saved} is saved. Nothing was resent; your draft is retained. Review the saved settings before further edits.`
+        : `Connection lost after sending; the readback shows revision ${saved} currently unchanged. The original save outcome remains unconfirmed. Nothing was resent; your draft is retained.`,
+      "warning",
+    );
+    void status();
+    return null;
   } finally {
-    if (generation === authGeneration) {
+    if (generation === authGeneration && intent === settingsIntent) {
       lifecycleBusy = false;
       renderUpdate();
     }
@@ -328,6 +381,18 @@ async function api(path, body, signal, method) {
   }
   return data;
 }
+// Readback of the saved revisions (no mutation).
+const savedRevision = async (signal) =>
+  (await api("config", undefined, signal)).revision;
+const savedSkillsRevision = async (signal) =>
+  (await api("skills", undefined, signal)).revision;
+const adoptRevision = (revision) => {
+  config.revision = revision;
+  $("revision").textContent = "Saved revision " + revision;
+};
+const adoptSkillsRevision = (revision) => {
+  skillsData.revision = revision;
+};
 async function load(preserveDrafts = false) {
   const generation = authGeneration;
   const data = await api("config");
@@ -400,34 +465,40 @@ action("save", async () => {
     );
     return;
   }
-  const result = await lifecycleApi("config", {
-    persona,
-    origin: $("origin").value,
-    token: $("token").value,
-    models: {
-      active: { ...draft.active },
-      providers: draft.providers.map((p) => ({
-        id: p.id,
-        name: p.name,
-        baseUrl: p.baseUrl,
-        ...(p.apiKey ? { apiKey: p.apiKey } : {}),
-        ...(p.clearApiKey && !p.apiKey ? { clearApiKey: true } : {}),
-        models: p.models.map((m) => ({
-          id: m.id,
-          name: m.name.trim() || m.model,
-          model: m.model,
-          vision: m.vision,
+  const result = await lifecycleApi(
+    "config",
+    {
+      persona,
+      origin: $("origin").value,
+      token: $("token").value,
+      models: {
+        active: { ...draft.active },
+        providers: draft.providers.map((p) => ({
+          id: p.id,
+          name: p.name,
+          baseUrl: p.baseUrl,
+          ...(p.apiKey ? { apiKey: p.apiKey } : {}),
+          ...(p.clearApiKey && !p.apiKey ? { clearApiKey: true } : {}),
+          models: p.models.map((m) => ({
+            id: m.id,
+            name: m.name.trim() || m.model,
+            model: m.model,
+            vision: m.vision,
+          })),
         })),
-      })),
+      },
     },
-  });
+    config.revision,
+    savedRevision,
+    adoptRevision,
+  );
   if (!result) return;
-  await load();
-  notice(
+  await acknowledgeSaved(
+    result,
     result.lifecycle?.resumed
       ? "Saved. Coach restarted with the new revision."
       : "Saved. Check Coach status below.",
-    "success",
+    () => load(),
   );
 });
 // Models registry editor. The draft lives in memory and in hidden-not-removed
@@ -1047,17 +1118,18 @@ action("saveSkill", async () => {
   const result = await lifecycleApi(
     "skills/" + id,
     draft,
-    false,
     skillsData.revision,
+    savedSkillsRevision,
+    adoptSkillsRevision,
   );
   if (!result) return;
   skillDrafts.delete(id);
-  await loadSkills(true);
-  notice(
+  await acknowledgeSaved(
+    result,
     result.lifecycle?.resumed
       ? "Skill saved. Coach restarted with the new Skills revision."
       : "Skill saved as a new immutable revision.",
-    "success",
+    () => loadSkills(true),
   );
 });
 action("restoreSkill", async () => {
@@ -1066,7 +1138,7 @@ action("restoreSkill", async () => {
   const skill = skillsData.skills.find((entry) => entry.id === id);
   if (
     !confirm(
-      `Restore the current default for ${skill.name} as a new Skills revision? Your current draft for this skill will be replaced. ${restartExplanation}`,
+      `Restore the current default for ${skill.name} as a new Skills revision? Your current draft for this skill will be replaced.`,
     )
   ) {
     notice("Restore cancelled. No skill changed.", "info");
@@ -1075,13 +1147,17 @@ action("restoreSkill", async () => {
   const result = await lifecycleApi(
     `skills/${selectedSkill}/restore-default`,
     {},
-    true,
     skillsData.revision,
+    savedSkillsRevision,
+    adoptSkillsRevision,
   );
   if (!result) return;
   skillDrafts.delete(id);
-  await loadSkills(true);
-  notice("Default restored as a new immutable Skills revision.", "success");
+  await acknowledgeSaved(
+    result,
+    "Default restored as a new immutable Skills revision.",
+    () => loadSkills(true),
+  );
 });
 function skillHistoryVisible() {
   return (
@@ -1252,7 +1328,7 @@ action("restorePersona", async () => {
   const unsaved = fields.some((f) => $(f).value !== config.persona[f]);
   if (
     !confirm(
-      `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Kata.fit and Models settings and credentials will not change. Unsaved Kata.fit and Models drafts will remain unsaved. History is kept. ${restartExplanation}`,
+      `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Kata.fit and Models settings and credentials will not change. Unsaved Kata.fit and Models drafts will remain unsaved. History is kept.`,
     )
   ) {
     notice("Restore cancelled. No settings changed.", "info");
@@ -1261,12 +1337,23 @@ action("restorePersona", async () => {
   historyBusy = true;
   $("restorePersona").disabled = true;
   try {
-    if (!(await lifecycleApi("persona-restore", { revision }, true))) return;
-    await load(true);
-    $("personaHistory").querySelector("summary").focus({ preventScroll: true });
-    notice(
+    const result = await lifecycleApi(
+      "persona-restore",
+      { revision },
+      config.revision,
+      savedRevision,
+      adoptRevision,
+    );
+    if (!result) return;
+    await acknowledgeSaved(
+      result,
       "Persona restored as a new revision. Kata.fit and Models drafts remain unsaved; saved settings and credentials are unchanged.",
-      "success",
+      async () => {
+        await load(true);
+        $("personaHistory")
+          .querySelector("summary")
+          .focus({ preventScroll: true });
+      },
     );
   } finally {
     if (generation === authGeneration) {
@@ -1448,19 +1535,6 @@ async function status() {
     serverTransition = s.transition === true;
     workerState = s.state;
     if (s.lifecycle) showLifecycle(s.lifecycle);
-    if (
-      lifecycleUncertain &&
-      s.lifecycle?.phase === "complete" &&
-      (!lifecycleOperation || s.lifecycle.id === lifecycleOperation)
-    ) {
-      lifecycleUncertain = false;
-      $("restartCheck").hidden = true;
-      notice(
-        "Operation status recovered. Your draft is retained. Check the saved revision before applying further edits.",
-        "info",
-      );
-      if (s.lifecycle.applied) config.revision = s.revision;
-    }
     renderHeaderStatus();
     updateWorkerBlocked = s.preview === true;
     renderUpdate();
@@ -3673,7 +3747,7 @@ function renderHeaderStatus() {
   if (manualUpdateWaiting()) {
     $("state").textContent = "QUEUED";
     $("state").dataset.tone = "busy";
-  } else if (lifecycleBusy || lifecycleUncertain || serverTransition) {
+  } else if (lifecycleBusy || serverTransition) {
     $("state").textContent = "APPLYING";
     $("state").dataset.tone = "busy";
   } else if (
@@ -3789,8 +3863,15 @@ function renderUpdate() {
     data.applying ||
     data.recovering ||
     lifecycleBusy ||
-    lifecycleUncertain ||
     serverTransition;
+  // Settings lock only for this tab's outstanding settings POST or a process
+  // replacement: never for a saved operation's continuation or a preview.
+  const settingsLocked =
+    manualUpdateActive(data) ||
+    updatePending ||
+    data.applying ||
+    data.recovering ||
+    lifecycleBusy;
   const preparation = safePreparationAttempt(data.preparationAttempt);
   const journalIssue = safePreparationJournalIssue(
     data.preparationJournalIssue,
@@ -3943,14 +4024,16 @@ function renderUpdate() {
     "saveSkill",
     "restoreSkill",
   ])
-    $(id).disabled =
-      (locked && !(id === "cancel" && previewBusy)) ||
-      (id === "previewButton" && (previewBusy || previewCancelling)) ||
-      // The server refuses configuration changes while a preview runs.
-      (previewBusy &&
-        ["save", "restorePersona", "saveSkill", "restoreSkill"].includes(id)) ||
-      (id === "restorePersona" && historyBusy);
-  editorsLocked = locked;
+    $(id).disabled = [
+      "save",
+      "restorePersona",
+      "saveSkill",
+      "restoreSkill",
+    ].includes(id)
+      ? settingsLocked || (id === "restorePersona" && historyBusy)
+      : (locked && !(id === "cancel" && previewBusy)) ||
+        (id === "previewButton" && (previewBusy || previewCancelling));
+  editorsLocked = settingsLocked;
   $("restartRetry").disabled = lifecycleBusy || data.applying;
   if (
     data.recovering &&
@@ -4189,8 +4272,6 @@ function lockSession(message, severity) {
   updateApplyRequest = false;
   key = "";
   lifecycleBusy = false;
-  lifecycleUncertain = false;
-  lifecycleOperation = undefined;
   serverTransition = false;
   updateRecoveryVisible = false;
   statusEpoch++;
@@ -4458,7 +4539,6 @@ const native = nativeTerminal({
   authorized: () =>
     !!key &&
     !lifecycleBusy &&
-    !lifecycleUncertain &&
     !serverTransition &&
     !updatePending &&
     !updateData?.applying &&

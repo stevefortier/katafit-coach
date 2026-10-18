@@ -56,23 +56,10 @@ test(
       const revision = f.store.publicConfig().revision;
       assert.equal(
         (await post("/api/config", f.store.publicConfig())).status,
-        409,
-      );
-      assert.equal(f.store.publicConfig().revision, revision);
-      assert.equal(
-        ws.readyState,
-        WebSocket.OPEN,
-        "unconfirmed save must not stop native Pi",
-      );
-      assert.equal(
-        (
-          await post("/api/config", {
-            ...f.store.publicConfig(),
-            confirmRestart: true,
-          })
-        ).status,
         200,
+        "settings save requires no restart consent even with an active native terminal",
       );
+      assert.equal(f.store.publicConfig().revision, revision + 1);
       assert.equal(
         await Promise.race([
           closed,

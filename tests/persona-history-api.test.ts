@@ -56,17 +56,24 @@ test("restore respects active operation and worker guards without mutation", asy
       headers,
       body: JSON.stringify(body),
     });
+  const status = async () =>
+    (await fetch(app.origin + "/api/status", { headers })).json();
   try {
     const preview = post("preview", { text: "synthetic preview" });
     await started;
-    const before = store.publicConfig();
-    assert.equal((await post("persona-restore", { revision: 1 })).status, 409);
-    assert.deepEqual(store.publicConfig(), before);
+    const initial = store.publicConfig();
+    // Settings policy: a valid restore cancels the running preview.
+    assert.equal((await post("persona-restore", { revision: 1 })).status, 200);
+    assert.equal(store.publicConfig().revision, initial.revision + 1);
     release();
-    await preview;
+    assert.equal((await (await preview).json()).error, "CANCELLED");
+    for (let i = 0; i < 500 && (await status()).transition; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    const before = store.publicConfig();
     assert.equal((await post("run")).status, 200);
-    assert.equal((await post("persona-restore", { revision: 1 })).status, 409);
-    assert.deepEqual(store.publicConfig(), before);
+    // Settings policy: a running Coach needs no restart consent.
+    assert.equal((await post("persona-restore", { revision: 1 })).status, 200);
+    assert.equal(store.publicConfig().revision, before.revision + 1);
     await post("stop");
   } finally {
     release();

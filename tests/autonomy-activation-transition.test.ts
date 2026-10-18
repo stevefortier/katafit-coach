@@ -118,7 +118,7 @@ for (const mode of ["config", "rebind", "uncertain"] as const) {
   });
 }
 
-test("a startup admitted before configuration is joined by stop before apply", async () => {
+test("a save during held autonomy startup is durable first; the continuation joins that startup and restarts", async () => {
   const updates = new Updates(null, async () => {});
   updates.recovering = true;
   let releaseStart!: () => void, enteredStart!: () => void;
@@ -139,48 +139,35 @@ test("a startup admitted before configuration is joined by stop before apply", a
       };
     },
   });
-  let releaseSave!: () => void;
-  const saveGate = new Promise<void>((r) => (releaseSave = r));
-  const save = env.store.save.bind(env.store);
-  let applying = false;
-  let request: ReturnType<typeof env.call> | undefined;
   try {
-    env.store.save = async (...args) => {
-      applying = true;
-      await saveGate;
-      return save(...args);
-    };
     updates.recovering = false;
     await starting;
     const config = env.store.publicConfig();
-    request = env.call("POST", "/api/config", {
+    // Settings policy: the save never waits for the held startup.
+    const saved = await env.call("POST", "/api/config", {
       ...config,
       persona: { ...config.persona, name: "Joined New Coach" },
     });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(env.store.publicConfig().persona.name, "Joined New Coach");
+    assert.equal(starts, 1, "no second startup while the first is held");
     await until(
       async () =>
         (await env.call("GET", "/api/status")).body.lifecycle?.phase ===
         "stopping",
-      "configuration owns stop while startup is held",
+      "the continuation owns stop while startup is held",
     );
-    assert.equal(applying, false, "save cannot overtake in-flight startup");
-    releaseStart();
-    await until(() => applying, "startup is joined before apply");
     const before = env.fake.calls.length;
-    await pause();
-    assert.equal(acquisitions(env.fake.calls.slice(before)).length, 0);
-    assert.equal(starts, 1, "no second startup inside application");
-    releaseSave();
-    assert.equal((await request).status, 200);
+    releaseStart();
     await until(() => starts === 2, "running intent resumes after commit");
+    // A startup admitted before the save may claim once while the
+    // continuation joins and stops it (as when Stop joined it before apply);
+    // nothing else acquires work until the saved revision restarts.
+    assert.ok(acquisitions(env.fake.calls.slice(before)).length <= 1);
     await pause();
     assert.equal(starts, 2);
-    assert.equal(env.store.publicConfig().persona.name, "Joined New Coach");
   } finally {
     releaseStart();
-    releaseSave();
-    await request;
-    env.store.save = save;
     await env.close();
   }
 });

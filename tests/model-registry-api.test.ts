@@ -36,6 +36,20 @@ async function backend() {
   return server;
 }
 
+/** A saved operation's background stop/restart, once it settles. */
+async function settled(
+  h: { call: (path: string, body?: unknown) => Promise<Response> },
+  response: Response,
+) {
+  const { id } = (await response.json()).lifecycle;
+  for (let i = 0; i < 1500; i++) {
+    const { lifecycle } = await (await h.call("status")).json();
+    if (lifecycle?.id === id && lifecycle.phase === "complete")
+      return lifecycle;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.fail("lifecycle " + id + " did not settle");
+}
 async function harness(
   infer: Parameters<typeof admin>[2] = async () => "synthetic reply",
   prepare?: (dir: string) => void,
@@ -211,21 +225,24 @@ test("registry saves share preview, worker and operator guards without mutation"
     await started;
     const change = h.registry("bravo");
     change.providers[1].apiKey = keyC;
-    const busy = await h.save(change);
-    assert.equal(busy.status, 409);
-    assert.equal((await busy.json()).error, "OPERATION_IN_PROGRESS");
+    // Settings policy: a valid save cancels the running preview.
+    const saved = await h.save(change);
+    assert.equal(saved.status, 200, await saved.clone().text());
     release();
-    assert.equal((await preview).status, 200);
-    assert.equal((await h.call("run", {})).status, 200);
-    const running = await h.save(change);
-    assert.equal(running.status, 409);
-    assert.equal((await running.json()).error, "RESTART_CONFIRMATION_REQUIRED");
-    assert.equal(h.store.publicConfig().revision, revision);
-    assert.equal(await readFile(h.dir + "/secrets.json", "utf8"), before);
-    assert.equal(Object.values(h.store.secrets).includes(keyC), false);
-    await h.call("stop", {});
-    assert.equal((await h.save(change)).status, 200);
+    assert.equal((await (await preview).json()).error, "CANCELLED");
     assert.ok(Object.values(h.store.secrets).includes(keyC));
+    assert.equal(h.store.publicConfig().revision, revision + 1);
+    assert.notEqual(await readFile(h.dir + "/secrets.json", "utf8"), before);
+    await settled(h, saved);
+    // Settings policy: a running Coach needs no restart consent to save.
+    const revisionBeforeRun = h.store.publicConfig().revision;
+    assert.equal((await h.call("run", {})).status, 200);
+    const running = await h.save(h.registry());
+    assert.equal(running.status, 200, await running.clone().text());
+    assert.equal(h.store.publicConfig().revision, revisionBeforeRun + 1);
+    const restarted = await settled(h, running);
+    assert.equal(restarted.wasRunning, true);
+    assert.equal(restarted.resumed, true);
   } finally {
     release();
     await h.close();
@@ -294,9 +311,9 @@ test("confirmed config change restarts a running Coach once with fresh provider 
     };
     const result = await h.call("config", payload);
     assert.equal(result.status, 200, await result.clone().text());
-    const data = await result.json();
-    assert.equal(data.lifecycle.applied, true);
-    assert.equal(data.lifecycle.resumed, true);
+    const data = await settled(h, result);
+    assert.equal(data.applied, true);
+    assert.equal(data.resumed, true);
     assert.equal(h.store.publicConfig().revision, revision + 1);
     assert.notEqual((await (await h.call("status")).json()).state, "stopped");
     const preview = await h.call("preview", {
@@ -381,8 +398,11 @@ test("validation and disk save failure restore prior running configuration; stop
       models: h.registry(),
       confirmRestart: true,
     });
+    // Invalid input never disrupts the running Coach.
     assert.equal(invalid.status, 400);
-    assert.equal((await invalid.json()).lifecycle.resumed, true);
+    const invalidLifecycle = (await invalid.json()).lifecycle;
+    assert.equal(invalidLifecycle.applied, false);
+    assert.equal(invalidLifecycle.running, true);
     assert.equal(h.store.publicConfig().revision, before.revision);
     h.store.atomic = async (file, data) => {
       if (file === "config") throw Error("synthetic disk failure");
@@ -395,7 +415,8 @@ test("validation and disk save failure restore prior running configuration; stop
       confirmRestart: true,
     });
     assert.equal(failed.status, 400);
-    assert.equal((await failed.json()).lifecycle.resumed, true);
+    assert.equal((await failed.json()).lifecycle.running, true);
+    assert.notEqual((await (await h.call("status")).json()).state, "stopped");
     const disk = new Store(h.dir);
     await disk.init();
     assert.deepEqual(disk.publicConfig(), before);
@@ -406,14 +427,14 @@ test("validation and disk save failure restore prior running configuration; stop
       confirmRestart: true,
     });
     assert.equal(restore.status, 200);
-    assert.equal((await restore.json()).lifecycle.resumed, true);
+    assert.equal((await settled(h, restore)).resumed, true);
     const rollback = await h.call("rollback", { confirmRestart: true });
     assert.equal(rollback.status, 200);
-    assert.equal((await rollback.json()).lifecycle.resumed, true);
+    assert.equal((await settled(h, rollback)).resumed, true);
     await h.call("stop", {});
     const stopped = await h.call("persona-restore", { revision: 1 });
     assert.equal(stopped.status, 200);
-    assert.equal((await stopped.json()).lifecycle.resumed, false);
+    assert.equal((await settled(h, stopped)).resumed, false);
     assert.equal((await (await h.call("status")).json()).state, "stopped");
   } finally {
     h.store.atomic = atomic;
@@ -439,9 +460,12 @@ test("ambiguous config publication does not restart from stale in-memory credent
       confirmRestart: true,
     });
     assert.equal(result.status, 400);
+    // The previous execution is stopped in the background and stays stopped.
+    const lifecycle = await settled(h, result);
+    assert.equal(lifecycle.applicationUncertain, true);
+    assert.equal(lifecycle.resumed, false);
     const state = await (await h.call("status")).json();
     assert.equal(state.state, "stopped");
-    assert.equal(state.lifecycle.applicationUncertain, true);
     assert.equal((await h.call("run", {})).status, 400);
   } finally {
     h.store.atomic = atomic;

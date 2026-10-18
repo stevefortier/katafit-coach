@@ -312,8 +312,17 @@ async function studio(options: { updates?: boolean } = {}) {
     assert.equal(saved.status, 200, JSON.stringify(body));
     assert.equal(body.lifecycle.applied, true);
     assert.equal(body.lifecycle.wasRunning, true);
-    assert.equal(body.lifecycle.resumed, false);
-    assert.equal(body.lifecycle.error, "COACH_RESTART_FAILED");
+    // The restart continues after the acknowledged save.
+    let lifecycle: any;
+    for (let i = 0; i < 1500; i++) {
+      lifecycle = (await status()).lifecycle;
+      if (lifecycle?.id === body.lifecycle.id && lifecycle.phase === "complete")
+        break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(lifecycle.phase, "complete");
+    assert.equal(lifecycle.resumed, false);
+    assert.equal(lifecycle.error, "COACH_RESTART_FAILED");
     const [old, stranded] = f.instances();
     assert.equal(f.rows.get(old)?.state, "stopped", "old Worker stopped");
     const state = await status();
