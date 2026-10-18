@@ -148,13 +148,13 @@ try {
   await page.locator("#preview").scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence + "/preview-running-native.png" });
 
-  // 3. Cancel: controls stay usable for Run/Stop, mutations wait, one preview.
+  // 3. Cancel: Save and Run/Stop stay usable; only one preview runs.
   mode = "hold";
   entered = held();
   await page.locator("#previewButton").click();
   await bounded(entered.started, "held preview");
   assert.equal(await page.locator("#previewButton").isDisabled(), true);
-  assert.equal(await page.locator("#save").isDisabled(), true);
+  assert.equal(await page.locator("#save").isEnabled(), true);
   assert.equal(await page.locator("#cancel").isEnabled(), true);
   assert.equal(await page.locator("#run").isEnabled(), true);
   assert.equal(await page.locator("#stop").isEnabled(), true);
