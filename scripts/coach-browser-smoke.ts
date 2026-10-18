@@ -215,19 +215,26 @@ try {
   );
   await page.locator("#settingsTab").click();
   await settingsTab(page, "Worker");
-  page.once("dialog", (dialog) => dialog.dismiss());
-  await page.locator("#save").click();
-  await page.waitForFunction(() =>
-    document.querySelector("#notice")?.textContent?.includes("cancelled"),
-  );
-  assert.equal(store.publicConfig().revision, revisionBeforeDraft);
-  page.once("dialog", (dialog) => dialog.accept());
+  const saveDialogs: string[] = [];
+  const rejectSaveDialog = (dialog: import("playwright").Dialog) => {
+    saveDialogs.push(dialog.message());
+    void dialog.dismiss();
+  };
+  page.on("dialog", rejectSaveDialog);
   await page.locator("#save").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
+  assert.equal(store.publicConfig().revision, revisionBeforeDraft + 1);
   assert.match(store.publicConfig().persona.markdown, /Explicit Settings rule/);
-  assert.match(await page.locator("#restartStatus").innerText(), /restarted/);
+  assert.equal(await page.locator("#save").isEnabled(), true);
+  await page.waitForFunction(() =>
+    document
+      .querySelector("#restartStatus")
+      ?.textContent?.includes("restarted"),
+  );
+  assert.deepEqual(saveDialogs, [], "saving never asks for restart consent");
+  page.off("dialog", rejectSaveDialog);
   await page.locator("#stop").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent === "STOPPED",
