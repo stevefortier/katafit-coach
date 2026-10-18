@@ -246,6 +246,13 @@ export async function admin(
         error?: string;
         hint?: string;
         applicationUncertain?: boolean;
+        // The saved origin or Kata.fit token differs from the previous one.
+        rebinding?: boolean;
+        // Saved, but the previous execution's cleanup is unconfirmed: Coach
+        // was not restarted. Retry restarts the saved revision only.
+        restartPending?: boolean;
+        // Unresolved or unconfirmed earlier work never blocks a valid save.
+        warnings?: { code: string; hint: string }[];
       }
     | undefined;
   const startWorker = async () => {
@@ -262,6 +269,14 @@ export async function admin(
       await worker.recoverStoppedPresence();
       if (closing) throw new SafeError("CANCELLED");
     }
+    if (
+      worker?.state === "stopped" &&
+      worker.stopConfirmed &&
+      !worker.safeToReplace
+    )
+      // Restart pending after a save: one bounded receipt-only read with the
+      // stopped instance's own credentials; nothing is replayed.
+      await worker.reconcilePublications().catch(() => {});
     if (
       worker?.state === "stopped" &&
       (!worker.stopConfirmed || !worker.safeToReplace)
@@ -371,103 +386,233 @@ export async function admin(
     };
     observe();
   };
-  // An unresolved autonomy write is provable only by its original origin and
-  // account: a binding change waits until exact proof settles it.
-  const bindingSettled = async () => (
-    await autonomy.reconcile().catch(() => false),
-    autonomy.unresolvedWrites === 0 && autonomy.snapshot().ledgerHealthy
-  );
+  // Earlier work a settings operation reports but never waits for. Each
+  // remains protected where it is: journals keep their original identity and
+  // account binding, nothing is replayed, and owned cleanup stays owned.
+  const settingsWarnings = {
+    AUTONOMY_WRITE_UNRESOLVED:
+      "Earlier background Coach work has an unconfirmed outcome: a message or change may already have reached Kata.fit. It is kept with its original connection and account, never replayed, and new background actions stay paused until Kata.fit confirms it.",
+    AUTONOMY_WRITE_REBOUND:
+      "Earlier background Coach work has an unconfirmed outcome and stays bound to the previous Kata.fit connection and account: a message or change may already have been delivered. It is never replayed with the new settings and can only be confirmed through the original connection and account; new background actions stay paused until then.",
+    AUTONOMY_JOURNAL_UNCONFIRMED:
+      "Background Coach could not confirm its write journal or the cleanup of its own containers. Nothing was deleted or replayed; new background actions stay paused until protected storage and Docker access recover.",
+    ACTION_DELIVERY_UNRESOLVED:
+      "An earlier Coach message or action delivery is unconfirmed: it may already have reached Kata.fit. It stays bound to its original account, is never re-sent, and new Coach actions wait until it is confirmed.",
+    NATIVE_CLEANUP_UNCONFIRMED:
+      "A native session could not confirm its cleanup. It stays owned by this installation; new native sessions remain unavailable until Stop native session confirms cleanup.",
+    WORKER_STOP_UNCONFIRMED:
+      "The previous Coach's backend stop or a reply publication is unconfirmed: a reply may already have been posted, and it will not be re-sent.",
+  };
+  type Operation = NonNullable<typeof lifecycle>;
+  const warn = (op: Operation, code: keyof typeof settingsWarnings) => {
+    op.warnings ??= [];
+    if (!op.warnings.some((w) => w.code === code))
+      op.warnings.push({ code, hint: settingsWarnings[code] });
+  };
+  // Background continuation of the latest saved operation: stop, cleanup and
+  // restart. It holds `busy` for every other admission, but a later valid
+  // settings save is still accepted, applied and supersedes it.
+  let activation: Promise<void> | undefined;
+  let settingsWriting = false;
+  let generation = 0;
+  // Running intent captured by an admitted save and carried across superseded
+  // continuations until the latest one acts on it.
+  let resumeIntent = false;
+  let autonomyIntent = false;
+  // The admitted local write, if any: settles once its save has either
+  // superseded the running continuation or failed and left it the owner.
+  let applyingDone: Promise<void> = Promise.resolve();
+  const continueLifecycle = (op: Operation) => {
+    const mine = ++generation;
+    const previous = activation;
+    // A newer save or shutdown owns what happens next.
+    const superseded = () => mine !== generation || closing;
+    op.phase = "stopping";
+    busy = true;
+    const done: Promise<void> = (async () => {
+      await previous;
+      if (superseded()) return;
+      op.phase = "stopping";
+      let nativeFailed = false;
+      await terminal.stop().catch(() => (nativeFailed = true));
+      if (nativeFailed || !terminal.idle)
+        warn(op, "NATIVE_CLEANUP_UNCONFIRMED");
+      let autonomyFailed = false;
+      await autonomy.stop().catch(() => (autonomyFailed = true));
+      const stopping = worker;
+      if (stopping && stopping.state !== "stopped")
+        await stopping.stop().catch(() => {});
+      try {
+        const local = autonomy.snapshot();
+        if (
+          !local.ledgerHealthy ||
+          !local.cleanupHealthy ||
+          local.cleanupPending
+        )
+          warn(op, "AUTONOMY_JOURNAL_UNCONFIRMED");
+      } catch {
+        warn(op, "AUTONOMY_JOURNAL_UNCONFIRMED");
+      }
+      // A replacement never discards an unconfirmed stop or publication.
+      let replaceable = false;
+      try {
+        replaceable =
+          !worker ||
+          (worker.state === "stopped" &&
+            worker.stopConfirmed &&
+            worker.safeToReplace);
+      } catch {}
+      if (!replaceable) warn(op, "WORKER_STOP_UNCONFIRMED");
+      // Never consume running intent while a newer local write is pending.
+      await applyingDone;
+      if (superseded()) return;
+      if (resumeIntent && !configurationUncertain) {
+        // Intent survives a pending or failed restart: the next save retries
+        // it; only a successful start, Run or Stop settles it.
+        if (!replaceable || nativeFailed || !terminal.idle) {
+          op.restartPending = true;
+          op.hint =
+            worker && worker.state !== "stopped"
+              ? "The previous Coach did not confirm its stop and may still be running the previous revision; the saved revision was not started. Stop Coach, then Retry restart; nothing is saved again or replayed."
+              : "Coach was not restarted because cleanup of the previous Coach (its stop, a reply publication or a native session) is unconfirmed. Retry restart checks that earlier work first and starts the saved revision only; it never saves again or replays chat or actions.";
+        } else {
+          op.phase = "restarting";
+          try {
+            await startWorker();
+            op.resumed = true;
+            // A save applied during this start inherits the intent: its own
+            // continuation stops this Worker and starts the latest revision.
+            if (!superseded()) resumeIntent = false;
+          } catch {
+            op.error = "COACH_RESTART_FAILED";
+            op.hint =
+              "Coach could not restart. Retry starts the saved revision only; it never saves again or replays chat or actions.";
+          }
+        }
+      }
+      if (autonomyIntent && !superseded()) {
+        autonomyIntent = false;
+        if (!autonomyFailed) await startAutonomy();
+      }
+    })()
+      .catch(() => {})
+      .finally(() => {
+        op.running = !!worker && worker.state !== "stopped";
+        op.phase = "complete";
+        if (activation === done) {
+          activation = undefined;
+          busy = settingsWriting;
+          // An opt-in acknowledged after this continuation's own decision.
+          if (autonomyIntent && !closing) {
+            autonomyIntent = false;
+            void startAutonomy();
+          }
+        }
+      });
+    activation = done;
+    lifecycleDone = done;
+  };
+  // Durable local apply first; the HTTP answer never waits for a stop,
+  // cleanup, presence report or reconciliation of the previous execution.
   const transition = async <T>(
     operation: string,
     body: any,
     apply: () => Promise<T>,
-    rebinding = false,
+    report: (op: Operation) => void,
   ) => {
+    // No consent precondition: a running Coach, a native session or earlier
+    // unresolved work never blocks a valid save (`confirmRestart` is ignored).
     const wasRunning = !!worker && worker.state !== "stopped";
-    if ((wasRunning || terminal.active) && body.confirmRestart !== true)
-      throw new SafeError("RESTART_CONFIRMATION_REQUIRED");
-    if (rebinding && !(await bindingSettled()))
-      throw new SafeError("AUTONOMY_WRITE_UNRESOLVED");
-    let settled!: () => void;
-    lifecycleDone = new Promise<void>((resolve) => {
-      settled = resolve;
-    });
-    lifecycle = {
+    const op: Operation = {
       id: body.operationId ?? randomUUID(),
       operation,
-      phase: "stopping",
+      phase: "applying",
       wasRunning,
       running: wasRunning,
       applied: false,
       resumed: false,
+      rebinding: false,
+      warnings: [],
     };
-    let safeToResume = false;
-    // Configuration changes reach autonomy only through a restart; an active
-    // cycle is aborted without local release (the backend lease fences it).
-    const autonomyWasRunning = autonomy.running;
+    report(op);
+    if (!activation) lifecycle = op;
+    const binding = () =>
+      JSON.stringify([store.publicConfig().origin, store.secrets.token ?? ""]);
+    const previousBinding = binding();
+    let settle!: () => void;
+    applyingDone = new Promise<void>((resolve) => (settle = resolve));
+    // Earlier unresolved work is reported from local state only.
     try {
-      await terminal.stop();
-      await autonomy.stop();
-      if (rebinding && !(await bindingSettled()))
-        throw new SafeError("AUTONOMY_WRITE_UNRESOLVED");
-      if (wasRunning) await worker!.stop();
-      if (
-        worker?.state === "stopped" &&
-        worker.stopConfirmed &&
-        !worker.safeToReplace
-      )
-        await worker.reconcilePublications();
-      if (worker && (!worker.stopConfirmed || !worker.safeToReplace))
-        throw new SafeError("WORKER_STOP_UNCONFIRMED");
-      safeToResume = true;
-      lifecycle.phase = "applying";
-      const result = await apply();
-      lifecycle.applied = true;
+      if (new Actions(store, onBackendDiagnostic).unresolved())
+        warn(op, "ACTION_DELIVERY_UNRESOLVED");
+    } catch {
+      warn(op, "ACTION_DELIVERY_UNRESOLVED");
+    }
+    try {
+      // Shutdown joins an accepted local write as well as its continuation.
+      const applying = apply();
+      const prior = lifecycleDone;
+      lifecycleDone = Promise.all([
+        prior,
+        applying.then(
+          () => {},
+          () => {},
+        ),
+      ]).then(() => {});
+      const result = await applying;
+      op.applied = true;
+      op.rebinding = binding() !== previousBinding;
+      // Running state after the write: a restart may have completed meanwhile.
+      resumeIntent ||= wasRunning || (!!worker && worker.state !== "stopped");
+      autonomyIntent ||= autonomy.running;
+      op.wasRunning = resumeIntent;
+      try {
+        if (autonomy.unresolvedWrites)
+          warn(
+            op,
+            op.rebinding
+              ? "AUTONOMY_WRITE_REBOUND"
+              : "AUTONOMY_WRITE_UNRESOLVED",
+          );
+      } catch {
+        warn(op, "AUTONOMY_JOURNAL_UNCONFIRMED");
+      }
+      lifecycle = op;
+      continueLifecycle(op);
       return result;
     } catch (error) {
       const failure = safeError(error);
-      lifecycle.error = failure.code;
-      lifecycle.hint = failure.hint;
-      if (safeToResume) {
-        try {
-          const disk = new Store(store.dir);
-          await disk.init();
-          if (
-            JSON.stringify(disk.publicConfig()) !==
-              JSON.stringify(store.publicConfig()) ||
-            JSON.stringify(disk.skills.view()) !==
-              JSON.stringify(store.skills.view()) ||
-            disk.secrets.apiKey !== store.secrets.apiKey ||
-            disk.secrets.token !== store.secrets.token
-          )
-            throw new Error("CONFIGURATION_STATE_UNCONFIRMED");
-        } catch {
-          safeToResume = false;
-          configurationUncertain = true;
-          lifecycle.applicationUncertain = true;
-          lifecycle.error = "CONFIGURATION_STATE_UNCONFIRMED";
-          lifecycle.hint = safeError(
-            new SafeError("CONFIGURATION_STATE_UNCONFIRMED"),
-          ).hint;
-        }
+      op.error = failure.code;
+      op.hint = failure.hint;
+      op.phase = "complete";
+      try {
+        const disk = new Store(store.dir);
+        await disk.init();
+        if (
+          JSON.stringify(disk.publicConfig()) !==
+            JSON.stringify(store.publicConfig()) ||
+          JSON.stringify(disk.skills.view()) !==
+            JSON.stringify(store.skills.view()) ||
+          disk.secrets.apiKey !== store.secrets.apiKey ||
+          disk.secrets.token !== store.secrets.token
+        )
+          throw new Error("CONFIGURATION_STATE_UNCONFIRMED");
+      } catch {
+        // Ambiguous storage: stop the previous execution and keep it stopped.
+        configurationUncertain = true;
+        resumeIntent = false;
+        op.applicationUncertain = true;
+        op.error = "CONFIGURATION_STATE_UNCONFIRMED";
+        op.hint = safeError(
+          new SafeError("CONFIGURATION_STATE_UNCONFIRMED"),
+        ).hint;
+        op.phase = "stopping";
+        lifecycle = op;
+        continueLifecycle(op);
       }
       throw error;
     } finally {
-      if (wasRunning && safeToResume && !closing) {
-        lifecycle.phase = "restarting";
-        try {
-          await startWorker();
-          lifecycle.resumed = true;
-        } catch {
-          lifecycle.error = "COACH_RESTART_FAILED";
-          lifecycle.hint =
-            "Coach could not restart. Retry starts the saved revision only; it never saves again or replays chat or actions.";
-        }
-      }
-      if (autonomyWasRunning) await startAutonomy();
-      lifecycle.running = !!worker && worker.state !== "stopped";
-      lifecycle.phase = "complete";
-      settled();
+      settle();
     }
   };
   // Replacement readiness: autonomy's own blockers (active cycle, unconfirmed
@@ -558,6 +703,8 @@ export async function admin(
     let fingerprint = "";
     // Preview outcomes never carry the unrelated last lifecycle result.
     let previewRequest = false;
+    // A settings operation's own outcome, even when a newer one is current.
+    let operationLifecycle: typeof lifecycle;
     const send = (status: number, data: unknown) => {
       if (acceptedId) {
         completed.set(acceptedId, { fingerprint, status, data });
@@ -1501,7 +1648,13 @@ export async function admin(
           error: "UPDATE_RECOVERING",
           hint: "The launcher is restoring Coach. Check worker status; do not reapply the update.",
         });
-      if (busy && path !== "/api/cancel")
+      // Only an earlier save's background continuation holding `busy` lets a
+      // valid settings save through; actual local writes stay serialized.
+      const settingsAdmissible =
+        (configuration || path === "/api/autonomy/participate") &&
+        !!activation &&
+        !settingsWriting;
+      if (busy && path !== "/api/cancel" && !settingsAdmissible)
         return send(
           409,
           path === "/api/preview"
@@ -1524,8 +1677,14 @@ export async function admin(
           stage: "autonomy-participation",
           metadata: { status: input.participate ? 1 : 0 },
         });
-        if (input.participate) await startAutonomy();
-        else await autonomy.stop();
+        // During a saved operation's continuation, an opt-in is started by
+        // that continuation; an opt-out stops background work at once.
+        if (input.participate && activation) autonomyIntent = true;
+        else if (input.participate) await startAutonomy();
+        else {
+          autonomyIntent = false;
+          await autonomy.stop();
+        }
         return send(200, await autonomyView());
       }
       if (/^\/api\/memories(?:\/|$)/.test(path)) {
@@ -2103,13 +2262,13 @@ export async function admin(
           settled();
         }
       }
-      if (configuration && preview)
-        return send(409, {
-          error: "OPERATION_IN_PROGRESS",
-          hint: "Finish or cancel the running preview, then save or restore again. Your draft is retained.",
-        });
-      if (busy) return send(409, { error: "OPERATION_IN_PROGRESS" });
+      // A save cancels the saved-revision preview; its late output is fenced
+      // by the changed revision.
+      if (configuration) preview?.abort();
+      if (busy && !settingsAdmissible)
+        return send(409, { error: "OPERATION_IN_PROGRESS" });
       busy = true;
+      if (configuration) settingsWriting = true;
       if (configuration && operationId) acceptedId = operationId;
       try {
         if (
@@ -2118,22 +2277,6 @@ export async function admin(
           ) ||
           skillMutation
         ) {
-          if (
-            ((worker && worker.state !== "stopped") || terminal.active) &&
-            confirmRestart !== true
-          )
-            return send(409, {
-              error: "RESTART_CONFIRMATION_REQUIRED",
-              hint: "Confirm to stop Coach, apply this change and restart it if it was running. Native sessions close; chat and actions are never replayed.",
-            });
-          // Origin/account changes (and rollbacks, which may restore either)
-          // rebind autonomy authority.
-          const rebinding =
-            path === "/api/rollback" ||
-            (path === "/api/config" &&
-              (body?.origin !== store.publicConfig().origin ||
-                (typeof body?.token === "string" &&
-                  body.token !== store.secrets.token)));
           await transition(
             path,
             { confirmRestart, operationId },
@@ -2185,13 +2328,16 @@ export async function admin(
                 await store.restorePersona(body.revision);
               } else await store.rollback();
             },
-            rebinding,
+            (op) => (operationLifecycle = op),
           );
           return send(
             200,
             skillMutation
-              ? { ...store.skills.view(skillMutation[1]), lifecycle }
-              : { ok: true, lifecycle },
+              ? {
+                  ...store.skills.view(skillMutation[1]),
+                  lifecycle: operationLifecycle,
+                }
+              : { ok: true, lifecycle: operationLifecycle },
           );
         }
         if (path === "/api/connect") {
@@ -2211,15 +2357,24 @@ export async function admin(
           });
         }
         if (path === "/api/run" || path === "/api/update/resume") {
+          const prior = worker;
           await startWorker();
-          if (lifecycle?.error === "COACH_RESTART_FAILED") {
+          resumeIntent = false;
+          // Only a Worker actually started here resolves a pending restart.
+          if (
+            worker !== prior &&
+            (lifecycle?.error === "COACH_RESTART_FAILED" ||
+              lifecycle?.restartPending)
+          ) {
             lifecycle.resumed = true;
             delete lifecycle.error;
             delete lifecycle.hint;
+            delete lifecycle.restartPending;
           }
           return send(200, { ok: true, presence: worker!.presence });
         }
         if (path === "/api/stop") {
+          resumeIntent = false;
           await worker?.stop();
           return send(200, {
             ok: true,
@@ -2228,7 +2383,8 @@ export async function admin(
         }
         return send(404, { error: "NOT_FOUND" });
       } finally {
-        busy = false;
+        if (configuration) settingsWriting = false;
+        busy = !!activation || settingsWriting;
       }
     } catch (e: any) {
       const account = accountMemoryError(e);
@@ -2261,14 +2417,14 @@ export async function admin(
             : failure.code === "CONNECTIVITY_ERROR"
               ? 503
               : 400
-          : failure.code === "AUTONOMY_WRITE_UNRESOLVED"
-            ? 409
-            : 400;
+          : 400;
       send(status, {
         error: failure.code,
         hint: failure.hint,
         metadata: failure.metadata,
-        ...(previewRequest ? {} : { lifecycle }),
+        ...(previewRequest
+          ? {}
+          : { lifecycle: operationLifecycle ?? lifecycle }),
       });
     }
   });

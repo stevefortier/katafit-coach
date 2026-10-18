@@ -57,6 +57,18 @@ for (const scenario of [
       Origin: app.origin,
       "Content-Type": "application/json",
     };
+    /** A saved operation's background continuation, once it settles. */
+    const settled = async (id: string) => {
+      for (let i = 0; i < 1500; i++) {
+        const { lifecycle } = await (
+          await fetch(app.origin + "/api/status", { headers })
+        ).json();
+        if (lifecycle?.id === id && lifecycle.phase === "complete")
+          return lifecycle;
+        await sleep(10);
+      }
+      assert.fail("lifecycle " + id + " did not settle");
+    };
     const post = (path: string) =>
       fetch(app.origin + path, {
         method: "POST",
@@ -109,23 +121,32 @@ for (const scenario of [
       if (scenario.startsWith("stopped")) await post("/api/stop");
       if (scenario === "stopped") {
         const beforeRestore = store.publicConfig().revision;
+        const reads = f.calls.filter(
+          (c) => c.name === "coach_read_task_receipt",
+        ).length;
         const restored = await fetch(app.origin + "/api/persona-restore", {
           method: "POST",
           headers,
           body: JSON.stringify({ revision: 1 }),
         });
+        const result = await restored.clone().json();
         assert.equal(
           restored.status,
           200,
-          `confirmed receipt permits restore without a separate recovery action: ${await restored.text()}`,
+          `unresolved publication never blocks restore: ${await restored.text()}`,
+        );
+        assert.deepEqual(
+          (await settled(result.lifecycle.id)).warnings.map((w: any) => w.code),
+          ["WORKER_STOP_UNCONFIRMED"],
         );
         assert.equal(store.publicConfig().revision, beforeRestore + 1);
-        assert.equal(original.safeToReplace, true);
-        assert.equal(original.state, "stopped");
+        // No reconciliation RPC on save: the publication stays retained.
         assert.equal(
-          (await readdir(home + "/task-terminal-receipts")).length,
-          1,
+          f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+          reads,
         );
+        assert.equal(original.safeToReplace, false);
+        assert.equal(original.state, "stopped");
         assert.equal(
           f.calls.filter((c) => c.name === "coach_complete_task").length,
           1,
@@ -152,12 +173,19 @@ for (const scenario of [
               body: JSON.stringify({ revision: 1 }),
             },
           );
-          assert.equal(deniedRestore.status, 400);
-          assert.equal(
-            (await deniedRestore.json()).error,
-            "WORKER_STOP_UNCONFIRMED",
+          // Saved with a truthful warning; the unresolved publication and
+          // the stopped instance that owns it are retained, not replaced.
+          assert.equal(deniedRestore.status, 200);
+          const result = await deniedRestore.json();
+          assert.deepEqual(
+            (await settled(result.lifecycle.id)).warnings.map(
+              (w: any) => w.code,
+            ),
+            ["WORKER_STOP_UNCONFIRMED"],
           );
-          assert.equal(store.publicConfig().revision, beforeRestore);
+          assert.equal(result.lifecycle.applied, true);
+          assert.equal(store.publicConfig().revision, beforeRestore + 1);
+          assert.equal(owned, original);
           assert.equal(original.state, "stopped");
           assert.equal(original.safeToReplace, false);
         }
