@@ -9,6 +9,174 @@ import {
 } from "../src/katafit/tasks.js";
 import { taskFixture, names } from "./task-fixtures.js";
 
+for (const reconcileTransport of ["hang", "drop"]) {
+  test(`matching completion ACK releases the next task without ${reconcileTransport} reconcile`, async () => {
+    const f = await taskFixture({ reconcileTransport });
+    const w = new Worker({
+      origin: f.origin,
+      token: "worker-secret",
+      system: "Coach",
+      complete: async () => '{"text":"stored once"}',
+    });
+    try {
+      const first = f.enqueue();
+      const second = f.enqueue();
+      await w.pollOnce();
+      assert.equal(w.state, "task-result-stored");
+      assert.equal(w.safeToReplace, true);
+      await w.pollOnce();
+      assert.equal(w.state, "task-result-stored");
+      assert.deepEqual(
+        f.saved.map((c) => c.task_id),
+        [first.id, second.id],
+      );
+      assert.equal(
+        f.calls.filter((c) => c.name === "coach_reconcile_task").length,
+        0,
+      );
+      assert.equal(
+        f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+        0,
+      );
+      assert.equal(
+        f.calls.filter((c) => c.name === "coach_fail_task").length,
+        0,
+      );
+    } finally {
+      await w.stop();
+      await f.close();
+    }
+  });
+}
+
+test("lost completion ACK recovers exact metadata receipt without reconcile or replay", async () => {
+  const f = await taskFixture({
+    dropComplete: true,
+    reconcileTransport: "hang",
+  });
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"stored once"}',
+  });
+  try {
+    const first = f.enqueue();
+    const second = f.enqueue();
+    await w.pollOnce();
+    assert.equal(w.state, "task-result-stored");
+    assert.equal(w.safeToReplace, true);
+    assert.deepEqual(
+      f.calls
+        .filter((c) => c.name === "coach_read_task_receipt")
+        .map((c) => c.args),
+      [
+        {
+          protocol: "coach.tasks.v1",
+          task_id: first.id,
+          lease_generation: first.lease_generation,
+        },
+      ],
+    );
+    await w.pollOnce();
+    assert.deepEqual(
+      f.saved.map((c) => c.task_id),
+      [first.id, second.id],
+    );
+    assert.equal(
+      f.calls.filter(
+        (c) => c.name === "coach_complete_task" && c.args.task_id === first.id,
+      ).length,
+      1,
+    );
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_reconcile_task").length,
+      0,
+    );
+    assert.equal(f.calls.filter((c) => c.name === "coach_fail_task").length, 0);
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+
+test("consumed exact completion ACK confirms publication without reconciliation", async () => {
+  const f = await taskFixture({
+    reconcileTransport: "hang",
+    completionReceipt: (receipt: any) => ({
+      ...receipt,
+      task: { ...receipt.task, status: "consumed" },
+      status: "consumed",
+      consumed_at: receipt.completed_at,
+    }),
+  });
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"stored"}',
+  });
+  try {
+    f.enqueue();
+    await w.pollOnce();
+    assert.equal(w.state, "task-publication-confirmed");
+    assert.equal(w.safeToReplace, true);
+    assert.equal(
+      f.calls.filter((c) =>
+        ["coach_read_task_receipt", "coach_reconcile_task"].includes(c.name),
+      ).length,
+      0,
+    );
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+
+test("mismatched completion ACK cannot release pending identity when metadata is unavailable", async () => {
+  const f = await taskFixture({
+    receiptError: true,
+    completionReceipt: (receipt: any) => ({
+      ...receipt,
+      task: {
+        ...receipt.task,
+        lease_generation: receipt.task.lease_generation + 1,
+      },
+    }),
+  });
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => '{"text":"stored"}',
+  });
+  try {
+    f.enqueue();
+    f.enqueue();
+    await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    await w.pollOnce();
+    assert.equal(w.safeToReplace, false);
+    assert.equal(w.incidents.length, 0);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_claim_task").length,
+      1,
+    );
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_complete_task").length,
+      1,
+    );
+    assert.equal(
+      f.calls.filter((c) =>
+        ["coach_reconcile_task", "coach_fail_task"].includes(c.name),
+      ).length,
+      0,
+    );
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+
 test("terminal invalidation receipt requires exact identity, null completion evidence and bounded disposition", () => {
   const task = {
     id: "1".repeat(24),
@@ -412,7 +580,7 @@ for (const outcome of ["corrected", "permanent", "meal", "workout"] as const) {
         );
         assert.equal(
           f.calls.filter((c) => c.name === "coach_reconcile_task").length,
-          1,
+          0,
         );
         assert.equal(
           f.calls.filter((c) => c.name === "coach_fail_task").length,
@@ -606,7 +774,7 @@ test("dropped completion response reconciles original receipt without resubmit o
       1,
     );
     assert.equal(
-      f.calls.filter((c) => c.name === "coach_reconcile_task").length,
+      f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
       1,
     );
     assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
@@ -645,11 +813,11 @@ test("pre-write drop uses atomic resolution and then serves the unrelated queued
     assert.deepEqual(claims.length, 2);
     assert.equal(
       f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
-      0,
+      3,
     );
     assert.equal(
-      f.calls.filter((c) => c.name === "coach_reconcile_task").length >= 2,
-      true,
+      f.calls.filter((c) => c.name === "coach_reconcile_task").length,
+      1,
     );
     assert.equal(
       f.calls.filter((c) => c.name === "coach_read_task_context")[1]?.args
@@ -699,6 +867,7 @@ test("late completion before authoritative resolution is stored, not retired by 
         .digest("hex");
       Date.now = () => Date.parse(first.lease_expires_at) + 1;
     };
+    Date.now = () => Date.parse(first.lease_expires_at) + 1;
     await w.pollOnce();
     assert.equal(w.state, "task-result-stored");
     assert.equal(
@@ -874,7 +1043,8 @@ test("source denial isolates uncertain digest while queued tasks take priority o
     assert.equal(w.incidents.length, 1);
     assert.ok(
       f.calls.filter(
-        (c) => c.name === "coach_reconcile_task" && c.args.task_id === first.id,
+        (c) =>
+          c.name === "coach_read_task_receipt" && c.args.task_id === first.id,
       ).length >= 2,
     );
     assert.equal(
@@ -1003,6 +1173,10 @@ test("unknown completion outcome is reconciled on next poll without another comp
     );
     assert.equal(
       f.calls.filter((c) => c.name === "coach_reconcile_task").length,
+      0,
+    );
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
       2,
     );
     assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
@@ -1156,7 +1330,10 @@ test("stop fences noncooperative typed provider without late completion", async 
   }
 });
 test("receipt digest mismatch stays unknown and never resubmits or downgrades", async () => {
-  const f = await taskFixture({ receiptHash: "f".repeat(64) });
+  const f = await taskFixture({
+    dropComplete: true,
+    receiptHash: "f".repeat(64),
+  });
   const w = new Worker({
     origin: f.origin,
     token: "worker-secret",
@@ -1181,7 +1358,7 @@ test("malformed independent receipt cannot establish stored success", async () =
     { consumed_at: "not-a-date" },
     { extra: "unexpected" },
   ]) {
-    const f = await taskFixture({ receipt });
+    const f = await taskFixture({ dropComplete: true, receipt });
     const w = new Worker({
       origin: f.origin,
       token: "worker-secret",
@@ -1220,7 +1397,7 @@ test("stop during completion uses independent live receipt transport", async () 
     await stopped;
     assert.equal(f.saved.length, 1);
     assert.equal(
-      f.calls.filter((c) => c.name === "coach_reconcile_task").length,
+      f.calls.filter((c) => c.name === "coach_read_task_receipt").length,
       1,
     );
     assert.ok(!f.calls.some((c) => c.name === "coach_fail_task"));
@@ -1271,7 +1448,7 @@ test("strict local schemas deny coerced numbers, unknown fields, enums, secrets 
   ])
     assert.throws(() => parseTaskResult("activity_followup", raw, []));
 });
-test("negotiated task lifecycle submits structured result once and independently reads receipt", async () => {
+test("negotiated task lifecycle submits structured result once and accepts its matching ACK", async () => {
   const f = await taskFixture();
   let seen: any;
   const w = new Worker({
@@ -1290,7 +1467,7 @@ test("negotiated task lifecycle submits structured result once and independently
     assert.deepEqual(f.saved[0].result, { text: "Steady progress." });
     assert.equal(
       f.calls.filter((c) => c.name === "coach_reconcile_task").length,
-      1,
+      0,
     );
     assert.deepEqual(
       seen.tools.map((t: any) => t.name),

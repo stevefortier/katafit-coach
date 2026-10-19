@@ -116,7 +116,7 @@ for (const [kind, result] of Object.entries(results))
       assert.ok(!payload.includes("lease_generation"));
       assert.equal(
         f.calls.filter((c) => c.name === "coach_reconcile_task").length,
-        1,
+        0,
       );
       assert.ok(
         !f.calls.some((c) =>
@@ -250,7 +250,7 @@ for (const [category, first] of [
       );
       assert.equal(
         f.calls.filter((c) => c.name === "coach_reconcile_task").length,
-        1,
+        0,
       );
       // Structured-output correction keeps the same tools.
       assert.deepEqual(
