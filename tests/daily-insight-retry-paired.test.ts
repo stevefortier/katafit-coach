@@ -280,23 +280,24 @@ test(
             enter = resolve;
           });
           let gate = true;
-          // Hold the actual HTTP reconciliation at dispatch BEFORE its Mongo
-          // transaction. Completion must already be committed; no result or
-          // authorization response is replaced by this test-only scheduling gate.
+          // Hold the actual completion ACK AFTER its Mongo transaction. The
+          // original exact ACK settles the worker even if a consumer invalidates
+          // the stored result and Retry renews the backend lease meanwhile.
           tasks.execute = async (auth: any, name: string, input: any) => {
-            if (name === "coach_reconcile_task" && gate) {
+            const response = await execute(auth, name, input);
+            if (name === "coach_complete_task" && gate) {
               gate = false;
               enter();
               await held;
             }
-            return execute(auth, name, input);
+            return response;
           };
           const pending = runOnce(backend, f.token, model);
           try {
             await Promise.race([
               entered,
               pending.then(() => {
-                throw new Error("worker never reached held reconciliation");
+                throw new Error("worker never reached held completion ACK");
               }),
             ]);
             const accepted = await row(f.status);

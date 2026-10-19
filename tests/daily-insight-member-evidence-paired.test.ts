@@ -185,8 +185,8 @@ async function runWorker(
     httpStatus: number;
     result: any;
   }> = [];
-  // Observe the real completion/reconciliation MCP responses. The worker's
-  // conservative DELIVERY_UNVERIFIED alone does not prove a source refusal.
+  // Observe actual completion and exact metadata receipts separately: source
+  // refusal belongs to completion, not to the metadata-only recovery read.
   globalThis.fetch = async (input, init) => {
     const response = await originalFetch(input, init);
     if (
@@ -196,9 +196,11 @@ async function runWorker(
       const request = JSON.parse(init.body);
       if (
         request.method === "tools/call" &&
-        ["coach_complete_task", "coach_reconcile_task"].includes(
-          request.params?.name,
-        )
+        [
+          "coach_complete_task",
+          "coach_read_task_receipt",
+          "coach_reconcile_task",
+        ].includes(request.params?.name)
       ) {
         const raw = await response.clone().text();
         const packets = response.headers
@@ -261,6 +263,8 @@ async function runWorker(
     );
     return {
       error,
+      state: w.state,
+      safeToReplace: w.safeToReplace,
       taskReplies,
       raw: JSON.stringify(first ?? {}),
       system: (first?.messages ?? [])
@@ -420,25 +424,34 @@ test(
                 .collection("member_nutrition_overlays")
                 .findOne({ member_id: f.member });
               assert.deepEqual(overlay.daily_targets, prescription(2700, 175));
-              assert.equal((r.error as any)?.code, "DELIVERY_UNVERIFIED");
+              assert.equal(r.error, undefined);
+              assert.equal(r.state, "task-result-unknown");
+              assert.equal(r.safeToReplace, false);
               const task = await backend.task();
               assert.equal(task?.status, "claimed");
               const completions = r.taskReplies.filter(
                 (reply) => reply.tool === "coach_complete_task",
               );
-              const reconciliations = r.taskReplies.filter(
-                (reply) => reply.tool === "coach_reconcile_task",
+              const receipts = r.taskReplies.filter(
+                (reply) => reply.tool === "coach_read_task_receipt",
               );
               assert.equal(
                 completions.length,
                 1,
                 "one real completion attempt, no write replay",
               );
-              assert.ok(
-                reconciliations.length > 0,
-                "worker checked the real reconciliation boundary",
+              assert.equal(
+                receipts.length,
+                1,
+                "worker checked exact metadata once",
               );
-              for (const wire of [...completions, ...reconciliations]) {
+              assert.equal(
+                r.taskReplies.filter(
+                  (reply) => reply.tool === "coach_reconcile_task",
+                ).length,
+                0,
+              );
+              for (const wire of completions) {
                 assert.equal(wire.taskId, String(task._id));
                 assert.equal(wire.httpStatus, 200);
                 assert.equal(wire.result.isError, true);
@@ -448,6 +461,14 @@ test(
                 );
                 assert.equal(denial.code, "TASK_SOURCE_CHANGED");
               }
+              assert.equal(receipts[0].taskId, String(task._id));
+              assert.equal(receipts[0].httpStatus, 200);
+              assert.notEqual(receipts[0].result.isError, true);
+              const metadata = receipts[0].result.structuredContent;
+              assert.equal(metadata.task.id, String(task._id));
+              assert.equal(metadata.status, "claimed");
+              assert.equal(metadata.result_sha256, null);
+              assert.equal(metadata.completed_at, null);
               const noAcceptedResult = (row: any) => {
                 for (const field of [
                   "result",

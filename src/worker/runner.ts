@@ -1213,35 +1213,64 @@ export class Worker {
       AbortSignal.timeout(3000),
       (event) => this.diagnostic(event),
     );
-    let checked: any;
+    let status: string;
     try {
-      const result = await control.rpc(
-        "tools/call",
-        {
-          name: "coach_reconcile_task",
-          arguments: {
-            protocol: TASK_PROTOCOL,
-            task_id: pending.task.id,
-            lease_generation: pending.task.lease_generation,
+      const read = async (name: string) => {
+        const result = await control.rpc(
+          "tools/call",
+          {
+            name,
+            arguments: {
+              protocol: TASK_PROTOCOL,
+              task_id: pending.task.id,
+              lease_generation: pending.task.lease_generation,
+            },
           },
-        },
-        false,
-        3000,
-      );
-      if (result.isError) {
-        let code: unknown;
-        try {
-          code = JSON.parse(
-            result.content?.find((v: any) => v.type === "text")?.text,
-          ).code;
-        } catch {}
-        if (typeof code === "string" && DENIAL_CODES.has(code))
-          throw new Error(code);
-        throw new Error("MCP_TOOL_FAILED");
+          false,
+          3000,
+        );
+        if (result.isError) {
+          let code: unknown;
+          try {
+            code = JSON.parse(
+              result.content?.find((v: any) => v.type === "text")?.text,
+            ).code;
+          } catch {}
+          if (typeof code === "string" && DENIAL_CODES.has(code))
+            throw new Error(code);
+          throw new Error("MCP_TOOL_FAILED");
+        }
+        return (
+          result.structuredContent ??
+          JSON.parse(result.content?.find((v: any) => v.type === "text")?.text)
+        );
+      };
+      const receipt = await read("coach_read_task_receipt");
+      if (["completed", "consumed"].includes(receipt?.status)) {
+        // Metadata proves acceptance without replaying source authorization.
+        status = verifyTaskReceipt(pending.task, receipt, pending.digest);
+      } else {
+        // Reuse the exact identity/null-result validator for non-completion
+        // metadata. This local label is not authoritative expiry settlement.
+        if (Object.hasOwn(receipt ?? {}, "resolution"))
+          throw new Error("DELIVERY_UNVERIFIED");
+        const checked = {
+          ...receipt,
+          resolution:
+            receipt?.status === "expired" ? "reclaimable" : "observed",
+        };
+        status = verifyTaskResolution(pending.task, checked, pending.digest);
+        if (
+          status === "expired" ||
+          (status === "claimed" &&
+            Date.now() >= Date.parse(pending.task.lease_expires_at))
+        )
+          status = verifyTaskResolution(
+            pending.task,
+            await read("coach_reconcile_task"),
+            pending.digest,
+          );
       }
-      checked =
-        result.structuredContent ??
-        JSON.parse(result.content?.find((v: any) => v.type === "text")?.text);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "";
       if (
@@ -1268,7 +1297,6 @@ export class Worker {
       }
       throw error;
     }
-    const status = verifyTaskResolution(pending.task, checked, pending.digest);
     if (status === "claimed") {
       this.update("task-result-unknown");
       return;
@@ -1622,12 +1650,21 @@ export class Worker {
           { ...fence, result },
           budget(),
         );
-        verifyTaskReceipt(task, receipt, this.pendingTask.digest);
-        this.pendingTask.digest = receipt.result_sha256;
+        const status = verifyTaskReceipt(
+          task,
+          receipt,
+          this.pendingTask.digest,
+        );
+        this.pendingTask = undefined;
+        this.update(
+          status === "consumed"
+            ? "task-publication-confirmed"
+            : "task-result-stored",
+        );
       } catch {
-        /* The read, never a repeated write, decides the outcome. */
+        /* The read, never a repeated write, decides an ambiguous outcome. */
       }
-      await this.reconcileTask();
+      if (this.pendingTask) await this.reconcileTask();
       // Retain only from an accepted canonical result (completed/consumed).
       if (
         memory &&

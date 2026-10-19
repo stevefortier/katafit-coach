@@ -559,7 +559,7 @@ export async function taskFixture(options: any = {}) {
         req.socket.destroy();
         return;
       }
-      value = receipt(true);
+      value = options.completionReceipt?.(receipt(true)) ?? receipt(true);
     } else if (n === "coach_read_task_receipt") {
       current = byId.get(a.task_id) ?? current;
       if (options.reconcileDenial && denied.has(a.task_id)) {
@@ -599,6 +599,11 @@ export async function taskFixture(options: any = {}) {
     } else if (n === "coach_reconcile_task") {
       current = byId.get(a.task_id) ?? current;
       options.onReconcile?.(current);
+      if (options.reconcileTransport === "hang") return;
+      if (options.reconcileTransport === "drop") {
+        req.socket.destroy();
+        return;
+      }
       if (options.reconcileDenial && denied.has(a.task_id)) {
         res.setHeader("Content-Type", "application/json");
         res.end(
