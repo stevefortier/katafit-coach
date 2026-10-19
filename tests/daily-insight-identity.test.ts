@@ -17,7 +17,7 @@ const status = JSON.stringify({
   note: "Synthetic readiness note",
 });
 const insight = JSON.stringify({
-  general_advice: "You saved good with a note; start easy.",
+  general_advice: "Keep that momentum today.",
   meal_recommendations: [],
   recovery_recommendations: [],
   workout_directives: [],
@@ -95,6 +95,24 @@ for (const negotiate of [true, false])
       const all = messages.map(text).join("\n");
       assert.match(all, /Daily insight fixed constraints/);
       assert.match(all, /not measured recovery/);
+      // Exercise the real Worker -> Pi -> HTTP provider payload. The scripted
+      // response proves concise-result retention, not autonomous model quality.
+      assert.match(all, /one salient, evidence-grounded observation/);
+      assert.match(all, /brief encouragement is a complete daily insight/);
+      assert.match(all, /empty recommendation arrays/);
+      assert.match(all, /Do not narrate routine evidence bookkeeping/);
+      assert.ok(
+        !all.includes(
+          "Acknowledge that saved status, and its note when present,",
+        ),
+      );
+      assert.equal(
+        fixture.saved[0].result.general_advice,
+        "Keep that momentum today.",
+      );
+      assert.deepEqual(fixture.saved[0].result.meal_recommendations, []);
+      assert.deepEqual(fixture.saved[0].result.recovery_recommendations, []);
+      assert.deepEqual(fixture.saved[0].result.workout_directives, []);
       assert.ok(!all.includes("synthetic-worker-credential"));
     } finally {
       await worker.stop();
