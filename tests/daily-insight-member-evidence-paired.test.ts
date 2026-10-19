@@ -330,7 +330,14 @@ test(
           assert.equal(r.targets.day, JSON.parse(status.text).day);
           for (const foreign of ["5000", "3100", String(f.other)])
             assert.ok(!r.raw.includes(foreign), foreign);
-          assert.match(r.raw, /acknowledg\w* (?:that |the )?saved/i);
+          assert.match(
+            r.raw,
+            /Use that status and its note to inform coaching/,
+          );
+          assert.match(
+            r.raw,
+            /brief encouragement is a complete daily insight/,
+          );
           assert.match(r.raw, /not measured recovery/i);
           assert.match(r.raw, /Daily insight fixed constraints/);
           assert.ok(!r.raw.includes(f.token));
