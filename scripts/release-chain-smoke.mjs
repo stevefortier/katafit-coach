@@ -7,6 +7,7 @@ import {
 import { releasePresenceFixture } from "./release-presence-fixture.mjs";
 import { roundtripChangedImage } from "./release-image-roundtrip.mjs";
 import { syntheticReleaseBoundary } from "./synthetic-release-boundary.mjs";
+import { writeFailureEvidence } from "./release-failure-evidence.mjs";
 // Real packed CLI/child lifecycle with synthetic release discovery and local Git.
 // The owner uses actual native readiness; this fixture makes no provenance claim.
 import {
@@ -41,6 +42,9 @@ const env = {
 };
 let cli, preload, failure, backend, presence, imagesBeforeBuild, imageOwner;
 const imageOwnerPath = join(root, "image-owner.json");
+const cleanupTrace = join(root, "cleanup-diagnostics.jsonl");
+let failureSnapshot = {};
+let observeFailure = async () => {};
 const phase = (name, details = {}) =>
   console.log(JSON.stringify({ phase: name, ...details }));
 const run = (...args) =>
@@ -186,6 +190,13 @@ try {
     `import cp from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {readFileSync,appendFileSync,existsSync,statSync} from 'node:fs';
+import {channel} from 'node:diagnostics_channel';
+let cleanupRows=0;
+channel('katafit.native-cleanup').subscribe(row=>{
+  try {
+    if(cleanupRows++<64)appendFileSync(${JSON.stringify(cleanupTrace)},JSON.stringify(row)+'\\n',{mode:0o600});
+  }catch{}
+});
 import {Updates} from ${JSON.stringify(join(root, "install/node_modules/@katafit/coach/dist/update/updates.js"))};
 ${syntheticReleaseBoundary({ installedRoot: join(root, "install/node_modules/@katafit/coach"), source, legacy: false })}
 const now=Date.now.bind(Date), tracePath=${JSON.stringify(trace)};
@@ -239,6 +250,20 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeout),
     });
+  observeFailure = async () => {
+    const read = async (path) => {
+      try {
+        return await (await api(path)).json();
+      } catch {
+        return undefined;
+      }
+    };
+    const [update, worker] = await Promise.all([
+      read("update"),
+      read("status"),
+    ]);
+    failureSnapshot = { ...failureSnapshot, update, worker };
+  };
   const wait = async (predicate) => {
     let lastState;
     for (let i = 0; i < 900; i++) {
@@ -277,6 +302,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     );
   };
   const apply = async (sha, offset) => {
+    failureSnapshot = { target: sha, offset };
     await writeFile(selection, JSON.stringify({ sha, offset }));
     const receiptsBefore = await readdir(join(home, "native-artifacts"));
     const checked = await (await api("update/check", {})).json();
@@ -291,6 +317,7 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       "readonly readiness must not mint receipts",
     );
     const response = await api("update/apply", { sha, confirm: true }, 180000);
+    failureSnapshot.status = response.status;
     assert.equal(response.status, 202, await response.text());
   };
   await apply(good, 0);
@@ -646,6 +673,17 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
   }
 } catch (error) {
   failure = error;
+  // Capture before teardown can delete the protected home; never mask failure.
+  try {
+    await observeFailure();
+    await writeFailureEvidence(
+      process.env.COACH_RELEASE_EVIDENCE_DIR,
+      cleanupTrace,
+      failureSnapshot,
+    );
+  } catch {
+    phase("failure-evidence", { state: "write-failed" });
+  }
   // Preserve the bounded lifecycle diagnostic even if fixture cleanup fails.
   if (
     error instanceof Error &&

@@ -20,6 +20,8 @@ import { StringDecoder } from "node:string_decoder";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { request } from "node:http";
+import { performance } from "node:perf_hooks";
+import { cleanupDiagnostic } from "./cleanup-diagnostics.js";
 import type { Duplex } from "node:stream";
 import { sandboxArgs } from "./policy.js";
 import {
@@ -138,6 +140,7 @@ export async function cleanupNativeProbe(
   engine?: NativeProbeEngine,
 ) {
   const selectedEngine = recordEngine(ownership);
+  const started = performance.now();
   const socket = nativeEngineSocket(selectedEngine);
   if (engine && recordEngine(engine) !== selectedEngine)
     throw Error("NATIVE_ENGINE_MISMATCH");
@@ -145,7 +148,8 @@ export async function cleanupNativeProbe(
   let found: any;
   try {
     found = await engine.inspect(ownership.name);
-  } catch {
+  } catch (error) {
+    cleanupDiagnostic("inspect", started, error);
     throw new Error("NATIVE_CLEANUP_PENDING");
   }
   if (found === undefined) return;
@@ -160,14 +164,20 @@ export async function cleanupNativeProbe(
     found.Config?.Image !== ownership.image ||
     !exactLabels ||
     (ownership.containerId !== null && found.Id !== ownership.containerId)
-  )
+  ) {
+    cleanupDiagnostic("identity", started);
     throw new Error("NATIVE_CLEANUP_PENDING");
+  }
   try {
     await engine.remove(found.Id);
-  } catch {
+  } catch (error) {
     try {
       if ((await engine.inspect(found.Id)) === undefined) return;
-    } catch {}
+    } catch (inspectionError) {
+      cleanupDiagnostic("remove-unconfirmed", started, inspectionError);
+      throw new Error("NATIVE_CLEANUP_PENDING");
+    }
+    cleanupDiagnostic("remove-present", started, error);
     throw new Error("NATIVE_CLEANUP_PENDING");
   }
 }
