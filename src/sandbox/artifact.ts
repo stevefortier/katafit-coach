@@ -17,6 +17,8 @@ import { randomUUID } from "node:crypto";
 import { lstat, open, rm, opendir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { performance } from "node:perf_hooks";
+import { cleanupDiagnostic } from "./cleanup-diagnostics.js";
 import { directory, managedFile } from "../update/managed.js";
 import { atomicWrite } from "../update/journal.js";
 import {
@@ -698,20 +700,24 @@ export async function nativeBindingPreflight(
   return withCleanupLock(
     home,
     async () => {
+      let cleanupStarted = performance.now();
       try {
         await drainDurableCleanup(
           home,
           boundary.engine,
           boundary.commands?.exec,
         );
-      } catch {
+      } catch (error) {
+        cleanupDiagnostic("durable-drain", cleanupStarted, error);
         throw artifactFailure("CLEANUP_PENDING");
       }
       const build = await metadata(root);
       if (build.protocol === 1) return undefined;
+      cleanupStarted = performance.now();
       try {
         await drainOwnedCleanup(key);
-      } catch {
+      } catch (error) {
+        cleanupDiagnostic("local-drain", cleanupStarted, error);
         throw artifactFailure("CLEANUP_PENDING");
       }
       boundary.signal?.throwIfAborted();
@@ -763,6 +769,7 @@ export async function nativeBindingPreflight(
         });
       let catalog = false,
         output = "";
+      let probeFailed = false;
       runtime.onOutput = (chunk) => {
         output = (output + chunk).slice(-65536);
       };
@@ -814,14 +821,19 @@ export async function nativeBindingPreflight(
           throw new Error("NATIVE_PREFLIGHT_FAILED");
         return binding;
       } catch (error) {
+        probeFailed = true;
         if (boundary.signal?.aborted && error === boundary.signal.reason)
           throw new Error("BUILD_CANCELLED");
         throw artifactFailure("PROBE_FAILED");
       } finally {
+        cleanupStarted = performance.now();
+        let phase: "runtime-stop" | "ownership-record-remove" = "runtime-stop";
         try {
           await runtime.stop();
+          phase = "ownership-record-remove";
           if (durable) await removeOwnership(home, ownership);
-        } catch {
+        } catch (error) {
+          cleanupDiagnostic(phase, cleanupStarted, error, probeFailed);
           const owned = pendingCleanup.get(key) ?? new Set<PreflightRuntime>();
           owned.add(runtime);
           pendingCleanup.set(key, owned);

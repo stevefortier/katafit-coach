@@ -34,9 +34,18 @@ jobs:
       - name: Qualify the actual package bytes and native image
         env:
           COACH_RELEASE_CYCLES: '20'
+          COACH_RELEASE_EVIDENCE_DIR: ${{ runner.temp }}/coach-release-evidence
         run: |
           export COACH_RELEASE_PACKAGE="$RUNNER_TEMP/coach-release/coach-${GITHUB_SHA}.tgz"
           node scripts/release-chain-smoke.mjs
+      - name: Preserve sanitized qualification evidence including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coach-release-evidence-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/coach-release-evidence
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Qualify real immutable isolation
         run: NATIVE_DOCKER_TEST=1 npx tsx --test --test-concurrency=1 tests/native-deployment.test.ts tests/native-runtime.test.ts
       - name: Attest every published byte to this main source/workflow
