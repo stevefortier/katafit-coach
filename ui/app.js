@@ -1546,6 +1546,11 @@ async function status() {
         " — " +
         s.lastError.hint
       : "No retained error.";
+    const recovery = $("isolatedTaskRecovery");
+    if (recovery) {
+      recovery.textContent = s.isolatedTaskRecovery?.hint ?? "";
+      recovery.hidden = !recovery.textContent;
+    }
   } catch {}
 }
 function workerStatusTone(state) {

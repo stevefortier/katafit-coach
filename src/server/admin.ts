@@ -25,6 +25,7 @@ import { Worker } from "../worker/runner.js";
 import { Client, ToolFailure } from "../katafit/client.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 import { archiveTaskInvalidation } from "../worker/taskInvalidationArchive.js";
+import { IsolatedTaskJournal } from "../worker/isolatedTaskJournal.js";
 import { Admission } from "../runtime/admission.js";
 import { AutonomyHost, type AutonomyHostOptions } from "../autonomy/host.js";
 import { AutonomyBackend, AutonomyFailure } from "../autonomy/backend.js";
@@ -58,6 +59,11 @@ export async function admin(
     },
   });
   let worker: Worker | undefined;
+  // Storage uncertainty blocks runtime admission, never the settings editor.
+  const isolatedJournal = await IsolatedTaskJournal.open(store.dir).catch(
+    () => undefined,
+  );
+  const isolationHealthy = () => isolatedJournal?.healthy === true;
   // One inference slot shared by the request Worker and the continuous Coach.
   const admission = new Admission();
   const autonomy = new AutonomyHost({
@@ -284,6 +290,7 @@ export async function admin(
       (!worker.stopConfirmed || !worker.safeToReplace)
     )
       throw new SafeError("WORKER_STOP_UNCONFIRMED");
+    if (!isolationHealthy()) throw new SafeError("WORKER_STOP_UNCONFIRMED");
     if (!store.secrets.token || !store.secrets.apiKey)
       throw new Error("CONNECTION_AND_PROVIDER_REQUIRED");
     if (!worker || worker.state === "stopped") {
@@ -298,6 +305,7 @@ export async function admin(
         secrets: Object.values(store.secrets),
         vision: c.provider.vision === true,
         integrationDirectory: store.dir,
+        isolatedJournal,
         skills,
         personaRevision: String(c.revision),
         admission,
@@ -392,6 +400,8 @@ export async function admin(
   // remains protected where it is: journals keep their original identity and
   // account binding, nothing is replayed, and owned cleanup stays owned.
   const settingsWarnings = {
+    ISOLATED_TASK_OUTCOME_UNCONFIRMED:
+      "Earlier insight work has an unconfirmed outcome. Its original identity is durably retained; Coach can run unrelated work and will not resend it.",
     AUTONOMY_WRITE_UNRESOLVED:
       "Earlier background Coach work has an unconfirmed outcome: a message or change may already have reached Kata.fit. It is kept with its original connection and account, never replayed, and new background actions stay paused until Kata.fit confirms it.",
     AUTONOMY_WRITE_REBOUND:
@@ -465,6 +475,8 @@ export async function admin(
             worker.safeToReplace);
       } catch {}
       if (!replaceable) warn(op, "WORKER_STOP_UNCONFIRMED");
+      if (isolatedJournal?.healthy && isolatedJournal.snapshot().length)
+        warn(op, "ISOLATED_TASK_OUTCOME_UNCONFIRMED");
       // Never consume running intent while a newer local write is pending.
       await applyingDone;
       if (superseded()) return;
@@ -623,7 +635,8 @@ export async function admin(
   const replacementBlocked = () =>
     !autonomy.safeToReplace
       ? ("AUTONOMY_REPLACEMENT_UNCONFIRMED" as const)
-      : !terminal.idle ||
+      : !isolationHealthy() ||
+          !terminal.idle ||
           (worker && (!worker.stopConfirmed || !worker.safeToReplace))
         ? ("WORKER_STOP_UNCONFIRMED" as const)
         : undefined;
@@ -1446,12 +1459,26 @@ export async function admin(
           state: worker?.state ?? "stopped",
           presence: worker?.presence ?? "unconfirmed",
           presenceStopRecovery: worker?.presenceStopRecovery ?? "none",
+          isolatedTaskRecovery: {
+            count: isolatedJournal?.healthy
+              ? isolatedJournal.snapshot().length
+              : null,
+            healthy: isolationHealthy(),
+            hint:
+              isolatedJournal?.healthy && isolatedJournal.snapshot().length
+                ? "Earlier insight work has an unconfirmed outcome. Original identities are durably retained; Coach can run unrelated work and will not resend it."
+                : isolationHealthy()
+                  ? null
+                  : "Earlier task metadata storage is unconfirmed; replacement is blocked.",
+          },
           preview: !!preview,
           // Autonomy fences replacement independent of participation. Durable
           // unknown writes are retained history: they pause new autonomous
           // actions (autonomySafeToAct) but not replacement of an idle host.
           safeToReplace:
-            (worker?.safeToReplace ?? true) && autonomy.safeToReplace,
+            isolationHealthy() &&
+            (worker?.safeToReplace ?? true) &&
+            autonomy.safeToReplace,
           autonomyUnresolvedWrites: autonomy.unresolvedWrites,
           autonomySafeToAct: autonomy.safeToAct,
           stopConfirmed: worker?.stopConfirmed ?? true,
@@ -2021,7 +2048,10 @@ export async function admin(
             await cancelPrepared("LAUNCHER_UPGRADE_REQUIRED");
             return send(409, { error: "LAUNCHER_UPGRADE_REQUIRED" });
           }
-          if (worker?.state === "stopped" && !worker.stopConfirmed) {
+          if (
+            !isolationHealthy() ||
+            (worker?.state === "stopped" && !worker.stopConfirmed)
+          ) {
             await cancelPrepared("WORKER_STOP_UNCONFIRMED");
             return send(409, { error: "WORKER_STOP_UNCONFIRMED" });
           }
