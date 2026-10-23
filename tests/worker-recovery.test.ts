@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Worker } from "../src/worker/runner.js";
+import {
+  IsolatedTaskJournal,
+  taskBinding,
+} from "../src/worker/isolatedTaskJournal.js";
 import { taskFixture } from "./task-fixtures.js";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -103,8 +107,8 @@ test("manual update queues an in-flight claim and fences late claims and native 
   }
 });
 
-test("actual admin queues idle-unsafe manual apply without stopping and supports receipt-only stopped recovery", async () => {
-  const options = {
+test("actual admin permits durable isolated replacement and receipt-only stopped recovery without clearing denied history", async () => {
+  const options: any = {
     dropCompleteBeforeAcceptance: true,
     reconcileDenial: "TASK_SOURCE_CHANGED",
   };
@@ -160,41 +164,56 @@ test("actual admin queues idle-unsafe manual apply without stopping and supports
       (c) => c.name === "coach_complete_task",
     ).length;
     assert.equal(completionWrites, 1);
-    const response = await post("/api/update/apply", {
-      confirm: true,
-      sha: updates.latest,
-    });
-    assert.equal(response.status, 202);
-    const queue = await response.json();
-    for (let i = 0; i < 100; i++) {
-      const data = await (
-        await fetch(app.origin + "/api/update", { headers })
-      ).json();
-      if (data.manualQueue.phase === "waiting-publication") break;
-      await sleep(10);
-    }
-    assert.equal(
-      owned?.state,
-      "idle",
-      "manual apply must not abort the original worker",
-    );
-    assert.equal(updates.lastOperation, undefined);
-    assert.equal(
-      (await post("/api/update/quiesce", { confirm: true })).status,
-      409,
-    );
-    assert.equal(owned?.state, "idle");
-    assert.equal(
-      (await post("/api/update/cancel", { id: queue.id })).status,
-      200,
-    );
     await post("/api/stop");
     assert.equal(owned?.state, "stopped");
-    const before = f.calls.length;
-    const denied = await post("/api/worker/reconcile");
-    assert.equal(denied.status, 409);
-    assert.equal(owned?.incidents.length, 1);
+    assert.equal(owned!.stopConfirmed, true);
     const attemptedDigest = owned!.incidents[0].digest;
+    const isolatedRecord = {
+      task: retainedTask,
+      digest: attemptedDigest,
+      reason: "TASK_SOURCE_CHANGED",
+      binding: taskBinding(f.origin, "synthetic-token"),
+    };
+    assert.deepEqual((await IsolatedTaskJournal.open(home)).snapshot(), [
+      isolatedRecord,
+    ]);
+    const denied = await post("/api/worker/reconcile");
+    assert.equal(
+      denied.status,
+      200,
+      "durable isolation permits replacement, not receipt acceptance",
+    );
+    assert.equal((await denied.json()).safeToReplace, true);
+    assert.equal(
+      owned?.incidents.length,
+      1,
+      "denial does not clear quarantine",
+    );
+    assert.deepEqual((await IsolatedTaskJournal.open(home)).snapshot(), [
+      isolatedRecord,
+    ]);
+    const quiesced = await post("/api/update/quiesce", { confirm: true });
+    assert.equal(quiesced.status, 200);
+    assert.equal((await quiesced.json()).wasRunning, false);
+    assert.equal((await post("/api/update/release")).status, 200);
+    const originalWorker = owned;
+    assert.equal((await post("/api/run")).status, 200);
+    assert.notStrictEqual(
+      owned,
+      originalWorker,
+      "stopped worker is actually replaced",
+    );
+    await post("/api/stop");
+    assert.equal(owned!.stopConfirmed, true);
+    assert.equal(owned!.safeToReplace, true);
+    assert.equal(owned!.incidents[0].digest, attemptedDigest);
+    assert.deepEqual(
+      (await IsolatedTaskJournal.open(home)).snapshot(),
+      [isolatedRecord],
+      "replacement reloads exact isolated history instead of discarding it",
+    );
+    const before = f.calls.length;
+    const historicalError = owned!.lastError;
     options.reconcileDenial = "";
     options.receipt = {
       task: { ...retainedTask, status: "invalidated" },
@@ -209,7 +228,10 @@ test("actual admin queues idle-unsafe manual apply without stopping and supports
     assert.equal((await post("/api/worker/reconcile")).status, 200);
     assert.equal(owned?.state, "stopped");
     assert.equal(owned?.safeToReplace, true);
-    assert.equal(owned?.lastError?.code, "DELIVERY_UNVERIFIED");
+    assert.strictEqual(owned!.lastError, historicalError);
+    assert.equal(originalWorker!.lastError?.code, "DELIVERY_UNVERIFIED");
+    assert.equal(owned!.incidents.length, 0);
+    assert.deepEqual((await IsolatedTaskJournal.open(home)).snapshot(), []);
     const archiveNames = await readdir(home + "/task-terminal-receipts");
     assert.equal(archiveNames.length, 1);
     const archived = JSON.parse(
@@ -278,6 +300,11 @@ test("actual admin queues idle-unsafe manual apply without stopping and supports
       completionWrites,
       "restart performs no write replay",
     );
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_fail_task").length,
+      0,
+      "durable recovery never fabricates a canonical failure",
+    );
   } finally {
     Worker.prototype.start = start;
     await app.close();
@@ -345,10 +372,40 @@ test("stopped admin keeps invalidated task identity when durable archive publica
       invalidation_code: "TASK_SOURCE_CHANGED",
       invalidated_at: new Date().toISOString(),
     };
+    const isolatedRecord = {
+      task: retainedTask,
+      digest,
+      reason: "TASK_SOURCE_CHANGED",
+      binding: taskBinding(f.origin, "synthetic-token"),
+    };
+    assert.deepEqual((await IsolatedTaskJournal.open(home)).snapshot(), [
+      isolatedRecord,
+    ]);
+    const historicalError = owned!.lastError;
     await writeFile(home + "/task-terminal-receipts", "blocked");
-    assert.equal((await post("/api/worker/reconcile")).status, 409);
-    assert.equal(owned!.safeToReplace, false);
+    const recovery = await post("/api/worker/reconcile");
+    assert.equal(recovery.status, 200);
+    assert.deepEqual(await recovery.json(), {
+      safeToReplace: true,
+      stopConfirmed: true,
+    });
+    assert.equal(owned!.safeToReplace, true);
+    assert.equal(
+      owned!.incidents.length,
+      1,
+      "archive failure leaves quarantine unresolved",
+    );
     assert.equal(owned!.incidents[0].digest, digest);
+    assert.strictEqual(owned!.lastError, historicalError);
+    assert.equal(
+      await readFile(home + "/task-terminal-receipts", "utf8"),
+      "blocked",
+    );
+    assert.deepEqual(
+      (await IsolatedTaskJournal.open(home)).snapshot(),
+      [isolatedRecord],
+      "replacement is safe only because the exact unresolved metadata remains durable",
+    );
     assert.equal(f.saved.length, 0);
     assert.equal(
       f.calls.filter((c) => c.name === "coach_complete_task").length,
@@ -358,6 +415,24 @@ test("stopped admin keeps invalidated task identity when durable archive publica
     await rm(home + "/task-terminal-receipts");
     assert.equal((await post("/api/worker/reconcile")).status, 200);
     assert.equal(owned!.safeToReplace, true);
+    assert.equal(owned!.incidents.length, 0);
+    assert.deepEqual((await IsolatedTaskJournal.open(home)).snapshot(), []);
+    assert.strictEqual(owned!.lastError, historicalError);
+    const archiveNames = await readdir(home + "/task-terminal-receipts");
+    assert.equal(archiveNames.length, 1);
+    const archived = JSON.parse(
+      await readFile(
+        home + "/task-terminal-receipts/" + archiveNames[0],
+        "utf8",
+      ),
+    );
+    assert.equal(archived.attempted_result_sha256, digest);
+    assert.deepEqual(archived.receipt, options.receipt);
+    assert.equal(
+      f.calls.filter((c) => c.name === "coach_fail_task").length,
+      0,
+      "archive recovery never fabricates a canonical failure",
+    );
     assert.equal(
       f.saved.length,
       0,
