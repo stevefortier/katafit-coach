@@ -1,4 +1,10 @@
 import type { Admission } from "../runtime/admission.js";
+import {
+  IsolatedTaskJournal,
+  taskBinding,
+  ISOLATION_REASONS,
+  type IsolatedTaskRecord,
+} from "./isolatedTaskJournal.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   discoverTaskPlane,
@@ -164,6 +170,7 @@ export interface WorkerOptions {
    */
   actionLedger?: ActionLedger;
   integrationDirectory?: string;
+  isolatedJournal?: IsolatedTaskJournal;
   archiveTaskInvalidation?: (record: {
     protocol: typeof TASK_PROTOCOL;
     attempted_result_sha256: string;
@@ -219,16 +226,13 @@ async function verifyRequestReceipt(
 }
 
 type PendingTask = { task: any; digest: string; ref: string };
-type Incident = PendingTask & { reason: string; nextCheck: number };
-const DENIAL_CODES = new Set([
-  "TASK_SOURCE_CHANGED",
-  "TASK_ROUTING_CHANGED",
-  "CONVERSATION_CLEARED",
-  "SCOPE_CHANGED",
-  "REQUESTER_SCOPE_CHANGED",
-  "EXTERNAL_COACH_AUTO_ACCEPTANCE_CONFLICT",
-  "CREDENTIAL_REJECTED",
-]);
+type Incident = PendingTask & {
+  reason: string;
+  nextCheck: number;
+  binding?: string;
+  durable?: boolean;
+};
+const DENIAL_CODES = ISOLATION_REASONS;
 const MAX_INCIDENTS = 32;
 // Presence report budgets: fresh initialize + initialized, then a fresh call.
 const PRESENCE_HANDSHAKE_MS = 4000;
@@ -314,6 +318,24 @@ export class Worker {
   private preferTask = true;
   private pendingTask?: PendingTask;
   private isolated: Incident[] = [];
+  private typedCooldown = 0;
+  private isolatedRecord(incident: Incident): IsolatedTaskRecord {
+    return {
+      task: incident.task,
+      digest: incident.digest,
+      reason: incident.reason,
+      binding:
+        incident.binding ??
+        taskBinding(this.options.origin, this.options.token),
+    };
+  }
+  private async settleIsolated(incident: Incident) {
+    if (incident.durable)
+      await this.options.isolatedJournal!.resolve(
+        this.isolatedRecord(incident),
+      );
+    this.isolated = this.isolated.filter((entry) => entry !== incident);
+  }
   // Main-chat ambiguity must not disappear when a later error overwrites history.
   private unresolvedRequests = new Map<
     string,
@@ -351,6 +373,12 @@ export class Worker {
       for (const pending of [this.pendingTask, ...this.isolated]) {
         if (signal.aborted) break;
         if (!pending) continue;
+        if (
+          "binding" in pending &&
+          pending.binding !==
+            taskBinding(this.options.origin, this.options.token)
+        )
+          continue;
         try {
           const c = new Client(
             this.options.origin,
@@ -377,8 +405,7 @@ export class Worker {
             });
           } else verifyTaskReceipt(pending.task, receipt, pending.digest);
           if (pending === this.pendingTask) this.pendingTask = undefined;
-          else
-            this.isolated = this.isolated.filter((entry) => entry !== pending);
+          else await this.settleIsolated(pending as Incident);
         } catch {
           /* Missing, denied or mismatched reads are never proof. */
         }
@@ -394,7 +421,8 @@ export class Worker {
     // replacement worker. They require read-only reconciliation, not replay.
     return (
       !this.pendingTask &&
-      this.isolated.length === 0 &&
+      this.isolated.every((incident) => incident.durable) &&
+      (this.options.isolatedJournal?.healthy ?? true) &&
       this.unresolvedRequests.size === 0 &&
       this.invocations.size === 0 &&
       !this.reconciling
@@ -486,6 +514,14 @@ export class Worker {
     } catch {}
   }
   constructor(private options: WorkerOptions) {
+    this.isolated = (options.isolatedJournal?.snapshot() ?? []).map(
+      (record) => ({
+        ...record,
+        durable: true,
+        ref: randomUUID(),
+        nextCheck: Date.now() + (options.isolationMs ?? 60000),
+      }),
+    );
     const { admission, complete } = options;
     this.options = {
       ...options,
@@ -810,7 +846,11 @@ export class Worker {
       const taskPlane = await discoverTaskPlane(c);
       const taskKinds = taskPlane.kinds;
       const due = this.isolated.find(
-        (incident) => incident.nextCheck <= Date.now(),
+        (incident) =>
+          incident.nextCheck <= Date.now() &&
+          (!incident.binding ||
+            incident.binding ===
+              taskBinding(this.options.origin, this.options.token)),
       );
       if (due) {
         due.nextCheck = Date.now() + (this.options.isolationMs ?? 60000);
@@ -826,6 +866,7 @@ export class Worker {
           this.updateQuiesced ||
           this.statsPollPauses ||
           triedTasks ||
+          Date.now() < this.typedCooldown ||
           !taskKinds.length
         )
           return false;
@@ -1207,6 +1248,43 @@ export class Worker {
     pending: PendingTask | Incident | undefined = this.pendingTask,
   ) {
     if (!pending) return;
+    if (pending !== this.pendingTask) {
+      // Quarantined history has no expiry/requeue authority. Receipt-only,
+      // bounded and credential-bound; never coach_reconcile_task or replay.
+      const incident = pending as Incident;
+      if (
+        incident.binding &&
+        incident.binding !==
+          taskBinding(this.options.origin, this.options.token)
+      )
+        return;
+      const control = new Client(
+        this.options.origin,
+        this.options.token,
+        AbortSignal.timeout(3000),
+      );
+      const receipt = await control.call(
+        "coach_read_task_receipt",
+        {
+          protocol: TASK_PROTOCOL,
+          task_id: pending.task.id,
+          lease_generation: pending.task.lease_generation,
+        },
+        3000,
+      );
+      if (receipt?.status === "invalidated") {
+        verifyTaskInvalidation(pending.task, receipt);
+        if (!this.options.archiveTaskInvalidation)
+          throw new Error("TASK_INVALIDATION_ARCHIVE_UNAVAILABLE");
+        await this.options.archiveTaskInvalidation({
+          protocol: TASK_PROTOCOL,
+          attempted_result_sha256: pending.digest,
+          receipt,
+        });
+      } else verifyTaskReceipt(pending.task, receipt, pending.digest);
+      await this.settleIsolated(incident);
+      return;
+    }
     const control = new Client(
       this.options.origin,
       this.options.token,
@@ -1278,11 +1356,20 @@ export class Worker {
         pending === this.pendingTask &&
         this.isolated.length < MAX_INCIDENTS
       ) {
-        this.isolated.push({
+        const incident: Incident = {
           ...pending,
           reason,
           nextCheck: Date.now() + (this.options.isolationMs ?? 60000),
-        });
+          binding: taskBinding(this.options.origin, this.options.token),
+        };
+        if (this.options.isolatedJournal) {
+          // Preserve before releasing pending ownership or replacement safety.
+          await this.options.isolatedJournal.preserve(
+            this.isolatedRecord(incident),
+          );
+          incident.durable = true;
+        }
+        this.isolated.push(incident);
         this.pendingTask = undefined;
         this.diagnostic({
           source: "worker",
@@ -1374,6 +1461,21 @@ export class Worker {
     });
     if (!task) return false;
     validateTask(task, kinds);
+    if (
+      this.isolated.some(
+        (incident) =>
+          incident.task.id.toLowerCase() === task.id.toLowerCase() &&
+          (!incident.binding ||
+            incident.binding ===
+              taskBinding(this.options.origin, this.options.token)),
+      )
+    ) {
+      // Older servers have no exact-ID exclusion parameter. Refuse returned
+      // history before context/model/failure/completion, even on a newer lease.
+      this.typedCooldown =
+        Date.now() + Math.max(60000, this.options.isolationMs ?? 60000);
+      return false;
+    }
     const fence = {
       protocol: TASK_PROTOCOL,
       task_id: task.id,
