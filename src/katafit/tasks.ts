@@ -1,3 +1,4 @@
+import { livingContext } from "./living-context.js";
 import { isDeepStrictEqual } from "node:util";
 import { Ajv } from "ajv";
 import { taskCatalog } from "./taskCatalog.js";
@@ -245,6 +246,8 @@ export function taskAdmission(task: any, context: any): TaskAdmission {
   };
 }
 function validAdmission(task: any, context: any) {
+  context = { ...context };
+  delete context.living_context;
   const cap = context.capability;
   const ordinary = invocationAdmission(cap, {
     plane: "task",
@@ -302,6 +305,12 @@ function validAdmission(task: any, context: any) {
   );
 }
 export function taskContext(task: any, context: any, secrets: string[]) {
+  const report = livingContext(
+    context?.living_context,
+    context?.evidence?.conversation ?? [],
+  );
+  context = { ...context };
+  delete context.living_context;
   const negotiated = context && Object.hasOwn(context, "capability");
   if (
     !isDeepStrictEqual(context.task, task) ||
@@ -327,7 +336,7 @@ export function taskContext(task: any, context: any, secrets: string[]) {
     !validEvidence(context.evidence)
   )
     throw new Error("CONTEXT_REJECTED");
-  assertNoSecrets(context, secrets);
+  assertNoSecrets({ context, living_context: report }, secrets);
   return JSON.stringify({
     generation_task: {
       kind: task.kind,
@@ -341,6 +350,7 @@ export function taskContext(task: any, context: any, secrets: string[]) {
       ...(negotiated ? restPrincipal(task, context.capability) : {}),
     },
     evidence: context.evidence,
+    ...(report ? { living_context: report } : {}),
   });
 }
 /** Only a REST principal consistent with the validated subject binding. */

@@ -1,6 +1,11 @@
+import { livingContext } from "./living-context.js";
+
 // Preserve server ownership, order and original anchor; do not hydrate local history.
 export function serializeContext(context: any): string {
   const copy = structuredClone(context);
+  const report = livingContext(copy.living_context, copy.conversation ?? []);
+  if (report) copy.living_context = report;
+  else delete copy.living_context;
   const last = copy.conversation?.at(-1);
   if (
     typeof copy.request?.message === "string" &&
