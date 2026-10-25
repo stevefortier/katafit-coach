@@ -5,6 +5,9 @@ import { nativeBinding } from "../sandbox/artifact.js";
 import { openProfileGateway } from "../sandbox/gateway.js";
 import type { WorkerOptions } from "../worker/runner.js";
 
+// Temporary per-generation headroom for background Coach work only.
+export const WORKER_PROVIDER_TOKENS = 500000;
+
 /**
  * The installed Worker's completion seam. No host Agent/provider fallback:
  * request-scoped tools stay on the host, Pi and its workspace stay offline.
@@ -35,7 +38,7 @@ export function isolatedWorkerCompletion(
       onDiagnostic: owner.onDiagnostic,
       budgets: {
         tool_calls: 64,
-        provider_tokens: 200000,
+        provider_tokens: WORKER_PROVIDER_TOKENS,
         images_per_cycle: store.publicConfig().provider.vision ? 5 : 0,
       },
     });
