@@ -226,3 +226,59 @@ test("context rejects a daily schema that is neither exact local variant", () =>
     /CONTEXT_REJECTED/,
   );
 });
+
+test("decision/calorie pairing is a repairable SEMANTIC error mirroring the backend refinement", async () => {
+  const parse = (value: any) =>
+    parseTaskResult(
+      "daily_insight",
+      JSON.stringify({ ...base, nutrition_decision: value }),
+      [],
+      current.result_schema,
+    );
+  for (const bad of [
+    { ...decision, new_daily_calories: null },
+    { ...decision, decision: "observe" },
+    { ...decision, decision: "request_evidence" },
+  ])
+    assert.throws(
+      () => parse(bad),
+      (e: any) =>
+        e instanceof TaskOutputError &&
+        e.category === "SEMANTIC" &&
+        /new_daily_calories/.test(e.repairHint),
+    );
+  assert.equal(
+    parse({
+      ...decision,
+      decision: "request_evidence",
+      new_daily_calories: null,
+    }).nutrition_decision.decision,
+    "request_evidence",
+  );
+  // The worker's bounded correction repairs the pairing before completion.
+  const outputs = [
+    { ...base, nutrition_decision: { ...decision, new_daily_calories: null } },
+    { ...base, nutrition_decision: decision },
+  ];
+  const f = await taskFixture({
+    capabilities: capabilities(current),
+    context: { result_schema: structuredClone(current.result_schema) },
+  });
+  let calls = 0;
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => JSON.stringify(outputs[Math.min(calls++, 1)]),
+  });
+  try {
+    f.enqueue("daily_insight");
+    await w.pollOnce();
+    assert.equal(calls, 2);
+    assert.equal(f.saved.length, 1);
+    assert.equal(f.saved[0].result.nutrition_decision.new_daily_calories, 3180);
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});

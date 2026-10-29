@@ -659,6 +659,19 @@ export function parseTaskResult(
       JSON.stringify(validator.errors ?? []),
       schemaRepairHint(kind, validator.errors ?? [], resultSchema),
     );
+  // Mirror the backend refinement (not emitted in the JSON schema): only adjust
+  // carries a calorie value. Repairable before completion, never ignored.
+  if (
+    kind === "daily_insight" &&
+    value.nutrition_decision &&
+    (value.nutrition_decision.decision === "adjust") !==
+      (value.nutrition_decision.new_daily_calories !== null)
+  )
+    throw new TaskOutputError(
+      "SEMANTIC",
+      "nutrition_decision.new_daily_calories must be an integer for adjust and null for observe or request_evidence",
+      "For nutrition_decision adjust, set new_daily_calories to an integer kcal/day; for observe or request_evidence, set new_daily_calories to null.",
+    );
   // Ordinary activity reactions are not day closeouts. Keep the shared catalog
   // compatible, but mirror the consumer's truthy guard after normalization.
   if (
