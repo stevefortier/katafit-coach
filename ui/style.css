@@ -1654,12 +1654,26 @@ header {
   cursor: pointer;
 }
 .model-choice input {
+  /* Native radio appearance can override border-radius in newer Chromium. */
+  appearance: none;
   flex: 0 0 18px;
   width: 18px;
   height: 18px;
   margin: 2px 0 0;
   padding: 0;
   accent-color: var(--accent);
+}
+.model-choice input:checked {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 3px #101010;
+}
+@media (forced-colors: active) {
+  .model-choice input:checked {
+    background: Highlight;
+    border-color: Highlight;
+    box-shadow: none;
+    forced-color-adjust: none;
+  }
 }
 .model-choice-text {
   display: grid;
