@@ -1,7 +1,7 @@
 import { livingContext } from "./living-context.js";
 import { isDeepStrictEqual } from "node:util";
 import { Ajv } from "ajv";
-import { taskCatalog } from "./taskCatalog.js";
+import { taskCatalog, legacyDailyInsightContract } from "./taskCatalog.js";
 import { Client } from "./client.js";
 import { assertNoSecrets } from "../config/store.js";
 import {
@@ -42,10 +42,19 @@ const ajv = new Ajv({
   useDefaults: false,
   strict: true,
 });
+// Exact local contract variants per kind. Only daily_insight has a second,
+// pre-extension variant (backends before nutrition_decision); every other kind
+// still requires its single pinned contract. Remote schemas are never compiled.
+const variants = new Map<string, any[]>(
+  taskCatalog.contracts.map((c) => [
+    c.kind,
+    c.kind === "daily_insight" ? [c, legacyDailyInsightContract] : [c],
+  ]),
+);
 const validators = new Map(
-  taskCatalog.contracts.map((c) => {
+  [...variants.values()].flat().map((c) => {
     const { $schema, ...schema } = c.result_schema;
-    return [c.kind as string, ajv.compile(schema)];
+    return [c.result_schema, ajv.compile(schema)];
   }),
 );
 export async function discoverTasks(c: Client): Promise<string[]> {
@@ -87,9 +96,11 @@ export async function discoverTaskPlane(c: Client): Promise<{
       (kind) =>
         cap.kinds.includes(kind) &&
         cap.contracts.filter((x: any) => x.kind === kind).length === 1 &&
-        isDeepStrictEqual(
-          cap.contracts.find((x: any) => x.kind === kind),
-          catalog.get(kind),
+        variants.get(kind)!.some((v) =>
+          isDeepStrictEqual(
+            cap.contracts.find((x: any) => x.kind === kind),
+            v,
+          ),
         ),
     );
     const claim = listed.tools?.find((t: any) => t.name === "coach_claim_task");
@@ -193,8 +204,15 @@ export function validateTask(task: any, kinds: string[]) {
   )
     throw new Error("CONTEXT_REJECTED");
 }
-export function taskSchema(kind: string) {
-  return catalog.get(kind)?.result_schema;
+/**
+ * The current local schema, or with `delivered` the local variant exactly equal
+ * to a context's delivered schema (undefined when none matches).
+ */
+export function taskSchema(kind: string, delivered?: unknown) {
+  if (delivered === undefined) return catalog.get(kind)?.result_schema;
+  return variants
+    .get(kind)
+    ?.find((v) => isDeepStrictEqual(v.result_schema, delivered))?.result_schema;
 }
 export interface TaskAdmission {
   negotiated: boolean;
@@ -314,7 +332,7 @@ export function taskContext(task: any, context: any, secrets: string[]) {
   const negotiated = context && Object.hasOwn(context, "capability");
   if (
     !isDeepStrictEqual(context.task, task) ||
-    !isDeepStrictEqual(context.result_schema, taskSchema(task.kind)) ||
+    !taskSchema(task.kind, context.result_schema) ||
     (!negotiated &&
       (context.direct_mutations_forbidden !== true ||
         !isDeepStrictEqual(context.allowed_tools, []))) ||
@@ -459,7 +477,11 @@ export class TaskOutputError extends Error {
 }
 // Only local catalog field names and fixed instructions may cross the repair
 // boundary. Ajv instancePath, message, data and params can contain model text.
-function schemaRepairHint(kind: string, errors: any[] = []): string {
+function schemaRepairHint(
+  kind: string,
+  errors: any[] = [],
+  resultSchema: any = taskSchema(kind),
+): string {
   const messages: Record<string, string> = {
     type: "must match the allowed types",
     anyOf: "must match one allowed schema alternative",
@@ -475,7 +497,7 @@ function schemaRepairHint(kind: string, errors: any[] = []): string {
     maxItems: "must not exceed the schema item limit",
   };
   const hints = errors.slice(0, 6).map((error) => {
-    let schema = taskSchema(kind);
+    let schema = resultSchema;
     const path: string[] = [];
     // Resolve the schema path against the immutable local catalog, never emit
     // a rejected object's dynamic keys (including otherwise valid workout IDs).
@@ -560,7 +582,15 @@ export function validateTaskReactionCoverage(
   }
 }
 
-export function parseTaskResult(kind: string, text: string, secrets: string[]) {
+export function parseTaskResult(
+  kind: string,
+  text: string,
+  secrets: string[],
+  // The context-validated schema; an old backend's legacy daily variant
+  // rejects nutrition_decision exactly as that backend would.
+  delivered: unknown = taskSchema(kind),
+) {
+  const resultSchema = taskSchema(kind, delivered);
   if (typeof text !== "string" || Buffer.byteLength(text) > limits.result_bytes)
     throw new TaskOutputError(
       "SIZE",
@@ -603,14 +633,14 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
   } catch {
     throw new TaskOutputError("SECURITY", "Credential in decoded JSON output");
   }
-  const validator = validators.get(kind);
+  const validator = resultSchema && validators.get(resultSchema);
   if (!validator?.(value))
     throw new TaskOutputError(
       "SCHEMA",
       JSON.stringify(validator?.errors ?? [{ message: "Unknown task kind" }]),
-      schemaRepairHint(kind, validator?.errors ?? []),
+      schemaRepairHint(kind, validator?.errors ?? [], resultSchema),
     );
-  value = normalize(value, taskSchema(kind));
+  value = normalize(value, resultSchema);
   if (kind === "day_closure") {
     const emptyField = ["general_advice", "day_closeout_meal_assessment"].find(
       // Match the backend's semantic guard, including non-Latin written prose.
@@ -627,7 +657,20 @@ export function parseTaskResult(kind: string, text: string, secrets: string[]) {
     throw new TaskOutputError(
       "SCHEMA",
       JSON.stringify(validator.errors ?? []),
-      schemaRepairHint(kind, validator.errors ?? []),
+      schemaRepairHint(kind, validator.errors ?? [], resultSchema),
+    );
+  // Mirror the backend refinement (not emitted in the JSON schema): only adjust
+  // carries a calorie value. Repairable before completion, never ignored.
+  if (
+    kind === "daily_insight" &&
+    value.nutrition_decision &&
+    (value.nutrition_decision.decision === "adjust") !==
+      (value.nutrition_decision.new_daily_calories !== null)
+  )
+    throw new TaskOutputError(
+      "SEMANTIC",
+      "nutrition_decision.new_daily_calories must be an integer for adjust and null for observe or request_evidence",
+      "For nutrition_decision adjust, set new_daily_calories to an integer kcal/day; for observe or request_evidence, set new_daily_calories to null.",
     );
   // Ordinary activity reactions are not day closeouts. Keep the shared catalog
   // compatible, but mirror the consumer's truthy guard after normalization.

@@ -233,6 +233,51 @@ export const taskCatalog = {
               },
             ],
           },
+          nutrition_decision: {
+            anyOf: [
+              {
+                type: "object",
+                properties: {
+                  decision: {
+                    type: "string",
+                    enum: ["adjust", "observe", "request_evidence"],
+                  },
+                  new_daily_calories: {
+                    anyOf: [
+                      { type: "integer", minimum: 1, maximum: 10000 },
+                      { type: "null" },
+                    ],
+                  },
+                  reason: { type: "string", minLength: 1, maxLength: 1000 },
+                  uncertainty: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: 1000,
+                  },
+                  review_after_days: {
+                    type: "integer",
+                    minimum: 1,
+                    maximum: 90,
+                  },
+                  monitoring_goal: {
+                    type: "string",
+                    minLength: 1,
+                    maxLength: 1000,
+                  },
+                },
+                required: [
+                  "decision",
+                  "new_daily_calories",
+                  "reason",
+                  "uncertainty",
+                  "review_after_days",
+                  "monitoring_goal",
+                ],
+                additionalProperties: false,
+              },
+              { type: "null" },
+            ],
+          },
         },
         required: [
           "general_advice",
@@ -823,4 +868,145 @@ export const taskCatalog = {
       },
     },
   ],
+} as const;
+
+// Exact pre-extension daily_insight contract still advertised by backends that
+// predate nutrition_decision. Accepted only by exact equality with this local
+// copy (never compiled from remote input); its strict schema rejects the field.
+export const legacyDailyInsightContract = {
+  kind: "daily_insight",
+  schema_id: "coach.tasks.v1/daily_insight",
+  result_schema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    properties: {
+      general_advice: {
+        type: "string",
+        minLength: 1,
+        maxLength: 8000,
+      },
+      meal_recommendations: {
+        maxItems: 3,
+        type: "array",
+        items: {
+          type: "string",
+          maxLength: 1000,
+        },
+      },
+      recovery_recommendations: {
+        maxItems: 3,
+        type: "array",
+        items: {
+          type: "string",
+          maxLength: 1000,
+        },
+      },
+      workout_directives: {
+        maxItems: 3,
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            activity_id: {
+              type: "string",
+              pattern: "^[a-f0-9]{24}$",
+            },
+            workout_exercise_id: {
+              type: "string",
+              pattern: "^[a-f0-9]{24}$",
+            },
+            exercise_id: {
+              type: "string",
+              pattern: "^[a-f0-9]{24}$",
+            },
+            exercise_name: {
+              type: "string",
+              minLength: 1,
+              maxLength: 160,
+            },
+            recommendation: {
+              type: "string",
+              maxLength: 1000,
+            },
+          },
+          required: [
+            "activity_id",
+            "workout_exercise_id",
+            "exercise_id",
+            "exercise_name",
+            "recommendation",
+          ],
+          additionalProperties: false,
+        },
+      },
+      strategy_nudge: {
+        type: "string",
+        maxLength: 1000,
+      },
+      strategy_assessment: {
+        anyOf: [
+          {
+            type: "object",
+            properties: {
+              status_summary: {
+                type: "string",
+                maxLength: 1000,
+              },
+              milestones_reached: {
+                maxItems: 3,
+                type: "array",
+                items: {
+                  type: "string",
+                  maxLength: 1000,
+                },
+              },
+              milestones_upcoming: {
+                maxItems: 3,
+                type: "array",
+                items: {
+                  type: "string",
+                  maxLength: 1000,
+                },
+              },
+              milestones_overdue: {
+                maxItems: 3,
+                type: "array",
+                items: {
+                  type: "string",
+                  maxLength: 1000,
+                },
+              },
+              strategy_verdict: {
+                type: "string",
+                enum: ["on_track", "needs_attention", "needs_revision"],
+              },
+              strategy_verdict_reason: {
+                type: "string",
+                maxLength: 1000,
+              },
+            },
+            required: [
+              "status_summary",
+              "milestones_reached",
+              "milestones_upcoming",
+              "milestones_overdue",
+              "strategy_verdict",
+              "strategy_verdict_reason",
+            ],
+            additionalProperties: false,
+          },
+          {
+            type: "null",
+          },
+        ],
+      },
+    },
+    required: [
+      "general_advice",
+      "meal_recommendations",
+      "recovery_recommendations",
+      "workout_directives",
+    ],
+    additionalProperties: false,
+  },
 } as const;

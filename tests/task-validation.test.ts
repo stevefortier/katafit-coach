@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Worker } from "../src/worker/runner.js";
-import { taskCatalog } from "../src/katafit/taskCatalog.js";
+import {
+  taskCatalog,
+  legacyDailyInsightContract,
+} from "../src/katafit/taskCatalog.js";
 import { taskFixture } from "./task-fixtures.js";
 const capabilities = () => ({
   protocol: "coach.tasks.v1",
@@ -23,7 +26,16 @@ const capabilities = () => ({
 test("day closure extends the pinned catalog without changing old contracts", () => {
   assert.equal(
     createHash("sha256")
-      .update(JSON.stringify(taskCatalog.contracts.slice(0, 8)))
+      .update(
+        JSON.stringify(
+          // daily_insight's pre-extension contract is retained as an exact variant.
+          taskCatalog.contracts
+            .slice(0, 8)
+            .map((c) =>
+              c.kind === "daily_insight" ? legacyDailyInsightContract : c,
+            ),
+        ),
+      )
       .digest("hex"),
     "5d8e929d7ecc70bd6116e8b1e31fbf39ff01afb8a90b399941ebb394ce6263ad",
   );
