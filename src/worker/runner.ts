@@ -1638,7 +1638,7 @@ export class Worker {
         CAPABILITY_GUIDANCE +
         (admission.subjectIsPrincipal ? "" : PRINCIPAL_REST_NOTE) +
         "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON as an object, with no prose or Markdown code fences, matching this local result schema: " +
-        JSON.stringify(taskSchema(task.kind)) +
+        JSON.stringify(taskSchema(task.kind, context.result_schema)) +
         (task.kind === "activity_reaction"
           ? "\nSemantic constraint: activity_feedback.reply_worthwhile must equal Boolean(general_advice). If you write nonempty general_advice, set reply_worthwhile to true; if reply_worthwhile is false, general_advice must be empty. This is an individual activity reaction, not a day closeout. Omit day_closeout_meal_assessment; return feedback only for the triggering activity."
           : "") +
@@ -1685,7 +1685,12 @@ export class Worker {
         budget();
         phase = "output";
         try {
-          result = parseTaskResult(task.kind, text, secrets);
+          result = parseTaskResult(
+            task.kind,
+            text,
+            secrets,
+            context.result_schema,
+          );
           validateTaskReactionCoverage(task.kind, result, context.evidence);
           break;
         } catch (error) {
