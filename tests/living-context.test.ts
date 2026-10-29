@@ -46,8 +46,8 @@ for (const invalid of [
 }
 test("typed task accepts optional report and still validates original evidence", () => {
   const task = {
-    kind: "media_reply",
-    schema_id: "coach.media-reply.v1",
+    kind: "media_chat",
+    schema_id: "coach.tasks.v1/media_chat",
     requester_id: "a".repeat(24),
     owner_type: "dojo",
   };
@@ -69,6 +69,15 @@ test("typed task accepts optional report and still validates original evidence",
   );
   assert.throws(() =>
     taskContext(task, { ...context, evidence: { unsafe: true } }, []),
+  );
+  // An unknown kind has no pinned schema; undefined must not match undefined.
+  const unknownTask = { ...task, kind: "media_reply" };
+  assert.throws(() =>
+    taskContext(
+      unknownTask,
+      { ...context, task: unknownTask, result_schema: undefined },
+      [],
+    ),
   );
 });
 test("actual worker delivers report to provider input and keeps tools available", async () => {
