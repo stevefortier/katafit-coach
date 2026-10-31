@@ -356,13 +356,20 @@ export async function taskFixture(options: any = {}) {
                 (name) => ({ name }),
               )
             : []),
-          ...(options.memoryRecallFailure || options.memory
+          ...(options.memoryRecallFailure ||
+          options.memory ||
+          options.memoryRecovery
             ? [
                 "coach_memory_capabilities",
                 "coach_memory_begin",
                 "coach_memory_recall",
                 "coach_memory_commit",
               ].map((name) => ({ name }))
+            : []),
+          ...(options.memoryRecovery
+            ? ["coach_memory_pending", "coach_memory_resume"].map((name) => ({
+                name,
+              }))
             : []),
           {
             name: "coach_list_requests",
@@ -435,8 +442,12 @@ export async function taskFixture(options: any = {}) {
           "hypothesis",
         ],
         limits: { max_proposals: 8, max_recall_items: 20 },
+        ...(options.memoryRecovery ? { extraction_recovery_version: 1 } : {}),
       };
-    else if (n === "coach_memory_begin")
+    else if (n === "coach_memory_pending") {
+      await options.memoryRecovery?.();
+      value = { protocol: "coach.memory.v1", captures: [] };
+    } else if (n === "coach_memory_begin")
       value = {
         protocol: "coach.memory.v1",
         capture_id: "abcdefabcdefabcdefabcdef",

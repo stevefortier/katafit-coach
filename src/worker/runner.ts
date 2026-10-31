@@ -695,8 +695,10 @@ export class Worker {
       },
     } as AgentTool;
   }
+  private memoryRecoveryDeferrals = 0;
   /** Extraction runs only after verified publication and commits under the capture's own deadline. */
   private async recoverMemory(c: Client, ref: string) {
+    this.memoryRecoveryDeferrals = 0;
     if (!(await negotiateMemory(c, backendWireBudget(15000)))?.recovery) return;
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
     const pending = await pendingMemory(c, secrets, backendWireBudget(15000));
@@ -842,7 +844,10 @@ export class Worker {
     };
     try {
       await c.connect();
-      await this.recoverMemory(c, ref);
+      // Recovery extracts memory from already accepted results; it does not
+      // reconcile uncertain publications. Give new feedback first admission,
+      // but keep serial recovery bounded under a continuously busy queue.
+      if (this.memoryRecoveryDeferrals++ >= 3) await this.recoverMemory(c, ref);
       const taskPlane = await discoverTaskPlane(c);
       const taskKinds = taskPlane.kinds;
       const due = this.isolated.find(
@@ -908,6 +913,7 @@ export class Worker {
         )
       ) {
         if (await tryTasks()) return;
+        if (this.memoryRecoveryDeferrals) await this.recoverMemory(c, ref);
         this.update("idle");
         return;
       }
@@ -948,6 +954,7 @@ export class Worker {
       });
       if (!request) {
         if (await tryTasks()) return;
+        if (this.memoryRecoveryDeferrals) await this.recoverMemory(c, ref);
         this.update("idle");
         return;
       }
