@@ -114,6 +114,10 @@ export async function taskFixture(options: any = {}) {
   const negotiated = new Set<string>();
   const memberReceipts = new Map<string, any>();
   const state: any = { leaseLost: false };
+  // Opt-in durable per-task captures (mirrors backend core/coachMemory.js
+  // begin/pending/resume/commit): pending lists open captures whose task the
+  // backend has accepted (completed or consumed), oldest first, at most 8.
+  const captures: any[] = [];
   const sockets = new Set<any>();
   const server = createServer(async (req, res) => {
     sockets.add(req.socket);
@@ -243,7 +247,10 @@ export async function taskFixture(options: any = {}) {
       res.writeHead(403).end();
       return;
     }
-    if (n === "coach_memory_recall" && options.memory) {
+    if (
+      n === "coach_memory_recall" &&
+      (options.memory || options.memoryCaptures)
+    ) {
       res.setHeader("Content-Type", "application/json");
       res.end(
         JSON.stringify({
@@ -359,7 +366,8 @@ export async function taskFixture(options: any = {}) {
             : []),
           ...(options.memoryRecallFailure ||
           options.memory ||
-          options.memoryRecovery
+          options.memoryRecovery ||
+          options.memoryCaptures
             ? [
                 "coach_memory_capabilities",
                 "coach_memory_begin",
@@ -367,7 +375,7 @@ export async function taskFixture(options: any = {}) {
                 "coach_memory_commit",
               ].map((name) => ({ name }))
             : []),
-          ...(options.memoryRecovery
+          ...(options.memoryRecovery || options.memoryCaptures
             ? ["coach_memory_pending", "coach_memory_resume"].map((name) => ({
                 name,
               }))
@@ -443,11 +451,83 @@ export async function taskFixture(options: any = {}) {
           "hypothesis",
         ],
         limits: { max_proposals: 8, max_recall_items: 20 },
-        ...(options.memoryRecovery ? { extraction_recovery_version: 1 } : {}),
+        ...(options.memoryRecovery || options.memoryCaptures
+          ? { extraction_recovery_version: 1 }
+          : {}),
       };
     else if (n === "coach_memory_pending") {
       await options.memoryRecovery?.();
-      value = { protocol: "coach.memory.v1", captures: [] };
+      value = {
+        protocol: "coach.memory.v1",
+        captures: captures
+          .filter(
+            (c) =>
+              c.status === "open" &&
+              Date.parse(c.extraction_expires_at) > Date.now() &&
+              ["completed", "consumed"].includes(byId.get(c.task_id)?.status),
+          )
+          .slice(0, 8)
+          .map((c) => ({ capture_id: c.capture_id, origin: "task" })),
+      };
+    } else if (n === "coach_memory_resume" && options.memoryCaptures) {
+      const c = captures.find((c) => c.capture_id === a.capture_id);
+      if (!c || c.status !== "open") {
+        toolError("MEMORY_CONFLICT");
+        return;
+      }
+      c.resumes++;
+      value = {
+        protocol: "coach.memory.v1",
+        origin: "task",
+        publication: "pending",
+        capture: visibleCapture(c),
+        recalled: [],
+        evidence: {
+          task_context: { observations: [] },
+          task_result: c.result ?? null,
+        },
+      };
+    } else if (n === "coach_memory_commit" && options.memoryCaptures) {
+      const c = captures.find((c) => c.capture_id === a.capture_id);
+      if (!c || (c.status !== "open" && c.key !== a.idempotency_key)) {
+        toolError("MEMORY_CONFLICT");
+        return;
+      }
+      const idempotent = c.status === "committed";
+      c.status = "committed";
+      c.key = a.idempotency_key;
+      if (!idempotent) c.commits++;
+      value = {
+        protocol: "coach.memory.v1",
+        capture_id: c.capture_id,
+        status: "committed",
+        memory_epoch: 0,
+        created: [],
+        superseded: [],
+        skipped: [],
+        idempotent,
+        publication: "pending",
+      };
+    } else if (n === "coach_memory_begin" && options.memoryCaptures) {
+      const task_id = a.execution.task_id;
+      let c = captures.find((c) => c.task_id === task_id);
+      if (!c) {
+        c = {
+          capture_id: createHash("sha256")
+            .update(task_id)
+            .digest("hex")
+            .slice(0, 24),
+          task_id,
+          status: "open",
+          resumes: 0,
+          commits: 0,
+          extraction_expires_at: new Date(
+            Date.now() + (options.captureTtlMs ?? 600000),
+          ).toISOString(),
+        };
+        captures.push(c);
+      }
+      value = visibleCapture(c);
     } else if (n === "coach_memory_begin")
       value = {
         protocol: "coach.memory.v1",
@@ -563,6 +643,8 @@ export async function taskFixture(options: any = {}) {
       }
       saved.push(a);
       current.status = "completed";
+      const capture = captures.find((c) => c.task_id === current.id);
+      if (capture) capture.result = a.result;
       current.hash = createHash("sha256")
         .update(JSON.stringify(a.result))
         .digest("hex");
@@ -801,6 +883,15 @@ export async function taskFixture(options: any = {}) {
         resolution,
       };
     }
+    function visibleCapture(c: any) {
+      return {
+        protocol: "coach.memory.v1",
+        capture_id: c.capture_id,
+        audience: "member_private",
+        memory_epoch: 0,
+        extraction_expires_at: c.extraction_expires_at,
+      };
+    }
     function receipt(write: boolean) {
       const { hash, failure, failureDetail, ...task } = current;
       return {
@@ -820,6 +911,7 @@ export async function taskFixture(options: any = {}) {
     origin: `http://127.0.0.1:${(server.address() as any).port}`,
     calls,
     saved,
+    captures,
     restCalls,
     commitments,
     journal,

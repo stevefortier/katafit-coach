@@ -138,6 +138,46 @@ function abortCause(inference: InferenceSignals) {
     budgetMs: boundedMs(inference.budgetMs),
   });
 }
+/**
+ * Fixed content-free task kind codes for `task-timing` diagnostics. 0 means
+ * unknown (for example a capture recovered after restart). Never log names.
+ */
+export const TASK_KIND_CODES: Readonly<Record<string, number>> = Object.freeze({
+  daily_insight: 1,
+  activity_reaction: 2,
+  exercise_suggestions: 3,
+  activity_followup: 4,
+  media_chat: 5,
+  workout_chat: 6,
+  exercise_chat: 7,
+  workout_suggestions: 8,
+  day_closure: 9,
+});
+/**
+ * Fixed `task-timing` stage codes. Each entry carries the original poll `ref`
+ * and `elapsedMs` since that poll started; stage intervals may overlap.
+ */
+export const TASK_TIMING_CODES = Object.freeze({
+  claimed: 1,
+  contextRead: 2,
+  inferenceStarted: 3,
+  outputParsed: 4,
+  resultAccepted: 5,
+  publicationConfirmed: 6,
+  extractionDeferred: 7,
+  recoveryStarted: 8,
+  recoveryEnded: 9,
+  extractionStarted: 10,
+  extractionEnded: 11,
+});
+const taskKindCode = (kind: string) =>
+  Object.hasOwn(TASK_KIND_CODES, kind) ? TASK_KIND_CODES[kind] : 0;
+interface TaskTiming {
+  ref: string;
+  kindCode: number;
+  started: number;
+  acceptedAt?: number;
+}
 export interface WorkerOptions {
   origin: string;
   token: string;
@@ -579,7 +619,12 @@ export class Worker {
     budget: () => number,
     ref: string,
   ): Promise<
-    | { capture: MemoryCapture; recalled: MemoryItem[]; partial: boolean }
+    | {
+        capture: MemoryCapture;
+        recalled: MemoryItem[];
+        partial: boolean;
+        recovery: boolean;
+      }
     | undefined
   > {
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
@@ -600,7 +645,12 @@ export class Worker {
         ref,
         metadata: { memoryItems: items.length },
       });
-      return { capture, recalled: items, partial: has_more };
+      return {
+        capture,
+        recalled: items,
+        partial: has_more,
+        recovery: negotiation.recovery,
+      };
     } catch (error) {
       if (
         !(error instanceof ToolFailure) ||
@@ -696,8 +746,30 @@ export class Worker {
     } as AgentTool;
   }
   private memoryRecoveryDeferrals = 0;
+  /** Original poll timing of accepted captures left to durable recovery. */
+  private deferredCaptures = new Map<string, TaskTiming>();
+  private timing(
+    at: TaskTiming,
+    timingCode: number,
+    metadata: Record<string, number> = {},
+  ) {
+    this.diagnostic({
+      source: "worker",
+      stage: "task-timing",
+      ref: at.ref,
+      metadata: {
+        ...metadata,
+        timingCode,
+        taskKindCode: at.kindCode,
+        elapsedMs: Date.now() - at.started,
+        ...(at.acceptedAt !== undefined
+          ? { sinceAcceptedMs: Date.now() - at.acceptedAt }
+          : {}),
+      },
+    });
+  }
   /** Extraction runs only after verified publication and commits under the capture's own deadline. */
-  private async recoverMemory(c: Client, ref: string) {
+  private async recoverMemory(c: Client, ref: string, started = Date.now()) {
     // A reservation can arrive while the active poll lists work. Drain that
     // poll without admitting a fresh maintenance operation afterward.
     if (this.updateQuiesced || this.statsPollPauses) return;
@@ -706,20 +778,36 @@ export class Worker {
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
     const pending = await pendingMemory(c, secrets, backendWireBudget(15000));
     if (!pending.length) return;
+    const id = pending[0].capture_id;
+    // Task captures keep their original poll ref and kind; after a restart
+    // the origin is unknown and this recovery poll's ref is used instead.
+    const timing =
+      pending[0].origin === "task"
+        ? (this.deferredCaptures.get(id) ?? { ref, kindCode: 0, started })
+        : undefined;
+    if (timing) this.timing(timing, TASK_TIMING_CODES.recoveryStarted);
     try {
       const resumed = await resumeMemory(
         c,
-        pending[0].capture_id,
+        id,
         secrets,
         backendWireBudget(15000),
       );
-      await this.retainMemory(resumed, resumed.origin, resumed.evidence, ref);
+      await this.retainMemory(
+        resumed,
+        resumed.origin,
+        resumed.evidence,
+        timing?.ref ?? ref,
+        timing,
+      );
+      this.deferredCaptures.delete(id);
     } catch (error) {
       if (this.controller.signal.aborted) throw error;
       // A job may be invalidated between discovery and resume. It must not
       // replay its execution, or prevent unrelated new work from proceeding.
       if (!(error instanceof ToolFailure) || !error.code?.startsWith("MEMORY_"))
         throw error;
+      this.deferredCaptures.delete(id);
       this.diagnostic({
         source: "worker",
         stage: "memory-retention-skipped",
@@ -727,6 +815,8 @@ export class Worker {
         level: "warn",
         error: safeError(error),
       });
+    } finally {
+      if (timing) this.timing(timing, TASK_TIMING_CODES.recoveryEnded);
     }
   }
   private async retainMemory(
@@ -734,6 +824,7 @@ export class Worker {
     origin: MemoryOrigin,
     evidence: Record<string, unknown>,
     ref: string,
+    timing?: TaskTiming,
   ) {
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
     const until = Math.min(
@@ -748,6 +839,7 @@ export class Worker {
     const c = new Client(this.options.origin, this.options.token, signal, (e) =>
       this.diagnostic(e),
     );
+    let extracting = false;
     try {
       if ((await negotiateMemory(c, backendWireBudget(15000)))?.recovery) {
         const resumed = await resumeMemory(
@@ -759,6 +851,8 @@ export class Worker {
         evidence = resumed.evidence;
         memory = { capture: resumed.capture, recalled: resumed.recalled };
       }
+      extracting = true;
+      if (timing) this.timing(timing, TASK_TIMING_CODES.extractionStarted);
       const proposals = await bounded(
         () =>
           extractMemories({
@@ -811,6 +905,9 @@ export class Worker {
         ref,
         error: safeError(error),
       });
+    } finally {
+      if (timing && extracting)
+        this.timing(timing, TASK_TIMING_CODES.extractionEnded);
     }
   }
   private async poll() {
@@ -850,7 +947,8 @@ export class Worker {
       // Recovery extracts memory from already accepted results; it does not
       // reconcile uncertain publications. Give new feedback first admission,
       // but keep serial recovery bounded under a continuously busy queue.
-      if (this.memoryRecoveryDeferrals++ >= 3) await this.recoverMemory(c, ref);
+      if (this.memoryRecoveryDeferrals++ >= 3)
+        await this.recoverMemory(c, ref, started);
       const taskPlane = await discoverTaskPlane(c);
       const taskKinds = taskPlane.kinds;
       const due = this.isolated.find(
@@ -901,6 +999,7 @@ export class Worker {
             !!this.options.actionLedger?.snapshot &&
             !!this.options.integrationDirectory,
           taskPlane.failureDetails === true,
+          started,
         );
         if (!handled) taskAttempt = false;
         return handled;
@@ -916,7 +1015,8 @@ export class Worker {
         )
       ) {
         if (await tryTasks()) return;
-        if (this.memoryRecoveryDeferrals) await this.recoverMemory(c, ref);
+        if (this.memoryRecoveryDeferrals)
+          await this.recoverMemory(c, ref, started);
         this.update("idle");
         return;
       }
@@ -957,7 +1057,8 @@ export class Worker {
       });
       if (!request) {
         if (await tryTasks()) return;
-        if (this.memoryRecoveryDeferrals) await this.recoverMemory(c, ref);
+        if (this.memoryRecoveryDeferrals)
+          await this.recoverMemory(c, ref, started);
         this.update("idle");
         return;
       }
@@ -1442,6 +1543,7 @@ export class Worker {
     negotiate = false,
     ordinary = false,
     failureDetails = false,
+    started = Date.now(),
   ) {
     if (this.updateQuiesced || this.statsPollPauses) return false;
     const { task } = await c.call("coach_claim_task", {
@@ -1491,6 +1593,14 @@ export class Worker {
       task_id: task.id,
       lease_generation: task.lease_generation,
     };
+    const timing: TaskTiming = {
+      ref,
+      kindCode: taskKindCode(task.kind),
+      started,
+    };
+    this.timing(timing, TASK_TIMING_CODES.claimed, {
+      leaseGeneration: task.lease_generation,
+    });
     const deadline =
       Math.min(Date.parse(task.timeout_at), Date.parse(task.lease_expires_at)) -
       2000;
@@ -1506,6 +1616,7 @@ export class Worker {
     let completing = false;
     try {
       const context = await c.call("coach_read_task_context", fence, budget());
+      this.timing(timing, TASK_TIMING_CODES.contextRead);
       const secrets = [this.options.token, ...(this.options.secrets ?? [])];
       const serialized = taskContext(task, context, secrets);
       this.update("task-working");
@@ -1620,6 +1731,7 @@ export class Worker {
           enabledSkills: selectedSkills.length,
         },
       });
+      this.timing(timing, TASK_TIMING_CODES.inferenceStarted);
       // A day closeout's seed lists meal IDs only. Read them before the model
       // sees the task; REST opt-out and legacy contexts keep the seed alone.
       const meals =
@@ -1702,6 +1814,7 @@ export class Worker {
             context.result_schema,
           );
           validateTaskReactionCoverage(task.kind, result, context.evidence);
+          this.timing(timing, TASK_TIMING_CODES.outputParsed);
           break;
         } catch (error) {
           if (!(error instanceof TaskOutputError)) throw error;
@@ -1788,17 +1901,34 @@ export class Worker {
       if (this.pendingTask) await this.reconcileTask();
       // Retain only from an accepted canonical result (completed/consumed).
       if (
-        memory &&
         ["task-result-stored", "task-publication-confirmed"].includes(
           this.state,
         )
-      )
-        await this.retainMemory(
-          memory,
-          "task",
-          { task_kind: task.kind, evidence: context.evidence, result },
-          ref,
-        );
+      ) {
+        timing.acceptedAt = Date.now();
+        this.timing(timing, TASK_TIMING_CODES.resultAccepted);
+        if (this.state === "task-publication-confirmed")
+          this.timing(timing, TASK_TIMING_CODES.publicationConfirmed);
+        if (memory?.recovery) {
+          // The backend lists an accepted task capture for durable recovery
+          // immediately. Leave extraction to the existing bounded recovery
+          // (idle or every fourth busy poll) so it never delays the next claim.
+          this.deferredCaptures.delete(memory.capture.capture_id);
+          this.deferredCaptures.set(memory.capture.capture_id, timing);
+          if (this.deferredCaptures.size > 64)
+            this.deferredCaptures.delete(
+              this.deferredCaptures.keys().next().value!,
+            );
+          this.timing(timing, TASK_TIMING_CODES.extractionDeferred);
+        } else if (memory)
+          await this.retainMemory(
+            memory,
+            "task",
+            { task_kind: task.kind, evidence: context.evidence, result },
+            ref,
+            timing,
+          );
+      }
       return true;
     } catch (error) {
       // Settle the local outcome before any reporting await: the inference

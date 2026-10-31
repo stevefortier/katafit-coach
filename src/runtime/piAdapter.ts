@@ -293,6 +293,8 @@ export async function complete(
     if (failedReads.size >= CALL_LIMIT) exhausted = true;
   };
   let recentHighLatencyMs = 0;
+  // Latest provider HTTP call latency, logged apart from task/poll elapsedMs.
+  let providerMs: number | undefined;
   const agent = new Agent({
     initialState: {
       systemPrompt: system,
@@ -511,6 +513,7 @@ export async function complete(
                   controller.enqueue(chunk);
                 },
                 flush() {
+                  providerMs = Math.round(performance.now() - callStarted);
                   recentHighLatencyMs = Math.max(
                     recentHighLatencyMs,
                     performance.now() - callStarted,
@@ -650,6 +653,7 @@ export async function complete(
             ).length,
             textParts: message.content.filter((part) => part.type === "text")
               .length,
+            ...(providerMs !== undefined ? { providerMs } : {}),
           },
         });
       } catch {}
