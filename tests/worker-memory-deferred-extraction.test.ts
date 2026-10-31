@@ -211,6 +211,9 @@ test("task timing diagnostics are numeric, fixed-code and content-free after log
       "elapsedMs",
       "sinceAcceptedMs",
       "leaseGeneration",
+      // Bounded 48-bit task-attempt digest and 1-based output attempt.
+      "attemptDigest",
+      "outputAttempt",
     ]);
     for (const entry of entries) {
       for (const [key, value] of Object.entries(entry.metadata)) {
@@ -219,6 +222,8 @@ test("task timing diagnostics are numeric, fixed-code and content-free after log
       }
       assert.ok(entry.metadata.taskKindCode <= 9);
       assert.ok(entry.metadata.timingCode <= 11);
+      assert.ok(entry.metadata.attemptDigest < 2 ** 48);
+      assert.ok((entry.metadata.outputAttempt ?? 1) <= 2);
       const text = JSON.stringify(entry);
       for (const secret of [
         token,

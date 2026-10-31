@@ -1139,6 +1139,8 @@ export interface ProfileGatewayOptions {
   onDiagnostic?: BackendLogger;
   /** Correlates content-free receipts with the caller's Worker poll ref. */
   diagnosticRef?: string;
+  /** Worker task-attempt binding (worker/runner.ts taskAttemptDigest). */
+  diagnosticAttribution?: { attemptDigest: number; outputAttempt: number };
 }
 // The composer drafts one bounded text: a handful of completions at most.
 const COMPOSER_PROVIDER_REQUESTS = 4;
@@ -1228,6 +1230,27 @@ export async function openProfileGateway(
     )
       ? options.diagnosticRef
       : randomUUID();
+  // Exactly two bounded integers or nothing; never fails the gateway.
+  const attribution = (() => {
+    try {
+      const a = options.diagnosticAttribution;
+      const digest = a?.attemptDigest;
+      const attempt = a?.outputAttempt;
+      return worker &&
+        a &&
+        typeof a === "object" &&
+        !Array.isArray(a) &&
+        Object.keys(a).length === 2 &&
+        Number.isSafeInteger(digest) &&
+        digest! > 0 &&
+        digest! < 2 ** 48 &&
+        (attempt === 1 || attempt === 2)
+        ? { attemptDigest: digest!, outputAttempt: attempt }
+        : {};
+    } catch {
+      return {};
+    }
+  })();
   let emissionOrdinal = 0;
   // Numeric-only receipts: profileCode 1=planner, 2=composer, 3=worker;
   // chargeSource 1=reported_total, 2=wire_estimate. Saturation is telemetry
@@ -1246,6 +1269,7 @@ export async function openProfileGateway(
         stage,
         metadata: {
           profileCode: planner ? 1 : worker ? 3 : 2,
+          ...attribution,
           cumulativeTokens: bounded(used.provider_tokens),
           tokenBudget: bounded(budgets.provider_tokens),
           remainingTokens: bounded(

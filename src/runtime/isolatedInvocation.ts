@@ -1,13 +1,46 @@
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Store } from "../config/store.js";
 import type { RuntimeContext } from "../autonomy/host.js";
 import { HeadlessCycleRuntime } from "../autonomy/headless.js";
 import { nativeBinding } from "../sandbox/artifact.js";
-import { openProfileGateway } from "../sandbox/gateway.js";
+import {
+  openProfileGateway,
+  type ProfileGatewayOptions,
+} from "../sandbox/gateway.js";
 import type { WorkerOptions } from "../worker/runner.js";
+import type { InferenceBudget } from "./piAdapter.js";
 
 // Temporary per-generation headroom for background Coach work only.
 export const WORKER_PROVIDER_TOKENS = 500000;
 
+/** The installed Worker's profile gateway options for one completion. */
+export function workerGatewayOptions(
+  store: Store,
+  call: {
+    prompt: string;
+    tools: AgentTool[];
+    ref: string;
+    budget?: InferenceBudget;
+    onDiagnostic?: ProfileGatewayOptions["onDiagnostic"];
+  },
+): ProfileGatewayOptions {
+  return {
+    profile: "worker",
+    prompt: call.prompt,
+    tools: call.tools,
+    skills: true,
+    onDiagnostic: call.onDiagnostic,
+    diagnosticRef: call.ref,
+    ...(call.budget?.attribution
+      ? { diagnosticAttribution: call.budget.attribution }
+      : {}),
+    budgets: {
+      tool_calls: 64,
+      provider_tokens: WORKER_PROVIDER_TOKENS,
+      images_per_cycle: store.publicConfig().provider.vision ? 5 : 0,
+    },
+  };
+}
 /**
  * The installed Worker's completion seam. No host Agent/provider fallback:
  * request-scoped tools stay on the host, Pi and its workspace stay offline.
@@ -30,19 +63,17 @@ export function isolatedWorkerCompletion(
       (budget?.deadlineAt ?? Date.now() + 100000) - Date.now(),
     );
     if (!(cycleMs > 0)) throw new Error("LEASE_EXPIRED");
-    const gateway = await openProfileGateway(store, signal, {
-      profile: "worker",
-      prompt,
-      tools,
-      skills: true,
-      onDiagnostic: owner.onDiagnostic,
-      diagnosticRef: ref,
-      budgets: {
-        tool_calls: 64,
-        provider_tokens: WORKER_PROVIDER_TOKENS,
-        images_per_cycle: store.publicConfig().provider.vision ? 5 : 0,
-      },
-    });
+    const gateway = await openProfileGateway(
+      store,
+      signal,
+      workerGatewayOptions(store, {
+        prompt,
+        tools,
+        ref,
+        budget,
+        onDiagnostic: owner.onDiagnostic,
+      }),
+    );
     try {
       const result = await runtime.run({
         profile: "worker",

@@ -236,6 +236,8 @@ const TOTAL_INPUT_LIMIT = 48 * 1024 * 1024;
 const OUTPUT_TOKEN_LIMIT = 48000;
 export interface InferenceBudget {
   deadlineAt?: number;
+  /** Content-free Worker task-attempt binding for gateway receipts only. */
+  attribution?: { attemptDigest: number; outputAttempt: number };
   readBudget?: () => { used: number; limit: number };
 }
 

@@ -186,6 +186,9 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     // Fixed task-timing enums (worker/runner.ts TASK_KIND_CODES/TASK_TIMING_CODES).
     taskKindCode: 9,
     timingCode: 11,
+    // 48-bit taskAttemptDigest and the 1-based output (correction) attempt.
+    attemptDigest: 2 ** 48 - 1,
+    outputAttempt: 2,
     ...Object.fromEntries(
       [
         ...Array.from({ length: 3 }, (_, i) => `headlessWork${i}`),
@@ -235,6 +238,8 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     "taskKindCode",
     "timingCode",
     "sinceAcceptedMs",
+    "attemptDigest",
+    "outputAttempt",
     // Provider HTTP call latency, distinct from task/poll elapsedMs.
     "providerMs",
     "statusCode",
