@@ -176,6 +176,7 @@ export async function taskFixture(options: any = {}) {
     const n = m.params?.name;
     const a = m.params?.arguments;
     calls.push({ name: n ?? m.method, args: a });
+    if (n === "coach_list_requests") await options.onListRequests?.(a);
     if (m.method === "notifications/initialized") {
       res.writeHead(202).end();
       return;

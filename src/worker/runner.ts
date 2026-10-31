@@ -698,6 +698,9 @@ export class Worker {
   private memoryRecoveryDeferrals = 0;
   /** Extraction runs only after verified publication and commits under the capture's own deadline. */
   private async recoverMemory(c: Client, ref: string) {
+    // A reservation can arrive while the active poll lists work. Drain that
+    // poll without admitting a fresh maintenance operation afterward.
+    if (this.updateQuiesced || this.statsPollPauses) return;
     this.memoryRecoveryDeferrals = 0;
     if (!(await negotiateMemory(c, backendWireBudget(15000)))?.recovery) return;
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
