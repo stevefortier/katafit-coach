@@ -172,9 +172,28 @@ export const TASK_TIMING_CODES = Object.freeze({
 });
 const taskKindCode = (kind: string) =>
   Object.hasOwn(TASK_KIND_CODES, kind) ? TASK_KIND_CODES[kind] : 0;
+export const TASK_ATTEMPT_DOMAIN = "katafit.coach.worker.task-attempt.v1";
+/**
+ * Content-free exact task-attempt binding for diagnostics: the first 48 bits
+ * of SHA-256(domain NUL lowercase task ID NUL decimal lease generation), so it
+ * stays a safe integer. A backend or local reader holding the claim receipt
+ * recomputes it; the log never holds the raw task ID.
+ */
+export const taskAttemptDigest = (taskId: string, leaseGeneration: number) =>
+  parseInt(
+    createHash("sha256")
+      .update(
+        `${TASK_ATTEMPT_DOMAIN}\0${taskId.toLowerCase()}\0${leaseGeneration}`,
+      )
+      .digest("hex")
+      .slice(0, 12),
+    16,
+  );
 interface TaskTiming {
   ref: string;
   kindCode: number;
+  /** taskAttemptDigest of the claim; 0 when unknown (restart recovery). */
+  attemptDigest?: number;
   started: number;
   acceptedAt?: number;
 }
@@ -761,6 +780,7 @@ export class Worker {
         ...metadata,
         timingCode,
         taskKindCode: at.kindCode,
+        ...(at.attemptDigest ? { attemptDigest: at.attemptDigest } : {}),
         elapsedMs: Date.now() - at.started,
         ...(at.acceptedAt !== undefined
           ? { sinceAcceptedMs: Date.now() - at.acceptedAt }
@@ -1596,6 +1616,7 @@ export class Worker {
     const timing: TaskTiming = {
       ref,
       kindCode: taskKindCode(task.kind),
+      attemptDigest: taskAttemptDigest(task.id, task.lease_generation),
       started,
     };
     this.timing(timing, TASK_TIMING_CODES.claimed, {
@@ -1799,7 +1820,14 @@ export class Worker {
                   : ""),
               tools,
               ref,
-              { deadlineAt },
+              // Provider receipts join this attempt and output turn exactly.
+              {
+                deadlineAt,
+                attribution: {
+                  attemptDigest: timing.attemptDigest!,
+                  outputAttempt: attempt + 1,
+                },
+              },
             ),
           signal,
         );
@@ -1814,7 +1842,9 @@ export class Worker {
             context.result_schema,
           );
           validateTaskReactionCoverage(task.kind, result, context.evidence);
-          this.timing(timing, TASK_TIMING_CODES.outputParsed);
+          this.timing(timing, TASK_TIMING_CODES.outputParsed, {
+            outputAttempt: attempt + 1,
+          });
           break;
         } catch (error) {
           if (!(error instanceof TaskOutputError)) throw error;
@@ -1843,6 +1873,10 @@ export class Worker {
             level: "warn",
             ref,
             error: new SafeError(`TASK_OUTPUT_${error.category}`),
+            metadata: {
+              attemptDigest: timing.attemptDigest!,
+              outputAttempt: attempt + 1,
+            },
             ...(safeCandidate
               ? {
                   rejection: {
