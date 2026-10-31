@@ -30,6 +30,19 @@ const expectedDigest = (taskId: string, leaseGeneration: number) =>
     16,
   );
 
+// Always attempt later cleanup phases, even if an earlier resource refuses.
+async function cleanupOwned(phases: Array<Array<() => Promise<unknown>>>) {
+  const errors: unknown[] = [];
+  for (const phase of phases) {
+    const results = await Promise.allSettled(
+      phase.map((close) => Promise.resolve().then(close)),
+    );
+    for (const result of results)
+      if (result.status === "rejected") errors.push(result.reason);
+  }
+  if (errors.length) throw new AggregateError(errors, "fixture cleanup failed");
+}
+
 async function providerServer() {
   let calls = 0;
   const server = createServer(async (req, res) => {
@@ -61,114 +74,121 @@ test(
   "compiled Worker binds each concurrent same-kind task attempt to its own provider receipts and stages",
   { timeout: 60000 },
   async () => {
-    // Two independent backends: the fixture tracks one current lease each.
-    const backends = [await taskFixture(), await taskFixture()];
-    const provider = await providerServer();
-    const home = await mkdtemp(tmpdir() + "/worker-exact-attribution-");
-    const store = new Store(home);
-    await store.init();
-    await store.save({
-      ...store.publicConfig(),
-      provider: { baseUrl: provider.baseUrl, model: "synthetic-model" },
-      apiKey: "synthetic-provider-key",
-    });
-    const valid = '{"text":"Synthetic verified result"}';
-    // Same kind, lease generation and creation time; only identity differs.
-    const created = new Date().toISOString();
-    const correcting = backends[0].enqueue("activity_followup", {
-      id: "a1".repeat(12),
-      created_at: created,
-    });
-    const direct = backends[1].enqueue("activity_followup", {
-      id: "b2".repeat(12),
-      created_at: created,
-    });
-    assert.equal(correcting.lease_generation, direct.lease_generation);
-    const workerEvents: any[] = [];
-    const providerEvents: any[] = [];
+    // Retain each allocation before the next await, including partial setup.
+    const backends: Awaited<ReturnType<typeof taskFixture>>[] = [];
     const engines: Awaited<ReturnType<typeof fakeEngine>>[] = [];
     const workers: Worker[] = [];
-    let corrected = false;
-    for (let n = 0; n < 2; n++) {
-      let gateway: Awaited<ReturnType<typeof openProfileGateway>>;
-      let last = valid;
-      const engine = await fakeEngine((command, pi) => {
-        if (command.type === "abort")
-          return pi.send({ type: "response", id: command.id, success: true });
-        if (command.type !== "prompt") return obedient(last)(command, pi);
-        pi.send({ type: "response", id: command.id, success: true });
-        void (async () => {
-          // Two provider requests per output attempt.
-          for (const content of ["Synthetic evidence", "Synthetic follow up"])
-            await gateway.handle({
-              kind: "provider",
-              body: {
-                model: "synthetic-model",
-                messages: [{ role: "user", content }],
-              },
+    let provider: Awaited<ReturnType<typeof providerServer>> | undefined;
+    let home: string | undefined;
+    try {
+      // Two independent backends: the fixture tracks one current lease each.
+      backends.push(await taskFixture());
+      backends.push(await taskFixture());
+      provider = await providerServer();
+      home = await mkdtemp(tmpdir() + "/worker-exact-attribution-");
+      const store = new Store(home);
+      await store.init();
+      await store.save({
+        ...store.publicConfig(),
+        provider: { baseUrl: provider.baseUrl, model: "synthetic-model" },
+        apiKey: "synthetic-provider-key",
+      });
+      const valid = '{"text":"Synthetic verified result"}';
+      // Same kind, lease generation and creation time; only identity differs.
+      const created = new Date().toISOString();
+      const correcting = backends[0].enqueue("activity_followup", {
+        id: "a1".repeat(12),
+        created_at: created,
+      });
+      const direct = backends[1].enqueue("activity_followup", {
+        id: "b2".repeat(12),
+        created_at: created,
+      });
+      assert.equal(correcting.lease_generation, direct.lease_generation);
+      const workerEvents: any[] = [];
+      const providerEvents: any[] = [];
+      let corrected = false;
+      for (let n = 0; n < 2; n++) {
+        let gateway: Awaited<ReturnType<typeof openProfileGateway>>;
+        let last = valid;
+        const engine = await fakeEngine((command, pi) => {
+          if (command.type === "abort")
+            return pi.send({ type: "response", id: command.id, success: true });
+          if (command.type !== "prompt") return obedient(last)(command, pi);
+          pi.send({ type: "response", id: command.id, success: true });
+          void (async () => {
+            // Two provider requests per output attempt.
+            for (const content of ["Synthetic evidence", "Synthetic follow up"])
+              await gateway.handle({
+                kind: "provider",
+                body: {
+                  model: "synthetic-model",
+                  messages: [{ role: "user", content }],
+                },
+              });
+            // Worker 0 (the first backend) gets one invalid output first.
+            const first = n === 0 && !corrected;
+            if (first) corrected = true;
+            last = first ? "not json at all" : valid;
+            pi.send({
+              type: "agent_end",
+              messages: [
+                {
+                  role: "assistant",
+                  stopReason: "stop",
+                  content: [{ type: "text", text: last }],
+                },
+              ],
             });
-          // Worker 0 (the first backend) gets one invalid output first.
-          const first = n === 0 && !corrected;
-          if (first) corrected = true;
-          last = first ? "not json at all" : valid;
-          pi.send({
-            type: "agent_end",
-            messages: [
-              {
-                role: "assistant",
-                stopReason: "stop",
-                content: [{ type: "text", text: last }],
-              },
-            ],
-          });
-        })().catch(() =>
-          pi.send({
-            type: "agent_end",
-            messages: [{ role: "assistant", stopReason: "error", content: [] }],
+          })().catch(() =>
+            pi.send({
+              type: "agent_end",
+              messages: [
+                { role: "assistant", stopReason: "error", content: [] },
+              ],
+            }),
+          );
+        });
+        engines.push(engine);
+        workers.push(
+          new Worker({
+            origin: backends[n].origin,
+            token: "worker-secret",
+            system: "Coach",
+            onDiagnostic: (event) => workerEvents.push(structuredClone(event)),
+            complete: async (message, signal, prompt, tools, ref, budget) => {
+              gateway = await openProfileGateway(
+                store,
+                signal,
+                workerGatewayOptions(store, {
+                  prompt,
+                  tools,
+                  ref,
+                  budget,
+                  onDiagnostic: (event) =>
+                    providerEvents.push(structuredClone(event)),
+                }),
+              );
+              try {
+                return (
+                  await new HeadlessCycleRuntime({
+                    image: IMAGE,
+                    engine: engine.engine,
+                  }).run({
+                    profile: "worker",
+                    gateway,
+                    message,
+                    signal,
+                    cycleMs: Math.min(30000, budget!.deadlineAt! - Date.now()),
+                  })
+                ).text;
+              } finally {
+                await gateway.close();
+              }
+            },
           }),
         );
-      });
-      engines.push(engine);
-      workers.push(
-        new Worker({
-          origin: backends[n].origin,
-          token: "worker-secret",
-          system: "Coach",
-          onDiagnostic: (event) => workerEvents.push(structuredClone(event)),
-          complete: async (message, signal, prompt, tools, ref, budget) => {
-            gateway = await openProfileGateway(
-              store,
-              signal,
-              workerGatewayOptions(store, {
-                prompt,
-                tools,
-                ref,
-                budget,
-                onDiagnostic: (event) =>
-                  providerEvents.push(structuredClone(event)),
-              }),
-            );
-            try {
-              return (
-                await new HeadlessCycleRuntime({
-                  image: IMAGE,
-                  engine: engine.engine,
-                }).run({
-                  profile: "worker",
-                  gateway,
-                  message,
-                  signal,
-                  cycleMs: Math.min(30000, budget!.deadlineAt! - Date.now()),
-                })
-              ).text;
-            } finally {
-              await gateway.close();
-            }
-          },
-        }),
-      );
-    }
-    try {
+      }
       await Promise.all(workers.map((w) => w.pollOnce()));
       assert.deepEqual(
         backends.map((b) => b.saved.length),
@@ -265,33 +285,45 @@ test(
       for (const e of persisted)
         assert.ok([dc, dd].includes(e.metadata.attemptDigest));
     } finally {
-      await Promise.all(workers.map((w) => w.stop()));
-      await Promise.all(engines.map((e) => e.close()));
-      await Promise.all(backends.map((b) => b.close()));
-      provider.server.closeAllConnections();
-      await new Promise<void>((r) => provider.server.close(() => r()));
-      await rm(home, { recursive: true, force: true });
+      await cleanupOwned([
+        workers.map((w) => () => w.stop()),
+        engines.map((e) => () => e.close()),
+        backends.map((b) => () => b.close()),
+        provider
+          ? [
+              async () => {
+                provider!.server.closeAllConnections();
+                await new Promise<void>((r) =>
+                  provider!.server.close(() => r()),
+                );
+              },
+            ]
+          : [],
+        home ? [() => rm(home!, { recursive: true, force: true })] : [],
+      ]);
     }
   },
 );
 
 test("compiled gateway and log reject malformed or private attribution without failing the provider call", async () => {
-  const provider = await providerServer();
-  const home = await mkdtemp(tmpdir() + "/worker-attribution-malformed-");
-  const store = new Store(home);
-  await store.init();
-  await store.save({
-    ...store.publicConfig(),
-    provider: { baseUrl: provider.baseUrl, model: "synthetic-model" },
-    apiKey: "synthetic-provider-key",
-  });
-  const hostile = {
-    get attemptDigest(): number {
-      throw new Error("PRIVATE-GETTER-TEXT");
-    },
-    outputAttempt: 1,
-  };
+  let provider: Awaited<ReturnType<typeof providerServer>> | undefined;
+  let home: string | undefined;
   try {
+    provider = await providerServer();
+    home = await mkdtemp(tmpdir() + "/worker-attribution-malformed-");
+    const store = new Store(home);
+    await store.init();
+    await store.save({
+      ...store.publicConfig(),
+      provider: { baseUrl: provider.baseUrl, model: "synthetic-model" },
+      apiKey: "synthetic-provider-key",
+    });
+    const hostile = {
+      get attemptDigest(): number {
+        throw new Error("PRIVATE-GETTER-TEXT");
+      },
+      outputAttempt: 1,
+    };
     for (const [index, attribution] of [
       { attemptDigest: "aaaaaaaaaaaaaaaaaaaaaaaa", outputAttempt: 1 },
       { attemptDigest: -1, outputAttempt: 1 },
@@ -381,8 +413,16 @@ test("compiled gateway and log reject malformed or private attribution without f
       outputAttempt: 2,
     });
   } finally {
-    provider.server.closeAllConnections();
-    await new Promise<void>((r) => provider.server.close(() => r()));
-    await rm(home, { recursive: true, force: true });
+    await cleanupOwned([
+      provider
+        ? [
+            async () => {
+              provider!.server.closeAllConnections();
+              await new Promise<void>((r) => provider!.server.close(() => r()));
+            },
+          ]
+        : [],
+      home ? [() => rm(home!, { recursive: true, force: true })] : [],
+    ]);
   }
 });
