@@ -9,7 +9,11 @@ import {
   isExtraction,
 } from "./helpers/memory-backend.js";
 
-for (const kind of [
+// Exercise suggestions route two publication contracts. Automatic
+// completed-set feedback (no forceReply) intentionally publishes past ordinary
+// evidence edits; an explicit reply (forceReply:true) and a batch keep strict
+// source freshness. Either way a stale replacement never retires its input.
+for (const variant of [
   "activity_reaction",
   "daily_insight",
   "day_closure",
@@ -17,18 +21,30 @@ for (const kind of [
   "workout_chat",
   "workout_suggestions",
   "exercise_suggestions",
+  "exercise_suggestions explicit",
 ])
   for (const consumption of [
     "success",
     "source_revoked",
-    ...(["workout_suggestions", "exercise_suggestions"].includes(kind)
-      ? ["source_aba"]
+    ...(variant.startsWith("workout_suggestions") ||
+    variant.startsWith("exercise_suggestions")
+      ? ["source_aba", "source_edit"]
       : []),
   ])
     test(
-      `paired actual Worker ${kind} consolidation ${consumption}: original source extraction, accepted versus consumed publication, no replay`,
+      `paired actual Worker ${variant} consolidation ${consumption}: original source extraction, accepted versus consumed publication, no replay`,
       { skip: !memoryBackendEnabled, timeout: 90000 },
       async () => {
+        const [kind] = variant.split(" "),
+          explicitReply = variant.endsWith(" explicit"),
+          automaticFeedback = kind === "exercise_suggestions" && !explicitReply;
+        // Strict tasks never publish after a source change. Automatic feedback
+        // publishes, but only an unchanged source makes its replacement valid,
+        // so only then may the consolidation retire the recalled input.
+        const published =
+          consumption === "success" ||
+          (automaticFeedback && consumption !== "source_revoked");
+        const retired = consumption === "success";
         const backend = await startBackend();
         const { db, service, ObjectId } = backend;
         // Exercise suggestions publish automatically after acceptance. Hold the
@@ -283,7 +299,10 @@ for (const kind of [
                   String(user),
                   activity,
                   kind === "exercise_suggestions"
-                    ? { workoutExerciseId: String(exercise._id) }
+                    ? {
+                        workoutExerciseId: String(exercise._id),
+                        ...(explicitReply ? { forceReply: true } : {}),
+                      }
                     : {},
                 );
           }
@@ -352,7 +371,11 @@ for (const kind of [
           );
           if (consumption === "source_revoked")
             await db.collection("activities").deleteOne({ _id: activity._id });
+          const sourceEpoch = async () =>
+            (await db.collection("activities").findOne({ _id: activity._id }))
+              .memory_source_fields?.data || 0;
           if (consumption === "source_aba") {
+            const before = await sourceEpoch();
             await db
               .collection("activities")
               .updateOne(
@@ -365,6 +388,17 @@ for (const kind of [
                 { _id: activity._id },
                 { $set: { "data.exercises.0.name": exercise.name } },
               );
+            assert.equal(await sourceEpoch(), before + 2);
+          }
+          if (consumption === "source_edit") {
+            const before = await sourceEpoch();
+            await db
+              .collection("activities")
+              .updateOne(
+                { _id: activity._id },
+                { $set: { "data.exercises.0.name": "Renamed source" } },
+              );
+            assert.equal(await sourceEpoch(), before + 1);
           }
           holdPublication = false;
           if (kind === "activity_reaction")
@@ -387,7 +421,7 @@ for (const kind of [
             await backend
               .require("./core/workoutExternalSuggestions")
               .processCompleted(db);
-          if (consumption !== "success") {
+          if (!published) {
             assert.notEqual(
               (
                 await db
@@ -414,13 +448,25 @@ for (const kind of [
             );
             return;
           }
+          const prior = async () =>
+            JSON.stringify(
+              await db
+                .collection("coach_memories")
+                .findOne(
+                  { _id: new ObjectId(supersededId) },
+                  { projection: { read_fence: 0 } },
+                ),
+            );
           assert.equal(
             (
               await db
                 .collection("coach_memories")
                 .findOne({ _id: new ObjectId(supersededId) })
             ).status,
-            "archived",
+            retired ? "archived" : "active",
+            retired
+              ? "a valid replacement supersedes its recalled input"
+              : "a stale replacement must not retire its recalled input",
           );
           assert.equal(
             (
@@ -436,8 +482,9 @@ for (const kind of [
                 memory_id: String(memory._id),
               })
             ).item.availability,
-            consumption === "source_aba" ? "unavailable" : "available",
+            retired ? "available" : "unavailable",
           );
+          const priorBefore = await prior();
           const before = JSON.stringify(
             await db
               .collection("external_coach_tasks")
@@ -493,6 +540,11 @@ for (const kind of [
                 ),
             ),
             before,
+          );
+          assert.equal(
+            await prior(),
+            priorBefore,
+            "recovery never re-retires or rewrites the recalled input",
           );
           await db.collection("activities").deleteOne({ _id: activity._id });
           assert.equal(
