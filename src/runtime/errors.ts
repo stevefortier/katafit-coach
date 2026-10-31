@@ -183,6 +183,9 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     headlessIntentional: 1,
     headlessContainerKnown: 1,
     headlessWorkKnown: 1,
+    // Fixed task-timing enums (worker/runner.ts TASK_KIND_CODES/TASK_TIMING_CODES).
+    taskKindCode: 9,
+    timingCode: 11,
     ...Object.fromEntries(
       [
         ...Array.from({ length: 3 }, (_, i) => `headlessWork${i}`),
@@ -228,6 +231,12 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     "totalBytes",
     "totalLimit",
     "elapsedMs",
+    // Task-timing receipts: fixed codes and durations, never kind names/content.
+    "taskKindCode",
+    "timingCode",
+    "sinceAcceptedMs",
+    // Provider HTTP call latency, distinct from task/poll elapsedMs.
+    "providerMs",
     "statusCode",
     "responseBytes",
     "budgetMs",

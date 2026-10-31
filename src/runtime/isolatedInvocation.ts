@@ -17,7 +17,7 @@ export function isolatedWorkerCompletion(
   store: Store,
   context: () => Promise<RuntimeContext>,
 ): WorkerOptions["complete"] {
-  return async (message, signal, prompt, tools, _ref, budget) => {
+  return async (message, signal, prompt, tools, ref, budget) => {
     signal.throwIfAborted();
     const owner = await context();
     const image = await nativeBinding(store.dir);
@@ -36,6 +36,7 @@ export function isolatedWorkerCompletion(
       tools,
       skills: true,
       onDiagnostic: owner.onDiagnostic,
+      diagnosticRef: ref,
       budgets: {
         tool_calls: 64,
         provider_tokens: WORKER_PROVIDER_TOKENS,

@@ -1137,6 +1137,8 @@ export interface ProfileGatewayOptions {
   /** Each admitted provider response body (planner transcript spans). */
   onProviderResponse?: (body: string, type: string) => void;
   onDiagnostic?: BackendLogger;
+  /** Correlates content-free receipts with the caller's Worker poll ref. */
+  diagnosticRef?: string;
 }
 // The composer drafts one bounded text: a handful of completions at most.
 const COMPOSER_PROVIDER_REQUESTS = 4;
@@ -1219,7 +1221,13 @@ export async function openProfileGateway(
   let closed = false;
   const used = { tool_calls: 0, provider_tokens: 0, provider_requests: 0 };
   // Ephemeral gateway correlation, never a work/member/call identity.
-  const diagnosticRef = randomUUID();
+  const diagnosticRef =
+    typeof options.diagnosticRef === "string" &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
+      options.diagnosticRef,
+    )
+      ? options.diagnosticRef
+      : randomUUID();
   let emissionOrdinal = 0;
   // Numeric-only receipts: profileCode 1=planner, 2=composer, 3=worker;
   // chargeSource 1=reported_total, 2=wire_estimate. Saturation is telemetry

@@ -335,6 +335,29 @@ for (const variant of [
             worker.state,
             /^task-(result-stored|publication-confirmed)$/,
           );
+          // An accepted capture extracts through the next idle durable
+          // recovery, never inline before the next feedback claim. A welcome's
+          // legitimately scheduled suggestions task would (correctly) be
+          // admitted first; park it so this poll isolates extraction, then
+          // restore it for the unchanged recovery-Worker replay check below.
+          const followups = db.collection("external_coach_tasks");
+          const parked =
+            kind === "workout_chat"
+              ? await followups
+                  .find({ kind: "workout_suggestions", status: "queued" })
+                  .toArray()
+              : [];
+          for (const row of parked)
+            await followups.updateOne(
+              { _id: row._id },
+              { $set: { status: "parked_by_test" } },
+            );
+          await worker.pollOnce();
+          for (const row of parked)
+            await followups.updateOne(
+              { _id: row._id },
+              { $set: { status: "queued" } },
+            );
           const task = await db
             .collection("external_coach_tasks")
             .findOne({ kind });
