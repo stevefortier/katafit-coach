@@ -7,6 +7,10 @@ import {
 } from "./isolatedTaskJournal.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  baselineCoversRecall,
+  DAILY_BASELINE_GUIDANCE,
+} from "../katafit/daily-baseline.js";
+import {
   discoverTaskPlane,
   taskAdmission,
   validateTask,
@@ -726,6 +730,7 @@ export class Worker {
     budget: () => number,
     ref: string,
     attemptDigest?: number,
+    coveredRecall = false,
   ): Promise<
     | {
         capture: MemoryCapture;
@@ -769,6 +774,15 @@ export class Worker {
       phase = 2;
       started = performance.now();
       const capture = await beginMemory(c, execution, secrets, budget());
+      if (coveredRecall) {
+        settled(1, 0, 1);
+        return {
+          capture,
+          recalled: [],
+          partial: false,
+          recovery: negotiation.recovery,
+        };
+      }
       settled(1, 0, 0);
       phase = 3;
       started = performance.now();
@@ -1227,6 +1241,7 @@ export class Worker {
             !!this.options.integrationDirectory,
           taskPlane.failureDetails === true,
           started,
+          taskPlane.dailyBaseline === true,
         );
         if (!handled) taskAttempt = false;
         return handled;
@@ -1783,6 +1798,7 @@ export class Worker {
     ordinary = false,
     failureDetails = false,
     started = Date.now(),
+    dailyBaselineNegotiated = false,
   ) {
     if (this.updateQuiesced || this.statsPollPauses) return false;
     const claimStarted = c.trace ? read(c.trace.clock) : NaN;
@@ -1877,12 +1893,32 @@ export class Worker {
     let completing = false;
     try {
       const contextRead = at(SPAN_CODES.contextRead);
-      const context = await c.call("coach_read_task_context", fence, budget());
+      const context = await c.call(
+        "coach_read_task_context",
+        {
+          ...fence,
+          ...(dailyBaselineNegotiated && task.kind === "daily_insight"
+            ? { daily_baseline_schema: "coach_daily_baseline.v1" }
+            : {}),
+        },
+        budget(),
+      );
       contextRead();
       this.timing(timing, TASK_TIMING_CODES.contextRead);
       const prepared = at(SPAN_CODES.contextPrepare);
       const secrets = [this.options.token, ...(this.options.secrets ?? [])];
       const serialized = taskContext(task, context, secrets);
+      // Derive policy only from the accepted, scope-bound model envelope.
+      const acceptedInput = JSON.parse(serialized);
+      const acceptedBaseline = acceptedInput.daily_baseline;
+      const coveredRecall = baselineCoversRecall(acceptedBaseline);
+      if (coveredRecall)
+        this.diagnostic({
+          source: "worker",
+          stage: "daily-baseline-recall-covered",
+          ref,
+          metadata: { baselineRecallReasonCode: 1 },
+        });
       this.update("task-working");
       const ms = Math.min(
         this.options.modelMs ?? 100000,
@@ -1982,10 +2018,13 @@ export class Worker {
       const memory = await this.memoryFor(
         c,
         { kind: "task", ...fence, protocol: "coach.tasks.v1" },
-        task.kind + " " + JSON.stringify(context.evidence ?? {}).slice(0, 1800),
+        task.kind +
+          " " +
+          JSON.stringify(acceptedInput.evidence ?? {}).slice(0, 1800),
         budget,
         ref,
         timing.attemptDigest,
+        coveredRecall,
       );
       memoryPrepared();
       this.diagnostic({
@@ -2026,6 +2065,7 @@ export class Worker {
         : serialized;
       const system =
         effectivePrompt(this.options.system, context.instructions, secrets) +
+        (acceptedBaseline ? DAILY_BASELINE_GUIDANCE : "") +
         formatSkillBodies(selectedSkills, "worker") +
         formatRecall(memory?.recalled ?? [], "worker") +
         (memory?.partial
@@ -2238,7 +2278,7 @@ export class Worker {
           await this.retainMemory(
             memory,
             "task",
-            { task_kind: task.kind, evidence: context.evidence, result },
+            { task_kind: task.kind, evidence: acceptedInput.evidence, result },
             ref,
             timing,
           );

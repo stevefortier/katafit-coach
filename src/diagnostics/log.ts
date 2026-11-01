@@ -64,6 +64,7 @@ export const stages = [
   "preview-started",
   "preview-completed",
   "memory-recalled",
+  "daily-baseline-recall-covered",
   "memory-preparation",
   "memory-unavailable",
   "memory-retained",

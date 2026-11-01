@@ -189,6 +189,7 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     // 48-bit taskAttemptDigest and the 1-based output (correction) attempt.
     attemptDigest: 2 ** 48 - 1,
     outputAttempt: 2,
+    baselineRecallReasonCode: 1,
     memoryPhaseCode: 3,
     memoryOutcomeCode: 4,
     memorySubtypeCode: 9,
@@ -272,6 +273,7 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     "sinceAcceptedMs",
     "attemptDigest",
     "outputAttempt",
+    "baselineRecallReasonCode",
     "memoryPhaseCode",
     "memoryOutcomeCode",
     "memorySubtypeCode",
