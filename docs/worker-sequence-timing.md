@@ -83,9 +83,15 @@ Clocks are not synchronized: never subtract client and server timestamps.
 Every span carries `spanCode`, `spanOutcome`, `spanStartMs` (offset from
 the poll origin) and `spanMs`.
 
-`spanOutcome` values: 1 ok, 2 failed, 3 cancelled (an enclosing signal aborted),
-4 timeout or expiry (`BACKEND_TIMEOUT`, `PROVIDER_TIMEOUT`, `LEASE_EXPIRED`,
-`HEADLESS_TIMEOUT`, `NATIVE_PROVIDER_TIMEOUT`).
+`spanOutcome` values: 1 ok, 2 failed, 3 aborted/cancelled (an enclosing
+signal aborted), 4 an explicit timeout or expiry code (`BACKEND_TIMEOUT`,
+`PROVIDER_TIMEOUT`, `LEASE_EXPIRED`, `HEADLESS_TIMEOUT`,
+`NATIVE_PROVIDER_TIMEOUT`). The existing inference timer reports a generic
+`CANCELLED` abort, so its enclosing/native/gateway spans can have outcome 3;
+join the same attempt's `task-failed` code (`PROVIDER_TIMEOUT`) to distinguish
+that timer from a lease/operator cancellation. Outcome 3 alone must never be
+used to claim an operator cancellation. Telemetry does not change the abort
+reason or business failure classification.
 
 A span that a thrown error interrupts is closed with that error's outcome
 before failure reporting begins. Spans can nest and overlap. The inference

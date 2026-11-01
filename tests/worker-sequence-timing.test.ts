@@ -296,7 +296,11 @@ test("Client timing faults and cancellation never change transport outcomes", as
     const faults = events.slice(1);
     assert.equal(faults.length, 2);
     for (const e of faults) {
-      assert.equal(e.metadata.elapsedMs, 0, "unknown clock never invents time");
+      assert.equal(
+        e.metadata.elapsedMs,
+        undefined,
+        "unknown clock is not zero",
+      );
       assert.equal(e.metadata.headersMs, undefined);
       assert.equal(e.metadata.callOrdinal !== undefined, true);
       assert.match(e.parentRef, UUID);

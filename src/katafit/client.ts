@@ -249,7 +249,7 @@ export class Client {
           ...(trace?.ref ? { parentRef: trace.ref } : {}),
           backendCall: { ...descriptor, outcome },
           metadata: {
-            elapsedMs: ms(ended - started) ?? 0,
+            elapsedMs: ms(ended - started),
             statusCode: status,
             responseBytes: size,
             budgetMs: budget,

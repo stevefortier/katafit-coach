@@ -69,10 +69,11 @@ export function read(clock: Clock): number {
     return NaN;
   }
 }
-/** Rounded, saturated nonnegative milliseconds, or undefined when unknown. */
+/** Rounded bounded milliseconds; unknown/out-of-range values stay absent. */
 export function ms(value: number): number | undefined {
-  if (!Number.isFinite(value)) return undefined;
-  return Math.min(TRACE_MS_MAX, Math.max(0, Math.round(value)));
+  if (!Number.isFinite(value) || value < 0 || value > TRACE_MS_MAX)
+    return undefined;
+  return Math.round(value);
 }
 export function between(
   start: number | undefined,
@@ -127,20 +128,25 @@ export function inferenceTrace(
   }
 }
 export function spanOutcome(error: unknown, signal?: AbortSignal): number {
-  const code =
-    error && typeof error === "object"
-      ? String((error as { code?: unknown; message?: unknown }).code ?? "") ||
-        String((error as { message?: unknown }).message ?? "")
-      : "";
-  if (
-    /^(?:BACKEND_TIMEOUT|PROVIDER_TIMEOUT|LEASE_EXPIRED|HEADLESS_TIMEOUT|NATIVE_PROVIDER_TIMEOUT)$/.test(
-      code,
+  try {
+    const code =
+      error && typeof error === "object"
+        ? String((error as { code?: unknown; message?: unknown }).code ?? "") ||
+          String((error as { message?: unknown }).message ?? "")
+        : "";
+    if (
+      /^(?:BACKEND_TIMEOUT|PROVIDER_TIMEOUT|LEASE_EXPIRED|HEADLESS_TIMEOUT|NATIVE_PROVIDER_TIMEOUT)$/.test(
+        code,
+      )
     )
-  )
-    return SPAN_OUTCOMES.timeout;
-  if (signal?.aborted || /^(?:CANCELLED|NATIVE_CANCELLED)$/.test(code))
-    return SPAN_OUTCOMES.cancelled;
-  return SPAN_OUTCOMES.failed;
+      return SPAN_OUTCOMES.timeout;
+    if (signal?.aborted || /^(?:CANCELLED|NATIVE_CANCELLED)$/.test(code))
+      return SPAN_OUTCOMES.cancelled;
+    return SPAN_OUTCOMES.failed;
+  } catch {
+    // Observing arbitrary thrown values must never replace the business error.
+    return SPAN_OUTCOMES.failed;
+  }
 }
 
 // Server-Timing from the Kata.fit requestPerformance middleware. Only these
