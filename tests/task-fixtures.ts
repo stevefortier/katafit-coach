@@ -356,7 +356,21 @@ export async function taskFixture(options: any = {}) {
     else if (m.method === "tools/list")
       value = {
         tools: [
-          ...(options.tools ?? names).map((name: string) => ({ name })),
+          ...(options.tools ?? names).map((name: string) => ({
+            name,
+            ...(name === "coach_read_task_context" && options.dailyBaseline
+              ? {
+                  inputSchema: {
+                    type: "object",
+                    properties: {
+                      daily_baseline_schema: {
+                        const: "coach_daily_baseline.v1",
+                      },
+                    },
+                  },
+                }
+              : {}),
+          })),
           // [v2 §2.7] request-worker commitment handoff (B10), opt-in.
           ...(options.commitment
             ? [
@@ -851,6 +865,11 @@ export async function taskFixture(options: any = {}) {
         return;
       }
       value = {};
+    }
+    if (n === "coach_read_task_context") {
+      const allowed = ["protocol", "task_id", "lease_generation", ...(options.dailyBaseline ? ["daily_baseline_schema"] : [])];
+      if (Object.keys(a).some(k => !allowed.includes(k))) { toolError("TASK_CONTEXT_INVALID"); return; }
+      if (a.daily_baseline_schema !== "coach_daily_baseline.v1") delete value.daily_baseline;
     }
     if (n === "coach_list_requests" && a.statuses)
       value = {

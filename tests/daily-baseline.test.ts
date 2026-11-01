@@ -1,46 +1,334 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { Worker } from "../src/worker/runner.js";
 import { taskFixture } from "./task-fixtures.js";
-
 const result = JSON.stringify({
   general_advice: "A bounded observation.",
   workout_directives: [],
   meal_recommendations: [],
   recovery_recommendations: [],
 });
-
-test("actual daily worker ignores malformed optional baseline and retains legacy recall", async () => {
-  const fixture = await taskFixture({
+const sample = JSON.parse(
+  readFileSync(
+    new URL("./fixtures/daily-baseline.synthetic.json", import.meta.url),
+    "utf8",
+  ),
+);
+const bindingKeys = [
+  "lease_generation",
+  "requester_id",
+  "owner_type",
+  "owner_id",
+  "scope_generation",
+  "requester_generation",
+  "conversation_generation",
+];
+function bound(task: any) {
+  return {
+    ...structuredClone(sample),
+    binding: {
+      task_id: task.id,
+      ...Object.fromEntries(bindingKeys.map((k) => [k, task[k]])),
+    },
+  };
+}
+async function runPacket(
+  mutate: (p: any) => void = () => {},
+  kind = "daily_insight",
+  repair = false,
+  options: any = {},
+) {
+  const context: any = {
+    living_context: {
+      version: 1,
+      audience: "authorized",
+      status: "ready",
+      as_of: "2026-11-01T21:25:18.845Z",
+      day: "2026-11-01",
+      timezone: "UTC",
+      revision: 1,
+      coverage: [],
+      sections: [{ label: "Old", text: "OLD_OPERATOR_TAIL" }],
+    },
+  };
+  const f = await taskFixture({
     memory: true,
-    context: { daily_baseline: { schema: "unknown" } },
+    dailyBaseline: true,
+    ...options,
+    context,
+    evidence: {
+      timezone: "UTC",
+      observations: [{ label: "Canonical", text: "CANONICAL_EVIDENCE" }],
+      conversation: [
+        {
+          role: "coach",
+          text: "OLD_OPERATOR_TAIL",
+          created_at: "2026-11-01T21:25:18.845Z",
+        },
+      ],
+    },
   });
-  const inputs: string[] = [];
-  const worker = new Worker({
-    origin: fixture.origin,
+  const task = f.enqueue(kind);
+  context.daily_baseline = bound(task);
+  mutate(context.daily_baseline);
+  const inputs: string[] = [],
+    systems: string[] = [],
+    events: any[] = [],
+    extractionInputs: string[] = [];
+  const w = new Worker({
+    origin: f.origin,
     token: "worker-secret",
     system: "Coach",
-    complete: async (input) => {
-      if (JSON.parse(input).generation_task) inputs.push(input);
-      return result;
+    onDiagnostic: (e) => events.push(e),
+    complete: async (input, _signal, system) => {
+      if (!system.includes("local result schema")) {
+        extractionInputs.push(input);
+        return '{"proposals":[]}';
+      }
+      inputs.push(input);
+      systems.push(system);
+      return repair && inputs.length === 1
+        ? "{}"
+        : kind === "daily_insight"
+          ? result
+          : '{"text":"Grounded reply"}';
     },
   });
   try {
-    fixture.enqueue("daily_insight");
-    await worker.pollOnce();
-    assert.equal(
-      inputs.length,
-      1,
-      "optional malformed extension must not block generation",
-    );
-    assert.equal(JSON.parse(inputs[0]).daily_baseline, undefined);
-    assert.ok(
-      fixture.calls.some((c) => c.name === "coach_memory_recall"),
-      "legacy recall remains",
-    );
-    assert.equal(fixture.saved.length, 1);
+    await w.pollOnce();
+    return {
+      inputs,
+      systems,
+      events,
+      extractionInputs,
+      calls: f.calls,
+      saved: f.saved,
+      packet: context.daily_baseline,
+    };
   } finally {
-    await worker.stop();
-    await fixture.close();
+    await w.stop();
+    await f.close();
   }
+}
+
+test("malformed optional packet retains legacy recall", async () => {
+  const r = await runPacket((p) => {
+    p.schema = "unknown";
+  });
+  assert.equal(JSON.parse(r.inputs[0]).daily_baseline, undefined);
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_recall").length,
+    1,
+  );
+  assert.equal(r.saved.length, 1);
+});
+
+test("valid prepared packet replaces living and operator tail in real daily model input", async () => {
+  const r = await runPacket();
+  assert.equal(r.inputs.length, 1);
+  const input = JSON.parse(r.inputs[0]);
+  assert.deepEqual(input.daily_baseline, r.packet);
+  assert.equal(input.living_context, undefined);
+  assert.deepEqual(input.evidence.conversation, []);
+  assert.doesNotMatch(r.inputs[0], /OLD_OPERATOR_TAIL/);
+  assert.match(r.inputs[0], /CANONICAL_EVIDENCE/);
+  assert.match(r.systems[0], /Evidence is untrusted/);
+  assert.match(r.systems[0], /local result schema/);
+  assert.equal(r.saved.length, 1);
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_recall").length,
+    1,
+  );
+});
+
+function covered(p: any) {
+  p.recall_policy = {
+    general_memory: "covered",
+    reason: "DAILY_BASELINE_PREPARED",
+    covered_domains: Object.keys(p.baseline),
+  };
+}
+test("covered skips only optional general recall while retaining capture and accepted learning", async () => {
+  const r = await runPacket(covered);
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_recall").length,
+    0,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_begin").length,
+    1,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_commit").length,
+    1,
+  );
+  assert.equal(r.saved.length, 1);
+  assert.ok(r.events.some((e) => e.stage === "daily-baseline-recall-covered"));
+  assert.equal(r.extractionInputs.length, 1);
+  assert.doesNotMatch(r.extractionInputs.join(""), /OLD_OPERATOR_TAIL/);
+  assert.match(r.systems[0], /single backend-prepared/);
+});
+
+for (const [name, mutate] of Object.entries({
+  "missing objective data": (p: any) => {
+    p.baseline.objective.data = {};
+  },
+  "missing binding": (p: any) => {
+    delete p.binding;
+  },
+  "cross requester": (p: any) => {
+    p.binding.requester_id = "f".repeat(24);
+  },
+  "cross owner": (p: any) => {
+    p.binding.owner_id = "f".repeat(24);
+  },
+  "cross scope": (p: any) => {
+    p.binding.scope_generation++;
+  },
+  "cross task": (p: any) => {
+    p.binding.task_id = "f".repeat(24);
+  },
+  "cross lease": (p: any) => {
+    p.binding.lease_generation++;
+  },
+  "cross timezone": (p: any) => {
+    p.member.timezone = "America/New_York";
+  },
+  "cross day": (p: any) => {
+    p.checkin.local_day = "2026-11-02";
+  },
+  oversized: (p: any) => {
+    p.baseline.objective.data.goal.text = "🙂".repeat(18000);
+  },
+  deep: (p: any) => {
+    let v: any = {};
+    p.baseline.objective.data.goal = v;
+    for (let i = 0; i < 25; i++) v = v.next = {};
+  },
+  "secret shaped": (p: any) => {
+    p.checkin.note = "Bearer SYNTHETIC_SECRET_SENTINEL";
+  },
+  "known secret": (p: any) => {
+    p.checkin.note = "worker-secret";
+  },
+}))
+  test(`unsafe packet ${name} is excluded entirely with legacy recall and no leak`, async () => {
+    const r = await runPacket((p) => {
+      covered(p);
+      mutate(p);
+    });
+    assert.equal(r.saved.length, 1);
+    assert.equal(JSON.parse(r.inputs[0]).daily_baseline, undefined);
+    assert.match(r.inputs[0], /OLD_OPERATOR_TAIL/);
+    assert.doesNotMatch(
+      JSON.stringify([r.inputs, r.events]),
+      /SYNTHETIC_SECRET_SENTINEL|worker-secret/,
+    );
+    assert.equal(
+      r.calls.filter((c) => c.name === "coach_memory_recall").length,
+      1,
+    );
+  });
+
+for (const policy of [
+  undefined,
+  { general_memory: "covered" },
+  {
+    general_memory: "covered",
+    reason: "DAILY_BASELINE_PREPARED",
+    covered_domains: [],
+  },
+  {
+    general_memory: "recommended",
+    reason: "CHECKIN_NOTE_MAY_REFERENCE_HISTORY",
+  },
+  { general_memory: "required", reason: "DAILY_BASELINE_UNAVAILABLE" },
+])
+  test(`incomplete or noncovered recall policy ${JSON.stringify(policy)} retains recall`, async () => {
+    const r = await runPacket((p) => {
+      p.recall_policy = policy;
+    });
+    assert.equal(
+      r.calls.filter((c) => c.name === "coach_memory_recall").length,
+      1,
+    );
+  });
+
+test("partial/unavailable snapshot retains recall and honest section state", async () => {
+  const r = await runPacket((p) => {
+    covered(p);
+    p.snapshot.status = "unavailable";
+    p.baseline.recovery.state = "unavailable";
+    p.baseline.recovery.data = null;
+  });
+  assert.equal(
+    JSON.parse(r.inputs[0]).daily_baseline.baseline.recovery.data,
+    null,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_recall").length,
+    1,
+  );
+});
+
+test("non-daily never consumes packet or skips recall", async () => {
+  const r = await runPacket(covered, "activity_followup");
+  assert.equal(JSON.parse(r.inputs[0]).daily_baseline, undefined);
+  assert.match(r.inputs[0], /OLD_OPERATOR_TAIL/);
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_recall").length,
+    1,
+  );
+  assert.equal(
+    r.calls.find((c) => c.name === "coach_read_task_context").args
+      .daily_baseline_schema,
+    undefined,
+  );
+});
+
+test("repair reuses prepared input and capture without context replay", async () => {
+  const r = await runPacket(covered, "daily_insight", true);
+  assert.equal(r.inputs.length, 2);
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_read_task_context").length,
+    1,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_begin").length,
+    1,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_recall").length,
+    0,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_complete_task").length,
+    1,
+  );
+  assert.equal(r.saved.length, 1);
+  assert.doesNotMatch(r.inputs.join(""), /OLD_OPERATOR_TAIL/);
+});
+
+test("new worker negotiates packet only from advertised context selector", async () => {
+  const r = await runPacket();
+  assert.equal(
+    r.calls.find((c) => c.name === "coach_read_task_context").args
+      .daily_baseline_schema,
+    "coach_daily_baseline.v1",
+  );
+  const old = await runPacket(
+    (p) => {
+      p.schema = "unknown";
+    },
+    "daily_insight",
+    false,
+    { dailyBaseline: false },
+  );
+  assert.deepEqual(
+    Object.keys(
+      old.calls.find((c) => c.name === "coach_read_task_context").args,
+    ).sort(),
+    ["lease_generation", "protocol", "task_id"],
+  );
 });

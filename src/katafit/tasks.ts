@@ -1,4 +1,5 @@
 import { livingContext } from "./living-context.js";
+import { dailyBaseline } from "./daily-baseline.js";
 import { isDeepStrictEqual } from "node:util";
 import { Ajv } from "ajv";
 import { taskCatalog, legacyDailyInsightContract } from "./taskCatalog.js";
@@ -70,6 +71,7 @@ export async function discoverTaskPlane(c: Client): Promise<{
   capability: boolean;
   invocation?: boolean;
   failureDetails?: boolean;
+  dailyBaseline?: boolean;
 }> {
   // Capability absence/mismatch never grants task authority or breaks legacy chat.
   try {
@@ -114,9 +116,17 @@ export async function discoverTaskPlane(c: Client): Promise<{
         "coach_read_invocation_action",
         "coach_settle_invocation_action",
       ].every((n) => listed.tools?.some((t: any) => t.name === n));
+    const baselineSelector = listed.tools?.find(
+      (t: any) => t.name === "coach_read_task_context",
+    )?.inputSchema?.properties?.daily_baseline_schema;
+    const dailyBaseline =
+      baselineSelector?.const === "coach_daily_baseline.v1" ||
+      (Array.isArray(baselineSelector?.enum) &&
+        baselineSelector.enum.includes("coach_daily_baseline.v1"));
     return {
       kinds,
       capability,
+      ...(dailyBaseline ? { dailyBaseline: true } : {}),
       ...(invocation ? { invocation: true } : {}),
       ...(failureDetailsNegotiated(cap) ? { failureDetails: true } : {}),
     };
@@ -323,10 +333,18 @@ function validAdmission(task: any, context: any) {
   );
 }
 export function taskContext(task: any, context: any, secrets: string[]) {
-  const report = livingContext(
-    context?.living_context,
-    context?.evidence?.conversation ?? [],
+  const baseline = dailyBaseline(
+    task,
+    context?.daily_baseline,
+    context?.evidence?.timezone,
+    secrets,
   );
+  const report = baseline
+    ? undefined
+    : livingContext(
+        context?.living_context,
+        context?.evidence?.conversation ?? [],
+      );
   context = { ...context };
   delete context.living_context;
   // Optional backend extension: absent/unsupported packets keep legacy input.
@@ -369,7 +387,10 @@ export function taskContext(task: any, context: any, secrets: string[]) {
       },
       ...(negotiated ? restPrincipal(task, context.capability) : {}),
     },
-    evidence: context.evidence,
+    evidence: baseline
+      ? { ...context.evidence, conversation: [] }
+      : context.evidence,
+    ...(baseline ? { daily_baseline: baseline } : {}),
     ...(report ? { living_context: report } : {}),
   });
 }
