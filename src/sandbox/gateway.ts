@@ -7,6 +7,16 @@ import { Store, assertNoSecrets, compileOperator } from "../config/store.js";
 import { Actions } from "../chat/actions.js";
 import { ToolFailure, type BackendLogger } from "../katafit/client.js";
 import { providerFailure } from "../runtime/errors.js";
+import {
+  between,
+  defined,
+  inferenceTrace,
+  read,
+  SPAN_CODES,
+  SPAN_OUTCOMES,
+  spanOutcome,
+  type InferenceTrace,
+} from "../diagnostics/trace.js";
 import { acquisitionDiagnostic } from "../diagnostics/acquisition.js";
 import { complete as providerComplete } from "../runtime/piAdapter.js";
 import {
@@ -1141,6 +1151,20 @@ export interface ProfileGatewayOptions {
   diagnosticRef?: string;
   /** Worker task-attempt binding (worker/runner.ts taskAttemptDigest). */
   diagnosticAttribution?: { attemptDigest: number; outputAttempt: number };
+  /**
+   * Worker sequence timing: the poll scope's monotonic origin/clock. Worker
+   * profile only; emits content-free `task-span` receipts under diagnosticRef.
+   */
+  diagnosticTrace?: InferenceTrace;
+}
+/** Physical provider-call marks on the trace clock (gateway-internal). */
+interface ProviderMarks {
+  dispatched?: number;
+  headers?: number;
+  firstByte?: number;
+  body?: number;
+  requestOrdinal?: number;
+  statusCode?: number;
 }
 // The composer drafts one bounded text: a handful of completions at most.
 const COMPOSER_PROVIDER_REQUESTS = 4;
@@ -1252,6 +1276,61 @@ export async function openProfileGateway(
     }
   })();
   let emissionOrdinal = 0;
+  // Sequence timing never changes dispatch: a missing/invalid trace or a
+  // throwing clock/sink only drops the span.
+  const trace = worker ? inferenceTrace(options.diagnosticTrace) : undefined;
+  let toolOrdinal = 0;
+  const span = (
+    code: number,
+    arrived: number,
+    started: number | undefined,
+    outcome: number,
+    metadata: Record<string, number | undefined>,
+  ) => {
+    if (!trace) return;
+    try {
+      const ended = read(trace.clock);
+      options.onDiagnostic?.({
+        source: "provider",
+        stage: "task-span",
+        level: "verbose",
+        ref: diagnosticRef,
+        metadata: {
+          ...attribution,
+          ...defined({
+            spanStartMs: between(trace.origin, arrived),
+            spanMs: between(arrived, ended),
+            queueMs: between(arrived, started),
+            ...metadata,
+          }),
+          profileCode: 3,
+          spanCode: code,
+          spanOutcome: outcome,
+        },
+      });
+    } catch {}
+  };
+  const providerSpan = (
+    marks: ProviderMarks,
+    arrived: number,
+    started: number | undefined,
+    outcome: number,
+  ) => {
+    if (!trace) return;
+    const ended = read(trace.clock);
+    span(SPAN_CODES.providerRequest, arrived, started, outcome, {
+      requestOrdinal: marks.requestOrdinal,
+      statusCode: marks.statusCode,
+      preparationMs: between(started, marks.dispatched),
+      // Physical round trips from fetch dispatch on this host's clock; the
+      // provider's internal queue/compute split is opaque.
+      headersMs: between(marks.dispatched, marks.headers),
+      firstByteMs: between(marks.dispatched, marks.firstByte),
+      bodyMs: between(marks.headers, marks.body),
+      providerMs: between(marks.dispatched, marks.body),
+      postMs: between(marks.body ?? marks.headers ?? marks.dispatched, ended),
+    });
+  };
   // Numeric-only receipts: profileCode 1=planner, 2=composer, 3=worker;
   // chargeSource 1=reported_total, 2=wire_estimate. Saturation is telemetry
   // only: never change the accounting ledger or the next-request threshold.
@@ -1624,7 +1703,11 @@ export async function openProfileGateway(
     };
   }
 
-  async function provider(request: any, requestSignal: AbortSignal) {
+  async function provider(
+    request: any,
+    requestSignal: AbortSignal,
+    marks: ProviderMarks = {},
+  ) {
     try {
       assertNoSecrets(request.body, secretValues);
     } catch {
@@ -1652,11 +1735,13 @@ export async function openProfileGateway(
     const { original, wire } = nativeProviderAdmission(request.body);
     const history = toolHistory(original);
     used.provider_requests++;
+    marks.requestOrdinal = used.provider_requests;
     selections.retire();
     options.onProviderRequest?.(wire);
     digests.push(createHash("sha256").update(wire).digest("hex"));
     const timeout = AbortSignal.timeout(120000);
     let response: Response;
+    if (trace) marks.dispatched = read(trace.clock);
     try {
       response = await fetch(config.provider.baseUrl + "/chat/completions", {
         method: "POST",
@@ -1668,6 +1753,8 @@ export async function openProfileGateway(
         },
         body: wire,
       });
+      if (trace) marks.headers = read(trace.clock);
+      marks.statusCode = response.status;
     } catch {
       // Charged as sent: the provider may have processed it.
       charge(wire, undefined, history);
@@ -1695,6 +1782,7 @@ export async function openProfileGateway(
     try {
       if (response.body)
         for await (const c of response.body) {
+          if (trace) marks.firstByte ??= read(trace.clock);
           size += c.length;
           if (size > 2 * 1024 * 1024)
             throw new NativeFailure(
@@ -1712,6 +1800,7 @@ export async function openProfileGateway(
             "NATIVE_PROVIDER_FAILED",
           );
     }
+    if (trace) marks.body = read(trace.clock);
     const body = Buffer.concat(chunks).toString("utf8");
     const type = response.headers
       .get("content-type")
@@ -1775,18 +1864,34 @@ export async function openProfileGateway(
       const scoped = requestSignal
         ? AbortSignal.any([lifetime, requestSignal])
         : lifetime;
+      const arrived = trace ? read(trace.clock) : NaN;
+      const marks: ProviderMarks = {};
+      const ordinal = request.kind === "tool" ? ++toolOrdinal : undefined;
+      let started: number | undefined;
       // One host operation at a time, in arrival order.
       const run = queue.then(async () => {
+        if (trace) started = read(trace.clock);
         check();
         if (scoped.aborted) throw new NativeFailure("NATIVE_CANCELLED");
         return request.kind === "tool"
           ? tool(request, scoped)
-          : provider(request, scoped);
+          : provider(request, scoped, marks);
       });
       queue = run.catch(() => {});
+      const settled = (outcome: number) =>
+        request.kind === "tool"
+          ? span(SPAN_CODES.toolCall, arrived, started, outcome, {
+              toolOrdinal: ordinal,
+            })
+          : providerSpan(marks, arrived, started, outcome);
       try {
-        return await run;
+        const result = await run;
+        settled(SPAN_OUTCOMES.ok);
+        return result;
       } catch (error) {
+        settled(
+          scoped.aborted ? SPAN_OUTCOMES.cancelled : spanOutcome(error, scoped),
+        );
         if (!current()) throw new NativeFailure("NATIVE_SESSION_REVOKED");
         if (scoped.aborted) throw new NativeFailure("NATIVE_CANCELLED");
         if (error instanceof NativeFailure) throw error;

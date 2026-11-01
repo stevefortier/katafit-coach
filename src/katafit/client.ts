@@ -3,6 +3,15 @@ import { backendWireBudget } from "./wireBudget.js";
 import { randomUUID } from "node:crypto";
 import type { LogInput } from "../diagnostics/log.js";
 import { safeBackendCall, type BackendCall } from "./backendReceipt.js";
+import {
+  between,
+  defined,
+  monotonic,
+  ms,
+  read,
+  serverTiming,
+  type TraceScope,
+} from "../diagnostics/trace.js";
 export type BackendLogger = (event: LogInput) => void;
 export type ResponseDecoder = (
   data: { text: string; type: string },
@@ -74,6 +83,8 @@ export class Client {
     private token: string,
     readonly signal: AbortSignal,
     readonly onDiagnostic?: BackendLogger,
+    /** Per-poll/operation attribution; never process-global state. */
+    readonly trace?: TraceScope,
   ) {}
   withSignal(signal?: AbortSignal) {
     return new Client(
@@ -81,6 +92,17 @@ export class Client {
       this.token,
       signal ? AbortSignal.any([this.signal, signal]) : this.signal,
       this.onDiagnostic,
+      this.trace,
+    );
+  }
+  /** Same transport, signal and logger, attributed to another scope. */
+  withTrace(trace?: TraceScope) {
+    return new Client(
+      this.origin,
+      this.token,
+      this.signal,
+      this.onDiagnostic,
+      trace,
     );
   }
   async fetch(
@@ -90,7 +112,20 @@ export class Client {
     limit = 1048576,
     decode?: ResponseDecoder,
   ) {
-    const started = performance.now();
+    const trace = this.trace;
+    const clock = trace?.clock ?? monotonic;
+    const started = read(clock);
+    // One locally generated UUID per physical request: the receipt ref and the
+    // X-Request-ID the backend's requestPerformance middleware may adopt.
+    const requestId = randomUUID();
+    const callOrdinal = trace ? ++trace.ordinal.value : undefined;
+    let headersAt: number | undefined;
+    let firstByteAt: number | undefined;
+    let bodyAt: number | undefined;
+    let decodedAt: number | undefined;
+    let requestBytes: number | undefined;
+    let server: Record<string, number> = {};
+    let requestIdEcho: number | undefined;
     let outcome: BackendCall["outcome"] = "network_error";
     let status: number | undefined;
     let size = 0;
@@ -120,6 +155,8 @@ export class Client {
     try {
       let data: { text: string; type: string };
       try {
+        const payload = body ? JSON.stringify(body) : undefined;
+        if (payload !== undefined) requestBytes = Buffer.byteLength(payload);
         const response = await fetch(this.origin + path, {
           method: body ? "POST" : "GET",
           redirect: "error",
@@ -130,11 +167,21 @@ export class Client {
                 Accept: "application/json, text/event-stream",
                 Authorization: "Bearer " + this.token,
                 "MCP-Protocol-Version": "2025-03-26",
+                "X-Request-ID": requestId,
               }
-            : {},
-          body: body ? JSON.stringify(body) : undefined,
+            : { "X-Request-ID": requestId },
+          body: payload,
         });
+        headersAt = read(clock);
         status = response.status;
+        try {
+          server = serverTiming(response.headers.get("server-timing"));
+          const echoed = response.headers.get("x-request-id");
+          if (echoed !== null)
+            requestIdEcho = echoed.toLowerCase() === requestId ? 1 : 0;
+        } catch {
+          /* Absent/malformed timing headers never change the call. */
+        }
         if (!response.ok) {
           outcome = "http_error";
           throw new Error(
@@ -146,6 +193,7 @@ export class Client {
         const chunks = [];
         if (response.body)
           for await (const c of response.body) {
+            firstByteAt ??= read(clock);
             size += c.length;
             if (size > limit) {
               outcome = "response_too_large";
@@ -153,6 +201,7 @@ export class Client {
             }
             chunks.push(c);
           }
+        bodyAt = read(clock);
         data = {
           text: Buffer.concat(chunks).toString("utf8"),
           type: response.headers.get("content-type") ?? "",
@@ -185,21 +234,43 @@ export class Client {
         outcome =
           error instanceof ToolFailure ? "tool_error" : "protocol_error";
         throw error;
+      } finally {
+        decodedAt = read(clock);
       }
       return result;
     } finally {
       try {
+        const ended = read(clock);
         this.onDiagnostic?.({
           source: "backend",
           stage: "backend-call",
           level: outcome === "ok" ? "verbose" : "warn",
-          ref: randomUUID(),
+          ref: requestId,
+          ...(trace?.ref ? { parentRef: trace.ref } : {}),
           backendCall: { ...descriptor, outcome },
           metadata: {
-            elapsedMs: Math.max(0, Math.round(performance.now() - started)),
+            elapsedMs: ms(ended - started) ?? 0,
             statusCode: status,
             responseBytes: size,
             budgetMs: budget,
+            ...defined({
+              requestBytes,
+              // Dispatch -> response headers: physical RTT including server
+              // processing until its headers; not a one-way latency.
+              headersMs: between(started, headersAt),
+              firstByteMs: between(started, firstByteAt),
+              bodyMs: between(headersAt, bodyAt),
+              decodeMs: between(bodyAt, decodedAt),
+              requestIdEcho,
+              ...(trace
+                ? {
+                    callOrdinal,
+                    sinceScopeMs: between(trace.origin, started),
+                    attemptDigest: trace.attemptDigest,
+                  }
+                : {}),
+            }),
+            ...server,
           },
         });
       } catch {

@@ -9,6 +9,18 @@ import {
 } from "../sandbox/gateway.js";
 import type { WorkerOptions } from "../worker/runner.js";
 import type { InferenceBudget } from "./piAdapter.js";
+import type { LogInput } from "../diagnostics/log.js";
+import {
+  between,
+  defined,
+  inferenceTrace,
+  read,
+  SPAN_CODES,
+  SPAN_OUTCOMES,
+  spanOutcome,
+  UUID_PATTERN,
+  attributionOf,
+} from "../diagnostics/trace.js";
 
 // Temporary per-generation headroom for background Coach work only.
 export const WORKER_PROVIDER_TOKENS = 500000;
@@ -34,6 +46,7 @@ export function workerGatewayOptions(
     ...(call.budget?.attribution
       ? { diagnosticAttribution: call.budget.attribution }
       : {}),
+    ...(call.budget?.trace ? { diagnosticTrace: call.budget.trace } : {}),
     budgets: {
       tool_calls: 64,
       provider_tokens: WORKER_PROVIDER_TOKENS,
@@ -53,39 +66,122 @@ export function isolatedWorkerCompletion(
   return async (message, signal, prompt, tools, ref, budget) => {
     signal.throwIfAborted();
     const owner = await context();
-    const image = await nativeBinding(store.dir);
-    signal.throwIfAborted();
-    const runtime = new HeadlessCycleRuntime({ image, cleanup: owner.cleanup });
-    await runtime.sweep();
-    signal.throwIfAborted();
+    const timed = nativeSpans(owner.onDiagnostic, ref, budget, signal);
+    const runtime = await timed(SPAN_CODES.nativeSetup, async () => {
+      const image = await nativeBinding(store.dir);
+      signal.throwIfAborted();
+      const runtime = new HeadlessCycleRuntime({
+        image,
+        cleanup: owner.cleanup,
+        ...(timed.lifecycle ? { onDiagnostic: timed.lifecycle } : {}),
+      });
+      await runtime.sweep();
+      signal.throwIfAborted();
+      return runtime;
+    });
     const cycleMs = Math.min(
       100000,
       (budget?.deadlineAt ?? Date.now() + 100000) - Date.now(),
     );
     if (!(cycleMs > 0)) throw new Error("LEASE_EXPIRED");
-    const gateway = await openProfileGateway(
-      store,
-      signal,
-      workerGatewayOptions(store, {
-        prompt,
-        tools,
-        ref,
-        budget,
-        onDiagnostic: owner.onDiagnostic,
-      }),
+    const gateway = await timed(SPAN_CODES.gatewayOpen, () =>
+      openProfileGateway(
+        store,
+        signal,
+        workerGatewayOptions(store, {
+          prompt,
+          tools,
+          ref,
+          budget,
+          onDiagnostic: owner.onDiagnostic,
+        }),
+      ),
     );
     try {
-      const result = await runtime.run({
-        profile: "worker",
-        gateway,
-        message,
-        signal,
-        cycleMs,
-      });
+      const result = await timed(SPAN_CODES.nativeRun, () =>
+        runtime.run({
+          profile: "worker",
+          gateway,
+          message,
+          signal,
+          cycleMs,
+        }),
+      );
       signal.throwIfAborted();
       return result.text;
     } finally {
-      await gateway.close();
+      await timed(SPAN_CODES.gatewayClose, () => gateway.close());
     }
   };
+}
+/**
+ * Native-seam `task-span` receipts and headless lifecycle correlation for one
+ * traced Worker completion. Untraced calls are byte-for-byte unchanged: no
+ * spans and no lifecycle sink. Never throws and never alters the call.
+ */
+export function nativeSpans(
+  sink: ((event: LogInput) => void) | undefined,
+  ref: string,
+  budget: InferenceBudget | undefined,
+  signal: AbortSignal,
+) {
+  const trace = inferenceTrace(budget?.trace);
+  const parentRef = UUID_PATTERN.test(ref) ? ref : undefined;
+  const attribution = attributionOf(budget?.attribution);
+  const emit = (event: LogInput) => {
+    try {
+      sink?.(event);
+    } catch {}
+  };
+  const timed = async <T>(code: number, run: () => Promise<T>): Promise<T> => {
+    if (!trace || !parentRef || !sink) return run();
+    const started = read(trace.clock);
+    let outcome: number = SPAN_OUTCOMES.failed;
+    try {
+      const value = await run();
+      outcome = SPAN_OUTCOMES.ok;
+      return value;
+    } catch (error) {
+      outcome = spanOutcome(error, signal);
+      throw error;
+    } finally {
+      const ended = read(trace.clock);
+      emit({
+        source: "worker",
+        stage: "task-span",
+        level: "verbose",
+        ref: parentRef,
+        metadata: {
+          ...attribution,
+          ...defined({
+            spanStartMs: between(trace.origin, started),
+            spanMs: between(started, ended),
+          }),
+          spanCode: code,
+          spanOutcome: outcome,
+        },
+      });
+    }
+  };
+  // Headless milestones keep their own container ref; parentRef joins them to
+  // the originating Worker poll and spanStartMs places them on its timeline.
+  const lifecycle =
+    trace && parentRef && sink
+      ? (event: LogInput) => {
+          let offset: number | undefined;
+          try {
+            offset = between(trace.origin, read(trace.clock));
+          } catch {}
+          emit({
+            ...event,
+            parentRef,
+            metadata: {
+              ...event.metadata,
+              ...attribution,
+              ...defined({ spanStartMs: offset }),
+            },
+          });
+        }
+      : undefined;
+  return Object.assign(timed, { lifecycle });
 }
