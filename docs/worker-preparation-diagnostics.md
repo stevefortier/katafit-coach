@@ -4,7 +4,7 @@ These receipts observe existing awaited operations only. They add no RPC, timer,
 
 ## Correlation
 
-Join task receipts using BOTH the original random poll `ref` and `attemptDigest`: the first 48 bits of SHA-256 over `katafit.coach.worker.task-attempt.v1`, lowercase task ID and decimal lease generation, NUL-separated. Existing task-timing and provider-accounting contracts are unchanged. Request preparation carries its own ref and memoryOriginCode=1, never an inferred task digest. Kind/time adjacency is not exact attribution.
+Join task receipts using BOTH the original random poll `ref` and `attemptDigest`: the first 48 bits of SHA-256 over `katafit.coach.worker.task-attempt.v1`, lowercase task ID and decimal lease generation, NUL-separated. Existing task-timing and provider-accounting contracts are unchanged. Request preparation carries its own ref and memoryOriginCode=1, never an inferred task digest. Kind/time adjacency is not exact attribution. Backend calls of the poll carry `parentRef` = poll ref and `attemptDigest`; `task-span` receipts place every stage on the poll timeline ([worker sequence timing](worker-sequence-timing.md)).
 
 ## memory-preparation (worker)
 

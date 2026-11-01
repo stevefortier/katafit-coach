@@ -70,6 +70,21 @@ import {
 } from "../capability/invocation.js";
 import { ToolFailure } from "../katafit/client.js";
 import {
+  attributionOf,
+  between,
+  defined,
+  inferenceTrace,
+  read,
+  SPAN_CODES,
+  SPAN_OUTCOMES,
+  spanOutcome,
+  traceScope,
+  UUID_PATTERN,
+  withAttempt,
+  type Clock,
+  type TraceScope,
+} from "../diagnostics/trace.js";
+import {
   InvocationActions,
   INVOCATION_ACTION_PROTOCOL,
 } from "../capability/invocationActions.js";
@@ -196,7 +211,12 @@ interface TaskTiming {
   attemptDigest?: number;
   started: number;
   acceptedAt?: number;
+  /** The claim's sequence-timing scope (poll ref/origin + attempt digest). */
+  trace?: TraceScope;
 }
+/** Closes one `task-span` exactly once (default outcome ok). */
+type SpanEnd = (outcome?: number, metadata?: Record<string, number>) => void;
+const noSpan: SpanEnd = () => {};
 export interface WorkerOptions {
   origin: string;
   token: string;
@@ -213,6 +233,8 @@ export interface WorkerOptions {
   ) => Promise<string>;
   onState?: (state: string) => void;
   onDiagnostic?: (event: LogInput) => void;
+  /** Monotonic sequence-timing clock (ms); defaults to performance.now. */
+  clock?: Clock;
   /** Inference slot shared with the continuous Coach; requests go first. */
   admission?: Admission;
   pollMs?: number;
@@ -284,7 +306,12 @@ async function verifyRequestReceipt(
     throw new SafeError("DELIVERY_UNVERIFIED");
 }
 
-type PendingTask = { task: any; digest: string; ref: string };
+type PendingTask = {
+  task: any;
+  digest: string;
+  ref: string;
+  trace?: TraceScope;
+};
 type Incident = PendingTask & {
   reason: string;
   nextCheck: number;
@@ -572,6 +599,47 @@ export class Worker {
       this.options.onDiagnostic?.(event);
     } catch {}
   }
+  /**
+   * Content-free `task-span` receipt on the scope's monotonic clock. Spans
+   * may nest/overlap; codes are documented in docs/worker-sequence-timing.md.
+   */
+  private span(
+    trace: TraceScope | undefined,
+    code: number,
+    metadata: Record<string, number> = {},
+    open?: Set<SpanEnd>,
+    started = trace ? read(trace.clock) : NaN,
+  ): SpanEnd {
+    if (!trace?.ref) return noSpan;
+    let done = false;
+    const end: SpanEnd = (outcome = SPAN_OUTCOMES.ok, extra = {}) => {
+      if (done) return;
+      done = true;
+      open?.delete(end);
+      try {
+        const ended = read(trace.clock);
+        this.diagnostic({
+          source: "worker",
+          stage: "task-span",
+          level: "verbose",
+          ref: trace.ref,
+          metadata: {
+            ...metadata,
+            ...extra,
+            ...defined({
+              spanStartMs: between(trace.origin, started),
+              spanMs: between(started, ended),
+              attemptDigest: trace.attemptDigest,
+            }),
+            spanCode: code,
+            spanOutcome: outcome,
+          },
+        });
+      } catch {}
+    };
+    open?.add(end);
+    return end;
+  }
   constructor(private options: WorkerOptions) {
     this.isolated = (options.isolatedJournal?.snapshot() ?? []).map(
       (record) => ({
@@ -585,16 +653,36 @@ export class Worker {
     this.options = {
       ...options,
       complete: (context, signal, ...rest) => {
-        const call = () => complete(context, signal, ...rest);
+        const waited = this.admissionSpan(rest[2], rest[3]);
+        let granted = false;
+        const call = () => {
+          granted = true;
+          waited(SPAN_OUTCOMES.ok);
+          return complete(context, signal, ...rest);
+        };
         const invocation = admission
           ? admission.run("request", signal, call)
           : Promise.resolve().then(call);
         this.invocations.add(invocation);
         const settled = () => this.invocations.delete(invocation);
-        void invocation.then(settled, settled);
+        void invocation.then(settled, (error) => {
+          settled();
+          if (!granted) waited(spanOutcome(error, signal));
+        });
         return invocation;
       },
     };
+  }
+  /** Admission queue wait before one traced inference call is granted. */
+  private admissionSpan(ref: unknown, budget: InferenceBudget | undefined) {
+    const trace = inferenceTrace(budget?.trace);
+    if (!trace || typeof ref !== "string" || !UUID_PATTERN.test(ref))
+      return noSpan;
+    return this.span(
+      { ref, origin: trace.origin, clock: trace.clock, ordinal: { value: 0 } },
+      SPAN_CODES.admissionWait,
+      attributionOf(budget?.attribution),
+    );
   }
   private update(s: string) {
     if (this.state === s) return;
@@ -896,9 +984,17 @@ export class Worker {
         ? (this.deferredCaptures.get(id) ?? { ref, kindCode: 0, started })
         : undefined;
     if (timing) this.timing(timing, TASK_TIMING_CODES.recoveryStarted);
+    // A deferred task capture keeps its original poll scope and attempt.
+    const trace = timing?.trace ?? c.trace;
+    const traced = trace === c.trace ? c : c.withTrace(trace);
+    const recovered = this.span(
+      trace,
+      SPAN_CODES.memoryRecover,
+      timing ? { taskKindCode: timing.kindCode } : {},
+    );
     try {
       const resumed = await resumeMemory(
-        c,
+        traced,
         id,
         secrets,
         backendWireBudget(15000),
@@ -909,9 +1005,12 @@ export class Worker {
         resumed.evidence,
         timing?.ref ?? ref,
         timing,
+        trace,
       );
       this.deferredCaptures.delete(id);
+      recovered();
     } catch (error) {
+      recovered(spanOutcome(error, this.controller.signal));
       if (this.controller.signal.aborted) throw error;
       // A job may be invalidated between discovery and resume. It must not
       // replay its execution, or prevent unrelated new work from proceeding.
@@ -935,6 +1034,7 @@ export class Worker {
     evidence: Record<string, unknown>,
     ref: string,
     timing?: TaskTiming,
+    trace = timing?.trace,
   ) {
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
     const until = Math.min(
@@ -946,10 +1046,19 @@ export class Worker {
       this.controller.signal,
       AbortSignal.timeout(until - Date.now()),
     ]);
-    const c = new Client(this.options.origin, this.options.token, signal, (e) =>
-      this.diagnostic(e),
+    const c = new Client(
+      this.options.origin,
+      this.options.token,
+      signal,
+      (e) => this.diagnostic(e),
+      trace,
     );
     let extracting = false;
+    const retained = this.span(
+      trace,
+      SPAN_CODES.memoryRetain,
+      timing ? { taskKindCode: timing.kindCode } : {},
+    );
     try {
       if ((await negotiateMemory(c, backendWireBudget(15000)))?.recovery) {
         const resumed = await resumeMemory(
@@ -969,6 +1078,9 @@ export class Worker {
             complete: (system, context, s) =>
               this.options.complete(context, s, system, [], ref, {
                 deadlineAt: until,
+                ...(trace
+                  ? { trace: { origin: trace.origin, clock: trace.clock } }
+                  : {}),
               }),
             persona: this.options.system,
             origin,
@@ -1007,7 +1119,9 @@ export class Worker {
           skipped: receipt.skipped.length,
         },
       });
+      retained();
     } catch (error) {
+      retained(spanOutcome(error, signal));
       this.diagnostic({
         source: "worker",
         stage: "memory-retention-skipped",
@@ -1023,13 +1137,16 @@ export class Worker {
   private async poll() {
     const signal = this.controller.signal;
     signal.throwIfAborted();
+    const ref = randomUUID();
+    // One scope per poll: every physical backend call and task span joins it.
+    const trace = traceScope(ref, this.options.clock);
     const c = new Client(
       this.options.origin,
       this.options.token,
       signal,
       (event) => this.diagnostic(event),
+      trace,
     );
-    const ref = randomUUID();
     const started = Date.now();
     const stage = (stage: Stage, metadata: Record<string, unknown> = {}) =>
       this.diagnostic({
@@ -1228,6 +1345,7 @@ export class Worker {
               this.options.token,
               inferenceSignal,
               (event) => this.diagnostic(event),
+              trace,
             ),
             fence,
             {
@@ -1315,6 +1433,7 @@ export class Worker {
               this.options.token,
               inferenceSignal,
               (event) => this.diagnostic(event),
+              trace,
             ),
             fence,
             message: current.message,
@@ -1357,7 +1476,11 @@ export class Worker {
               ...capability.tools(),
             ],
             ref,
-            { deadlineAt, readBudget: reads.readBudget },
+            {
+              deadlineAt,
+              readBudget: reads.readBudget,
+              trace: { origin: trace.origin, clock: trace.clock },
+            },
           ),
         modelSignal,
       ).finally(() => {
@@ -1401,6 +1524,8 @@ export class Worker {
             initial_context: JSON.parse(serialized),
           },
           ref,
+          undefined,
+          trace,
         );
       this.update("reply-persisted");
       stage("reply-persisted");
@@ -1511,7 +1636,9 @@ export class Worker {
       this.options.token,
       AbortSignal.timeout(3000),
       (event) => this.diagnostic(event),
+      pending.trace,
     );
+    const reconciled = this.span(pending.trace, SPAN_CODES.receiptReconcile);
     let status: string;
     try {
       const read = async (name: string) => {
@@ -1571,6 +1698,7 @@ export class Worker {
           );
       }
     } catch (error) {
+      reconciled(spanOutcome(error, control.signal));
       const reason = error instanceof Error ? error.message : "";
       if (
         DENIAL_CODES.has(reason) &&
@@ -1605,6 +1733,7 @@ export class Worker {
       }
       throw error;
     }
+    reconciled();
     if (status === "claimed") {
       this.update("task-result-unknown");
       return;
@@ -1656,6 +1785,7 @@ export class Worker {
     started = Date.now(),
   ) {
     if (this.updateQuiesced || this.statsPollPauses) return false;
+    const claimStarted = c.trace ? read(c.trace.clock) : NaN;
     const { task } = await c.call("coach_claim_task", {
       protocol: TASK_PROTOCOL,
       kinds,
@@ -1703,12 +1833,32 @@ export class Worker {
       task_id: task.id,
       lease_generation: task.lease_generation,
     };
+    const attemptDigest = taskAttemptDigest(task.id, task.lease_generation);
+    const trace = c.trace ? withAttempt(c.trace, attemptDigest) : undefined;
     const timing: TaskTiming = {
       ref,
       kindCode: taskKindCode(task.kind),
-      attemptDigest: taskAttemptDigest(task.id, task.lease_generation),
+      attemptDigest,
       started,
+      ...(trace ? { trace } : {}),
     };
+    // Every later backend call of this claim carries its attempt digest.
+    if (trace) c = c.withTrace(trace);
+    const open = new Set<SpanEnd>();
+    const at = (code: number, metadata: Record<string, number> = {}) =>
+      this.span(
+        trace,
+        code,
+        { taskKindCode: timing.kindCode, ...metadata },
+        open,
+      );
+    this.span(
+      trace,
+      SPAN_CODES.taskClaim,
+      { taskKindCode: timing.kindCode },
+      undefined,
+      claimStarted,
+    )();
     this.timing(timing, TASK_TIMING_CODES.claimed, {
       leaseGeneration: task.lease_generation,
     });
@@ -1726,8 +1876,11 @@ export class Worker {
     let inference: InferenceSignals | undefined;
     let completing = false;
     try {
+      const contextRead = at(SPAN_CODES.contextRead);
       const context = await c.call("coach_read_task_context", fence, budget());
+      contextRead();
       this.timing(timing, TASK_TIMING_CODES.contextRead);
+      const prepared = at(SPAN_CODES.contextPrepare);
       const secrets = [this.options.token, ...(this.options.secrets ?? [])];
       const serialized = taskContext(task, context, secrets);
       this.update("task-working");
@@ -1820,10 +1973,12 @@ export class Worker {
             }
           : {}),
       });
+      prepared();
       phase = "provider";
       const selectedSkills = this.options.skills
         ? skillForTask(this.options.skills, task.kind)
         : [];
+      const memoryPrepared = at(SPAN_CODES.memoryPrepare);
       const memory = await this.memoryFor(
         c,
         { kind: "task", ...fence, protocol: "coach.tasks.v1" },
@@ -1832,6 +1987,7 @@ export class Worker {
         ref,
         timing.attemptDigest,
       );
+      memoryPrepared();
       this.diagnostic({
         source: "worker",
         stage: "inference",
@@ -1846,16 +2002,22 @@ export class Worker {
       this.timing(timing, TASK_TIMING_CODES.inferenceStarted);
       // A day closeout's seed lists meal IDs only. Read them before the model
       // sees the task; REST opt-out and legacy contexts keep the seed alone.
-      const meals =
+      const acquireMeals =
         task.kind === "day_closure" &&
         admission.negotiated &&
-        context.capability.rest.available === true
-          ? await acquireDayMeals(capability, context.evidence, {
-              subject: String(task.requester_id).toLowerCase(),
-              self: admission.subjectIsPrincipal,
-              signal,
-            })
-          : undefined;
+        context.capability.rest.available === true;
+      const mealsAcquired = acquireMeals
+        ? at(SPAN_CODES.mealAcquire)
+        : undefined;
+      const meals = acquireMeals
+        ? await acquireDayMeals(capability, context.evidence, {
+            subject: String(task.requester_id).toLowerCase(),
+            self: admission.subjectIsPrincipal,
+            signal,
+          })
+        : undefined;
+      mealsAcquired?.();
+      const assembled = at(SPAN_CODES.promptAssemble);
       const envelope = meals
         ? JSON.stringify({
             ...JSON.parse(serialized),
@@ -1892,6 +2054,7 @@ export class Worker {
         (task.kind === "workout_suggestions"
           ? '\nWorkout output: recommendations is an object keyed by the exact exercise IDs from the workout context, not an array or a single summary. Cover each exercise in that workout using its exact key (1 to 40 entries); never use the workout ID as an exercise key. Do not invent IDs, history, or evidence. Shape template only: {"recommendations":{"<exact exercise ID from context>":{"summary":"","target_weight":null}}}. Replace the placeholder with a context exercise ID; do not output the placeholder. Each entry requires summary (string, at most 1000 characters). Optional numeric targets must be JSON numbers within the schema bounds, or null when unknown; sets/reps/duration must be integers. Intensity is low, moderate, high, or null. Omit unsupported optional fields; no extra fields. Use evidence-grounded advice, not example claims or invented loads. Return the actual complete JSON object, at most 24000 UTF-8 bytes, not a description of it.'
           : "");
+      assembled();
       let repairHint = "";
       let result: any;
       const tools = [
@@ -1899,6 +2062,9 @@ export class Worker {
         ...(memory ? [this.memorySearchTool(c, memory, budget, terminal)] : []),
       ];
       for (let attempt = 0; attempt < 2; attempt++) {
+        const inferred = at(SPAN_CODES.inferenceCall, {
+          outputAttempt: attempt + 1,
+        });
         const text = await bounded(() => {
           if (task.kind === "exercise_suggestions")
             this.diagnostic({
@@ -1928,12 +2094,19 @@ export class Worker {
                 attemptDigest: timing.attemptDigest!,
                 outputAttempt: attempt + 1,
               },
+              ...(trace
+                ? { trace: { origin: trace.origin, clock: trace.clock } }
+                : {}),
             },
           );
         }, signal);
+        inferred();
         signal.throwIfAborted();
         budget();
         phase = "output";
+        const parsed = at(SPAN_CODES.outputParse, {
+          outputAttempt: attempt + 1,
+        });
         try {
           result = parseTaskResult(
             task.kind,
@@ -1942,11 +2115,13 @@ export class Worker {
             context.result_schema,
           );
           validateTaskReactionCoverage(task.kind, result, context.evidence);
+          parsed();
           this.timing(timing, TASK_TIMING_CODES.outputParsed, {
             outputAttempt: attempt + 1,
           });
           break;
         } catch (error) {
+          parsed(SPAN_OUTCOMES.failed);
           if (!(error instanceof TaskOutputError)) throw error;
           const reason =
             Buffer.byteLength(error.reason) <= 24000
@@ -2011,7 +2186,10 @@ export class Worker {
         digest: createHash("sha256")
           .update(JSON.stringify(result))
           .digest("hex"),
+        ...(trace ? { trace } : {}),
       };
+      // Completion call through verified receipt: the client-observed ACK.
+      const submitted = at(SPAN_CODES.completeSubmit);
       try {
         const receipt = await c.call(
           "coach_complete_task",
@@ -2024,12 +2202,14 @@ export class Worker {
           this.pendingTask.digest,
         );
         this.pendingTask = undefined;
+        submitted();
         this.update(
           status === "consumed"
             ? "task-publication-confirmed"
             : "task-result-stored",
         );
-      } catch {
+      } catch (error) {
+        submitted(spanOutcome(error, c.signal));
         /* The read, never a repeated write, decides an ambiguous outcome. */
       }
       if (this.pendingTask) await this.reconcileTask();
@@ -2065,6 +2245,9 @@ export class Worker {
       }
       return true;
     } catch (error) {
+      // Close interrupted spans first (synchronous, never throws).
+      const interrupted = spanOutcome(error, taskModelSignal);
+      for (const end of [...open]) end(interrupted);
       // Settle the local outcome before any reporting await: the inference
       // timer keeps running while the failure is reported and must not
       // reinterpret a cause that was already observed.
@@ -2080,6 +2263,7 @@ export class Worker {
         !this.controller.signal.aborted &&
         deadline > Date.now()
       ) {
+        let reported = noSpan;
         const code =
           phase === "context"
             ? "TASK_CONTEXT_UNAVAILABLE"
@@ -2108,6 +2292,7 @@ export class Worker {
                   budget_ms: boundedMs(inference.budgetMs),
                 }
               : undefined;
+          reported = at(SPAN_CODES.failureReport);
           await c.call(
             "coach_fail_task",
             {
@@ -2124,8 +2309,10 @@ export class Worker {
             budget(),
           );
           verifyTaskFailure(task, checked, code, detailCode);
+          reported();
           this.update("task-failure-reported");
-        } catch {
+        } catch (failure) {
+          reported(spanOutcome(failure, c.signal));
           this.update("task-failure-unverified");
         }
       }

@@ -54,6 +54,7 @@ export const stages = [
   "task-reaction-inventory",
   "task-result-unknown",
   "task-timing",
+  "task-span",
   "failure-reported",
   "failure-report-unverified",
   "cancelled",
@@ -86,6 +87,8 @@ export interface LogInput {
   level?: "verbose" | "info" | "warn" | "error";
   backendCall?: BackendCall;
   ref?: string;
+  /** Originating poll/operation ref when `ref` names a nested physical unit. */
+  parentRef?: string;
   error?: unknown;
   metadata?: Record<string, unknown>;
   rejection?: { kind: string; attempt: number; reason: string; text: string };
@@ -127,6 +130,7 @@ export interface Entry {
   level: "verbose" | "info" | "warn" | "error";
   backendCall?: BackendCall;
   ref?: string;
+  parentRef?: string;
   code?: ErrorCode;
   hint?: string;
   metadata: Record<string, number>;
@@ -394,6 +398,12 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
       input.ref,
     )
       ? { ref: input.ref }
+      : {}),
+    ...(typeof input.parentRef === "string" &&
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(
+      input.parentRef,
+    )
+      ? { parentRef: input.parentRef }
       : {}),
     ...(error ? { code: error.code, hint: error.hint } : {}),
     metadata: numericMetadata({ ...error?.metadata, ...input.metadata }),

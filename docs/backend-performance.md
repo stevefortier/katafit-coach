@@ -43,6 +43,6 @@ Separate timeouts, other failures and cancellations before prioritizing. Cancell
 
 The summary does not attribute calls to individual agent turns, distinguish UI traffic from polling and agent reads, detect identical requests, or measure the critical path to an answer. It also does not measure provider inference.
 
-Before broad caching or batching changes, add privacy-safe caller categories and opaque task/turn correlation identifiers. Keep member identifiers, arguments and response bodies out of aggregate telemetry. Useful follow-up measures are calls per completed turn, cumulative backend request time per turn and actual waiting time for required data.
+Before broad caching or batching changes, use the opaque per-poll correlation of [worker sequence timing](worker-sequence-timing.md) (`parentRef`, `callOrdinal`, `X-Request-ID`, Server-Timing) to separate server, network and client time. Keep member identifiers, arguments and response bodies out of aggregate telemetry. Useful follow-up measures are calls per completed turn, cumulative backend request time per turn and actual waiting time for required data.
 
 Aggregate exports are snapshots for comparison, not durable telemetry. Existing raw log exports may contain screened private model text; inspect and redact those separately before sharing.

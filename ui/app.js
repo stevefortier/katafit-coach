@@ -3388,6 +3388,7 @@ function renderLogs() {
     meta.textContent =
       formatTimestamp(e.time) +
       (e.ref ? " · ref " + e.ref : "") +
+      (e.parentRef ? " · parent " + e.parentRef : "") +
       " · " +
       JSON.stringify(e.metadata);
     row.append(title, meta);

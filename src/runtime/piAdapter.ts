@@ -1,3 +1,4 @@
+import type { InferenceTrace } from "../diagnostics/trace.js";
 import { SafeError, safeError, providerFailure } from "./errors.js";
 import { createHash } from "node:crypto";
 import {
@@ -238,6 +239,8 @@ export interface InferenceBudget {
   deadlineAt?: number;
   /** Content-free Worker task-attempt binding for gateway receipts only. */
   attribution?: { attemptDigest: number; outputAttempt: number };
+  /** Worker poll sequence-timing origin/clock (diagnostics/trace.ts). */
+  trace?: InferenceTrace;
   readBudget?: () => { used: number; limit: number };
 }
 
