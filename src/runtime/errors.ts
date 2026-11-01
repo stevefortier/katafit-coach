@@ -189,6 +189,16 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     // 48-bit taskAttemptDigest and the 1-based output (correction) attempt.
     attemptDigest: 2 ** 48 - 1,
     outputAttempt: 2,
+    memoryPhaseCode: 3,
+    memoryOutcomeCode: 4,
+    memorySubtypeCode: 9,
+    memoryOriginCode: 2,
+    memoryTerminal: 1,
+    memoryPhaseMs: 86400000,
+    reactionInventoryCode: 2,
+    reactionInventoryEqual: 1,
+    reactionInventoryDigest: 2 ** 48 - 1,
+    reactionTargets: 40,
     ...Object.fromEntries(
       [
         ...Array.from({ length: 3 }, (_, i) => `headlessWork${i}`),
@@ -240,6 +250,16 @@ export function numericMetadata(input: Record<string, unknown> = {}) {
     "sinceAcceptedMs",
     "attemptDigest",
     "outputAttempt",
+    "memoryPhaseCode",
+    "memoryOutcomeCode",
+    "memorySubtypeCode",
+    "memoryOriginCode",
+    "memoryTerminal",
+    "memoryPhaseMs",
+    "reactionInventoryCode",
+    "reactionInventoryEqual",
+    "reactionInventoryDigest",
+    "reactionTargets",
     // Provider HTTP call latency, distinct from task/poll elapsedMs.
     "providerMs",
     "statusCode",

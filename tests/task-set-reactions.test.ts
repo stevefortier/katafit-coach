@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { Worker } from "../src/worker/runner.js";
 import { taskFixture } from "./task-fixtures.js";
 import {
@@ -94,6 +95,8 @@ for (const first of ["missing", "duplicate", "unknown"] as const) {
       },
     });
     const signals: AbortSignal[] = [];
+    const diagnostics: any[] = [];
+    const envelopes: any[] = [];
     const prompts: string[] = [];
     const good = {
       summary: "",
@@ -119,7 +122,42 @@ for (const first of ["missing", "duplicate", "unknown"] as const) {
       origin: f.origin,
       token: "worker-secret",
       system: "Coach",
-      complete: async (_context, signal, system) => {
+      onDiagnostic: (event) => diagnostics.push(event),
+      complete: async (_context, signal, system, _tools, ref, budget) => {
+        const actual = JSON.parse(_context);
+        envelopes.push(actual);
+        const offered = diagnostics
+          .filter((e) => e.stage === "task-reaction-inventory")
+          .at(-1);
+        assert.ok(offered, "inventory receipt at actual completion boundary");
+        const observations = actual.evidence.observations.filter(
+          (o: any) => o.label === "Eligible reaction targets",
+        );
+        assert.deepEqual(
+          JSON.parse(observations[0].text),
+          keys.map((target_event_key) => ({
+            target_event_key,
+            target_type: "set_completed",
+          })),
+        );
+        assert.equal(offered.ref, ref);
+        assert.equal(
+          offered.metadata.attemptDigest,
+          budget!.attribution!.attemptDigest,
+        );
+        assert.equal(offered.metadata.outputAttempt, envelopes.length);
+        assert.equal(offered.metadata.reactionInventoryEqual, 1);
+        assert.equal(offered.metadata.reactionTargets, 2);
+        assert.equal(
+          offered.metadata.reactionInventoryDigest,
+          parseInt(
+            createHash("sha256")
+              .update(JSON.stringify(observations))
+              .digest("hex")
+              .slice(0, 12),
+            16,
+          ),
+        );
         signals.push(signal);
         prompts.push(system);
         return JSON.stringify(prompts.length === 1 ? bad : good);
@@ -127,7 +165,13 @@ for (const first of ["missing", "duplicate", "unknown"] as const) {
     });
     try {
       f.enqueue("exercise_suggestions");
-      await w.pollOnce();
+      await w.pollOnce().catch((error) => {
+        assert.ok(
+          diagnostics.some((e) => e.stage === "task-reaction-inventory"),
+          "missing actual-boundary inventory attribution",
+        );
+        throw error;
+      });
       assert.equal(
         prompts.length,
         2,
@@ -138,6 +182,16 @@ for (const first of ["missing", "duplicate", "unknown"] as const) {
         [good],
       );
       assert.equal(signals[0], signals[1]);
+      assert.deepEqual(
+        envelopes[0],
+        envelopes[1],
+        "correction preserves exact offered inventory",
+      );
+      const receipts = diagnostics.filter(
+        (e) => e.stage === "task-reaction-inventory",
+      );
+      assert.equal(receipts.length, 2);
+      assert.doesNotMatch(JSON.stringify(receipts), /set-a|set-b|not-offered/);
       assert.match(
         prompts[1],
         /exactly one reaction for each offered completed-set target/,

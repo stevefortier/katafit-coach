@@ -180,6 +180,24 @@ export async function taskFixture(options: any = {}) {
     const n = m.params?.name;
     const a = m.params?.arguments;
     calls.push({ name: n ?? m.method, args: a });
+    // Test-only transport barrier/failure seam; does not replace Worker logic.
+    const memoryFailure = await options.onMemoryWire?.(n ?? m.method, a);
+    if (memoryFailure) {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: m.id,
+          result: {
+            isError: true,
+            content: [
+              { type: "text", text: JSON.stringify({ code: memoryFailure }) },
+            ],
+          },
+        }),
+      );
+      return;
+    }
     if (n === "coach_list_requests") await options.onListRequests?.(a);
     if (m.method === "notifications/initialized") {
       res.writeHead(202).end();

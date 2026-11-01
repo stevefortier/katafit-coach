@@ -637,6 +637,7 @@ export class Worker {
     query: string,
     budget: () => number,
     ref: string,
+    attemptDigest?: number,
   ): Promise<
     | {
         capture: MemoryCapture;
@@ -647,10 +648,42 @@ export class Worker {
     | undefined
   > {
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
+    let phase = 1;
+    let started = performance.now();
+    // One receipt per settled awaited phase; exactly one terminal receipt.
+    // Codes and bounds are documented in docs/worker-preparation-diagnostics.md.
+    const settled = (outcome: number, subtype: number, terminal: number) => {
+      this.diagnostic({
+        source: "worker",
+        stage: "memory-preparation",
+        ref,
+        metadata: {
+          memoryPhaseCode: phase,
+          memoryOutcomeCode: outcome,
+          memorySubtypeCode: subtype,
+          memoryTerminal: terminal,
+          memoryOriginCode: execution.kind === "task" ? 2 : 1,
+          memoryPhaseMs: Math.min(
+            86400000,
+            Math.max(0, Math.round(performance.now() - started)),
+          ),
+          ...(attemptDigest !== undefined ? { attemptDigest } : {}),
+        },
+      });
+    };
     try {
       const negotiation = await negotiateMemory(c, budget());
-      if (!negotiation) return undefined;
+      if (!negotiation) {
+        settled(2, 1, 1);
+        return undefined;
+      }
+      settled(1, 0, 0);
+      phase = 2;
+      started = performance.now();
       const capture = await beginMemory(c, execution, secrets, budget());
+      settled(1, 0, 0);
+      phase = 3;
+      started = performance.now();
       const { items, has_more } = await recallMemory(
         c,
         capture,
@@ -658,6 +691,7 @@ export class Worker {
         secrets,
         budget(),
       );
+      settled(1, 0, 1);
       this.diagnostic({
         source: "worker",
         stage: "memory-recalled",
@@ -671,6 +705,30 @@ export class Worker {
         recovery: negotiation.recovery,
       };
     } catch (error) {
+      const fallback =
+        error instanceof ToolFailure &&
+        [
+          "MEMORY_UNAVAILABLE",
+          "MEMORY_COVERAGE_UNAVAILABLE",
+          "MEMORY_LIMIT",
+        ].includes(error.code ?? "");
+      const code =
+        error instanceof ToolFailure || error instanceof SafeError
+          ? error.code
+          : undefined;
+      const subtype =
+        (
+          {
+            MEMORY_UNAVAILABLE: 2,
+            MEMORY_COVERAGE_UNAVAILABLE: 3,
+            MEMORY_LIMIT: 4,
+            MEMORY_NOT_AUTHORIZED: 5,
+            LEASE_LOST: 6,
+            CREDENTIAL_REJECTED: 7,
+            MEMORY_RESULT_REJECTED: 8,
+          } as Record<string, number>
+        )[code ?? ""] ?? 9;
+      settled(fallback ? 3 : 4, subtype, 1);
       if (
         !(error instanceof ToolFailure) ||
         ![
@@ -765,6 +823,38 @@ export class Worker {
     } as AgentTool;
   }
   private memoryRecoveryDeferrals = 0;
+  /** Observe bytes actually handed to complete; never validate or change them. */
+  private reactionInventory(
+    envelope: string,
+    evidence: any,
+  ): Record<string, number> {
+    try {
+      const select = (value: any) =>
+        value.observations.filter(
+          (item: any) => item.label === "Eligible reaction targets",
+        );
+      const actual = select(JSON.parse(envelope).evidence);
+      const original = select(evidence);
+      if (!actual.length && !original.length)
+        return { reactionInventoryCode: 0 };
+      const bytes = JSON.stringify(actual);
+      const targets = actual.length === 1 ? JSON.parse(actual[0].text) : null;
+      return {
+        reactionInventoryCode: 1,
+        reactionInventoryEqual: Number(bytes === JSON.stringify(original)),
+        reactionInventoryDigest: parseInt(
+          createHash("sha256").update(bytes).digest("hex").slice(0, 12),
+          16,
+        ),
+        ...(Array.isArray(targets) && targets.length <= 40
+          ? { reactionTargets: targets.length }
+          : {}),
+      };
+    } catch {
+      // Legacy/invalid inventory keeps precisely its existing validation path.
+      return { reactionInventoryCode: 2 };
+    }
+  }
   /** Original poll timing of accepted captures left to durable recovery. */
   private deferredCaptures = new Map<string, TaskTiming>();
   private timing(
@@ -1740,6 +1830,7 @@ export class Worker {
         task.kind + " " + JSON.stringify(context.evidence ?? {}).slice(0, 1800),
         budget,
         ref,
+        timing.attemptDigest,
       );
       this.diagnostic({
         source: "worker",
@@ -1808,29 +1899,38 @@ export class Worker {
         ...(memory ? [this.memorySearchTool(c, memory, budget, terminal)] : []),
       ];
       for (let attempt = 0; attempt < 2; attempt++) {
-        const text = await bounded(
-          () =>
-            this.options.complete(
-              envelope,
-              signal,
-              system +
-                (attempt === 1
-                  ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose or Markdown code fences. Your tools remain available and earlier tool results still apply; never repeat an action that already ran. The rejected result is not available. Structural correction: " +
-                    repairHint
-                  : ""),
-              tools,
+        const text = await bounded(() => {
+          if (task.kind === "exercise_suggestions")
+            this.diagnostic({
+              source: "worker",
+              stage: "task-reaction-inventory",
               ref,
-              // Provider receipts join this attempt and output turn exactly.
-              {
-                deadlineAt,
-                attribution: {
-                  attemptDigest: timing.attemptDigest!,
-                  outputAttempt: attempt + 1,
-                },
+              metadata: {
+                ...this.reactionInventory(envelope, context.evidence),
+                attemptDigest: timing.attemptDigest!,
+                outputAttempt: attempt + 1,
               },
-            ),
-          signal,
-        );
+            });
+          return this.options.complete(
+            envelope,
+            signal,
+            system +
+              (attempt === 1
+                ? "\nYour previous result failed local validation. Return a new JSON object matching the schema and semantic constraints; no prose or Markdown code fences. Your tools remain available and earlier tool results still apply; never repeat an action that already ran. The rejected result is not available. Structural correction: " +
+                  repairHint
+                : ""),
+            tools,
+            ref,
+            // Provider receipts join this attempt and output turn exactly.
+            {
+              deadlineAt,
+              attribution: {
+                attemptDigest: timing.attemptDigest!,
+                outputAttempt: attempt + 1,
+              },
+            },
+          );
+        }, signal);
         signal.throwIfAborted();
         budget();
         phase = "output";
