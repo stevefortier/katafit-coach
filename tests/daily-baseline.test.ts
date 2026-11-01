@@ -81,13 +81,17 @@ async function runPacket(
     token: "worker-secret",
     system: "Coach",
     onDiagnostic: (e) => events.push(e),
-    complete: async (input, _signal, system) => {
+    complete: async (input, signal, system, tools) => {
       if (!system.includes("local result schema")) {
         extractionInputs.push(input);
         return '{"proposals":[]}';
       }
       inputs.push(input);
       systems.push(system);
+      if (options.targetedRecall)
+        await tools
+          .find((t) => t.name === "coach_memory_search")!
+          .execute("synthetic-search", { query: "knee history" }, signal);
       return repair && inputs.length === 1
         ? "{}"
         : kind === "daily_insight"
@@ -138,7 +142,7 @@ test("valid prepared packet replaces living and operator tail in real daily mode
   assert.equal(r.saved.length, 1);
   assert.equal(
     r.calls.filter((c) => c.name === "coach_memory_recall").length,
-    1,
+    0,
   );
 });
 
@@ -173,6 +177,15 @@ test("covered skips only optional general recall while retaining capture and acc
 for (const [name, mutate] of Object.entries({
   "missing objective data": (p: any) => {
     p.baseline.objective.data = {};
+  },
+  "malformed nutrition target": (p: any) => {
+    p.baseline.prescription.data.nutrition.targets.calories = "NOT_A_NUMBER";
+  },
+  "malformed sessions": (p: any) => {
+    p.baseline.prescription.data.training.sessions = {};
+  },
+  "malformed constraints": (p: any) => {
+    p.baseline.constraints.data.items = "NOT_AN_ARRAY";
   },
   "missing binding": (p: any) => {
     delete p.binding;
@@ -216,14 +229,15 @@ for (const [name, mutate] of Object.entries({
   test(`unsafe packet ${name} is excluded entirely with legacy recall and no leak`, async () => {
     const r = await runPacket((p) => {
       covered(p);
+      p.baseline.objective.data.goal.text = "REJECTED_PACKET_SENTINEL";
       mutate(p);
     });
     assert.equal(r.saved.length, 1);
     assert.equal(JSON.parse(r.inputs[0]).daily_baseline, undefined);
     assert.match(r.inputs[0], /OLD_OPERATOR_TAIL/);
     assert.doesNotMatch(
-      JSON.stringify([r.inputs, r.events]),
-      /SYNTHETIC_SECRET_SENTINEL|worker-secret/,
+      JSON.stringify([r.inputs, r.extractionInputs, r.events]),
+      /SYNTHETIC_SECRET_SENTINEL|worker-secret|REJECTED_PACKET_SENTINEL/,
     );
     assert.equal(
       r.calls.filter((c) => c.name === "coach_memory_recall").length,
@@ -241,7 +255,7 @@ for (const policy of [
   },
   {
     general_memory: "recommended",
-    reason: "CHECKIN_NOTE_MAY_REFERENCE_HISTORY",
+    reason: "SECTIONS_NOT_READY",
   },
   { general_memory: "required", reason: "DAILY_BASELINE_UNAVAILABLE" },
 ])
@@ -308,6 +322,115 @@ test("repair reuses prepared input and capture without context replay", async ()
   );
   assert.equal(r.saved.length, 1);
   assert.doesNotMatch(r.inputs.join(""), /OLD_OPERATOR_TAIL/);
+});
+
+test("unavailable section cannot authorize covered recall even with ready snapshot", async () => {
+  const r = await runPacket((p) => {
+    covered(p);
+    p.baseline.objective.state = "unavailable";
+    p.baseline.objective.data = null;
+  });
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_recall").length,
+    1,
+  );
+  assert.equal(
+    JSON.parse(r.inputs[0]).daily_baseline.baseline.objective.state,
+    "unavailable",
+  );
+});
+
+test("recorded string exercise IDs, units and zero set values survive unchanged", async () => {
+  const r = await runPacket((p) => {
+    const e = p.baseline.prescription.data.training.sessions[0].exercises[0];
+    e.exercise_id = "barbell-back-squat";
+    Object.assign(e.sets[0], {
+      weight: 0,
+      repetitions: 0,
+      duration: 0,
+      distance: 0,
+      units: "as_recorded",
+    });
+  });
+  assert.deepEqual(JSON.parse(r.inputs[0]).daily_baseline, r.packet);
+});
+
+for (const state of ["partial", "withheld"])
+  test(`explicit covered ${state} section retains its limitations without general recall`, async () => {
+    const r = await runPacket((p) => {
+      covered(p);
+      p.baseline.constraints.state = state;
+      p.baseline.constraints.data.items = [];
+    });
+    assert.equal(
+      JSON.parse(r.inputs[0]).daily_baseline.baseline.constraints.state,
+      state,
+    );
+    assert.equal(
+      r.calls.filter((c) => c.name === "coach_memory_recall").length,
+      0,
+    );
+  });
+
+test("covered packet retains explicit targeted memory search with negotiated tools", async () => {
+  const r = await runPacket(covered, "daily_insight", false, {
+    negotiate: true,
+    targetedRecall: true,
+  });
+  assert.deepEqual(JSON.parse(r.inputs[0]).daily_baseline, r.packet);
+  const recalls = r.calls.filter((c) => c.name === "coach_memory_recall");
+  assert.equal(recalls.length, 1);
+  assert.equal(recalls[0].args.mode, "search");
+  assert.equal(r.saved.length, 1);
+});
+
+test("covered packet lost completion ACK resolves exact receipt without replay", async () => {
+  const r = await runPacket(covered, "daily_insight", false, {
+    dropComplete: true,
+  });
+  assert.equal(r.saved.length, 1);
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_complete_task").length,
+    1,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_read_task_receipt").length,
+    1,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_read_task_context").length,
+    1,
+  );
+  assert.equal(
+    r.calls.filter((c) => c.name === "coach_memory_commit").length,
+    1,
+  );
+});
+
+for (const code of [
+  "MEMORY_NOT_AUTHORIZED",
+  "LEASE_LOST",
+  "CREDENTIAL_REJECTED",
+])
+  test(`covered does not bypass capture authority ${code}`, async () => {
+    await assert.rejects(
+      runPacket(covered, "daily_insight", false, {
+        onMemoryWire: (name: string) =>
+          name === "coach_memory_begin" ? code : undefined,
+      }),
+    );
+  });
+
+test("dated canonical metrics outrank static plan narrative in fixed daily guidance", async () => {
+  const r = await runPacket((p) => {
+    p.baseline.objective.data.plan.goal_statement.text =
+      "Old plan rationale: 188 lbs today";
+  });
+  assert.match(
+    r.systems[0],
+    /Dated canonical metrics and approved targets outrank static plan rationale/,
+  );
+  assert.match(r.inputs[0], /Old plan rationale/);
 });
 
 test("new worker negotiates packet only from advertised context selector", async () => {

@@ -1,5 +1,15 @@
 {
   "schema": "coach_daily_baseline.v1",
+  "binding": {
+    "task_id": "a2dfe9042bb9aa39417dcf8d",
+    "lease_generation": 1,
+    "requester_id": "6ae7b244b02c869b56ecb904",
+    "owner_type": "personal",
+    "owner_id": "6ae7b244b02c869b56ecb904",
+    "scope_generation": 0,
+    "requester_generation": 0,
+    "conversation_generation": 0
+  },
   "member": {
     "subject": "requester",
     "timezone": "UTC",
@@ -12,19 +22,19 @@
   },
   "snapshot": {
     "local_day": "2026-11-01",
-    "built_at": "2026-11-01T21:25:18.845Z",
+    "built_at": "2026-11-01T21:42:28.822Z",
     "revision": 1,
     "status": "ready",
     "state_reason": "PREPARED",
     "prepared_before_checkin": true,
     "readiness_received": true,
-    "composed_at": "2026-11-01T21:25:19.329Z"
+    "composed_at": "2026-11-01T21:42:29.284Z"
   },
   "baseline": {
     "objective": {
       "state": "ready",
-      "as_of": "2026-11-01T21:25:18.845Z",
-      "source_revision": "1:d78affc5ca5b",
+      "as_of": "2026-11-01T21:42:28.822Z",
+      "source_revision": "1:a9e35ea30b3d",
       "origin": "prepared",
       "coverage": [],
       "data": {
@@ -33,20 +43,28 @@
           "source": "strategy.primary_goal"
         },
         "plan": {
-          "id": "6ae7ae3eaee156f02578054a",
+          "id": "6ae7b244b02c869b56ecb905",
           "title": "Hypertrophy block A",
-          "goal_statement": "Add lean mass with steady strength progression"
+          "goal_statement": {
+            "text": "Add lean mass with steady strength progression",
+            "kind": "plan_rationale",
+            "authored_at": null
+          }
         },
         "strategy": {
-          "id": "6ae7ae3eaee156f02578054b",
-          "summary": "Twelve-week lean gain with weekly review."
+          "id": "6ae7b244b02c869b56ecb906",
+          "summary": {
+            "text": "Twelve-week lean gain with weekly review.",
+            "kind": "plan_rationale",
+            "authored_at": "2026-09-22T21:42:28.741Z"
+          }
         }
       }
     },
     "prescription": {
       "state": "ready",
-      "as_of": "2026-11-01T21:25:19.112Z",
-      "source_revision": "0d8fa134e1af6ae8",
+      "as_of": "2026-11-01T21:42:29.090Z",
+      "source_revision": "c79f38d4c3f87d3e",
       "origin": "immediate_evidence+prepared",
       "coverage": [
         "SCHEDULED_IS_NOT_COMPLETED",
@@ -78,16 +96,16 @@
         "training": {
           "sessions": [
             {
-              "activity_id": "6ae7ae3eaee156f02578054e",
+              "activity_id": "6ae7b244b02c869b56ecb909",
               "name": "Lower A",
               "status": "pending",
-              "available_from": "2026-11-01T20:25:18.782Z",
-              "due_at": "2026-11-02T03:25:18.782Z",
+              "available_from": "2026-11-01T20:42:28.765Z",
+              "due_at": "2026-11-02T03:42:28.765Z",
               "completed_at": null,
               "exercises": [
                 {
                   "order": 1,
-                  "exercise_id": "6ae7ae3eaee156f02578054c",
+                  "exercise_id": "6ae7b244b02c869b56ecb907",
                   "name": "Back Squat",
                   "notes": "Pause one second at the bottom; stop at RPE 8.",
                   "sets": [
@@ -113,7 +131,7 @@
                 },
                 {
                   "order": 2,
-                  "exercise_id": "6ae7ae3eaee156f02578054d",
+                  "exercise_id": "6ae7b244b02c869b56ecb908",
                   "name": "Bench Press",
                   "sets": [
                     {
@@ -129,7 +147,7 @@
             }
           ],
           "detail_refs": [
-            "activities:6ae7ae3eaee156f02578054e"
+            "activities:6ae7b244b02c869b56ecb909"
           ]
         },
         "modifications": {
@@ -140,7 +158,7 @@
     },
     "constraints": {
       "state": "ready",
-      "as_of": "2026-11-01T21:25:18.845Z",
+      "as_of": "2026-11-01T21:42:28.822Z",
       "source_revision": "1:35d4228b066d",
       "origin": "prepared",
       "coverage": [
@@ -175,8 +193,8 @@
     },
     "training_state": {
       "state": "ready",
-      "as_of": "2026-11-01T21:25:18.845Z",
-      "source_revision": "1:56ba484ad691",
+      "as_of": "2026-11-01T21:42:28.822Z",
+      "source_revision": "1:e34b763b721d",
       "origin": "prepared",
       "coverage": [
         "COMPLETION_COUNTS_ARE_NOT_LOAD",
@@ -189,16 +207,17 @@
             "end_day": "2026-10-31",
             "complete": true
           },
-          "scheduled_in_window": 1,
+          "released_in_window": 1,
           "completed": 1,
+          "basis": "workout rows released in window (plan and custom); not a scheduled-adherence rate",
           "expired_incomplete": 0
         },
         "comparable": [
           {
-            "exercise_id": "6ae7ae3eaee156f02578054c",
+            "exercise_id": "6ae7b244b02c869b56ecb907",
             "window_days": 60,
             "last": {
-              "activity_id": "6ae7ae3eaee156f02578054f",
+              "activity_id": "6ae7b244b02c869b56ecb90a",
               "local_day": "2026-10-29",
               "completed_working_sets": [
                 {
@@ -216,7 +235,7 @@
             }
           },
           {
-            "exercise_id": "6ae7ae3eaee156f02578054d",
+            "exercise_id": "6ae7b244b02c869b56ecb908",
             "last": null,
             "window_days": 60,
             "reason": "NO_COMPLETED_COMPARABLE_IN_WINDOW"
@@ -226,7 +245,7 @@
     },
     "nutrition_and_weight": {
       "state": "ready",
-      "as_of": "2026-11-01T21:25:18.845Z",
+      "as_of": "2026-11-01T21:42:28.822Z",
       "source_revision": "1:b4a4831f8a37",
       "origin": "prepared",
       "coverage": [
@@ -318,7 +337,7 @@
         },
         "today": {
           "local_day": "2026-11-01",
-          "as_of": "2026-11-01T21:25:19.151Z",
+          "as_of": "2026-11-01T21:42:29.129Z",
           "consumed": null,
           "coverage": {
             "status": "complete",
@@ -344,8 +363,8 @@
     },
     "recovery": {
       "state": "ready",
-      "as_of": "2026-11-01T21:25:18.845Z",
-      "source_revision": "1:7842227923a7",
+      "as_of": "2026-11-01T21:42:28.822Z",
+      "source_revision": "1:baab42350954",
       "origin": "prepared",
       "coverage": [
         "SELF_REPORT_IS_NOT_MEASURED_RECOVERY"
@@ -354,8 +373,8 @@
         "last_sleep": {
           "minutes": 412,
           "wake_day": "2026-10-31",
-          "measured_at": "2026-10-31T21:25:18.783Z",
-          "source_id": "6ae7ae3eaee156f02578055a"
+          "measured_at": "2026-10-31T21:42:28.766Z",
+          "source_id": "6ae7b244b02c869b56ecb915"
         },
         "prior_checkins": [],
         "current_checkin_ref": "checkin"
@@ -363,8 +382,8 @@
     },
     "coaching_continuity": {
       "state": "ready",
-      "as_of": "2026-11-01T21:25:18.845Z",
-      "source_revision": "1:244816704c84",
+      "as_of": "2026-11-01T21:42:28.822Z",
+      "source_revision": "1:4a165e2bc088",
       "origin": "prepared",
       "coverage": [
         "CONVERSATION_TAIL_12_PLAIN_TURNS",
@@ -373,16 +392,16 @@
       ],
       "data": {
         "last_advice": {
-          "recommendation_id": "6ae7ae3eaee156f02578055f",
+          "recommendation_id": "6ae7b244b02c869b56ecb91a",
           "kind": "daily",
-          "created_at": "2026-10-31T21:25:18.809Z",
+          "created_at": "2026-10-31T21:42:28.792Z",
           "text": "Keep squats submaximal and log your weigh-ins this week. Hold calories at the approved target.",
           "delivery": "seen",
           "acknowledgement": "unknown"
         },
         "unanswered_member_question": {
           "text": "Should I keep squatting with the knee?",
-          "asked_at": "2026-10-31T21:25:18.797Z"
+          "asked_at": "2026-10-31T21:42:28.780Z"
         },
         "commitments": {
           "state": "not_tracked"
@@ -397,8 +416,8 @@
     },
     "prepared_assessment": {
       "state": "ready",
-      "as_of": "2026-11-01T21:25:19.112Z",
-      "source_revision": "f22bb7c46f740f82",
+      "as_of": "2026-11-01T21:42:29.090Z",
+      "source_revision": "01ede1fa45491da2",
       "origin": "deterministic_rules_at_checkin",
       "coverage": [
         "DETERMINISTIC_RULES_ONLY",
@@ -413,7 +432,7 @@
           {
             "code": "TODAYS_PRESCRIBED_SESSION",
             "refs": [
-              "activities:6ae7ae3eaee156f02578054e"
+              "activities:6ae7b244b02c869b56ecb909"
             ],
             "readiness_rule": "Lower readiness reported: any reduction is a suggestion, not a plan change."
           }
@@ -438,9 +457,9 @@
     }
   },
   "checkin": {
-    "event_id": "6ae7ae3faee156f025780561",
-    "revision": "0ebdce39bd816dfa",
-    "saved_at": "2026-11-01T21:25:19.112Z",
+    "event_id": "6ae7b245b02c869b56ecb91c",
+    "revision": "c348ec4e8a666644",
+    "saved_at": "2026-11-01T21:42:29.090Z",
     "local_day": "2026-11-01",
     "feeling": "tired",
     "note": "Slept badly, knee a bit stiff",
@@ -479,9 +498,26 @@
     "rule": "A feeling/note check-in changes readiness and the assessment only; stable sections are reused unless their own sources changed."
   },
   "recall_policy": {
-    "general_memory": "recommended",
-    "reason": "CHECKIN_NOTE_MAY_REFERENCE_HISTORY"
+    "general_memory": "covered",
+    "reason": "DAILY_BASELINE_PREPARED",
+    "covered_domains": [
+      "objective",
+      "prescription",
+      "constraints",
+      "training_state",
+      "nutrition_and_weight",
+      "recovery",
+      "coaching_continuity",
+      "prepared_assessment"
+    ],
+    "targeted_memory_search": "on_demand"
   },
+  "precedence": [
+    "checkin (saved event, current)",
+    "immediate_evidence (requester targets, schedule, fresh sleep, current day)",
+    "prepared dated canonical sections (as_of per section)",
+    "plan_rationale (static plan/strategy prose; authored_at may predate current facts; never a current measurement)"
+  ],
   "detail_retrieval": {
     "tools": "Use admitted read tools with the canonical refs in omitted[] and detail_refs; retrieval stays authorized per audience.",
     "max_refs": 40
