@@ -201,6 +201,10 @@ test(
         2,
         "old avatars remain held while the new primary read starts",
       );
+      // Initial load legitimately reads today's date, including either date
+      // below. Only requests admitted after this held-read barrier belong to
+      // the cancellation window; historical initial reads are not violations.
+      const cancellationStart = calls.length;
       await page.evaluate(() => {
         const input = document.getElementById(
           "dashboardMapDate",
@@ -217,8 +221,10 @@ test(
       await assertEventually(() => active === 0);
       await new Promise((resolve) => setTimeout(resolve, 100));
       assert.ok(
-        !calls.some((url) => /start=2026-11-01|start=2026-11-02/.test(url)),
-        `canceled dates dispatched: ${calls}`,
+        !calls
+          .slice(cancellationStart)
+          .some((url) => /start=2026-11-01|start=2026-11-02/.test(url)),
+        `canceled dates dispatched after barrier: ${calls.slice(cancellationStart)}`,
       );
       const clearedCalls = [...calls];
       await page.evaluate(() => {
