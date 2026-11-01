@@ -329,6 +329,8 @@ export function taskContext(task: any, context: any, secrets: string[]) {
   );
   context = { ...context };
   delete context.living_context;
+  // Optional backend extension: absent/unsupported packets keep legacy input.
+  delete context.daily_baseline;
   const negotiated = context && Object.hasOwn(context, "capability");
   if (
     !isDeepStrictEqual(context.task, task) ||
