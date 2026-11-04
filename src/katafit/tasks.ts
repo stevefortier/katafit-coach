@@ -70,6 +70,7 @@ export async function discoverTaskPlane(c: Client): Promise<{
   capability: boolean;
   invocation?: boolean;
   failureDetails?: boolean;
+  contextFailureDetails?: boolean;
 }> {
   // Capability absence/mismatch never grants task authority or breaks legacy chat.
   try {
@@ -119,6 +120,9 @@ export async function discoverTaskPlane(c: Client): Promise<{
       capability,
       ...(invocation ? { invocation: true } : {}),
       ...(failureDetailsNegotiated(cap) ? { failureDetails: true } : {}),
+      ...(contextFailureDetailsNegotiated(cap)
+        ? { contextFailureDetails: true }
+        : {}),
     };
   } catch {
     return { kinds: [], capability: false };
@@ -142,13 +146,23 @@ export const PROVIDER_FAILURE_DETAILS = [
   "PROVIDER_UNKNOWN",
 ] as const;
 export type ProviderFailureDetail = (typeof PROVIDER_FAILURE_DETAILS)[number];
+/** Which context-phase step failed: read, local preparation, lease left, admission. */
+export const CONTEXT_FAILURE_DETAILS = [
+  "TASK_CONTEXT_READ",
+  "TASK_CONTEXT_PREPARE",
+  "TASK_CONTEXT_LEASE",
+  "TASK_CONTEXT_ADMISSION",
+] as const;
+export type ContextFailureDetail = (typeof CONTEXT_FAILURE_DETAILS)[number];
 export const FAILURE_TIMING_MAX_MS = 900000;
 // Output subtypes predate negotiation; provider subtypes never do.
 const detailAllowed = (code: unknown, detail: unknown) =>
   (code === "TASK_INVALID_OUTPUT" &&
     (OUTPUT_FAILURE_DETAILS as readonly unknown[]).includes(detail)) ||
   (code === "TASK_PROVIDER_FAILED" &&
-    (PROVIDER_FAILURE_DETAILS as readonly unknown[]).includes(detail));
+    (PROVIDER_FAILURE_DETAILS as readonly unknown[]).includes(detail)) ||
+  (code === "TASK_CONTEXT_UNAVAILABLE" &&
+    (CONTEXT_FAILURE_DETAILS as readonly unknown[]).includes(detail));
 /** Exact additive capability; anything else keeps the legacy failure shape. */
 function failureDetailsNegotiated(cap: any) {
   const advertised = cap?.failure_details;
@@ -163,6 +177,18 @@ function failureDetailsNegotiated(cap: any) {
     PROVIDER_FAILURE_DETAILS.every((detail) => codes.includes(detail)) &&
     isDeepStrictEqual(advertised.timing_fields, ["elapsed_ms", "budget_ms"]) &&
     advertised.timing_max_ms === FAILURE_TIMING_MAX_MS
+  );
+}
+/** Context subtypes only when the backend advertises exactly this closed set. */
+function contextFailureDetailsNegotiated(cap: any) {
+  const advertised = cap?.failure_details;
+  const codes = advertised?.detail_codes?.TASK_CONTEXT_UNAVAILABLE;
+  return (
+    advertised?.protocol === FAILURE_DETAILS_PROTOCOL &&
+    Array.isArray(codes) &&
+    codes.length === CONTEXT_FAILURE_DETAILS.length &&
+    new Set(codes).size === codes.length &&
+    CONTEXT_FAILURE_DETAILS.every((detail) => codes.includes(detail))
   );
 }
 export function validateTask(task: any, kinds: string[]) {

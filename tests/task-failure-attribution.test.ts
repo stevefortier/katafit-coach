@@ -8,6 +8,7 @@ import { complete } from "../src/runtime/piAdapter.js";
 import {
   discoverTaskPlane,
   PROVIDER_FAILURE_DETAILS,
+  CONTEXT_FAILURE_DETAILS,
   verifyTaskFailure,
   verifyTaskResolution,
 } from "../src/katafit/tasks.js";
@@ -481,4 +482,100 @@ test("a terminal-first tool abort keeps its cause when the timer expires during 
     await w.stop();
     await f.close();
   }
+});
+
+// Context-phase step subtypes, sent only when the backend advertises them.
+const contextWorker = (origin: string) =>
+  new Worker({
+    origin,
+    token: "worker-secret",
+    system: "Coach",
+    complete: async () => {
+      throw new Error("no inference expected");
+    },
+  });
+for (const [step, options] of [
+  [
+    "TASK_CONTEXT_READ",
+    {
+      onMemoryWire: (name: string) =>
+        name === "coach_read_task_context" ? "TASK_UNAVAILABLE" : undefined,
+    },
+  ],
+  [
+    "TASK_CONTEXT_PREPARE",
+    {
+      evidence: {
+        timezone: "UTC",
+        conversation: [],
+        observations: [{ label: "Echo", text: "token worker-secret" }],
+      },
+    },
+  ],
+  ["TASK_CONTEXT_LEASE", { leaseMs: 5000 }],
+] as const) {
+  test(`a context failure at ${step} reports that subtype when advertised`, async () => {
+    const f = await taskFixture({
+      failureDetails: true,
+      contextFailureDetails: true,
+      ...options,
+    });
+    const w = contextWorker(f.origin);
+    try {
+      f.enqueue("activity_followup");
+      await assert.rejects(w.pollOnce());
+      const call = failCall(f);
+      assert.equal(call.args.code, "TASK_CONTEXT_UNAVAILABLE");
+      assert.equal(call.args.detail_code, step);
+      assert.equal(call.args.timing, undefined, "no model timing");
+      assert.equal(w.state, "task-failure-reported");
+    } finally {
+      await w.stop();
+      await f.close();
+    }
+  });
+}
+
+test("without the advertised context vocabulary a context failure keeps the legacy shape", async () => {
+  const f = await taskFixture({ failureDetails: true, leaseMs: 5000 });
+  const w = contextWorker(f.origin);
+  try {
+    f.enqueue("activity_followup");
+    await assert.rejects(w.pollOnce());
+    const call = failCall(f);
+    assert.equal(call.args.code, "TASK_CONTEXT_UNAVAILABLE");
+    assert.equal(call.args.detail_code, undefined);
+    assert.equal(w.state, "task-failure-reported");
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
+
+test("a context vocabulary negotiates only as the exact closed set", async () => {
+  const withContext = (codes: unknown) => {
+    const cap: any = validCapabilities();
+    cap.failure_details.detail_codes = {
+      ...cap.failure_details.detail_codes,
+      TASK_CONTEXT_UNAVAILABLE: codes,
+    };
+    return cap;
+  };
+  assert.equal(
+    (await discover(withContext([...CONTEXT_FAILURE_DETAILS])))
+      .contextFailureDetails,
+    true,
+  );
+  for (const codes of [
+    undefined,
+    CONTEXT_FAILURE_DETAILS.slice(1),
+    [...CONTEXT_FAILURE_DETAILS, "TASK_CONTEXT_OTHER"],
+    CONTEXT_FAILURE_DETAILS.join(","),
+  ])
+    assert.equal(
+      (await discover(withContext(codes))).contextFailureDetails,
+      undefined,
+    );
+  // Provider negotiation is independent of the context vocabulary.
+  assert.equal((await discover(withContext(undefined))).failureDetails, true);
 });

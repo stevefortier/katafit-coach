@@ -21,6 +21,7 @@ import {
   verifyTaskResolution,
   verifyTaskInvalidation,
   FAILURE_TIMING_MAX_MS,
+  type ContextFailureDetail,
   type ProviderFailureDetail,
 } from "../katafit/tasks.js";
 import { SafeError, safeError } from "../runtime/errors.js";
@@ -1263,6 +1264,7 @@ export class Worker {
             !!this.options.integrationDirectory,
           taskPlane.failureDetails === true,
           started,
+          taskPlane.contextFailureDetails === true,
         );
         if (!handled) taskAttempt = false;
         return handled;
@@ -1820,6 +1822,7 @@ export class Worker {
     ordinary = false,
     failureDetails = false,
     started = Date.now(),
+    contextDetails = false,
   ) {
     if (this.updateQuiesced || this.statsPollPauses) return false;
     const claimStarted = c.trace ? read(c.trace.clock) : NaN;
@@ -1909,6 +1912,8 @@ export class Worker {
       return backendWireBudget(left);
     };
     let phase = "context";
+    // The context-phase step in progress, reported as its failure subtype.
+    let contextStep: ContextFailureDetail = "TASK_CONTEXT_READ";
     let taskModelSignal: AbortSignal | undefined;
     let inference: InferenceSignals | undefined;
     let completing = false;
@@ -1918,6 +1923,7 @@ export class Worker {
       contextRead();
       this.timing(timing, TASK_TIMING_CODES.contextRead);
       const prepared = at(SPAN_CODES.contextPrepare);
+      contextStep = "TASK_CONTEXT_PREPARE";
       const secrets = [this.options.token, ...(this.options.secrets ?? [])];
       const serialized = taskContext(task, context, secrets);
       this.update("task-working");
@@ -1944,6 +1950,7 @@ export class Worker {
         signal,
       };
       const deadlineAt = Date.now() + ms;
+      contextStep = "TASK_CONTEXT_ADMISSION";
       const admission = taskAdmission(task, context);
       // One capability (and action record) for every attempt of this lease:
       // a structured-output correction keeps tools and never replays.
@@ -2321,7 +2328,11 @@ export class Worker {
               : // Provider subtypes and timing only when the backend advertises them.
                 failureDetails && code === "TASK_PROVIDER_FAILED" && inference
                 ? providerFailureDetail(error, inference)
-                : undefined;
+                : contextDetails && code === "TASK_CONTEXT_UNAVAILABLE"
+                  ? error instanceof Error && error.message === "LEASE_EXPIRED"
+                    ? "TASK_CONTEXT_LEASE"
+                    : contextStep
+                  : undefined;
           const timing =
             failureDetails && inference && phase !== "context"
               ? {
