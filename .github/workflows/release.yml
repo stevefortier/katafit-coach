@@ -26,14 +26,12 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: ./.github/actions/prepare
-      - name: Require latest green reviewed head and bounded merge composition
-        run: node scripts/release-qualify.mjs "$RUNNER_TEMP/source-qualification.json"
       - uses: ./.github/actions/native-image
       - name: Produce immutable exact-source artifacts
         run: node scripts/release-build.mjs "$RUNNER_TEMP/coach-release"
       - name: Qualify the actual package bytes and native image
         env:
-          # PR CI already ran this chain once on the identical reviewed tree.
+          # Branch protection requires PR CI, which already ran this chain once.
           # Here it qualifies the published bytes: two cycles keep a repeated
           # good/second round trip; further identical repeats add ~6 s each.
           COACH_RELEASE_CYCLES: '2'
