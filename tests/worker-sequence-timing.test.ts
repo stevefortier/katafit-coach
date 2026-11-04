@@ -122,7 +122,7 @@ test("Client reports physical MCP request phases, Server-Timing and X-Request-ID
       "content-type": "application/json",
       "x-request-id": requestId,
       "server-timing":
-        "total;dur=12.4, auth;dur=1.2, handler;dur=9.6;desc=x, db;dur=3, private-name;dur=1, bad",
+        "total;dur=12.4, auth;dur=1.2, handler;dur=9.6;desc=x, query_store;dur=3, private-name;dur=1, bad",
     });
     await tick();
     now = 1070;
@@ -188,7 +188,8 @@ test("Client reports physical MCP request phases, Server-Timing and X-Request-ID
       "backend.invalid",
       "coach_synthetic_tool",
       "private-name",
-      "db",
+      // Non-hex letters: random request/attempt IDs can never contain it.
+      "query_store",
     ])
       assert.equal(all.includes(secret), false, secret);
   } finally {

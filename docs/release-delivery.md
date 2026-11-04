@@ -42,22 +42,11 @@ keep that credential outside Coach config, child/Pi and model tools.
 
 `.github/workflows/release.yml` runs only on trusted merged main pushes, with
 bounded global serialization and no workflow_dispatch or privileged PR trigger.
-It reuses the latest relevant CI run/attempt on the associated merged PR's exact
-head (a newer failed/pending run supersedes any older success). Identical trees
-are the fast path. For a composed tree, it computes the **actual** source commit's
-first parent and `git merge-base` with the reviewed head, walks at most twenty
-actual first-parent advances, and requires each advance to be an independently
-merged/reviewed PR with latest exact-head green CI and qualified tree evidence.
-Each advance must match its green head tree or carry the same recursive clean
-composition proof. A shared budget allows at most twenty advances across the
-whole proof. `git merge-tree --write-tree` must cleanly reproduce every composed
-tree, including intervening advances and the final source tree. It never trusts stale PR.base.sha,
-unqualified/direct pushes, missing evidence, or bound exhaustion. This preserves
-the accepted unchanged-green-head/conflict-free main-advance policy without
-repeating all CI. Necessary
-release-specific qualification then exercises the actual packed app bytes and
-real native artifact, protocol2 upgrades/rollback/subsequent success, missing
-changed fingerprint then external provisioning, and twenty reuse cycles.
+Branch protection on `main` requires a reviewed PR with green CI before a merge,
+so the release does not re-derive CI evidence. Release-specific qualification
+exercises the actual packed app bytes and real native artifact, protocol2
+upgrades/rollback/subsequent success, missing changed fingerprint then external
+provisioning, and two reuse cycles.
 
 The builder produces `coach-<SHA>.tgz`, `native-<SHA>.tar.gz`, `manifest.json`
 outside the clean source. All three are attested. The workflow then exercises the
