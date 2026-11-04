@@ -102,9 +102,21 @@ jobs:
           # No tag-only eligibility, no mutable overwrite, no arbitrary dispatch.
           # GitHub freezes the complete release on publication when immutable
           # releases is enabled by the repository administrator.
-          if gh release view "$TAG" --repo stevefortier/katafit-coach >/dev/null 2>&1; then
-            echo 'Existing tag/release requires independent reconciliation; never overwrite.' >&2
-            exit 1
+          if gh release view "$TAG" --repo stevefortier/katafit-coach --json isDraft,assets,targetCommitish,databaseId > "$RUNNER_TEMP/existing.json" 2>/dev/null; then
+            # An interrupted create (e.g. an API 502) can leave an empty,
+            # unpublished draft for this exact commit. Only that debris is
+            # removed; anything published, with assets, or for another
+            # target still requires independent reconciliation.
+            if node --input-type=module -e '
+              import fs from "node:fs";
+              const r=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/existing.json"));
+              process.exit(r.isDraft===true && r.assets.length===0 && r.targetCommitish===process.env.GITHUB_SHA ? 0 : 1);'; then
+              gh api -X DELETE "repos/stevefortier/katafit-coach/releases/$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP+"/existing.json")).databaseId')"
+              echo 'Removed an empty unpublished draft left by an interrupted create.'
+            else
+              echo 'Existing tag/release requires independent reconciliation; never overwrite.' >&2
+              exit 1
+            fi
           fi
           gh release create "$TAG" --repo stevefortier/katafit-coach --target "$GITHUB_SHA" \
             --draft --title "Coach ${GITHUB_SHA}" --notes "Exact-source protocol-2 ready pair. Manual installation confirmation remains required."
