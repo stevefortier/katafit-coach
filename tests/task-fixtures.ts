@@ -438,6 +438,16 @@ export async function taskFixture(options: any = {}) {
                     "TASK_OUTPUT_SECURITY",
                     "TASK_OUTPUT_SIZE",
                   ],
+                  ...(options.contextFailureDetails
+                    ? {
+                        TASK_CONTEXT_UNAVAILABLE: [
+                          "TASK_CONTEXT_READ",
+                          "TASK_CONTEXT_PREPARE",
+                          "TASK_CONTEXT_LEASE",
+                          "TASK_CONTEXT_ADMISSION",
+                        ],
+                      }
+                    : {}),
                 },
                 timing_fields: ["elapsed_ms", "budget_ms"],
                 timing_max_ms: 900000,
@@ -953,7 +963,9 @@ export async function taskFixture(options: any = {}) {
         lease_generation: 1,
         created_at: new Date().toISOString(),
         timeout_at: new Date(Date.now() + 900000).toISOString(),
-        lease_expires_at: new Date(Date.now() + 60000).toISOString(),
+        lease_expires_at: new Date(
+          Date.now() + (options.leaseMs ?? 60000),
+        ).toISOString(),
         ...patch,
       };
       queue.push(task);
