@@ -238,6 +238,10 @@ export interface WorkerOptions {
   /** Inference slot shared with the continuous Coach; requests go first. */
   admission?: Admission;
   pollMs?: number;
+  /** How long a successful task-plane discovery is reused across polls (ms). */
+  discoveryMs?: number;
+  /** Minimum interval between memory recoveries with nothing deferred (ms). */
+  recoveryMs?: number;
   presenceMs?: number;
   modelMs?: number;
   isolationMs?: number;
@@ -911,6 +915,37 @@ export class Worker {
     } as AgentTool;
   }
   private memoryRecoveryDeferrals = 0;
+  private memoryRecoveredAt = -Infinity;
+  /**
+   * Recovery with no deferred capture only finds work left by a restart or
+   * another attempt (captures stay open for 30 minutes), so an idle or busy
+   * queue checks at most once per recoveryMs instead of every poll.
+   */
+  private recoveryDue() {
+    return (
+      this.deferredCaptures.size > 0 ||
+      Date.now() - this.memoryRecoveredAt >= (this.options.recoveryMs ?? 60000)
+    );
+  }
+  private discovered?: {
+    at: number;
+    value: Awaited<ReturnType<typeof discoverTaskPlane>>;
+  };
+  /**
+   * The backend catalog changes only on deploy. A successful discovery is
+   * reused for discoveryMs and dropped when a poll fails, so a withdrawn
+   * capability costs at most one refused call; absence is always rechecked.
+   */
+  private async taskPlane(c: Client) {
+    const ttl = this.options.discoveryMs ?? 60000;
+    if (this.discovered && Date.now() - this.discovered.at < ttl)
+      return this.discovered.value;
+    const value = await discoverTaskPlane(c);
+    this.discovered = value.kinds.length
+      ? { at: Date.now(), value }
+      : undefined;
+    return value;
+  }
   /** Observe bytes actually handed to complete; never validate or change them. */
   private reactionInventory(
     envelope: string,
@@ -972,6 +1007,7 @@ export class Worker {
     // poll without admitting a fresh maintenance operation afterward.
     if (this.updateQuiesced || this.statsPollPauses) return;
     this.memoryRecoveryDeferrals = 0;
+    this.memoryRecoveredAt = Date.now();
     if (!(await negotiateMemory(c, backendWireBudget(15000)))?.recovery) return;
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
     const pending = await pendingMemory(c, secrets, backendWireBudget(15000));
@@ -1174,9 +1210,9 @@ export class Worker {
       // Recovery extracts memory from already accepted results; it does not
       // reconcile uncertain publications. Give new feedback first admission,
       // but keep serial recovery bounded under a continuously busy queue.
-      if (this.memoryRecoveryDeferrals++ >= 3)
+      if (this.memoryRecoveryDeferrals++ >= 3 && this.recoveryDue())
         await this.recoverMemory(c, ref, started);
-      const taskPlane = await discoverTaskPlane(c);
+      const taskPlane = await this.taskPlane(c);
       const taskKinds = taskPlane.kinds;
       const due = this.isolated.find(
         (incident) =>
@@ -1242,7 +1278,7 @@ export class Worker {
         )
       ) {
         if (await tryTasks()) return;
-        if (this.memoryRecoveryDeferrals)
+        if (this.memoryRecoveryDeferrals && this.recoveryDue())
           await this.recoverMemory(c, ref, started);
         this.update("idle");
         return;
@@ -1284,7 +1320,7 @@ export class Worker {
       });
       if (!request) {
         if (await tryTasks()) return;
-        if (this.memoryRecoveryDeferrals)
+        if (this.memoryRecoveryDeferrals && this.recoveryDue())
           await this.recoverMemory(c, ref, started);
         this.update("idle");
         return;
@@ -1530,6 +1566,7 @@ export class Worker {
       this.update("reply-persisted");
       stage("reply-persisted");
     } catch (error) {
+      this.discovered = undefined;
       const failure = publishing
         ? new SafeError("DELIVERY_UNVERIFIED")
         : signal.aborted

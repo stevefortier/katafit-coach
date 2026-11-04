@@ -140,6 +140,8 @@ test("busy feedback cannot starve recovery and a fourth idle poll recovers only 
     token: "synthetic-worker-credential",
     system: "Coach",
     complete: async () => JSON.stringify(results.activity_reaction),
+    // Nothing is deferred here; count polls, not the empty-recovery interval.
+    recoveryMs: 0,
   });
   try {
     for (let i = 0; i < 3; i++) {
