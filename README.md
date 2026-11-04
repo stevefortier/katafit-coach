@@ -4,6 +4,8 @@ A local Node service with a browser studio for your Kata.fit connection, an expl
 
 **Single-user Linux pilot, not production-certified.** Negotiated v2 adds request-scoped read tools and opt-in original-image input; v1 remains text-only. Packed v2 proof uses real Pi, final-backend MCP and disposable MongoDB with synthetic users/storage. Bounded request-local media handles now avoid copying long backend references. The full-five-grant deterministic four-turn proof and one authorized live vision attempt both pass without increasing budgets or narrowing consent: the live model retrieved the original image and identified its color, with exact canonical reply persistence. Earlier failed runs remain documented. Independent review of this runtime delta is still required; PR #2 remains draft. No customer data or production Kata.fit credentials were used. See [request data access and proof](docs/request-data-access.md) and [bounded live results and limits](docs/evidence/data-final-integration.md).
 
+The Coach's product and system design, shared with the Kata.fit backend, is in [regimen `docs/coach-design.md`](https://github.com/stevefortier/regimen/blob/main/docs/coach-design.md).
+
 ## Install from this repository
 
 Requires Linux or macOS and **Node 26.10+ (major 26 only)**. Linux is the tested platform. Windows permissions/service management are not supported by this pilot. See [supported Node and CI qualification policy](docs/ci.md) for the latest-patch policy and parallel gates.
