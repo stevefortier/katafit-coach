@@ -85,6 +85,10 @@ jobs:
       - name: Measure
         shell: bash
         run: spike/wasm/measure.sh "wasmtime ${{ runner.os }}" "$RUNNER_TEMP/image/coach-pi.wasm" "$RUNNER_TEMP/work"
+      - name: Relay channel over the VM console
+        if: always()
+        shell: bash
+        run: node spike/wasm/channel.mjs "$RUNNER_TEMP/image/coach-pi.wasm" "$RUNNER_TEMP/channel"
   agentvm:
     strategy:
       fail-fast: false
