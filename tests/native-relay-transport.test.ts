@@ -395,6 +395,9 @@ test("every host failure code has exactly one fixed relay message with the pinne
     "NATIVE_PROVIDER_NETWORK_FAILED",
     "NATIVE_PROVIDER_OUTPUT_REJECTED",
     "NATIVE_TOOL_FAILED",
+    // A failed read changed nothing, so retrying it is safe.
+    "NATIVE_REST_TIMEOUT",
+    "NATIVE_REST_UNAVAILABLE",
     "NATIVE_GATEWAY_TIMEOUT",
     "NATIVE_GATEWAY_FAILED",
   ]);

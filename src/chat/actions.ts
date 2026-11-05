@@ -4,7 +4,13 @@ import { Store, assertNoSecrets } from "../config/store.js";
 type RecordedAction = {
   session_id: string;
   idempotency_key: string;
-  status: "pending" | "delivered" | "completed" | "unknown" | "not_found";
+  status:
+    | "pending"
+    | "delivered"
+    | "completed"
+    | "unknown"
+    | "not_found"
+    | "rejected";
   tool_name?: string;
   recipient_id?: string;
   member_ref?: string; // retained only for private historical receipts
@@ -199,9 +205,14 @@ export class Actions {
             "turn_generation",
           ].includes(k),
       ) ||
-      !["pending", "unknown", "not_found", "delivered", "completed"].includes(
-        v.status,
-      )
+      ![
+        "pending",
+        "unknown",
+        "not_found",
+        "delivered",
+        "completed",
+        "rejected",
+      ].includes(v.status)
     )
       throw new Error("UNSAFE_STORAGE");
     if (
@@ -307,7 +318,7 @@ export class Actions {
       return false;
     if (rows[i - 1].text === MEMBER_ROW)
       return this.decodeMember(rows[i].text).status === "delivered";
-    return ["delivered", "completed", "not_found"].includes(
+    return ["delivered", "completed", "not_found", "rejected"].includes(
       this.decode(rows[i].text).status,
     );
   }

@@ -11,7 +11,7 @@ import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { Store } from "../src/config/store.js";
 import { openNativeGateway } from "./helpers/legacy-gateway.js";
-import { fixture as checkinBackend } from "./operator-checkins.test.js";
+import { createServer } from "node:http";
 import {
   assistantText,
   imageParts,
@@ -23,13 +23,20 @@ import {
 } from "./helpers/native-relay.js";
 
 const MODEL = "approved-vision-model";
-const LIST = "studio_operator_list_dojo_checkins";
-const IMAGE = "studio_operator_read_dojo_checkin_image";
+// These tests exercise the provider path only; the backend is never read.
+async function idleBackend() {
+  const server = createServer((_req, res) => res.writeHead(404).end());
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return {
+    origin: `http://127.0.0.1:${(server.address() as any).port}`,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
 const MiB = 1024 * 1024;
 const UPSTREAM_SECRET = "sk-upstream-private-detail";
 
-async function setup(backendOptions: Record<string, any> = {}) {
-  const backend = await checkinBackend({ imageCount: 5, ...backendOptions });
+async function setup() {
+  const backend = await idleBackend();
   const provider = await providerStub();
   const dir = await mkdtemp(tmpdir() + "/native-image-gateway-");
   const store = new Store(dir);

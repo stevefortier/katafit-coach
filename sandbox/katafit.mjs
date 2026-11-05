@@ -24,6 +24,14 @@ const relayGuidance = {
     "This native Coach session is no longer authorized and is closing. The outcome of any in-flight action is unknown; check canonical Kata.fit state from a new native session before acting.",
   NATIVE_RESULT_TOO_LARGE:
     "The tool result was over the native return budget and was withheld. If this was an action, its outcome is unknown; do not replay it.",
+  NATIVE_REST_TIMEOUT:
+    "The read took longer than 8 seconds and was abandoned; nothing was changed. Narrow it (shorter date range, smaller limit, one member or type) and read again.",
+  NATIVE_REST_TOO_LARGE:
+    "The read returned more than 256 KiB of JSON and was withheld; nothing was changed. Narrow it (smaller limit, shorter date range, a single type, or a detail route instead of a list) and read again.",
+  NATIVE_REST_UNAVAILABLE:
+    "The read could not be completed (connection failure, redirect or non-JSON response); nothing was changed. Retry once; if it fails again, report that the data is unavailable.",
+  NATIVE_REST_REJECTED:
+    "The backend rejected this write and did not apply it. Check the documented method, path and body for this route, correct the request, then send it again.",
 };
 /** Executable shipped result contract, shared by host capture and Pi. */
 export function nativeToolResultTooLarge(result) {
@@ -36,7 +44,7 @@ export function nativeToolResultTooLarge(result) {
     16 * 1024 * 1024
   );
 }
-export function nativeToolOutcome(name, result, code) {
+export function nativeToolOutcome(name, result, code, status) {
   if (code === undefined && nativeToolResultTooLarge(result))
     code = "NATIVE_RESULT_TOO_LARGE";
   try {
@@ -58,7 +66,7 @@ export function nativeToolOutcome(name, result, code) {
     if (code !== undefined) {
       throw new Error(
         typeof code === "string" && Object.hasOwn(relayGuidance, code)
-          ? `${code}: ${relayGuidance[code]}`
+          ? `${code}${Number.isInteger(status) && status >= 400 && status <= 599 ? ` (HTTP ${status})` : ""}: ${relayGuidance[code]}`
           : fallback,
       );
     }
@@ -222,6 +230,7 @@ export default function (pi) {
       label: tool.name,
       async execute(toolCallId, args, signal) {
         let code;
+        let status;
         let result;
         try {
           const response = await fetch(`http://127.0.0.1:${port}/tool`, {
@@ -232,7 +241,9 @@ export default function (pi) {
           });
           if (!response.ok) {
             try {
-              code = (await response.json())?.error?.code;
+              const error = (await response.json())?.error;
+              code = error?.code;
+              status = error?.status;
             } catch {}
             code ??= "NATIVE_TOOL_FAILED";
           } else result = await response.json();
@@ -241,7 +252,7 @@ export default function (pi) {
           // raw fetch errors that invite automatic retries or invent a receipt.
           code = "NATIVE_TOOL_FAILED";
         }
-        const outcome = nativeToolOutcome(tool.name, result, code);
+        const outcome = nativeToolOutcome(tool.name, result, code, status);
         if (outcome !== result && outcome.isError)
           throw new Error(outcome.content[0].text);
         return outcome;

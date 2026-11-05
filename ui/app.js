@@ -36,6 +36,7 @@ function renderOperatorActions(actions = []) {
     pending: "Pending confirmation — do not resend",
     unknown: "Delivery unknown — refresh receipts before sending again",
     not_found: "No delivery found after session closed",
+    rejected: "Rejected by the backend — not applied",
   };
   $("operatorActions").replaceChildren();
   const history = $("operatorDeliveryHistory");
