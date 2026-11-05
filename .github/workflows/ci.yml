@@ -123,10 +123,58 @@ jobs:
             -t katafit-coach:qa -
       - name: Verify Docker ownership and persistent restart
         run: COACH_EXPECTED_REVISION="$(git rev-parse HEAD)" node scripts/docker-smoke.mjs
+  archives:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Qualify the unchanged PR head, not GitHub's moving synthetic merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: ./.github/actions/prepare
+      - name: Build one self-contained archive per platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          for platform in linux-x64 linux-arm64 win-x64; do
+            node scripts/platform-archive.mjs "$RUNNER_TEMP"/katafit-coach-*.tgz "$platform" "$RUNNER_TEMP/archives"
+          done
+          ls -l "$RUNNER_TEMP/archives"
+      - name: Run the Linux archive with nothing from the system
+        shell: bash
+        run: |
+          set -euo pipefail
+          run="$RUNNER_TEMP/run"; mkdir -p "$run/home"
+          tar -xzf "$RUNNER_TEMP"/archives/coach-*-linux-x64.tar.gz -C "$run"
+          coach="$run/katafit-coach"
+          clean() { env -i HOME="$run/home" PATH=/usr/sbin:/usr/bin:/sbin:/bin "$@"; }
+          test "$(clean "$coach/node/bin/node" -v)" = v26.10.0
+          clean "$coach/bin/katafit-coach" help | grep -q "katafit-coach start"
+          # Native modules load from the bundled runtime.
+          (cd "$coach/app" && clean "$coach/node/bin/node" -e 'import("sharp").then((s) => s.default({ create: { width: 2, height: 2, channels: 3, background: "red" } }).png().toBuffer()).then((b) => { if (!b.length) process.exit(1); })')
+      - name: Other platforms carry their own runtime and native modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          arm="$RUNNER_TEMP/arm"; mkdir -p "$arm"
+          tar -xzf "$RUNNER_TEMP"/archives/coach-*-linux-arm64.tar.gz -C "$arm"
+          file "$arm/katafit-coach/node/bin/node" | grep -q "ARM aarch64"
+          test -d "$arm/katafit-coach/app/node_modules/@img/sharp-linux-arm64"
+          unzip -l "$RUNNER_TEMP"/archives/coach-*-win-x64.zip > "$RUNNER_TEMP/win.txt"
+          for entry in katafit-coach/node/node.exe katafit-coach/katafit-coach.cmd katafit-coach/katafit-coach-boot.cmd \
+            katafit-coach/app/dist/boot.js katafit-coach/app/node_modules/@img/sharp-win32-x64/; do
+            grep -qF "$entry" "$RUNNER_TEMP/win.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coach-archives-${{ github.sha }}
+          path: ${{ runner.temp }}/archives
+          retention-days: 7
   verify:
     # Stable required check: skipped, cancelled and failed dependencies all fail.
     if: always()
-    needs: [build, tests, native, package, updater, browser, docker]
+    needs: [build, tests, native, package, updater, browser, docker, archives]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -134,4 +182,4 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==7 and all(job["result"]=="success" for job in results.values()), results'
+          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==8 and all(job["result"]=="success" for job in results.values()), results'
