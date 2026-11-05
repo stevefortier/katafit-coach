@@ -71,7 +71,7 @@ interface Boundary {
 export async function supervise(
   store: Store,
   port: number,
-  onShutdown?: () => void,
+  onShutdown?: (reason?: "handover") => void,
   boundary: Boundary = {},
 ) {
   const home = store.dir,
@@ -546,6 +546,7 @@ export async function supervise(
       if (prepareWork === work) prepareWork = undefined;
     }
   };
+  let handover = false;
   const apply = async (sha: string) => {
     const prepared = reservation;
     if (!prepared || prepared.sha !== sha) throw new Error("TARGET_REJECTED");
@@ -625,6 +626,24 @@ export async function supervise(
         } catch {
           updates.cleanupWarning = true;
         }
+        // Under the bootstrap, the new version's own supervisor takes over;
+        // the bootstrap restores the previous one if it never becomes healthy.
+        if (process.env.KATAFIT_BOOT_PROTOCOL === "1") {
+          const previousPointer = backup.get("active.json");
+          const handoff = join(home, "handoff-" + randomUUID() + ".tmp");
+          await writeFile(
+            handoff,
+            JSON.stringify({
+              revision: sha,
+              previous: previousPointer
+                ? JSON.parse(previousPointer.toString("utf8"))
+                : null,
+            }),
+            { mode: 0o600, flag: "wx" },
+          );
+          await rename(handoff, join(home, "handoff.json"));
+          handover = true;
+        }
       } catch (error) {
         if (active?.revision !== sha)
           await cleanupCandidate(candidate, sha).catch(() => {
@@ -643,6 +662,9 @@ export async function supervise(
         (child.exitCode !== null || child.signalCode !== null)
       )
         setImmediate(() => onShutdown?.());
+      // Let the upgrade's reply reach Studio before handing over.
+      else if (handover && !closing)
+        setTimeout(() => onShutdown?.("handover"), 1000).unref?.();
     }
   };
   const updates = new Updates(
