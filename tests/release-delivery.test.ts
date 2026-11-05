@@ -337,3 +337,58 @@ test("strict manifest rejects coercible arrays instead of treating them as diges
     }),
   );
 });
+
+test("a release may carry one self-contained archive per platform, and nothing else", async () => {
+  const extra = (name: string, i: number) => ({
+    id: 100 + i,
+    name,
+    size: 1000 + i,
+    digest: "sha256:" + String(i).repeat(64).slice(0, 64),
+    browser_download_url: `https://github.com/stevefortier/katafit-coach/releases/download/coach-${sha}/${name}`,
+  });
+  const discover = (releaseAssets: any[]) =>
+    discoverRelease(
+      async (input) =>
+        new Response(
+          JSON.stringify(
+            String(input) === releaseApi
+              ? {
+                  tag_name: `coach-${sha}`,
+                  target_commitish: sha,
+                  draft: false,
+                  prerelease: false,
+                  immutable: true,
+                  assets: releaseAssets,
+                }
+              : fixture(),
+          ),
+        ),
+    );
+  const names = [
+    `coach-${sha}-linux-x64.tar.gz`,
+    `coach-${sha}-linux-arm64.tar.gz`,
+    `coach-${sha}-win-x64.zip`,
+  ];
+  const found = await discover([...assets(), ...names.map(extra)]);
+  assert.deepEqual(Object.keys(found.archives), [
+    "linux-x64",
+    "linux-arm64",
+    "win-x64",
+  ]);
+  assert.deepEqual(found.archives["win-x64"], {
+    name: names[2],
+    size: 1002,
+    sha256: "2".repeat(64),
+    url: `https://github.com/stevefortier/katafit-coach/releases/download/coach-${sha}/${names[2]}`,
+  });
+  // The manifest is unchanged, so older launchers still read it.
+  assert.equal(found.manifest.artifacts.length, 2);
+  // A release without archives is still complete.
+  assert.deepEqual((await discover(assets())).archives, {});
+  for (const bad of [
+    [...assets(), extra(`coach-${sha}-darwin-arm64.tar.gz`, 1)],
+    [...assets(), extra("notes.txt", 1)],
+    [...assets(), extra(names[0], 1), extra(names[0], 2)],
+  ])
+    await assert.rejects(discover(bad), /RELEASE_REJECTED/);
+});

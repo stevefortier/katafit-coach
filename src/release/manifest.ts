@@ -4,6 +4,9 @@ export const releaseRepository = "stevefortier/katafit-coach";
 export const releaseWorkflow = `${releaseRepository}/.github/workflows/release.yml`;
 export const releaseApi = `https://api.github.com/repos/${releaseRepository}/releases/latest`;
 export type Artifact = { name: string; size: number; sha256: string };
+/** Platforms with a self-contained archive (bundled Node runtime and app). */
+export const PLATFORMS = ["linux-x64", "linux-arm64", "win-x64"] as const;
+export type Platform = (typeof PLATFORMS)[number];
 export type Manifest = {
   version: 1;
   repository: string;
@@ -218,8 +221,21 @@ export async function discoverRelease(
     release.prerelease !== false ||
     release.immutable !== true ||
     !Array.isArray(release.assets) ||
-    release.assets.length !== 3
+    release.assets.length < 3 ||
+    release.assets.length > 3 + PLATFORMS.length
   )
+    throw Error("RELEASE_REJECTED");
+  // Beyond the manifest and its two artifacts, a release may carry one
+  // self-contained archive per platform; any other asset is refused.
+  const archiveName = (platform: Platform) =>
+    `coach-${sha}-${platform}.${platform.startsWith("win-") ? "zip" : "tar.gz"}`;
+  const known = new Set([
+    "manifest.json",
+    `coach-${sha}.tgz`,
+    `native-${sha}.tar.gz`,
+    ...PLATFORMS.map(archiveName),
+  ]);
+  if (release.assets.some((a: any) => !known.has(a?.name)))
     throw Error("RELEASE_REJECTED");
   const url = (name: string) =>
     `https://github.com/${releaseRepository}/releases/download/coach-${sha}/${name}`;
@@ -253,10 +269,25 @@ export async function discoverRelease(
       throw Error("RELEASE_REJECTED");
   }
   if (verify) await verify(bytes, sha);
+  // Archives are not listed in the manifest (older launchers require its exact
+  // shape); each is trusted only through its own attestation when installed.
+  const archives: Partial<Record<Platform, Artifact & { url: string }>> = {};
+  for (const platform of PLATFORMS) {
+    const name = archiveName(platform);
+    if (!release.assets.some((a: any) => a.name === name)) continue;
+    const found = asset(name, 512 * 1024 ** 2);
+    archives[platform] = {
+      name,
+      size: found.size,
+      sha256: found.digest.slice("sha256:".length),
+      url: url(name),
+    };
+  }
   return {
     manifest,
     bytes,
     assets: manifest.artifacts.map((a) => ({ ...a, url: url(a.name) })),
+    archives,
   };
 }
 export async function downloadAsset(

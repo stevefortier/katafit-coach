@@ -330,3 +330,19 @@ old app, that is not a failed bootstrap nor proof of candidate activation. See
 or online pointer edit is provided; host topology cannot be guessed in a public
 package. The actual staged-package operator above is the bootstrap artifact
 preparer, not a claim that app-only source upgrades repair old launchers.
+
+## Self-contained platform archives
+
+`scripts/platform-archive.mjs` turns the release package into one archive per
+platform (`coach-<SHA>-linux-x64.tar.gz`, `coach-<SHA>-linux-arm64.tar.gz`,
+`coach-<SHA>-win-x64.zip`): the official Node 26.10.0 runtime for that platform
+(checked against digests pinned from nodejs.org), the application with its
+production dependencies installed for that platform, and `katafit-coach` /
+`katafit-coach-boot` launch scripts. Nothing is needed from the target machine.
+CI builds all three and runs the Linux one with an empty environment.
+
+Discovery accepts these archives as optional release assets, and still refuses
+any other asset. They are not listed in the manifest, whose exact shape older
+launchers require; each archive is trusted only through its own attestation.
+Archives are not published on releases yet: launchers installed before this
+change refuse any release with more than its three original assets.
