@@ -1,0 +1,10 @@
+{
+  "name": "katafit-coach-just-bash-spike",
+  "private": true,
+  "type": "module",
+  "description": "Spike only: Pi's tools backed by just-bash, Pi under Node's permission model.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.86.1",
+    "just-bash": "3.6.0"
+  }
+}
