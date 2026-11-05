@@ -3841,6 +3841,22 @@ function hostReady(data = updateData) {
     (data.serverNow || Date.now()) - data.checkedAt <= 300000
   );
 }
+// The launcher fetches a missing Pi image itself once the upgrade is confirmed.
+function deliverable(data = updateData) {
+  const local = safeReadiness(data);
+  return (
+    data?.deliverySupported === true &&
+    data.preparationSupported === true &&
+    local?.state === "delivery-pending" &&
+    local.sha === data.latest &&
+    !data.checkError &&
+    data.checkedAt > 0 &&
+    (data.serverNow || Date.now()) - data.checkedAt <= 300000
+  );
+}
+function canUpgrade(data = updateData) {
+  return hostReady(data) || deliverable(data);
+}
 function renderUpdate() {
   renderHeaderStatus();
   const data = updateData;
@@ -4020,11 +4036,14 @@ function renderUpdate() {
           ? "Published source is already installed."
           : hostReady(data)
             ? "Host ready: compatible protected native image is available. Installation still requires confirmation."
-            : local?.state === "delivery-pending"
-              ? "Published release · delivery pending on this host. Coach remains available. Refresh host readiness after trusted artifact provisioning completes."
-              : local?.state === "blocked"
-                ? readinessHelp[local.reason] || readinessHelp.LOCAL_UNAVAILABLE
-                : "Host readiness unknown or source approval expired. Check for updates before confirming.";
+            : deliverable(data)
+              ? "Published release · its Pi image is not on this host yet. Upgrading downloads and verifies it first; Coach remains available meanwhile."
+              : local?.state === "delivery-pending"
+                ? "Published release · delivery pending on this host. Coach remains available. Refresh host readiness after trusted artifact provisioning completes."
+                : local?.state === "blocked"
+                  ? readinessHelp[local.reason] ||
+                    readinessHelp.LOCAL_UNAVAILABLE
+                  : "Host readiness unknown or source approval expired. Check for updates before confirming.";
   $("updateReadinessRefresh").disabled =
     locked ||
     updateRequest ||
@@ -4032,14 +4051,14 @@ function renderUpdate() {
     data.readinessProtocol !== 1 ||
     data.readinessSupported !== true ||
     !sourceSha(data.latest);
-  if (!hostReady(data)) $("updateConfirm").hidden = true;
+  if (!canUpgrade(data)) $("updateConfirm").hidden = true;
   $("updateApply").disabled =
     updateRequest ||
     locked ||
     data.preparing === true ||
     updateWorkerBlocked ||
     !data.supported ||
-    !hostReady(data) ||
+    !canUpgrade(data) ||
     !sourceSha(data.latest) ||
     data.latest === data.installed;
   $("updateConfirmApply").disabled =
@@ -4047,7 +4066,7 @@ function renderUpdate() {
     data.preparing === true ||
     updateRequest ||
     updateWorkerBlocked ||
-    !hostReady(data);
+    !canUpgrade(data);
   for (const id of [
     "run",
     "stop",
@@ -4267,7 +4286,7 @@ action("updateApply", async () => {
     return;
   }
   if (
-    !hostReady() ||
+    !canUpgrade() ||
     !sourceSha(updateData?.latest) ||
     updatePending ||
     updateData.preparing ||
@@ -4309,7 +4328,7 @@ let updateApplyRequest = false;
 action("updateConfirmApply", async () => {
   const generation = authGeneration;
   if (
-    !hostReady() ||
+    !canUpgrade() ||
     !sourceSha(updateTarget) ||
     updateTarget !== updateData?.latest ||
     updatePending ||

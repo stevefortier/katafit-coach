@@ -1,3 +1,4 @@
+import { deliverRelease } from "../release/operator.js";
 import {
   asNativeBinding,
   recordEngine,
@@ -50,6 +51,9 @@ interface Boundary {
   readiness?: (
     target: import("../release/manifest.js").Manifest,
   ) => Promise<string | NativeBinding>;
+  deliver?: (
+    target: import("../release/manifest.js").Manifest,
+  ) => Promise<unknown>;
   housekeeping?: () => Promise<void>;
   prepare?: (
     sha: string,
@@ -650,6 +654,16 @@ export async function supervise(
     (sha, token) => releaseReservation(sha, token),
     (attempt) => preparationJournal.write(attempt),
     boundary.readiness ?? ((target) => nativeBindingForBuild(home, target)),
+    // A confirmed upgrade fetches a missing Pi image here, in the launcher:
+    // the Studio app and Pi never download or load images.
+    boundary.deliver ??
+      ((target) =>
+        deliverRelease(
+          resolve(home),
+          resolve(home, "release-staging"),
+          target.revision,
+          { signal: controller.signal },
+        )),
   );
   const journal = new UpdateJournal(home);
   const preparationJournal = new PreparationJournal(home);

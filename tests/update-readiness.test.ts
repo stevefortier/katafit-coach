@@ -273,7 +273,7 @@ test("readonly native observation reuses protected compatible receipt and create
   }
 });
 test(
-  "actual supervisor IPC/admin defers stale confirmation and GET stays local",
+  "actual supervisor IPC/admin: a stale confirmation delivers before preparing, a failed delivery stops nothing, and GET stays local",
   { timeout: 20000 },
   async () => {
     const home = await mkdtemp(join(tmpdir(), "owner-readiness-"));
@@ -312,6 +312,7 @@ test(
       const remote = source(installed);
       let available = true,
         prepared = 0,
+        delivered = 0,
         observations = 0;
       owner = await supervise(store, 0, undefined, {
         request: remote.request,
@@ -324,6 +325,10 @@ test(
           observations++;
           if (!available) throw missing();
           return image;
+        },
+        deliver: async () => {
+          delivered++;
+          throw Error("synthetic delivery failure");
         },
       });
       owner.updates.installed = installed; // Synthetic installed identity; dirty test builds intentionally have no revision.
@@ -349,9 +354,11 @@ test(
       available = false;
       const response = await post("apply", { sha, confirm: true });
       const data = await response.json();
+      // The launcher delivers the missing image itself; this one fails.
       assert.equal(response.status, 409);
-      assert.equal(data.error, "UPDATE_DELIVERY_PENDING");
-      assert.equal(data.deferred, true);
+      assert.equal(data.error, "RELEASE_DELIVERY_FAILED");
+      assert.doesNotMatch(JSON.stringify(data), /synthetic delivery failure/);
+      assert.equal(delivered, 1);
       assert.equal(prepared, 0);
       assert.equal(owner.updates.preparationAttempt, undefined);
       assert.equal(owner.updates.lastOperation, undefined);
@@ -583,3 +590,102 @@ test(
     }
   },
 );
+
+test("a launcher that delivers fetches a missing Pi image on a confirmed upgrade, then prepares", async () => {
+  const remote = source();
+  let delivered = 0,
+    prepared = 0,
+    available = false;
+  const updates = new Updates(
+    old,
+    async () => {},
+    remote.request,
+    undefined,
+    async () => {
+      prepared++;
+    },
+    async () => {},
+    undefined,
+    async () => {
+      if (!available) throw missing();
+      return image;
+    },
+    async (target) => {
+      delivered++;
+      assert.equal(target.revision, sha);
+      // Preparation has not started while the image is being delivered.
+      assert.equal(prepared, 0);
+      available = true;
+    },
+  );
+  const state = await updates.check();
+  assert.equal(state.deliverySupported, true);
+  assert.equal(state.readiness?.state, "delivery-pending");
+  await updates.prepare(sha);
+  assert.equal(delivered, 1);
+  assert.equal(prepared, 1);
+  assert.equal(updates.snapshot().readiness?.state, "ready");
+  assert.equal(updates.preparing, false);
+});
+
+test("an image already on the host is never delivered again; a failed delivery prepares nothing", async () => {
+  const ready = new Updates(
+    old,
+    async () => {},
+    source().request,
+    undefined,
+    async () => {},
+    async () => {},
+    undefined,
+    async () => image,
+    async () => assert.fail("no delivery for a present image"),
+  );
+  await ready.check();
+  await ready.prepare(sha);
+
+  let prepared = 0;
+  const failing = new Updates(
+    old,
+    async () => {},
+    source().request,
+    undefined,
+    async () => {
+      prepared++;
+    },
+    async () => {},
+    undefined,
+    async () => {
+      throw missing();
+    },
+    async () => {
+      throw new Error("private download failure");
+    },
+  );
+  await failing.check();
+  await assert.rejects(failing.prepare(sha), (e: any) => {
+    assert.equal(e.message, "RELEASE_DELIVERY_FAILED");
+    return true;
+  });
+  assert.equal(prepared, 0);
+  assert.equal(failing.preparing, false);
+  assert.match(failing.guidance, /could not be delivered/);
+  assert.doesNotMatch(failing.guidance, /private download failure/);
+});
+
+test("without a delivering launcher, a missing image still defers as before", async () => {
+  const updates = new Updates(
+    old,
+    async () => {},
+    source().request,
+    undefined,
+    async () => {},
+    async () => {},
+    undefined,
+    async () => {
+      throw missing();
+    },
+  );
+  const state = await updates.check();
+  assert.equal(state.deliverySupported, false);
+  await assert.rejects(updates.prepare(sha), /UPDATE_DELIVERY_PENDING/);
+});

@@ -38,6 +38,8 @@ export class Updates {
     "ready-releases-v1";
   readinessProtocol = 1;
   readinessSupported = false;
+  /** A confirmed upgrade delivers a missing Pi image itself (no external timer). */
+  deliverySupported = false;
   readiness?: Readiness;
   private releaseTarget?: Manifest;
   private stateSequence = 0;
@@ -135,8 +137,11 @@ export class Updates {
     private readonly observeReadiness?: (
       target: Manifest,
     ) => Promise<string | import("../sandbox/binding.js").NativeBinding>,
+    /** Fetches and provisions the exact release's Pi image when missing. */
+    private readonly deliverTarget?: (target: Manifest) => Promise<unknown>,
   ) {
     this.readinessSupported = !!observeReadiness;
+    this.deliverySupported = !!deliverTarget;
     if (applyTarget) this.guidance = "Check for source updates.";
     this.preparationSupported = !!prepareTarget;
     this.preparationOutcomeSupported = !!persistPreparation;
@@ -153,6 +158,7 @@ export class Updates {
       latest: this.latest,
       readinessProtocol: this.readinessProtocol,
       readinessSupported: this.readinessSupported,
+      deliverySupported: this.deliverySupported,
       readiness:
         this.readinessSupported &&
         this.readinessProtocol === 1 &&
@@ -287,11 +293,41 @@ export class Updates {
     if (!this.applyTarget) throw new Error("UNSUPPORTED_INSTALLATION");
     return sha;
   }
+  /**
+   * On a confirmed upgrade, fetch and provision the exact release's Pi image
+   * if this host does not have it yet. Readiness is re-observed afterwards.
+   */
+  private async deliverIfPending(sha: string) {
+    if (!this.deliverTarget) return;
+    await this.refreshReadiness(sha);
+    const target = this.releaseTarget;
+    if (
+      this.readiness?.sha !== sha ||
+      this.readiness.state !== "delivery-pending" ||
+      target?.revision !== sha
+    )
+      return;
+    this.preparing = true;
+    this.guidance =
+      "Downloading and verifying the Pi image for this release while Coach remains available.";
+    try {
+      await this.deliverTarget(structuredClone(target));
+    } catch {
+      this.guidance =
+        "The Pi image for this release could not be delivered. Coach remains available; check disk space and GitHub access, then try again.";
+      throw new Error("RELEASE_DELIVERY_FAILED");
+    } finally {
+      this.preparing = false;
+    }
+    // A fresh observation, not the cached pending one.
+    this.readiness = undefined;
+  }
   async prepare(value: unknown, token = randomUUID() as string) {
     const sha = this.validate(value);
     if (!this.prepareTarget) return;
     if (!validPreparationToken(token)) throw new Error("TARGET_REJECTED");
     if (this.preparationHeld) throw new Error("UPDATE_IN_PROGRESS");
+    await this.deliverIfPending(sha);
     await this.assertReady(sha);
     this.validate(sha);
     if (this.preparationHeld) throw new Error("UPDATE_IN_PROGRESS");

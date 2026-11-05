@@ -1923,22 +1923,30 @@ export async function admin(
             await updates.assertReady(body.sha);
             updates.validate(body.sha);
           } catch (error: any) {
-            const reason = [
-              "UPDATE_DELIVERY_PENDING",
-              "UPDATE_READINESS_BLOCKED",
-              "LAUNCHER_UPGRADE_REQUIRED",
-            ].includes(error?.message)
-              ? error.message
-              : "UPDATE_READINESS_BLOCKED";
-            return send(409, {
-              error: reason,
-              deferred: true,
-              readiness: updates.snapshot().readiness,
-              hint:
-                reason === "UPDATE_DELIVERY_PENDING"
-                  ? "Published release is awaiting local artifact delivery. Coach remains available. Refresh host readiness after trusted provisioning completes."
-                  : "Host readiness could not be established. Check local artifact delivery or replace an unsupported stable launcher, then refresh readiness.",
-            });
+            // A launcher that delivers Pi images fetches this one during
+            // preparation, after this confirmation; nothing to wait for.
+            const delivering =
+              error?.message === "UPDATE_DELIVERY_PENDING" &&
+              updates.snapshot().deliverySupported === true &&
+              updates.snapshot().preparationSupported === true;
+            if (!delivering) {
+              const reason = [
+                "UPDATE_DELIVERY_PENDING",
+                "UPDATE_READINESS_BLOCKED",
+                "LAUNCHER_UPGRADE_REQUIRED",
+              ].includes(error?.message)
+                ? error.message
+                : "UPDATE_READINESS_BLOCKED";
+              return send(409, {
+                error: reason,
+                deferred: true,
+                readiness: updates.snapshot().readiness,
+                hint:
+                  reason === "UPDATE_DELIVERY_PENDING"
+                    ? "Published release is awaiting local artifact delivery. Coach remains available. Refresh host readiness after trusted provisioning completes."
+                    : "Host readiness could not be established. Check local artifact delivery or replace an unsupported stable launcher, then refresh readiness.",
+              });
+            }
           }
           if (updates.snapshot().preparationSupported) {
             try {
@@ -1952,6 +1960,7 @@ export async function admin(
                   .catch(() => {});
               const typed = [
                 "EXTERNAL_ARTIFACT_BOOTSTRAP_REQUIRED",
+                "RELEASE_DELIVERY_FAILED",
                 "LAUNCHER_UPGRADE_REQUIRED",
                 "UPDATE_DELIVERY_PENDING",
                 "UPDATE_READINESS_BLOCKED",
@@ -1972,9 +1981,11 @@ export async function admin(
                   "UPDATE_READINESS_BLOCKED",
                 ].includes(error?.message)
                   ? "Host readiness changed. Coach was not stopped and no installation was accepted. Refresh host readiness after local delivery is available."
-                  : error?.message === "LAUNCHER_UPGRADE_REQUIRED"
-                    ? "Replace the reviewed stable launcher side by side, preserving the complete protected home and skill history. Coach was not stopped or updated."
-                    : "Candidate preparation failed while Coach remained available. Provision the exact trusted native artifact or inspect source/build prerequisites, then retry.",
+                  : error?.message === "RELEASE_DELIVERY_FAILED"
+                    ? "The Pi image for this release could not be downloaded or verified. Coach was not stopped or updated. Check disk space and GitHub access on the host, then try again."
+                    : error?.message === "LAUNCHER_UPGRADE_REQUIRED"
+                      ? "Replace the reviewed stable launcher side by side, preserving the complete protected home and skill history. Coach was not stopped or updated."
+                      : "Candidate preparation failed while Coach remained available. Provision the exact trusted native artifact or inspect source/build prerequisites, then retry.",
               });
             }
           }
