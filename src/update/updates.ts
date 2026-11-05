@@ -4,6 +4,7 @@ import {
   boundedBytes,
   requestOptions,
   type Manifest,
+  type Platform,
 } from "../release/manifest.js";
 import { failureReason, type FailureReason } from "./failure.js";
 import { artifactReason, type PreparationAttempt } from "./preparation.js";
@@ -42,6 +43,10 @@ export class Updates {
   deliverySupported = false;
   readiness?: Readiness;
   private releaseTarget?: Manifest;
+  // The published release's self-contained archives, by platform.
+  private releaseArchives: Awaited<
+    ReturnType<typeof discoverRelease>
+  >["archives"] = {};
   private stateSequence = 0;
   private localPending?: Promise<void>;
   latest: string | null = null;
@@ -89,6 +94,7 @@ export class Updates {
         this.latest = null;
         this.readiness = undefined;
         this.releaseTarget = undefined;
+        this.releaseArchives = {};
         this.checkError = "RATE_LIMITED";
         this.guidance = "GitHub rate limit. Source check failed.";
       }
@@ -574,7 +580,8 @@ export class Updates {
   /** Fixed HTTPS immutable published-source channel. Artifact provenance is
    * verified externally before Docker/code staging; no daemon gh/credentials. */
   async readyRelease(request: typeof fetch): Promise<string> {
-    const manifest = (await discoverRelease(request)).manifest;
+    const found = await discoverRelease(request);
+    const manifest = found.manifest;
     const sha = manifest.revision;
     // Release contents-write authority is not reviewed-main authority. An
     // unsigned manifest may select source, never authorize branch execution.
@@ -605,7 +612,14 @@ export class Updates {
     )
       throw Error("READY_SOURCE_NOT_AHEAD");
     this.releaseTarget = manifest;
+    this.releaseArchives = found.archives;
     return sha;
+  }
+  /** This release's archive for `platform`, if it publishes one. */
+  archiveFor(sha: string, platform: Platform | undefined) {
+    return this.releaseTarget?.revision === sha && platform
+      ? this.releaseArchives[platform]
+      : undefined;
   }
   async check() {
     if (this.pending) return this.pending;
@@ -617,6 +631,7 @@ export class Updates {
     this.latest = null;
     this.readiness = undefined;
     this.releaseTarget = undefined;
+    this.releaseArchives = {};
     this.checking = true;
     const generation = this.cooldownGeneration;
     this.pending = (async () => {

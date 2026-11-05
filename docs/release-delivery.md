@@ -344,5 +344,11 @@ CI builds all three and runs the Linux one with an empty environment.
 Discovery accepts these archives as optional release assets, and still refuses
 any other asset. They are not listed in the manifest, whose exact shape older
 launchers require; each archive is trusted only through its own attestation.
-Archives are not published on releases yet: launchers installed before this
-change refuse any release with more than its three original assets.
+When a release carries the archive for this machine (`linux-x64`,
+`linux-arm64` or `win-x64`), preparing an upgrade stages it instead of building
+source: it is downloaded with its published size and digest checked, its
+attestation must name exactly the release revision, and its `app/` directory
+becomes `versions/<SHA>`, as a source build's checkout would. No git, npm or
+build tools are needed. Without an archive, preparation builds source as before.
+Archives are not published on releases yet: launchers installed before
+discovery accepted them refuse any release with more than three assets.
