@@ -15,8 +15,12 @@ mkdirSync(work, { recursive: true });
 writeFileSync(
   `${work}/echo.mjs`,
   `import { createInterface } from "node:readline";
+// The VM console is a terminal: raw mode stops echo, CRLF translation and
+// the 4 KiB canonical line limit.
+const tty = !!process.stdin.isTTY;
+if (tty) process.stdin.setRawMode(true);
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
-process.stdout.write(JSON.stringify({ r: 1, ready: true }) + "\\n");
+process.stdout.write(JSON.stringify({ r: 1, ready: true, tty }) + "\\n");
 for await (const line of lines) {
   const m = JSON.parse(line);
   const reply = m.big ? { r: 1, id: m.id, data: "y".repeat(m.big) } : { r: 1, id: m.id, length: line.length };
@@ -80,6 +84,7 @@ try {
   await step("boot to first reply", async () => {
     const m = await next();
     if (!m.ready) throw Error("unexpected first line");
+    return `(console tty: ${m.tty})`;
   });
   await step("20 small round trips", async () => {
     for (let id = 1; id <= 20; id++) {

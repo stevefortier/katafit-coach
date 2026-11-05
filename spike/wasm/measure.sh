@@ -2,7 +2,11 @@
 # Phase 0 spike: time typical Pi workloads in the WebAssembly VM and check the
 # workspace boundary. Usage: measure.sh <runner> <image.wasm> <workdir>
 # Results go to the log and the job summary; any failed step fails the job.
+# wasmtime exits 0 whatever the guest command returns, so each step checks
+# its output for an expected pattern instead.
 set -uo pipefail
+# Git Bash would otherwise rewrite guest paths such as /mnt/work.
+export MSYS_NO_PATHCONV=1
 runner="$1" image="$2" work="$3"
 mkdir -p "$work"; printf 'alpha\nbeta needle\ngamma\n' > "$work/notes.txt"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
@@ -15,14 +19,14 @@ report "| Step | Seconds | Result |"
 report "|---|---|---|"
 wasmtime --version
 ls -l "$image"
-run() { # name, guest command...
-  local name="$1"; shift
+run() { # name, expected output pattern, guest command...
+  local name="$1" expect="$2"; shift 2
   local start end out status
   start=$(date +%s%N)
   out=$(wasmtime run --dir "$host::/mnt/work" "$image" -no-stdin "$@" 2>&1 </dev/null); status=$?
   end=$(date +%s%N)
   local seconds; seconds=$(awk -v a="$start" -v b="$end" 'BEGIN{printf "%.1f", (b-a)/1e9}')
-  if [ $status -eq 0 ]; then
+  if [ $status -eq 0 ] && echo "$out" | grep -qE "$expect"; then
     report "| $name | $seconds | ok: $(echo "$out" | tail -1 | cut -c1-60) |"
   else
     failures=$((failures + 1))
@@ -30,18 +34,21 @@ run() { # name, guest command...
   fi
   echo "--- output of $name:"; echo "$out" | tail -20
 }
-run "boot + uname" uname -a
-run "node -v" node -v
-run "node script" node -e 'console.log([1,2,3].map(x=>x*2).join(","))'
-run "pi --version" pi --version
-run "grep in workspace" grep -rn needle /mnt/work
-run "write in workspace" sh -c 'echo from-guest > /mnt/work/out.txt && cat /mnt/work/out.txt'
-run "10 shell commands in one boot" sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ls /mnt/work >/dev/null; done; echo done'
-run "git init + commit" sh -c 'cd /tmp && git init -q r && cd r && echo x > f && git -c user.email=a@b -c user.name=a add f && git -c user.email=a@b -c user.name=a commit -qm x && git log --oneline | wc -l'
-run "only workspace shared" sh -c 'ls /mnt && test "$(ls /mnt)" = work && echo isolated'
-# Interactive sessions feed the VM through stdin: commands piped to a shell.
+run "boot + uname" riscv64 uname -a
+run "node -v" '^v[0-9]' node -v
+run "node script" '^2,4,6' node -e 'console.log([1,2,3].map(x=>x*2).join(","))'
+run "pi --version" '^[0-9]+\.[0-9]+' pi --version
+run "pi --help" 'Usage|usage' pi --help
+run "grep in workspace" 'beta needle' grep -rn needle /mnt/work
+run "write in workspace" '^from-guest' sh -c 'echo from-guest > /mnt/work/out.txt && cat /mnt/work/out.txt'
+run "10 shell commands in one boot" '^done' sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ls /mnt/work >/dev/null; done; echo done'
+run "git init + commit" '^ *1$' sh -c 'cd /tmp && git init -q r && cd r && echo x > f && git -c user.email=a@b -c user.name=a add f && git -c user.email=a@b -c user.name=a commit -qm x && git log --oneline | wc -l'
+run "only workspace shared" '^isolated' sh -c 'ls /mnt && test "$(ls /mnt)" = work && echo isolated'
+run "no network device" '^no-network' sh -c 'ls /sys/class/net; test "$(ls /sys/class/net | grep -v "^lo$")" = "" && echo no-network'
+# Interactive sessions feed the VM through stdin. TinyEMU exits on console
+# EOF, so the pipe stays open until the guest shell exits.
 start=$(date +%s%N)
-piped=$(printf 'echo piped-$((6*7))\nnode -e "console.log(process.version)"\nexit\n' | wasmtime run --dir "$host::/mnt/work" "$image" sh 2>&1); status=$?
+piped=$( { printf 'echo piped-$((6*7))\nnode -e "console.log(process.version)"\nexit\n'; sleep 30; } | wasmtime run --dir "$host::/mnt/work" "$image" sh 2>&1); status=$?
 seconds=$(awk -v a="$start" -v b="$(date +%s%N)" 'BEGIN{printf "%.1f", (b-a)/1e9}')
 if [ $status -eq 0 ] && echo "$piped" | grep -q piped-42; then
   report "| commands piped to sh on stdin | $seconds | ok: $(echo "$piped" | tail -1 | cut -c1-60) |"
