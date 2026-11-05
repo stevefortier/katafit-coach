@@ -82,7 +82,7 @@ After one bootstrap install of this updater-capable build, managed **Linux** ins
 
 Source changes execute trusted repository code on your machine. This is not an npm update, an arbitrary URL installer, or a promise that immutable containers can rewrite themselves. See [source upgrades, bootstrap, safety limits and recovery](docs/source-updates.md) and the [managed nonroot Docker recipe](docs/docker.md).
 
-Successful Studio login now keeps the admin key in per-origin **sessionStorage** so this tab can reload after upgrades. **Lock studio** clears it without stopping the service/worker. Lock and close Studio on shared browsers; it is not stored in localStorage.
+Successful Studio login now keeps the admin key in per-origin **sessionStorage** so this tab can reload after upgrades. Once an upgrade is installed, every open Studio page shows a floating **Studio update ready** notice; **Refresh** loads the new version (unsaved edits block it until saved or reverted). **Lock studio** clears it without stopping the service/worker. Lock and close Studio on shared browsers; it is not stored in localStorage.
 
 ## Service commands
 
