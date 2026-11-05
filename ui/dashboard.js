@@ -1848,12 +1848,17 @@ window.CoachDashboard = (() => {
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
     // Changed authority invalidates the retained inventory, not only its geometry.
-    if (target.dataset.date !== date || restarts) {
+    const replaced = target.dataset.date !== date || restarts;
+    // Hold a shown timeline's shape with an empty, inert day while it loads.
+    const placeholder =
+      replaced &&
+      validDay(date) &&
+      Boolean(target.querySelector(".dashboard-timeline-track"));
+    if (replaced) {
       target.replaceChildren();
       timelineInteraction = () => {};
       filterTimeline = () => {};
-      // Hold the timeline's shape with an empty, inert day while it loads.
-      if (validDay(date)) {
+      if (placeholder) {
         renderEventTimeline(target, new Map(), new Map(), start, end, adminKey);
         timelineInteraction(false);
         timelineInteraction = () => {};
@@ -1885,7 +1890,7 @@ window.CoachDashboard = (() => {
     target.append(status);
     if (!validDay(date)) {
       timelinePending = false;
-      status.classList.remove("dashboard-timeline-loading");
+      status.className = "hint";
       status.textContent = "Choose a valid event date.";
       return;
     }
@@ -1897,7 +1902,7 @@ window.CoachDashboard = (() => {
     const publish = (failure = null) => {
       timelinePending = false;
       ledger = { date, start, end, items, users, complete: !cursor };
-      status.classList.remove("dashboard-timeline-loading");
+      status.className = "hint";
       status.textContent = failure
         ? `Timeline read failed (${failure.status}); partial day. Retry to continue loading.`
         : cursor
@@ -2015,7 +2020,9 @@ window.CoachDashboard = (() => {
         return publish(error);
       timelinePending = false;
       ledgerFailure = error.status || 0;
-      status.classList.remove("dashboard-timeline-loading");
+      status.className = "hint";
+      // A failed new day keeps no placeholder that could pass for an empty day.
+      if (placeholder) target.replaceChildren(status);
       if (denied(error) || error.status === 409) {
         ledgerGeneration++;
         ledger = null;
