@@ -2108,6 +2108,17 @@ html.coach-covered #workspaceScroll {
   margin: 0 0 8px;
   font-size: 11px;
 }
+/* Loading over a held timeline overlays it instead of pushing it down. */
+.dashboard-timeline {
+  position: relative;
+}
+.dashboard-timeline > p.dashboard-timeline-loading:not(:only-child) {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  margin: 0;
+  background: var(--panel);
+}
 .dashboard-timeline-legend,
 .dashboard-timeline-toolbar {
   display: flex;

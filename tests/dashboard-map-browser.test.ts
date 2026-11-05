@@ -505,3 +505,57 @@ for (const [name, shift, refits] of [
       },
     );
   });
+
+test("changing day holds the timeline and its legend in place, even for an empty day", async () => {
+  let release!: () => void;
+  const hold = new Promise<void>((r) => (release = r));
+  let held = false;
+  await fixture(
+    async (page) => {
+      await page.waitForFunction(
+        () => document.querySelectorAll(".dashboard-event-dot").length > 0,
+      );
+      const layout = () =>
+        page.evaluate(() => ({
+          mapTop: Math.round(
+            document.querySelector("#dashboardMap")!.getBoundingClientRect()
+              .top,
+          ),
+          legend: [
+            ...document.querySelectorAll(".dashboard-timeline-legend button"),
+          ].map((chip) => (chip as HTMLElement).dataset.category),
+        }));
+      const before = await layout();
+      held = true;
+      await page.locator("#dashboardMapDate").fill("2026-09-29");
+      await page.locator("#dashboardMapDate").dispatchEvent("change");
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#dashboardTimeline")
+          ?.textContent?.includes("Loading authorized day events"),
+      );
+      assert.deepEqual(await layout(), before, "no reflow while loading");
+      release();
+      await page.waitForFunction(
+        () =>
+          !document
+            .querySelector("#dashboardTimeline")
+            ?.textContent?.includes("Loading authorized day events") &&
+          document.querySelectorAll(".dashboard-timeline-track").length === 1,
+      );
+      assert.deepEqual(await layout(), before, "no reflow for an empty day");
+      assert.equal(
+        await page
+          .locator('.dashboard-timeline-legend button[data-category="meal"]')
+          .isDisabled(),
+        true,
+      );
+    },
+    {
+      override: (u) =>
+        u.pathname === "/api/dashboard/timeline" && held
+          ? { hold, body: { users: [], events: [], hasMore: false } }
+          : undefined,
+    },
+  );
+});
