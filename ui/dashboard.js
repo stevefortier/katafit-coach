@@ -1236,6 +1236,15 @@ window.CoachDashboard = (() => {
   const TIMELINE_MAX_PAGES = 50;
   // A member's located events farther apart than this are not connected.
   const GAP_HOURS = 4;
+  const EVENT_CATEGORIES = [
+    "meal",
+    "workout",
+    "metric",
+    "survey",
+    "media",
+    "app",
+    "status_change",
+  ];
   const eventCategory = (item) => item.event_type?.split(".")[0] || "other";
   const eventColor = (item) => activityColors[eventCategory(item)] || "#6b7280";
   function eventLabel(kind) {
@@ -1651,7 +1660,10 @@ window.CoachDashboard = (() => {
         replacement?.focus({ preventScroll: true });
       }
     };
-    for (const type of [null, ...new Set([...items.values()].map(category))]) {
+    // The legend keeps every standard category, so changing day never reflows
+    // the page; categories without events that day are shown disabled.
+    const present = new Set([...items.values()].map(category));
+    for (const type of [null, ...new Set([...EVENT_CATEGORIES, ...present])]) {
       const chip = text(
         "button",
         type
@@ -1662,6 +1674,7 @@ window.CoachDashboard = (() => {
       );
       chip.type = "button";
       chip.dataset.category = type || "";
+      chip.disabled = Boolean(type) && !present.has(type);
       if (type) {
         const swatch = text("i", "", "dashboard-timeline-swatch");
         swatch.style.backgroundColor = activityColors[type] || "#6b7280";
@@ -1826,11 +1839,31 @@ window.CoachDashboard = (() => {
     const signal = timelineController.signal,
       date = $("dashboardMapDate").value;
     const live = () => id === timelineEpoch && !signal.aborted;
+    const [year, month, day] = validDay(date)
+      ? date.split("-").map(Number)
+      : [];
+    const start = new Date(0);
+    start.setFullYear(year, month - 1, day);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
     // Changed authority invalidates the retained inventory, not only its geometry.
-    if (target.dataset.date !== date || restarts) {
+    const replaced = target.dataset.date !== date || restarts;
+    // Hold a shown timeline's shape with an empty, inert day while it loads.
+    const placeholder =
+      replaced &&
+      validDay(date) &&
+      Boolean(target.querySelector(".dashboard-timeline-track"));
+    if (replaced) {
       target.replaceChildren();
       timelineInteraction = () => {};
       filterTimeline = () => {};
+      if (placeholder) {
+        renderEventTimeline(target, new Map(), new Map(), start, end, adminKey);
+        timelineInteraction(false);
+        timelineInteraction = () => {};
+        filterTimeline = () => {};
+      }
     }
     target.dataset.date = date;
     for (const old of target.querySelectorAll(":scope > p, :scope > button"))
@@ -1848,20 +1881,19 @@ window.CoachDashboard = (() => {
       ledger = null;
     }
     syncMap();
-    const status = text("p", "Loading authorized day events…", "hint");
+    const status = text(
+      "p",
+      "Loading authorized day events…",
+      "hint dashboard-timeline-loading",
+    );
     status.setAttribute("role", "status");
     target.append(status);
     if (!validDay(date)) {
       timelinePending = false;
+      status.className = "hint";
       status.textContent = "Choose a valid event date.";
       return;
     }
-    const [year, month, day] = date.split("-").map(Number);
-    const start = new Date(0);
-    start.setFullYear(year, month - 1, day);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
     const users = new Map(resume?.users),
       items = resume?.items || new Map();
     let cursor = resume?.cursor,
@@ -1870,6 +1902,7 @@ window.CoachDashboard = (() => {
     const publish = (failure = null) => {
       timelinePending = false;
       ledger = { date, start, end, items, users, complete: !cursor };
+      status.className = "hint";
       status.textContent = failure
         ? `Timeline read failed (${failure.status}); partial day. Retry to continue loading.`
         : cursor
@@ -1987,6 +2020,9 @@ window.CoachDashboard = (() => {
         return publish(error);
       timelinePending = false;
       ledgerFailure = error.status || 0;
+      status.className = "hint";
+      // A failed new day keeps no placeholder that could pass for an empty day.
+      if (placeholder) target.replaceChildren(status);
       if (denied(error) || error.status === 409) {
         ledgerGeneration++;
         ledger = null;
