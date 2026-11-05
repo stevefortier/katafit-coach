@@ -84,6 +84,16 @@ if (!process.execArgv.includes("--experimental-test-module-mocks")) {
     new URL("../src/release/native-ownership.ts", import.meta.url).href,
     { namedExports: { ...ownership, nativeOwnedExec: command } },
   );
+  // Synthetic releases carry no real attestation; provenance is checked in
+  // process (release-attestation.test.ts), so it is accepted here.
+  const manifestModule = await import("../src/release/manifest.js");
+  mock.module(new URL("../src/release/manifest.ts", import.meta.url).href, {
+    namedExports: {
+      ...manifestModule,
+      verifyProvenance: async () => {},
+      verifyProvenanceFile: async () => {},
+    },
+  });
   const artifact = await import("../src/sandbox/artifact.js");
   mock.module(new URL("../src/sandbox/artifact.ts", import.meta.url).href, {
     namedExports: {

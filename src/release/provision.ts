@@ -92,7 +92,7 @@ export async function validateReleaseFiles(
   manifest: Manifest,
   folder: string,
   verify = (path: string, revision: string) =>
-    verifyProvenanceFile(path, revision, exec),
+    verifyProvenanceFile(path, revision),
 ) {
   const m = parseManifest(manifest);
   // Verify every digest before any attestation query or side effect.
@@ -692,8 +692,8 @@ export async function provisionReleaseOwned(
       timeout: 5000,
       signal: archiveOptions.signal,
     });
-    // Manifest and artifact attestation clients share this actual lock owner.
-    await verifyProvenance(manifestBytes, m.revision, exec);
+    // Attestations are verified in process; no external client is started.
+    await verifyProvenance(manifestBytes, m.revision);
     await recoverNativeSnapshots(state);
     await validateReleaseFiles(m, artifacts);
     const binding = async () => {
