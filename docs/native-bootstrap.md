@@ -32,14 +32,21 @@ not a supported deployment recipe; this release standardizes
 
 Image acquisition and operator delivery are separate: `image_receipt` identifies acquired pixels, not a displayed attachment. When asked to show photos, use `send_to_operator` with each existing receipt and confirm its successful panel delivery. API skill v2 teaches this explicitly; saved uncustomized defaults upgrade, while customized instructions remain intact for explicit review.
 
-New native conversations advertise only `katafit_rest_request` (the old GET helper remains an unadvertised compatibility entry point) with the existing private saved
-`token`. Human onboarding opts the installation credential into ordinary REST
-with `rest_user_access: true`; no second bearer or host identity introspection is
-needed. Replace older credentials in Settings with a newly opted-in credential.
+New native conversations advertise only `katafit_rest_request` (the old GET helper remains an unadvertised compatibility entry point). Human onboarding opts the
+installation credential into ordinary REST with `rest_user_access: true`.
+Replace older credentials in Settings with a newly opted-in credential.
+Pi's calls do not use that installation `token`: the host mints a short-lived
+agent session token from it (`POST /api/coach/agent-sessions`, 4 hours, renewed
+before expiry and revoked at teardown) and sends that instead. The backend
+refuses agent tokens on host-only routes (secrets, account auth, MCP
+configuration, autonomy control writes), so the host keeps no route filter of
+its own. If minting fails the call fails; it never falls back to the
+installation token. Host-owned calls (memory recall, member-message delivery)
+still use the installation token.
 A denied GET displays its HTTP status and never falls back to MCP reads.
-Mutation non-success is reported conservatively as unknown without upstream prose.
+A 4xx write is reported as rejected; any other failed write is unknown.
 
-The host sends this bearer only to the configured origin on bounded `/api/` requests
+The host sends these bearers only to the configured origin on bounded `/api/` requests
 using GET, POST, PUT, PATCH or DELETE, without redirects or caller headers. Non-loopback origins
 require HTTPS. Pi never receives credentials. Existing backend route authorization
 alone governs each new request; newly added routes need no host registration.

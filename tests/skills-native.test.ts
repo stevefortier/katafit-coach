@@ -7,7 +7,7 @@ import {
   formatSkillsForPrompt,
   loadSkillsFromDir,
 } from "@earendil-works/pi-coding-agent";
-import { fixture } from "./helpers/native.js";
+import { fixture, AGENT_TOKEN } from "./helpers/native.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
 
@@ -136,12 +136,10 @@ test(
         );
       },
       (path, headers) => {
-        assert.equal(
-          headers.authorization,
-          "Bearer synthetic-backend-credential",
-        );
         // Per-turn account memory recall is host-side, not a Pi REST call.
         if (path.startsWith("/api/coach/memory")) return { status: 404 };
+        // Pi's own read carries its agent token, never the installation one.
+        assert.equal(headers.authorization, `Bearer ${AGENT_TOKEN}`);
         assert.equal(path, "/api/user");
         return {
           body: JSON.stringify({

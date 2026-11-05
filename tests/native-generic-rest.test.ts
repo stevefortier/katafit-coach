@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
-import { fixture } from "./helpers/native.js";
+import { fixture, AGENT_TOKEN } from "./helpers/native.js";
 import { startRelay, loadExtension } from "./helpers/native-relay.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { restGet } from "../src/katafit/restGet.js";
@@ -87,9 +87,7 @@ test("real native relay and extension GET ordinary social, JPEG and unregistered
       gets.map((c) => c.path),
       Object.keys(responses),
     );
-    assert.ok(
-      gets.every((c) => c.auth === "Bearer synthetic-backend-credential"),
-    );
+    assert.ok(gets.every((c) => c.auth === `Bearer ${AGENT_TOKEN}`));
     assert.ok(gets.every((c) => !c.headers.cookie && !c.headers["x-custom"]));
     assert.ok(relay.frames.toHost > 0 && relay.frames.toRelay > 0);
   } finally {

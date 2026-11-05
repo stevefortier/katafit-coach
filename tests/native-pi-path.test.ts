@@ -2,7 +2,7 @@ import test from "node:test";
 import { PI_READY } from "./helpers/native-ready.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { fixture } from "./helpers/native.js";
+import { fixture, AGENT_TOKEN } from "./helpers/native.js";
 import { NativeRuntime } from "../src/sandbox/runtime.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 import { writeFile } from "node:fs/promises";
@@ -44,12 +44,10 @@ test(
   { skip: process.env.NATIVE_DOCKER_TEST !== "1", timeout: 60000 },
   async (t) => {
     const f = await fixture(undefined, (path, headers) => {
-      assert.equal(
-        headers.authorization,
-        "Bearer synthetic-backend-credential",
-      );
       // Per-turn account memory recall is host-side, not a Pi REST call.
       if (path.startsWith("/api/coach/memory")) return { status: 404 };
+      // Pi's own read carries its agent token, never the installation one.
+      assert.equal(headers.authorization, `Bearer ${AGENT_TOKEN}`);
       assert.equal(path, "/api/user");
       return {
         body: JSON.stringify({
