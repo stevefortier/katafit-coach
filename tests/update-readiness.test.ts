@@ -273,7 +273,7 @@ test("readonly native observation reuses protected compatible receipt and create
   }
 });
 test(
-  "actual supervisor IPC/admin defers stale confirmation and GET stays local",
+  "actual supervisor IPC/admin: a stale confirmation delivers before preparing, a failed delivery stops nothing, and GET stays local",
   { timeout: 20000 },
   async () => {
     const home = await mkdtemp(join(tmpdir(), "owner-readiness-"));
@@ -312,6 +312,7 @@ test(
       const remote = source(installed);
       let available = true,
         prepared = 0,
+        delivered = 0,
         observations = 0;
       owner = await supervise(store, 0, undefined, {
         request: remote.request,
@@ -324,6 +325,10 @@ test(
           observations++;
           if (!available) throw missing();
           return image;
+        },
+        deliver: async () => {
+          delivered++;
+          throw Error("synthetic delivery failure");
         },
       });
       owner.updates.installed = installed; // Synthetic installed identity; dirty test builds intentionally have no revision.
@@ -349,9 +354,11 @@ test(
       available = false;
       const response = await post("apply", { sha, confirm: true });
       const data = await response.json();
+      // The launcher delivers the missing image itself; this one fails.
       assert.equal(response.status, 409);
-      assert.equal(data.error, "UPDATE_DELIVERY_PENDING");
-      assert.equal(data.deferred, true);
+      assert.equal(data.error, "RELEASE_DELIVERY_FAILED");
+      assert.doesNotMatch(JSON.stringify(data), /synthetic delivery failure/);
+      assert.equal(delivered, 1);
       assert.equal(prepared, 0);
       assert.equal(owner.updates.preparationAttempt, undefined);
       assert.equal(owner.updates.lastOperation, undefined);
