@@ -25,6 +25,7 @@ import {
   type NativeMemoryHooks,
 } from "../memory/native.js";
 import {
+  RestMutationRejected,
   restGetTool,
   restPath,
   restRequest,
@@ -92,6 +93,27 @@ import {
  * 5. the final envelope is measured again (notices are text) and capped at
  *    the 24 MiB provider wire. Returns the exact bytes to send upstream.
  */
+
+// A failed read names its cause so Pi can narrow it instead of guessing.
+function restReadFailure(error: unknown) {
+  const code =
+    (error as { code?: unknown; message?: unknown })?.code ??
+    (error as Error)?.message;
+  if (code === "BACKEND_TIMEOUT")
+    return new NativeFailure("NATIVE_REST_TIMEOUT");
+  if (code === "REST_RESULT_TOO_LARGE")
+    return new NativeFailure("NATIVE_REST_TOO_LARGE");
+  if (
+    [
+      "CONNECTIVITY_ERROR",
+      "REST_TYPE_REJECTED",
+      "REST_REDIRECT_REJECTED",
+    ].includes(code as string)
+  )
+    return new NativeFailure("NATIVE_REST_UNAVAILABLE");
+  return error;
+}
+
 export function nativeProviderAdmission(body: unknown): {
   original: unknown;
   wire: string;
@@ -197,6 +219,22 @@ export async function openNativeGateway(
     : abort.signal;
   let closed = false;
   let active = false;
+  // Reads that arrive while another request is pending wait their turn; Pi
+  // often issues several at once.
+  let idle: (() => void)[] = [];
+  const untilIdle = (signal?: AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        idle = idle.filter((waiter) => waiter !== wake);
+        reject(new Error("NATIVE_CANCELLED"));
+      };
+      const wake = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      idle.push(wake);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   // One bounded human-turn latch, set only by the trusted host terminal.
   let turnArmed = false;
   let terminated: string | undefined;
@@ -585,6 +623,7 @@ export async function openNativeGateway(
       } finally {
         if (admitted) {
           active = false;
+          for (const wake of idle.splice(0)) wake();
         }
       }
     },
@@ -658,12 +697,23 @@ export async function openNativeGateway(
       assertNoSecrets(catalog, Object.values(secrets));
       return catalog;
     }
-    // A host-side retained-evidence refresh is brief and must never race a
-    // relay request (for example a turn advance); wait for it.
-    while (hostWork) {
-      await hostWork.catch(() => {});
+    for (;;) {
+      // A host-side retained-evidence refresh is brief and must never race a
+      // relay request (for example a turn advance); wait for it.
+      while (hostWork) {
+        await hostWork.catch(() => {});
+        check();
+        if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
+      }
+      if (
+        !active ||
+        request.kind !== "tool" ||
+        request.name !== restRequestTool.name ||
+        request.args?.method !== "GET"
+      )
+        break;
+      await untilIdle(requestSignal);
       check();
-      if (requestSignal?.aborted) throw new Error("NATIVE_CANCELLED");
     }
     if (active) {
       if (
@@ -674,17 +724,6 @@ export async function openNativeGateway(
         settle(undefined);
         check();
         return { attachmentError: { code: "ATTACHMENT_BUSY" } };
-      }
-      // No dispatch, no argument echo, no quota accounting. Capacity is
-      // deliberately omitted: the pending request may still consume it.
-      if (
-        request.kind === "tool" &&
-        request.name === restRequestTool.name &&
-        request.args?.method === "GET"
-      ) {
-        settle(undefined);
-        check();
-        return { imageReadError: { code: "IMAGE_READ_BUSY" } };
       }
       throw new Error("NATIVE_REQUEST_BUSY");
     }
@@ -916,12 +955,22 @@ export async function openNativeGateway(
           if (mutation)
             completionByResult.set(result, { ...pending, status: "completed" });
         } catch (error) {
+          // A definite backend rejection was not applied, so it never fences
+          // later writes the way an unknown outcome does.
+          if (mutation && error instanceof RestMutationRejected) {
+            actions.save({ ...pending, status: "rejected" });
+            throw new NativeFailure(
+              "NATIVE_REST_REJECTED",
+              error.message,
+              error.status,
+            );
+          }
           if (mutation) actions.save({ ...pending, status: "unknown" });
           if ((error as Error).message === "REST_REQUEST_REJECTED")
             throw new NativeFailure("NATIVE_REQUEST_REJECTED");
           // A lost response leaves a write's outcome unknown. No automatic retry.
           if (mutation) throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
-          throw error;
+          throw restReadFailure(error);
         }
         memory.observeTool(request.name, request.args, result);
         const image = result.content?.find((part) => part.type === "image");
@@ -1677,7 +1726,9 @@ export async function openProfileGateway(
         request,
         { method: "GET", path },
         requestSignal,
-      );
+      ).catch((error) => {
+        throw restReadFailure(error);
+      });
       assertNoSecrets(result, secretValues);
       if (nativeToolResultTooLarge(result))
         throw new NativeFailure("NATIVE_RESULT_TOO_LARGE");

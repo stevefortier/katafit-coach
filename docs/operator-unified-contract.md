@@ -14,7 +14,7 @@ Legacy sessions retain the existing adapters. With a version-one descriptor, fut
 
 ## Results, receipts and uncertainty
 
-Known SEND preserves the backend one-send-per-session lifecycle. It records a pending operation before dispatch and accepts only the canonical delivered receipt. `studio_operator_get_action` reconciles the same session, recipient and idempotency key; cancellation or a failed follow-up does not establish non-delivery. No uncertain write is automatically retried, even with changed arguments or a different generic write tool.
+Known SEND preserves the backend one-send-per-session lifecycle. It records a pending operation before dispatch and accepts only the canonical delivered receipt. Cancellation or a failed follow-up does not establish non-delivery. No uncertain write is automatically retried, even with changed arguments or a different generic write tool.
 
 Generic writes also persist tool name, session and operation key before dispatch, never payload/member text. A version-one backend result with `status: completed|delivered` and an `action_id` records `completed`; any missing canonical receipt, transport failure, native MCP error, or rejected result remains `unknown`. The model and UI receive that distinction. An unknown generic action survives restart/refresh: without an explicit generic readback contract, closing its session does not prove absence and the client never substitutes the SEND lookup or retries the action. Future receipt formats require an explicit adapter; they are not silently treated as confirmed success.
 

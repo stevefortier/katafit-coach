@@ -124,6 +124,22 @@ const failures = {
     502,
     "Kata.fit tool failed; do not replay uncertain actions.",
   ],
+  NATIVE_REST_TIMEOUT: [
+    504,
+    "The Kata.fit read took longer than 8 seconds and was abandoned.",
+  ],
+  NATIVE_REST_TOO_LARGE: [
+    413,
+    "The Kata.fit read returned more than 256 KiB of JSON and was withheld.",
+  ],
+  NATIVE_REST_UNAVAILABLE: [
+    502,
+    "The Kata.fit read could not be completed (connection, redirect or non-JSON response).",
+  ],
+  NATIVE_REST_REJECTED: [
+    422,
+    "The Kata.fit backend rejected this write; it was not applied.",
+  ],
   NATIVE_GATEWAY_TIMEOUT: [
     504,
     "Coach did not answer this native request in time (timeout); its outcome is unknown. Check Coach state before repeating any action.",
@@ -270,9 +286,14 @@ const fail = (res, error) => {
       error: {
         message:
           `${code}: ${text}` +
-          (error.status ? ` (provider HTTP ${error.status})` : ""),
+          (error.status
+            ? code.startsWith("NATIVE_REST_")
+              ? ` (HTTP ${error.status})`
+              : ` (provider HTTP ${error.status})`
+            : ""),
         type: "native_gateway",
         code,
+        ...(error.status ? { status: error.status } : {}),
       },
     }),
   );

@@ -9,6 +9,17 @@ const validWorkBinding = new Ajv2020().compile(
   workContract.schemas.dispatch_header_json,
 );
 
+/**
+ * The backend answered a mutation with a definite 4xx rejection (not 408), so
+ * it was not applied. The message stays REST_MUTATION_UNKNOWN for callers that
+ * do not distinguish it; they keep treating any failed write as unknown.
+ */
+export class RestMutationRejected extends Error {
+  constructor(readonly status: number) {
+    super("REST_MUTATION_UNKNOWN");
+  }
+}
+
 export const restGetTool = {
   name: "katafit_rest_get",
   description:
@@ -287,7 +298,12 @@ export async function restRequest(
     if (response.status >= 300 && response.status < 400)
       throw new Error("REST_REDIRECT_REJECTED");
     if (!response.ok) {
-      if (method !== "GET") throw new Error("REST_MUTATION_UNKNOWN");
+      if (method !== "GET")
+        throw response.status >= 400 &&
+          response.status < 500 &&
+          response.status !== 408
+          ? new RestMutationRejected(response.status)
+          : new Error("REST_MUTATION_UNKNOWN");
       return acquired({ restReadError: { status: response.status } });
     }
     if (response.status === 204)
@@ -333,7 +349,10 @@ export async function restRequest(
     assertNoSecrets(text, [...secrets, bearer]);
     return acquired({ content: [{ type: "text", text }] });
   } catch (error) {
-    if (method !== "GET") throw new Error("REST_MUTATION_UNKNOWN");
+    if (method !== "GET")
+      throw error instanceof RestMutationRejected
+        ? error
+        : new Error("REST_MUTATION_UNKNOWN");
     const failure = wireSignal.aborted
       ? new SafeError(
           wireSignal.reason?.name === "TimeoutError"
