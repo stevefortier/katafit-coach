@@ -32,8 +32,9 @@ RUN node --input-type=module -e '\
     && rm /tmp/fd.tar.gz /tmp/fd-member /tmp/fd-license \
     && fd --version && rg --version
 WORKDIR /opt/coach
-COPY package.json ./
-COPY dist/native/npm-lock.json ./package-lock.json
+# Only Pi's own dependencies (sandbox/package.json), never the host app's.
+COPY sandbox/package.json ./package.json
+COPY dist/native/sandbox-lock.json ./package-lock.json
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY sandbox/*.mjs /opt/coach/sandbox/
 ARG KATAFIT_BUILD_REVISION

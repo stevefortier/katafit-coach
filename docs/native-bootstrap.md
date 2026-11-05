@@ -103,10 +103,13 @@ docker build --pull=false -f sandbox/Dockerfile \
 KATAFIT_BUILD_REVISION="$SHA" npm pack --pack-destination "$ARTIFACT_DIR"
 ```
 
-`ARTIFACT_DIR` must be outside the export. The package includes
-`dist/native/npm-lock.json`: npm omits root `package-lock.json`. An unpacked npm
-tarball is therefore a valid context for the **sandbox** Dockerfile above, without
-assuming it contains a root lockfile. Build the **outer control-plane image**
+`ARTIFACT_DIR` must be outside the export. npm omits `package-lock.json`
+files, so the package ships `dist/native/npm-lock.json` (the app's lockfile,
+installed with the package) and `dist/native/sandbox-lock.json` (the Pi image's).
+The image installs only `sandbox/package.json` (Pi itself, at the host's
+version), and its fingerprint covers only the sandbox files, so changes to the
+app's own dependencies never require a new image. An unpacked npm tarball is
+therefore a valid context for the **sandbox** Dockerfile above. Build the **outer control-plane image**
 from the same source export, not the npm tarball:
 
 ```sh
