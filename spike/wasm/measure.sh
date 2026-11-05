@@ -42,9 +42,11 @@ run "pi --help" 'Usage|usage' pi --help
 run "grep in workspace" 'beta needle' grep -rn needle /mnt/work
 run "write in workspace" '^from-guest' sh -c 'echo from-guest > /mnt/work/out.txt && cat /mnt/work/out.txt'
 run "10 shell commands in one boot" '^done' sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ls /mnt/work >/dev/null; done; echo done'
-run "git init + commit" '^ *1$' sh -c 'cd /tmp && git init -q r && cd r && echo x > f && git -c user.email=a@b -c user.name=a add f && git -c user.email=a@b -c user.name=a commit -qm x && git log --oneline | wc -l'
+run "git init + commit" '^ *1\r?$' sh -c 'cd /tmp && git init -q r && cd r && echo x > f && git -c user.email=a@b -c user.name=a add f && git -c user.email=a@b -c user.name=a commit -qm x && git log --oneline | wc -l'
 run "only workspace shared" '^isolated' sh -c 'ls /mnt && test "$(ls /mnt)" = work && echo isolated'
-run "no network device" '^no-network' sh -c 'ls /sys/class/net; test "$(ls /sys/class/net | grep -v "^lo$")" = "" && echo no-network'
+# c2w always adds eth0, but without --net nothing backs it: no address, no
+# route, so nothing beyond the guest is reachable.
+run "no network route" '^no-network' sh -c 'ip -4 addr show eth0; ip route; test -z "$(ip route)" && ! ip -4 addr show eth0 | grep -q inet && echo no-network'
 # Interactive sessions feed the VM through stdin. TinyEMU exits on console
 # EOF, so the pipe stays open until the guest shell exits.
 start=$(date +%s%N)
