@@ -7,9 +7,9 @@ import { stockSkills } from "../src/config/skills.js";
 import {
   CAPABILITY_PROTOCOL,
   PRINCIPAL_REST_NOTE,
-  classifySecretRequest,
 } from "../src/capability/invocation.js";
 import { taskFixture } from "./task-fixtures.js";
+import { AGENT_TOKEN } from "./helpers/native.js";
 
 /**
  * Full-capability addendum (Steve): every typed task and chat request runs with
@@ -55,39 +55,10 @@ function worker(f: any, complete: any, extra: any = {}) {
   });
 }
 
-test("capability protocol and secret-producing endpoint classifier", () => {
+// Credential and account-auth routes are refused by the backend to the
+// model's agent token (regimen#1140); the Coach keeps no route list for them.
+test("capability protocol", () => {
   assert.equal(CAPABILITY_PROTOCOL, "coach.capability.v1");
-  for (const [method, path] of [
-    ["GET", "/api/coach/rest-credentials"],
-    ["DELETE", "/api/coach/rest-credentials/abc"],
-    ["GET", "/api/COACH/%72est-credentials"],
-    ["POST", "/api/mcp/servers/device"],
-    ["POST", "/api/mcp/servers/device/rotate"],
-    ["GET", "/api/mcp/servers"],
-    ["POST", "/api/login"],
-    ["POST", "/api/register"],
-    ["POST", "/api/auth/mobile-ticket"],
-    ["POST", "/api/auth/clerk/sync"],
-    ["GET", "/api/invite/abc"],
-    ["POST", "/api/email-verification/verify-code"],
-    ["GET", "/api/%ZZ"],
-  ])
-    assert.equal(
-      classifySecretRequest(method, path),
-      true,
-      `${method} ${path}`,
-    );
-  for (const [method, path] of [
-    ["GET", "/api/docs/coach"],
-    ["GET", "/api/user/targets"],
-    ["POST", "/api/meals"],
-    ["GET", "/api/coach/memory?query=protein"],
-  ])
-    assert.equal(
-      classifySecretRequest(method, path),
-      false,
-      `${method} ${path}`,
-    );
 });
 
 for (const negotiate of [true, false])
@@ -153,7 +124,9 @@ for (const negotiate of [true, false])
           1,
         );
         assert.ok(
-          f.restCalls.every((c: any) => c.authorization === `Bearer ${TOKEN}`),
+          f.restCalls.every(
+            (c: any) => c.authorization === `Bearer ${AGENT_TOKEN}`,
+          ),
         );
         assert.ok(
           f.calls.some((c) => c.name === "coach_memory_begin"),
@@ -540,10 +513,15 @@ test("stale lease, legacy DTO and unavailable REST block mutations before any ne
   }
 });
 
-test("secret-producing, host-only control-plane and memory-write routes are blocked before network", async () => {
+test("host-only routes reach the backend only with the agent token and its refusals never fence; memory writes stay host-side", async () => {
+  // As regimen#1140: the backend refuses agent tokens on host-only routes.
+  const hostOnly = /^\/api\/(coach\/(rest-credentials|autonomy)|mcp|auth)/;
   const f = await taskFixture({
     negotiate: true,
-    rest: async () => ({ status: 200, body: { leaked: TOKEN } }),
+    rest: async (call: any) =>
+      hostOnly.test(call.path)
+        ? { status: 403, body: { code: "AGENT_SESSION_FORBIDDEN" } }
+        : { status: 200, body: { leaked: TOKEN } },
   });
   const outcomes: any[] = [];
   let system = "";
@@ -579,12 +557,24 @@ test("secret-producing, host-only control-plane and memory-write routes are bloc
     f.enqueue("activity_reaction");
     await w.pollOnce();
     assert.deepEqual(
-      f.restCalls.map((c: any) => c.path),
-      ["/api/user/profile"],
+      f.restCalls.map((c: any) => [c.method, c.path]),
+      [
+        ["GET", "/api/coach/rest-credentials"],
+        ["POST", "/api/mcp/servers/device"],
+        ["POST", "/api/auth/mobile-ticket"],
+        ["POST", "/api/coach/autonomy/claims"],
+        ["GET", "/api/user/profile"],
+      ],
     );
-    for (const o of outcomes.slice(0, 3))
-      assert.match(o.text, /SECRET_ENDPOINT_DENIED/);
-    assert.match(outcomes[3].text, /HOST_ONLY_ROUTE/);
+    assert.ok(
+      f.restCalls.every(
+        (c: any) => c.authorization === `Bearer ${AGENT_TOKEN}`,
+      ),
+    );
+    assert.match(outcomes[0].text, /REST_READ_DENIED.*403/);
+    // Each refused write is definite, so the next one is still attempted.
+    for (const o of outcomes.slice(1, 4))
+      assert.match(o.text, /REST_REJECTED.*HTTP 403.*not applied/);
     assert.match(outcomes[4].text, /HOST_ONLY_ROUTE/);
     for (const o of outcomes) assert.ok(!o.text.includes(TOKEN));
     assert.ok(!system.includes(TOKEN));

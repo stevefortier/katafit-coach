@@ -1,3 +1,4 @@
+import { withAgentSessions } from "./helpers/native.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -33,23 +34,25 @@ async function gatewayFixture(
   let response = "",
     n = 0;
   let gateway: Awaited<ReturnType<typeof openProfileGateway>> | undefined;
-  const server = createServer(async (req, res) => {
-    if (req.url === "/v1/chat/completions") {
-      let wire = "";
-      for await (const chunk of req) wire += chunk;
-      wires.push(wire);
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(response);
-    } else {
-      reads.push(req.url!);
-      const route = routes.get(req.url!) ?? {
-        status: 404,
-        text: '{"error":"synthetic missing"}',
-      };
-      res.writeHead(route.status, { "content-type": "application/json" });
-      res.end(route.text);
-    }
-  });
+  const server = createServer(
+    withAgentSessions(async (req, res) => {
+      if (req.url === "/v1/chat/completions") {
+        let wire = "";
+        for await (const chunk of req) wire += chunk;
+        wires.push(wire);
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(response);
+      } else {
+        reads.push(req.url!);
+        const route = routes.get(req.url!) ?? {
+          status: 404,
+          text: '{"error":"synthetic missing"}',
+        };
+        res.writeHead(route.status, { "content-type": "application/json" });
+        res.end(route.text);
+      }
+    }),
+  );
   try {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     const origin = `http://127.0.0.1:${(server.address() as any).port}`;

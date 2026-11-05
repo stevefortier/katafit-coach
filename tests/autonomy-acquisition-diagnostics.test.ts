@@ -1,3 +1,4 @@
+import { withAgentSessionFetch, withAgentSessions } from "./helpers/native.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -77,24 +78,26 @@ async function fixture(
     { status: number; body: string | Buffer; type: string }
   >();
   let response = selection([]);
-  const server = createServer(async (req, res) => {
-    if (req.url === "/v1/chat/completions") {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk);
-      wires.push(Buffer.concat(chunks).toString("utf8"));
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(response);
-    } else {
-      reads.push(req.url!);
-      const route = routes.get(req.url!) ?? {
-        status: 200,
-        body: privateJson,
-        type: "application/json",
-      };
-      res.writeHead(route.status, { "content-type": route.type });
-      res.end(route.body);
-    }
-  });
+  const server = createServer(
+    withAgentSessions(async (req, res) => {
+      if (req.url === "/v1/chat/completions") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk);
+        wires.push(Buffer.concat(chunks).toString("utf8"));
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(response);
+      } else {
+        reads.push(req.url!);
+        const route = routes.get(req.url!) ?? {
+          status: 200,
+          body: privateJson,
+          type: "application/json",
+        };
+        res.writeHead(route.status, { "content-type": route.type });
+        res.end(route.body);
+      }
+    }),
+  );
   let gateway: Awaited<ReturnType<typeof openProfileGateway>> | undefined;
   try {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -336,7 +339,7 @@ for (const legacy of [false, true])
             try {
               AbortSignal.timeout = (ms) =>
                 ms === 8000 ? deadline.signal : originalTimeout(ms);
-              globalThis.fetch = async (url, init) => {
+              globalThis.fetch = withAgentSessionFetch(async (url, init) => {
                 if (new URL(String(url)).pathname !== "/api/coach/memory")
                   return originalFetch(url, init);
                 dispatches++;
@@ -354,7 +357,7 @@ for (const legacy of [false, true])
                   throw controller.signal.reason;
                 }
                 throw new Error("PRIVATE-UNCLASSIFIED");
-              };
+              });
               if (control === "cancelled") {
                 await assert.rejects(
                   gateway.handle(chosen, controller.signal),
@@ -491,9 +494,9 @@ test("throwing acquisition callback preserves original transport cancellation id
     },
   });
   try {
-    globalThis.fetch = async () => {
+    globalThis.fetch = withAgentSessionFetch(async () => {
       throw transportError;
-    };
+    });
     await assert.rejects(
       acquisition
         .tools()[0]

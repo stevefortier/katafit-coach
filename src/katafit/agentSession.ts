@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { restRequest } from "./restGet.js";
 
 const TTL_SECONDS = 4 * 3600;
@@ -83,4 +84,26 @@ export class AgentSession {
     this.minted = undefined;
     if (minted) await this.revoke(minted.id);
   }
+}
+
+const shared = new Map<string, AgentSession>();
+/**
+ * One agent session per installation for this host process. Worker and
+ * planner invocations are frequent and short; sharing keeps them well under
+ * the backend's active-session limit, and renewal keeps the token fresh.
+ */
+export function sharedAgentSession(
+  origin: string,
+  installation: string,
+  secrets: () => string[],
+) {
+  const key =
+    origin + "\0" + createHash("sha256").update(installation).digest("hex");
+  let session = shared.get(key);
+  if (!session)
+    shared.set(
+      key,
+      (session = new AgentSession(origin, installation, secrets)),
+    );
+  return session;
 }

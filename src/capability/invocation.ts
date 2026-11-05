@@ -12,13 +12,14 @@ import {
 } from "./integrations.js";
 import { assertNoSecrets } from "../config/store.js";
 import { GENERATION_GUIDANCE } from "../runtime/generationGuidance.js";
-import { classifyAutonomyRequest } from "../katafit/autonomyNamespace.js";
+import { sharedAgentSession } from "../katafit/agentSession.js";
 import {
   canonicalRecipient,
   classifyMemberMessageRequest,
   memberSendPath,
 } from "../katafit/memberMessages.js";
 import {
+  RestMutationRejected,
   restRequest,
   restRequestArgs,
   restRequestTool,
@@ -87,7 +88,7 @@ export interface ActionLedger {
     session_id: string;
     idempotency_key: string;
     tool_name: string;
-    status: "pending" | "unknown" | "completed";
+    status: "pending" | "unknown" | "completed" | "not_found";
   }): void;
 }
 export interface InvocationOptions {
@@ -168,34 +169,6 @@ export function validOccurrence(value: any): value is Occurrence {
   );
 }
 
-/**
- * Secret-producing or interactive-only account endpoints. Undecodable paths
- * fail closed. Reads are blocked too: they can disclose credentials.
- */
-export function classifySecretRequest(_method: string, path: string) {
-  const segments = path
-    .split("?", 1)[0]
-    .split("/")
-    .map((segment) => {
-      try {
-        return decodeURIComponent(segment).toLowerCase();
-      } catch {
-        return undefined;
-      }
-    });
-  if (segments.includes(undefined)) return true;
-  const s = segments.filter((segment) => segment !== "") as string[];
-  if (s[0] !== "api") return false;
-  return (
-    (s[1] === "coach" && s[2] === "rest-credentials") ||
-    s[1] === "mcp" ||
-    s[1] === "auth" ||
-    ["login", "register", "logout", "invite", "email-verification"].includes(
-      s[1],
-    )
-  );
-}
-
 const canonical = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === "object")
@@ -223,6 +196,16 @@ const text = (value: unknown) => ({
   details: {},
 });
 const refusal = (error: string, note: string) => text({ error, note });
+const rejected = (status: number) =>
+  refusal(
+    "REST_REJECTED",
+    `The backend rejected this write (HTTP ${status}); it was not applied. Do not retry it unchanged.`,
+  );
+const unavailable = () =>
+  refusal(
+    "REST_UNAVAILABLE",
+    "The Kata.fit connection is unavailable; nothing was sent. Do not retry this action in this invocation.",
+  );
 const settled = (o: Occurrence) =>
   o.status === "succeeded" || o.status === "failed";
 
@@ -342,8 +325,20 @@ export class InvocationCapability {
           o.mutationHeld?.() === true,
       });
   }
+  // The model's own REST calls use a shared agent session token, never the
+  // installation token; the backend refuses it the host-only routes.
+  private get agent() {
+    return sharedAgentSession(this.o.origin, this.o.token, () =>
+      [this.o.token, ...this.o.secrets].filter(Boolean),
+    );
+  }
+  private modelBearer(signal?: AbortSignal) {
+    return this.agent.token(signal ?? new AbortController().signal);
+  }
   private get values() {
-    return [this.o.token, ...this.o.secrets].filter(Boolean);
+    return [this.o.token, this.agent.current(), ...this.o.secrets].filter(
+      (v): v is string => !!v,
+    );
   }
   private integrationRoute(path: string) {
     try {
@@ -387,9 +382,6 @@ export class InvocationCapability {
     } catch {
       return { ok: false, error: "ARGUMENTS_REJECTED" };
     }
-    // The same GET guards as the model tool; nothing reaches the network.
-    if (classifySecretRequest("GET", canonical))
-      return { ok: false, error: "SECRET_ENDPOINT_DENIED" };
     if (this.integrationRoute(canonical))
       return { ok: false, error: "HOST_ONLY_ROUTE" };
     await this.read(raw, canonical, signal);
@@ -421,13 +413,7 @@ export class InvocationCapability {
         "Use {method, path, body?} with a relative /api/ path and no credentials.",
       );
     }
-    if (classifySecretRequest(args.method, args.path))
-      return refusal(
-        "SECRET_ENDPOINT_DENIED",
-        "Credential and account-security endpoints are interactive-only and never available to Coach invocations.",
-      );
     if (
-      classifyAutonomyRequest(args.method, args.path).kind === "reject" ||
       this.integrationRoute(args.path) ||
       (args.method !== "GET" &&
         classifyMemoryWrite(args.method, args.path, raw.body) !== undefined)
@@ -482,7 +468,7 @@ export class InvocationCapability {
       this.reads++;
       const result: any = await restRequest(
         this.o.origin,
-        this.o.token,
+        await this.modelBearer(signal),
         raw,
         signal ?? new AbortController().signal,
         this.values,
@@ -806,6 +792,9 @@ export class InvocationCapability {
           "LEASE_LOST",
           "This invocation no longer holds its lease; no action was performed.",
         );
+      // Before opening the action: a missing token must not leave it open.
+      const bearer = await this.modelBearer(signal).catch(() => undefined);
+      if (!bearer) return unavailable();
       const ordinal =
         this.known.filter((o) => o.action === "rest_mutation").length + 1;
       const local =
@@ -839,12 +828,24 @@ export class InvocationCapability {
       try {
         result = await restRequest(
           this.o.origin,
-          this.o.token,
+          bearer,
           raw,
           signal ?? new AbortController().signal,
           this.values,
         );
-      } catch {
+      } catch (error) {
+        // A definite 4xx was not applied: settle it failed, without fencing.
+        if (error instanceof RestMutationRejected) {
+          this.record(
+            await this.o.journal
+              .settle(opened.slot, "failed")
+              .catch(() => undefined),
+            opened,
+            "failed",
+          );
+          if (local) this.o.ledger!.save({ ...local, status: "not_found" });
+          return rejected(error.status);
+        }
         this.record(
           await this.o.journal
             .settle(opened.slot, "unknown")
@@ -872,6 +873,8 @@ export class InvocationCapability {
         "LEASE_LOST",
         "This invocation no longer holds its lease; no action was performed.",
       );
+    const bearer = await this.modelBearer(signal).catch(() => undefined);
+    if (!bearer) return unavailable();
     const pending = {
       session_id: this.o.ledgerSession,
       idempotency_key: randomUUID(),
@@ -883,12 +886,16 @@ export class InvocationCapability {
     try {
       result = await restRequest(
         this.o.origin,
-        this.o.token,
+        bearer,
         raw,
         signal ?? new AbortController().signal,
         this.values,
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof RestMutationRejected) {
+        this.o.ledger.save({ ...pending, status: "not_found" });
+        return rejected(error.status);
+      }
       this.o.ledger.save({ ...pending, status: "unknown" });
       this.uncertain();
     }

@@ -29,6 +29,20 @@ export function withAgentSessions(
     return handler(req, res);
   };
 }
+/** The same for a stubbed global fetch. */
+export function withAgentSessionFetch(stub: typeof fetch): typeof fetch {
+  return (async (input: any, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (new URL(url).pathname.startsWith("/api/coach/agent-sessions"))
+      return (init?.method ?? "GET") === "DELETE"
+        ? new Response(null, { status: 204 })
+        : new Response(JSON.stringify(agentSession()), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          });
+    return stub(input, init);
+  }) as typeof fetch;
+}
 export async function fixture(
   transform?: (name: string, result: any, body: any) => any,
   get?: (

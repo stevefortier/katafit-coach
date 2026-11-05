@@ -1,3 +1,4 @@
+import { agentSession } from "./helpers/native.js";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -121,6 +122,13 @@ export async function taskFixture(options: any = {}) {
   const sockets = new Set<any>();
   const server = createServer(async (req, res) => {
     sockets.add(req.socket);
+    // Agent sessions for the model's own REST calls (regimen#1140).
+    if (options.rest && req.url?.startsWith("/api/coach/agent-sessions")) {
+      for await (const _ of req);
+      if (req.method === "DELETE") return void res.writeHead(204).end();
+      res.writeHead(201, { "content-type": "application/json" });
+      return void res.end(JSON.stringify(agentSession()));
+    }
     if (
       options.rest &&
       req.url?.startsWith("/api/") &&

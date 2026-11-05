@@ -6,6 +6,7 @@ import { Worker } from "../src/worker/runner.js";
 import { InvocationCapability } from "../src/capability/invocation.js";
 import { answer, toolCall } from "./helpers/continuity.js";
 import { taskFixture } from "./task-fixtures.js";
+import { AGENT_TOKEN, withAgentSessions } from "./helpers/native.js";
 
 // Standalone typed day_closure: the actual Worker task -> InvocationCapability
 // -> loopback REST (canonical backend response shapes) -> real Pi adapter ->
@@ -306,7 +307,7 @@ test("personal day closeout hydrates canonical self meal detail before the model
   // The model's re-read was served from the acquisition, not refetched; no
   // principal-account targets or workout reads.
   assert.deepEqual(r.reads, r.readsAtFirstTurn);
-  assert.ok(r.authorizations.every((a) => a === `Bearer ${TOKEN}`));
+  assert.ok(r.authorizations.every((a) => a === `Bearer ${AGENT_TOKEN}`));
 
   const first = envelope(r.bodies[0]);
   assert.deepEqual(Object.keys(first), [
@@ -602,15 +603,25 @@ test("Dojo feed targets without numeric values and an array peer summary are una
   });
 });
 
-test("host acquire honors the tool's secret-endpoint and host-only integration guards with zero network dispatch", async () => {
+test("host acquire sends secret routes only with the agent token (the backend refuses them) and keeps integrations host-side", async () => {
   let server: ReturnType<typeof createServer> | undefined;
   const dispatched: string[] = [];
   try {
-    server = createServer((req, res) => {
-      dispatched.push(`${req.method} ${req.url}`);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ secret: "never" }));
-    });
+    server = createServer(
+      withAgentSessions((req, res) => {
+        dispatched.push(
+          `${req.method} ${req.url} ${req.headers.authorization}`,
+        );
+        // As regimen#1140: agent tokens are refused secret and auth routes.
+        const refused = /^\/api\/(coach\/rest-credentials|mcp|auth|login)/.test(
+          req.url!,
+        );
+        res.writeHead(refused ? 403 : 200, {
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ secret: "never" }));
+      }),
+    );
     await new Promise<void>((r) => server!.listen(0, "127.0.0.1", r));
     const capability = new InvocationCapability({
       plane: "task",
@@ -621,30 +632,38 @@ test("host acquire honors the tool's secret-endpoint and host-only integration g
       current: () => true,
       actions: [],
     });
-    for (const path of [
+    const secretPaths = [
       "/api/coach/rest-credentials",
       "/api/coach/rest-credentials/abc",
       "/api/mcp/tokens",
       "/api/auth/session",
       "/api/login",
+    ];
+    for (const path of secretPaths) {
+      const result = await capability.acquire(path);
+      assert.equal(result.ok, false, path);
+      assert.equal((result as any).status, 403, path);
+    }
+    for (const path of [
       "/api/coach/integrations",
       "/api/coach/integrations/abc/secrets",
     ]) {
       const result = await capability.acquire(path);
       assert.equal(result.ok, false, path);
-      assert.match(
-        (result as any).error,
-        /^(SECRET_ENDPOINT_DENIED|HOST_ONLY_ROUTE)$/,
-        path,
-      );
+      assert.equal((result as any).error, "HOST_ONLY_ROUTE", path);
     }
-    assert.deepEqual(dispatched, []);
     // An ordinary documented read still dispatches exactly once.
     assert.equal(
       (await capability.acquire(`/api/activities/${id(1)}`)).ok,
       true,
     );
-    assert.deepEqual(dispatched, [`GET /api/activities/${id(1)}`]);
+    // Only the agent token ever reached the backend; integrations never did.
+    assert.deepEqual(
+      dispatched,
+      [...secretPaths, `/api/activities/${id(1)}`].map(
+        (path) => `GET ${path} Bearer ${AGENT_TOKEN}`,
+      ),
+    );
   } finally {
     if (server) {
       server.closeAllConnections();

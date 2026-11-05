@@ -41,8 +41,9 @@ before expiry and revoked at teardown) and sends that instead. The backend
 refuses agent tokens on host-only routes (secrets, account auth, MCP
 configuration, autonomy control writes), so the host keeps no route filter of
 its own. If minting fails the call fails; it never falls back to the
-installation token. Host-owned calls (memory recall, member-message delivery)
-still use the installation token.
+installation token. Worker and planner invocations share one agent session per
+host process for the model's reads and writes. Host-owned calls (memory recall,
+member-message delivery) still use the installation token.
 A denied GET displays its HTTP status and never falls back to MCP reads.
 A 4xx write is reported as rejected; any other failed write is unknown.
 
