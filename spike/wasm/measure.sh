@@ -19,7 +19,7 @@ run() { # name, guest command...
   local name="$1"; shift
   local start end out status
   start=$(date +%s%N)
-  out=$(wasmtime run --dir "$host::/mnt/work" "$image" "$@" 2>&1 </dev/null); status=$?
+  out=$(wasmtime run --dir "$host::/mnt/work" "$image" -no-stdin "$@" 2>&1 </dev/null); status=$?
   end=$(date +%s%N)
   local seconds; seconds=$(awk -v a="$start" -v b="$end" 'BEGIN{printf "%.1f", (b-a)/1e9}')
   if [ $status -eq 0 ]; then
@@ -39,6 +39,15 @@ run "write in workspace" sh -c 'echo from-guest > /mnt/work/out.txt && cat /mnt/
 run "10 shell commands in one boot" sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ls /mnt/work >/dev/null; done; echo done'
 run "git init + commit" sh -c 'cd /tmp && git init -q r && cd r && echo x > f && git -c user.email=a@b -c user.name=a add f && git -c user.email=a@b -c user.name=a commit -qm x && git log --oneline | wc -l'
 run "only workspace shared" sh -c 'ls /mnt && test "$(ls /mnt)" = work && echo isolated'
+# Interactive sessions feed the VM through stdin: commands piped to a shell.
+start=$(date +%s%N)
+piped=$(printf 'echo piped-$((6*7))\nnode -e "console.log(process.version)"\nexit\n' | wasmtime run --dir "$host::/mnt/work" "$image" sh 2>&1); status=$?
+seconds=$(awk -v a="$start" -v b="$(date +%s%N)" 'BEGIN{printf "%.1f", (b-a)/1e9}')
+if [ $status -eq 0 ] && echo "$piped" | grep -q piped-42; then
+  report "| commands piped to sh on stdin | $seconds | ok: $(echo "$piped" | tail -1 | cut -c1-60) |"
+else
+  failures=$((failures + 1)); report "| commands piped to sh on stdin | $seconds | FAILED ($status): $(echo "$piped" | tr '\n' ' ' | cut -c1-120) |"
+fi
 if [ "$(cat "$work/out.txt" 2>/dev/null)" = "from-guest" ]; then
   report "| guest write visible on host | - | ok |"
 else
