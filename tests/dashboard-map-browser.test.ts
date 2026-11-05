@@ -408,3 +408,100 @@ test("served event timeline uses local DST occurrence scale without Leaflet", as
     await rm(home, { recursive: true, force: true });
   }
 });
+
+// Day navigation keeps the operator's view: no world-view flash while the
+// next day loads, and no refit when its events are already in view.
+const viewOf = (page: any) =>
+  page.evaluate(() => {
+    const map = (window as any).fixtureMap;
+    const { lat, lng } = map.getCenter();
+    return { lat, lng, zoom: map.getZoom() };
+  });
+// Same zoom and within one pixel: a new map re-rounds Leaflet's pixel origin.
+const sameView = (a: any, b: any) => {
+  const pixel = 360 / (256 * 2 ** a.zoom);
+  return (
+    a.zoom === b.zoom &&
+    Math.abs(a.lat - b.lat) < pixel &&
+    Math.abs(a.lng - b.lng) < pixel
+  );
+};
+for (const [name, shift, refits] of [
+  ["nearby events keep the view", 0.001, false],
+  ["events out of view refit to the new day", 20, true],
+] as const)
+  test(`changing day keeps the map view while loading; ${name}`, async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    let held = false;
+    await fixture(
+      async (page) => {
+        await page.waitForFunction(
+          () => document.querySelectorAll(".dashboard-event-dot").length > 0,
+        );
+        // The operator zooms out one level from the fitted day.
+        await page.evaluate(() =>
+          (window as any).fixtureMap.setZoom(
+            (window as any).fixtureMap.getZoom() - 1,
+            { animate: false },
+          ),
+        );
+        const before = await viewOf(page);
+        held = true;
+        await page.locator("#dashboardMapDate").fill("2026-09-29");
+        await page.locator("#dashboardMapDate").dispatchEvent("change");
+        await page.waitForFunction(() =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("Loading"),
+        );
+        assert.ok(
+          sameView(await viewOf(page), before),
+          "no world view while loading",
+        );
+        release();
+        await page.waitForFunction(
+          () => document.querySelectorAll(".dashboard-event-dot").length > 0,
+        );
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        );
+        const after = await viewOf(page);
+        assert.equal(
+          sameView(after, before),
+          !refits,
+          JSON.stringify({ before, after }),
+        );
+        if (refits) assert.ok(after.lat > 50, JSON.stringify(after));
+      },
+      {
+        override: (u, events) =>
+          u.pathname === "/api/dashboard/timeline" && held
+            ? {
+                hold,
+                body: {
+                  users: [{ _id: ada, display_name: "Synthetic Ada" }],
+                  events: events.map((e) => ({
+                    ...e,
+                    occurred_at: e.occurred_at.replace("09-28", "09-29"),
+                    ...(e.position
+                      ? {
+                          position: {
+                            ...e.position,
+                            latitude: (e.position.latitude as number) + shift,
+                          },
+                        }
+                      : {}),
+                  })),
+                  hasMore: false,
+                },
+              }
+            : undefined,
+      },
+    );
+  });
