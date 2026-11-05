@@ -77,6 +77,11 @@ test("the Pi image fingerprint ignores host dependency changes and follows sandb
       await readFile(join(dir, "dist/native/sandbox-lock.json"), "utf8"),
       await readFile("sandbox/package-lock.json", "utf8"),
     );
+    // The Docker build context must include the sandbox lockfile.
+    assert.match(
+      await readFile(".dockerignore", "utf8"),
+      /^!dist\/native\/sandbox-lock\.json$/m,
+    );
     const sandbox = await json(join(dir, "sandbox/package.json"));
     sandbox.dependencies[PI] = "0.0.0";
     await writeFile(join(dir, "sandbox/package.json"), JSON.stringify(sandbox));
