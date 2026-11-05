@@ -7,7 +7,7 @@ import { openNativeGateway } from "../src/sandbox/gateway.js";
 
 import { Actions } from "../src/chat/actions.js";
 
-test("actual relay journals REST mutations without automatic retry", async () => {
+test("actual relay sends REST mutations once, without journaling or automatic retry", async () => {
   const calls: string[] = [];
   const server = createServer((req, res) => {
     calls.push(req.method + " " + req.url);
@@ -58,7 +58,8 @@ test("actual relay journals REST mutations without automatic retry", async () =>
         }),
       /outcome is unknown.*do not replay/i,
     );
-    assert.equal(new Actions(f.store).snapshot().at(-1)?.status, "unknown");
+    // Ordinary writes are not journaled; the backend validates each one.
+    assert.deepEqual(new Actions(f.store).snapshot(), []);
     // An unknown acknowledgement does not trigger an automatic REST replay.
     assert.deepEqual(calls, [
       "GET /api/docs/coach",
@@ -154,12 +155,9 @@ test("actual Pi continuations may reuse a mutation ID for distinct canonical occ
     const answer = await piTurn(relay, "approved-custom-model", messages);
     assert.equal(answer.stopReason, "stop", JSON.stringify(answer));
     assert.deepEqual(writes, [args.body, args.body]);
-    assert.equal(new Actions(f.store).snapshot().length, 2);
     // Distinct provider selections dispatched despite reusing the same ID.
     assert.equal(writes.length, 2);
-    assert.ok(
-      new Actions(f.store).snapshot().every((a) => a.status === "completed"),
-    );
+    assert.deepEqual(new Actions(f.store).snapshot(), []);
   } finally {
     await relay?.close();
     await gateway?.close();
@@ -284,10 +282,7 @@ for (const lost of [false, true])
       const answer = await piTurn(relay, "approved-custom-model", messages);
       assert.equal(answer.stopReason, "stop", JSON.stringify(answer));
       assert.equal(mutations, 1);
-      assert.equal(
-        new Actions(f.store).snapshot().at(-1)?.status,
-        lost ? "unknown" : "completed",
-      );
+      assert.deepEqual(new Actions(f.store).snapshot(), []);
       assert.equal(mutations, 1);
     } finally {
       await relay?.close();
@@ -321,5 +316,46 @@ test("extension transport loss emits fixed unknown-outcome guidance, not a retry
   } finally {
     await gateway.close();
     await f.close();
+  }
+});
+
+test("rows left by earlier journaled REST writes no longer fence writes", async () => {
+  const writes: string[] = [];
+  const server = createServer((req, res) => {
+    writes.push(req.method + " " + req.url);
+    res.setHeader("content-type", "application/json");
+    res.end("{}");
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const f = await fixture();
+  await f.store.save({
+    ...f.store.publicConfig(),
+    origin: `http://127.0.0.1:${(server.address() as any).port}`,
+  });
+  // What an earlier lost native write left behind, with no way to reconcile it.
+  new Actions(f.store).save({
+    session_id: "native-fixture-session",
+    idempotency_key: "0f8fad5b-d9cb-469f-a165-70867728950e",
+    tool_name: "katafit_rest_request",
+    status: "unknown",
+  });
+  assert.equal(new Actions(f.store).unresolved(), false);
+  const gateway = await openNativeGateway(f.store);
+  let relay: Awaited<ReturnType<typeof startRelay>> | undefined;
+  try {
+    relay = await startRelay(gateway);
+    const ext = await loadExtension(relay);
+    await ext.call("katafit_rest_request", {
+      method: "PATCH",
+      path: "/api/next",
+      body: { value: 1 },
+    });
+    assert.deepEqual(writes, ["PATCH /api/next"]);
+  } finally {
+    await relay?.close();
+    await gateway.close();
+    await f.close();
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
   }
 });
