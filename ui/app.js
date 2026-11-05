@@ -1537,6 +1537,7 @@ async function status() {
     if (s.lifecycle) showLifecycle(s.lifecycle);
     renderHeaderStatus();
     updateWorkerBlocked = s.preview === true;
+    noteInstalledRevision(s.installed);
     renderUpdate();
     $("lastError").textContent = s.lastError
       ? "Last error · " +
@@ -4112,8 +4113,7 @@ async function refreshUpdate(check = false, local = false) {
     if (check && !manualUpdateActive(data) && !data.preparing && !data.applying)
       data = await api("update/check", {}, signal);
     if (controller.signal.aborted || generation !== authGeneration) return;
-    if (updateInitialRevision === undefined)
-      updateInitialRevision = data.installed;
+    noteInstalledRevision(data.installed);
     const queueEnded = manualUpdateActive() && !manualUpdateActive(data);
     updateData = data;
     // The queue's own transition fence just ended; refresh the header now.
@@ -4283,7 +4283,17 @@ action("updateCancel", async () => {
   $("updateConfirm").hidden = true;
   updateTarget = undefined;
 });
-action("updateReload", async () => {
+// The first installed revision seen is the one this page was served from; a
+// later one means an upgrade replaced it, so offer a refresh from any view.
+function noteInstalledRevision(installed) {
+  if (updateInitialRevision === undefined) updateInitialRevision = installed;
+  $("studioReloadNotice").hidden = !(
+    sourceSha(installed) &&
+    sourceSha(updateInitialRevision) &&
+    installed !== updateInitialRevision
+  );
+}
+async function reloadStudio() {
   if (hasUnsavedEdits()) {
     notice(
       "Unsaved edits: save or revert changes before reloading.",
@@ -4292,7 +4302,9 @@ action("updateReload", async () => {
     return;
   }
   location.reload();
-});
+}
+action("updateReload", reloadStudio);
+action("studioReload", reloadStudio);
 let updateApplyRequest = false;
 action("updateConfirmApply", async () => {
   const generation = authGeneration;

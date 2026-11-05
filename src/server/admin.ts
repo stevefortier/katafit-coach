@@ -1485,6 +1485,8 @@ export async function admin(
           nativeActive: terminal.active,
           lastError: logs.lastError,
           revision: store.publicConfig().revision,
+          // Installed Studio source, so an open page notices it is outdated.
+          installed: updates.installed,
           skillsRevision: store.skills.runtime().revision,
           lifecycle,
           transition: busy,

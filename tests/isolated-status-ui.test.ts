@@ -31,6 +31,7 @@ test("served status renders persistent no-resend warning separately from retaine
     $: (id: string) => (id === "isolatedTaskRecovery" ? recovery : node),
     renderHeaderStatus: () => {},
     renderUpdate: () => {},
+    noteInstalledRevision: () => {},
   });
   await vm.runInContext(body + ";status()", context);
   assert.match(

@@ -2775,3 +2775,34 @@ html.compact-map,
     display: none;
   }
 }
+
+/* An installed upgrade floats a refresh offer over the page, so it never
+   reflows the view beneath it. */
+.studio-reload-notice {
+  position: fixed;
+  top: calc(var(--header-offset, 0px) + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  max-width: calc(100vw - 16px);
+  padding: 8px 8px 8px 14px;
+  border: 1px solid #3f8a5c;
+  border-left-width: 4px;
+  background: #13291c;
+  color: #9ee3ae;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+}
+.studio-reload-notice[hidden] {
+  display: none;
+}
+.studio-reload-notice p {
+  margin: 0;
+  font-size: 13px;
+}
+.studio-reload-notice button {
+  flex: none;
+  margin: 0;
+}
