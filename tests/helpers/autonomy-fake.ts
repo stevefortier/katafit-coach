@@ -1,3 +1,4 @@
+import { AGENT_TOKEN, agentSession } from "./native.js";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import { AutonomyBackend } from "../../src/autonomy/backend.js";
@@ -905,8 +906,18 @@ export async function autonomyFake(
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const bearer = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
-    const identity = tokens.get(bearer);
     const url = new URL(req.url!, "http://fake");
+    // Agent sessions for the model's own REST calls (regimen#1140): the token
+    // then acts as the minting installation's identity.
+    if (url.pathname.startsWith("/api/coach/agent-sessions")) {
+      const minter = tokens.get(bearer);
+      if (!minter) return void res.writeHead(401).end();
+      if (req.method === "DELETE") return void res.writeHead(204).end();
+      tokens.set(AGENT_TOKEN, minter);
+      res.writeHead(201, { "content-type": "application/json" });
+      return void res.end(JSON.stringify(agentSession()));
+    }
+    const identity = tokens.get(bearer);
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
       state.providerRequests.push(raw);
       const out = state.provider?.(JSON.parse(raw)) ?? { content: "ok" };

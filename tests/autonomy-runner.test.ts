@@ -396,21 +396,31 @@ test("C3: denied or failed reads force partial coverage", async () => {
   }
 });
 
-test("C3: secret-producing reads are refused before any network call", async () => {
+test("C3: a secret route reaches the backend only with the agent token, and its refusal is a denied read", async () => {
   const env = await setup();
   try {
-    restServer(env.fake, {});
+    // As regimen#1140: agent tokens are refused credential routes.
+    restServer(env.fake, {
+      "GET /api/coach/rest-credentials": {
+        status: 403,
+        body: { code: "AGENT_SESSION_FORBIDDEN" },
+      },
+    });
     const { runtime } = await cycle(env, [
       async ({ call }) => {
         const r = await call("katafit_rest_get", {
           path: "/api/coach/rest-credentials",
         });
-        assert.match(JSON.stringify(r), /SECRET_ENDPOINT_DENIED/);
+        assert.match(JSON.stringify(r), /REST_READ_DENIED.*403/);
+        assert.doesNotMatch(JSON.stringify(r), /AGENT_SESSION_FORBIDDEN/);
         return outcome();
       },
     ]);
     assert.equal(runtime.runs[0].calls[0].ok, true);
-    assert.ok(!env.fake.calls.some((c) => c.path.includes("rest-credentials")));
+    assert.equal(
+      env.fake.calls.filter((c) => c.path.includes("rest-credentials")).length,
+      1,
+    );
   } finally {
     await env.close();
   }

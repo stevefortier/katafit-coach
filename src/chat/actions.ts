@@ -4,13 +4,16 @@ import { Store, assertNoSecrets } from "../config/store.js";
 /**
  * A row left by an earlier native Pi REST write. Those writes are no longer
  * journaled and had no way to be reconciled, so retained rows never fence.
- * Other writers key their rows with a prefix (invocation_, work_, legacy:).
+ * Other writers key their rows with a prefix (invocation_, work_, legacy:) or,
+ * for worker request writes, use a prefixed session (worker-request:).
  */
 export const ordinaryNativeRest = (action: {
   tool_name?: string;
   idempotency_key?: string;
+  session_id?: string;
 }) =>
   action.tool_name === "katafit_rest_request" &&
+  !/^(?:worker-request|invocation|autonomy):/.test(action.session_id ?? "") &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
     action.idempotency_key ?? "",
   );

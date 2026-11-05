@@ -1,3 +1,4 @@
+import { withAgentSessions } from "./helpers/native.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -10,25 +11,27 @@ for (const action of ["member_message", "rest_mutation"] as const) {
   test(`lost ${action} settlement remains unknown and never publishes synthetic success or replays`, async () => {
     let writes = 0;
     const recipient = "2".repeat(24);
-    const server = createServer(async (req, res) => {
-      for await (const _ of req) {
-        /* drain bounded synthetic request */
-      }
-      res.setHeader("content-type", "application/json");
-      if (req.method === "POST" || req.method === "PUT") writes++;
-      res.end(
-        JSON.stringify(
-          action === "member_message"
-            ? {
-                status: "delivered",
-                recipient_id: recipient,
-                idempotency_key: "synthetic-key",
-                message_id: "3".repeat(24),
-              }
-            : { per_year: 24 },
-        ),
-      );
-    });
+    const server = createServer(
+      withAgentSessions(async (req, res) => {
+        for await (const _ of req) {
+          /* drain bounded synthetic request */
+        }
+        res.setHeader("content-type", "application/json");
+        if (req.method === "POST" || req.method === "PUT") writes++;
+        res.end(
+          JSON.stringify(
+            action === "member_message"
+              ? {
+                  status: "delivered",
+                  recipient_id: recipient,
+                  idempotency_key: "synthetic-key",
+                  message_id: "3".repeat(24),
+                }
+              : { per_year: 24 },
+          ),
+        );
+      }),
+    );
     await new Promise<void>((resolve) =>
       server.listen(0, "127.0.0.1", resolve),
     );

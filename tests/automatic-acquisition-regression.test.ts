@@ -1,3 +1,4 @@
+import { withAgentSessions } from "./helpers/native.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -21,30 +22,32 @@ async function fixture(vision = true, maxImages = 1) {
     .toBuffer();
   let revoked = false;
   const reads: string[] = [];
-  const server = createServer(async (req, res) => {
-    if (req.method === "POST") {
-      let raw = "";
-      for await (const chunk of req) raw += chunk;
-      const selected = JSON.parse(JSON.parse(raw).messages[0].content);
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(
-        toolCall(
-          selected.function.name,
-          JSON.parse(selected.function.arguments),
-          selected.id,
-        ),
-      );
-      return;
-    }
-    reads.push(req.url!);
-    if (revoked || req.url!.includes("denied")) {
-      res.writeHead(403, { "content-type": "application/json" });
-      res.end('{"error":"unavailable"}');
-    } else {
-      res.writeHead(200, { "content-type": "image/jpeg" });
-      res.end(jpeg);
-    }
-  });
+  const server = createServer(
+    withAgentSessions(async (req, res) => {
+      if (req.method === "POST") {
+        let raw = "";
+        for await (const chunk of req) raw += chunk;
+        const selected = JSON.parse(JSON.parse(raw).messages[0].content);
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(
+          toolCall(
+            selected.function.name,
+            JSON.parse(selected.function.arguments),
+            selected.id,
+          ),
+        );
+        return;
+      }
+      reads.push(req.url!);
+      if (revoked || req.url!.includes("denied")) {
+        res.writeHead(403, { "content-type": "application/json" });
+        res.end('{"error":"unavailable"}');
+      } else {
+        res.writeHead(200, { "content-type": "image/jpeg" });
+        res.end(jpeg);
+      }
+    }),
+  );
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const store = new Store(home);
   await store.init();

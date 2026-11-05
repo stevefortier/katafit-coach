@@ -47,10 +47,7 @@ import {
   openMemberMessages,
 } from "../katafit/memberMessages.js";
 import { NativeSelections } from "./selections.js";
-import {
-  InvocationCapability,
-  classifySecretRequest,
-} from "../capability/invocation.js";
+import { InvocationCapability } from "../capability/invocation.js";
 import type { ActionType } from "../autonomy/types.js";
 import {
   PROVIDER_TEXT_LIMIT,
