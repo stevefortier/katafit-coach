@@ -72,6 +72,16 @@ jobs:
             tar -xJf wasmtime-v50.0.1-x86_64-linux.tar.xz
             echo "$RUNNER_TEMP/wasmtime-v50.0.1-x86_64-linux" >> "$GITHUB_PATH"
           fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26.x"
+      - name: Probe both images under wasmtime
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP" && npm init -y >/dev/null && npm install deepclause-agentvm@0.5.0 --no-audit --no-fund >/dev/null
+          agentvm=$(find "$RUNNER_TEMP/node_modules/deepclause-agentvm" -name '*.wasm' -size +10M | head -1)
+          echo "AgentVM image: $agentvm"
+          bash "$GITHUB_WORKSPACE/spike/wasm/probe.sh" "$RUNNER_TEMP/image/coach-pi.wasm" "$agentvm" "$RUNNER_TEMP/probe"
       - name: Measure
         shell: bash
         run: spike/wasm/measure.sh "wasmtime ${{ runner.os }}" "$RUNNER_TEMP/image/coach-pi.wasm" "$RUNNER_TEMP/work"

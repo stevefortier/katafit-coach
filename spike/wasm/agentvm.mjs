@@ -44,6 +44,19 @@ await timed("node script", () =>
   exec(`node -e 'console.log([1,2,3].map(x=>x*2).join(","))'`),
 );
 await timed("pi --version", () => exec("pi --version"));
+await timed("list workspace", () =>
+  exec("ls -la /mnt/work; cat /mnt/work/notes.txt | od -c | head -3"),
+);
+await timed("write in workspace", () =>
+  exec("echo from-guest > /mnt/work/out.txt && cat /mnt/work/out.txt"),
+);
+await timed("guest write visible on host", async () => {
+  const { readFileSync } = await import("node:fs");
+  const text = readFileSync(`${work}/out.txt`, "utf8").trim();
+  if (text !== "from-guest")
+    throw new Error(`host sees ${JSON.stringify(text)}`);
+  return text;
+});
 await timed("grep in workspace", () => exec("grep -rn needle /mnt/work"));
 await timed("10 shell commands", () =>
   exec(
