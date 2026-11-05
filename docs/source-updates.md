@@ -419,3 +419,20 @@ publication, operator, owner-bootstrap and remaining readiness/UI prerequisites.
 `npm test` builds and exercises revision checking, explicit confirmation/auth fences, metadata, isolated staging, child replacement, incompatible Store probing, immediate and delayed startup rollback, stable port/auth/data, disabled support and legacy-platform behavior. `npm run test:package` verifies the normal production-only package.
 
 `npm run test:updates-package` performs actual packed CLI upgrades through synthetic local Git commits: good revision → startup-crashing revision/rollback → second good revision, then normal restart and SIGKILL recovery. The only substitution is a code-loaded trusted GitHub/Git boundary; no production source override exists. It also runs in the managed nonroot Docker environment. `npm run test:updates-browser` exercises the real Studio/API with synthetic source transport and records desktop/mobile evidence. These tests do not update a real user installation, call a real model, or prove a production deployment.
+
+## Running under the bootstrap
+
+`katafit-coach-boot` (`dist/boot.js`) is a small frozen bootstrap for service
+managers to run instead of `katafit-coach serve`. It starts the active
+version's own supervisor (`<home>/versions/<SHA>/dist/cli.js serve`, or the
+package it shipped in while no version is active) with
+`KATAFIT_BOOT_PROTOCOL=1`. After a successful upgrade, such a supervisor writes
+`<home>/handoff.json` (the new revision and the previous `active.json`) and exits
+with code 75. The bootstrap then starts the new version's supervisor, so
+upgrades update the supervisor too and the launcher package never needs
+replacing. If the handed-over supervisor has not written `service.json` within
+60 seconds, or exits first, the bootstrap restores the previous `active.json`,
+records `<home>/boot-rollback.json` and starts the previous version. A stop
+requested during that window is not treated as a failure. The bootstrap uses
+only Node built-ins, with no network, Docker or settings access. Builds that
+support the handover declare `bootstrap-handoff-1` in `dist/build.json`.

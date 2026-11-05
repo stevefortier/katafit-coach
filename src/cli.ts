@@ -9,6 +9,7 @@ import { Store } from "./config/store.js";
 import { supervise } from "./update/supervisor.js";
 import { legacyServe } from "./update/legacy.js";
 import { assertSupportedNode } from "./runtime-version.js";
+import { HANDOVER_EXIT } from "./boot.js";
 assertSupportedNode();
 const dir = process.env.KATAFIT_COACH_HOME ?? join(homedir(), ".katafit-coach");
 const store = new Store(dir);
@@ -95,7 +96,9 @@ async function main() {
       app = await supervise(
         store,
         Number(process.env.KATAFIT_COACH_PORT ?? 4317),
-        () => {
+        (reason) => {
+          // The bootstrap starts the newly active version's supervisor.
+          if (reason === "handover") process.exitCode = HANDOVER_EXIT;
           void close();
         },
       );
