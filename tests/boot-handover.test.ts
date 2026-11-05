@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Store } from "../src/config/store.js";
-import { supervise } from "../src/update/supervisor.js";
+import { supervise } from "./helpers/legacy-supervisor.js";
 
 async function fixture(home: string) {
   const original = pathToFileURL(resolve("dist/server/admin.js")).href;
