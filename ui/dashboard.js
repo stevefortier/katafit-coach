@@ -119,6 +119,9 @@ window.CoachDashboard = (() => {
   let mapController;
   let mapEpoch = 0;
   let leafletMap;
+  // True once the current map shows a day's events or the operator moved it;
+  // only such a view is worth keeping across day changes.
+  let mapViewSettled = false;
   let mapResizeObserver;
   const avatarUrls = [];
   const avatarCache = new Map();
@@ -2140,6 +2143,13 @@ window.CoachDashboard = (() => {
       selection = $("dashboardMapSelection"),
       status = $("dashboardMapStatus");
     if (!map || !selection || !status) return;
+    // Another day (or a reload) keeps the view the operator was looking at
+    // instead of flashing the world view while the new day loads.
+    const keptView =
+      leafletMap && mapViewSettled
+        ? { center: leafletMap.getCenter(), zoom: leafletMap.getZoom() }
+        : null;
+    mapViewSettled = Boolean(keptView);
     disposeMap();
     filterMap = () => {};
     map.replaceChildren();
@@ -2171,7 +2181,10 @@ window.CoachDashboard = (() => {
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       maxZoom: 19,
     }).addTo(instance);
-    instance.setView([0, 0], 2); // Neutral initial view; never request device location.
+    // Neutral initial view; never request device location.
+    if (keptView)
+      instance.setView(keptView.center, keptView.zoom, { animate: false });
+    else instance.setView([0, 0], 2);
     const overlay = text("div", "", "dashboard-map-overlay");
     map.append(overlay);
     let chooserOwner = null;
@@ -2407,7 +2420,15 @@ window.CoachDashboard = (() => {
       );
       if (!fitted && dots.length) {
         fitted = true;
-        fitPins(dots);
+        // A kept view moves only when it would show none of the new day's events.
+        if (
+          !keptView ||
+          dots.every(({ fix }) =>
+            offscreen(project(fix, instance.getCenter().lng)),
+          )
+        )
+          fitPins(dots);
+        mapViewSettled = true;
         initialView = {
           center: instance.getCenter(),
           zoom: instance.getZoom(),
@@ -2552,12 +2573,13 @@ window.CoachDashboard = (() => {
           animate: false,
         });
     };
-    let userViewChanged = false;
+    // A kept view is the operator's own choice: resizes preserve it like panning.
+    let userViewChanged = Boolean(keptView);
     instance.on("dragstart", () => {
-      userViewChanged = true;
+      userViewChanged = mapViewSettled = true;
     });
     const markUserView = () => {
-      userViewChanged = true;
+      userViewChanged = mapViewSettled = true;
     };
     map.addEventListener(
       "keydown",
@@ -2596,14 +2618,14 @@ window.CoachDashboard = (() => {
     map.addEventListener(
       "wheel",
       () => {
-        userViewChanged = true;
+        userViewChanged = mapViewSettled = true;
       },
       { passive: true },
     );
     map
       .querySelector(".leaflet-control-zoom")
       ?.addEventListener("click", () => {
-        userViewChanged = true;
+        userViewChanged = mapViewSettled = true;
       });
     mapResizeObserver = new ResizeObserver(() => {
       if (!map.getClientRects().length) return;
