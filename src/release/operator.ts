@@ -9,7 +9,11 @@ import {
   requestOptions,
 } from "./manifest.js";
 import { provisionRelease, fileDigest } from "./provision.js";
-/** External service-UID operator only. Never imported by daemon or Pi. */
+/**
+ * Release delivery, run as the service UID by this CLI (an external
+ * controller) or by the supervising launcher when an upgrade is confirmed.
+ * Never imported by the Studio-facing application or Pi.
+ */
 export async function downloadFile(
   url: string,
   target: string,
@@ -108,6 +112,50 @@ export async function downloadFile(
     await rm(temporary, { force: true });
   }
 }
+/**
+ * Deliver one exact ready release: discover it, verify its provenance,
+ * download each asset with size and digest checks, then provision its Pi image.
+ * Refuses if the published release is no longer the expected one.
+ */
+export async function deliverRelease(
+  home: string,
+  staging: string,
+  expected: string,
+  options: { signal?: AbortSignal; request?: typeof fetch } = {},
+) {
+  if (!/^[a-f0-9]{40}$/.test(expected)) throw Error("RELEASE_TARGET_CHANGED");
+  if (resolve(home) !== home || resolve(staging) !== staging)
+    throw Error("ABSOLUTE_PATHS_REQUIRED");
+  const request = options.request ?? fetch;
+  const ready = await discoverRelease(request, verifyProvenance);
+  if (ready.manifest.revision !== expected)
+    throw Error("RELEASE_TARGET_CHANGED");
+  const downloads = join(staging, "downloads", expected);
+  await directory(downloads, true);
+  for (const a of ready.assets) {
+    if (options.signal?.aborted) throw Error("RELEASE_DELIVERY_CANCELLED");
+    try {
+      await downloadFile(
+        a.url,
+        join(downloads, a.name),
+        a.size,
+        a.sha256,
+        request,
+      );
+    } catch (e: any) {
+      if (e.code !== "EEXIST") throw e;
+    }
+  }
+  const selected = await provisionRelease(
+    ready.manifest,
+    downloads,
+    home,
+    staging,
+    ready.bytes,
+    { signal: options.signal },
+  );
+  return { revision: expected, ...selected };
+}
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [home, staging, expected, ...extra] = process.argv.slice(2);
   if (
@@ -119,33 +167,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     throw Error(
       "Usage: node dist/release/operator.js ABS_HOME ABS_STAGING EXPECTED_SHA",
     );
-  if (resolve(home) !== home || resolve(staging) !== staging)
-    throw Error("ABSOLUTE_PATHS_REQUIRED");
-  const ready = await discoverRelease(fetch, verifyProvenance);
-  if (ready.manifest.revision !== expected)
-    throw Error("RELEASE_TARGET_CHANGED");
-  const downloads = join(staging, "downloads", expected);
-  await directory(downloads, true);
-  for (const a of ready.assets) {
-    try {
-      await downloadFile(a.url, join(downloads, a.name), a.size, a.sha256);
-    } catch (e: any) {
-      if (e.code !== "EEXIST") throw e;
-    }
-  }
-  const selected = await provisionRelease(
-    ready.manifest,
-    downloads,
-    home,
-    staging,
-    ready.bytes,
-  );
+  const delivered = await deliverRelease(home, staging, expected);
   console.log(
-    JSON.stringify({
-      revision: expected,
-      ...selected,
-      activated: false,
-      ownerReplaced: false,
-    }),
+    JSON.stringify({ ...delivered, activated: false, ownerReplaced: false }),
   );
 }

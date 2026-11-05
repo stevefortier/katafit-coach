@@ -73,6 +73,24 @@ if immutable readback is false. Such a release is never offered by discovery.
 No release currently exists: real hosted attestations and publication remain
 unverified until the merged workflow runs. Do not call skipped native gates GREEN.
 
+## Delivery on a confirmed upgrade
+
+A current stable launcher delivers the Pi image itself. When you confirm an
+upgrade in Studio and the image for that exact release is not on the host, the
+launcher (not the Studio-facing application, and never Pi) runs the same
+`deliverRelease` transaction as the operator CLI below: it rediscovers the
+release, refuses if it is no longer the confirmed SHA, verifies provenance,
+downloads each asset with size and digest checks into
+`<home>/release-staging`, and provisions the image. Preparation then continues
+as usual. Studio shows "its Pi image is not on this host yet" and keeps Upgrade
+available; a failure reports `RELEASE_DELIVERY_FAILED` with Coach untouched.
+An image already on the host (same native fingerprint) is never delivered
+again. The launcher's service user needs `gh` on `PATH`, able to run
+`gh attestation verify`, and outbound GitHub access.
+
+An external controller is therefore optional. Older stable launchers, which do
+not report `deliverySupported`, still need it.
+
 ## External provisioning and timer integration
 
 Build/install this reviewed operator package outside the daemon. Discover actual
