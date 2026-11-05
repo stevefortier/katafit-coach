@@ -1,0 +1,97 @@
+name: WebAssembly sandbox spike
+# Phase 0 measurement only: builds a Pi VM image with container2wasm and times
+# it under wasmtime and AgentVM on Linux and Windows. Changes nothing shipped.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["spike/wasm/**", ".github/workflows/wasm-sandbox-spike.yml"]
+permissions:
+  contents: read
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: riscv64
+      - uses: docker/setup-buildx-action@v3
+      - name: Install container2wasm v0.8.5 (checksum verified)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          base=https://github.com/container2wasm/container2wasm/releases/download/v0.8.5
+          curl -fsSLO "$base/container2wasm-v0.8.5-linux-amd64.tar.gz"
+          curl -fsSLO "$base/SHA256SUMS"
+          grep " container2wasm-v0.8.5-linux-amd64.tar.gz$" SHA256SUMS | sha256sum -c -
+          tar -xzf container2wasm-v0.8.5-linux-amd64.tar.gz
+          sudo install c2w /usr/local/bin/c2w
+          c2w --version
+      - name: Build the Pi userland (riscv64 Alpine + Node + Pi)
+        run: |
+          start=$(date +%s)
+          docker buildx build --platform linux/riscv64 --load -t coach-pi-wasm spike/wasm
+          echo "Image build: $(( $(date +%s) - start ))s" >> "$GITHUB_STEP_SUMMARY"
+      - name: Convert to WebAssembly
+        run: |
+          start=$(date +%s)
+          c2w --target-arch=riscv64 coach-pi-wasm "$RUNNER_TEMP/coach-pi.wasm"
+          echo "Conversion: $(( $(date +%s) - start ))s, size $(du -h "$RUNNER_TEMP/coach-pi.wasm" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coach-pi-wasm
+          path: ${{ runner.temp }}/coach-pi.wasm
+          retention-days: 7
+  wasmtime:
+    needs: image
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: coach-pi-wasm
+          path: ${{ runner.temp }}/image
+      - name: Install wasmtime v50.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          base=https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.1
+          if [ "$RUNNER_OS" = Windows ]; then
+            curl -fsSLO "$base/wasmtime-v50.0.1-x86_64-windows.zip"
+            unzip -q wasmtime-v50.0.1-x86_64-windows.zip
+            echo "$RUNNER_TEMP/wasmtime-v50.0.1-x86_64-windows" >> "$GITHUB_PATH"
+          else
+            curl -fsSLO "$base/wasmtime-v50.0.1-x86_64-linux.tar.xz"
+            tar -xJf wasmtime-v50.0.1-x86_64-linux.tar.xz
+            echo "$RUNNER_TEMP/wasmtime-v50.0.1-x86_64-linux" >> "$GITHUB_PATH"
+          fi
+      - name: Measure
+        shell: bash
+        run: spike/wasm/measure.sh "wasmtime ${{ runner.os }}" "$RUNNER_TEMP/image/coach-pi.wasm" "$RUNNER_TEMP/work"
+  agentvm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26.x"
+      - name: Install AgentVM 0.5.0
+        shell: bash
+        run: cd "$RUNNER_TEMP" && npm init -y >/dev/null && npm install deepclause-agentvm@0.5.0 --no-audit --no-fund
+      - name: Measure
+        shell: bash
+        run: |
+          cp spike/wasm/agentvm.mjs "$RUNNER_TEMP/agentvm.mjs"
+          cd "$RUNNER_TEMP" && node agentvm.mjs "$RUNNER_TEMP/work"
