@@ -3,18 +3,25 @@
 //
 //   node vmux-host.mjs <image.wasm> <work-dir>
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const [image, workArg] = process.argv.slice(2);
 const work = resolve(workArg);
-mkdirSync(work, { recursive: true });
+mkdirSync(`${work}/x`, { recursive: true });
 writeFileSync(
   `${work}/echo.mjs`,
   `import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
 for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
   const m = JSON.parse(line);
-  process.stdout.write(JSON.stringify(m.big ? { id: m.id, data: "y".repeat(m.big) } : { id: m.id, length: line.length }) + "\\n");
+  let reply;
+  if (m.file) reply = { id: m.id, length: readFileSync("/workspace/" + m.file, "utf8").length };
+  else if (m.bigfile) {
+    writeFileSync("/workspace/x/resp-" + m.id, "y".repeat(m.bigfile));
+    reply = { id: m.id, file: "x/resp-" + m.id };
+  } else reply = m.big ? { id: m.id, data: "y".repeat(m.big) } : { id: m.id, length: line.length };
+  process.stdout.write(JSON.stringify(reply) + "\\n");
 }
 `,
 );
@@ -99,21 +106,40 @@ await step("relay stream: 20 round trips beside the pty", async () => {
     if ((await nextLine()).id !== id) throw Error("out of order");
   }
 });
-for (const mib of [1, 8, 32])
-  await step(`relay request ${mib} MiB`, async () => {
+// Bulk bytes through the shared folder; the console carries only a notice.
+for (const mib of [8, 32])
+  await step(`exchange-folder request ${mib} MiB`, async () => {
+    writeFileSync(`${work}/x/req-${mib}`, "x".repeat(mib << 20));
+    send({ t: "line", c: "relay", l: JSON.stringify({ id: 300 + mib, file: `x/req-${mib}` }) });
+    const m = await nextLine();
+    if (m.length !== mib << 20) throw Error(`length ${m.length}`);
+  });
+for (const mib of [16])
+  await step(`exchange-folder response ${mib} MiB`, async () => {
+    send({ t: "line", c: "relay", l: JSON.stringify({ id: 400 + mib, bigfile: mib << 20 }) });
+    const m = await nextLine();
+    if (readFileSync(`${work}/${m.file}`, "utf8").length !== mib << 20) throw Error("short");
+  });
+for (const mib of [1])
+  await step(`console request ${mib} MiB`, async () => {
     const l = JSON.stringify({ id: 100 + mib, payload: "x".repeat(mib << 20) });
     send({ t: "line", c: "relay", l });
     const m = await nextLine();
     if (m.length !== l.length) throw Error(`length ${m.length}`);
   });
-for (const mib of [1, 16])
-  await step(`relay response ${mib} MiB`, async () => {
+for (const mib of [1])
+  await step(`console response ${mib} MiB`, async () => {
     send({ t: "line", c: "relay", l: JSON.stringify({ id: 200 + mib, big: mib << 20 }) });
     const m = await nextLine();
     if (m.data?.length !== mib << 20) throw Error("short");
   });
 await step("pty echo while relay busy", () => shell("tty", "echo still-$((2+3))", /still-5/));
 await step("pi --version in the pty", () => shell("tty", "pi --version", /\d+\.\d+\.\d+/));
+await step("Pi module import (warm-start cost)", async () => {
+  writeFileSync(`${work}/warm.mjs`, readFileSync(new URL("./warm.mjs", import.meta.url)));
+  await shell("tty", "node /workspace/warm.mjs", /import \d+ms/);
+  return `(${/import (\d+ms)/.exec(terminal.get("tty"))?.[1]})`;
+});
 await step("Pi TUI first paint", async () => {
   send({ t: "start", c: "pi", argv: ["pi", "--offline", "--no-session"], pty: true, cols: 100, rows: 30 });
   await until(() => (terminal.get("pi") ?? "").length > 200 || exits.has("pi"), 90000);

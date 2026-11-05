@@ -1,0 +1,11 @@
+const t0 = Date.now();
+const root = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/";
+const { readFileSync } = await import("node:fs");
+const chunk = /from"\.\/(chunks\/chunk-[A-Z0-9]+\.js)"/.exec(readFileSync(root + "cli-runtime.js", "utf8"))[1];
+const pi = await import(root + chunk);
+const t1 = Date.now();
+console.error(`import ${t1 - t0}ms`);
+process.env.PI_CODING_AGENT = "true";
+pi.configureHttpDispatcher();
+await pi.main(["--version"]);
+console.error(`main --version ${Date.now() - t1}ms`);

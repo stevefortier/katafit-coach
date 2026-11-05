@@ -13,11 +13,19 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/coach-pi.wasm
+          key: coach-pi-wasm-${{ hashFiles('spike/wasm/Dockerfile', 'spike/wasm/vmux.mjs', 'spike/wasm/patch-tinyemu.py') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: docker/setup-qemu-action@v3
         with:
           platforms: riscv64
-      - uses: docker/setup-buildx-action@v3
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: docker/setup-buildx-action@v3
       - name: Install container2wasm v0.8.5 (checksum verified)
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
@@ -29,11 +37,13 @@ jobs:
           sudo install c2w /usr/local/bin/c2w
           c2w --version
       - name: Build the Pi userland (riscv64 Alpine + Node + Pi)
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           start=$(date +%s)
           docker buildx build --platform linux/riscv64 --load -t coach-pi-wasm spike/wasm
           echo "Image build: $(( $(date +%s) - start ))s" >> "$GITHUB_STEP_SUMMARY"
       - name: Convert to WebAssembly
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           start=$(date +%s)
           # TinyEMU rejects FENCE with a non-zero fm field, so fence.tso (which
