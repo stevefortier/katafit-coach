@@ -94,6 +94,10 @@ jobs:
         if: always()
         shell: bash
         run: node spike/wasm/channel.mjs "$RUNNER_TEMP/image/coach-pi.wasm" "$RUNNER_TEMP/channel"
+      - name: Terminal and relay multiplexed over the console
+        if: always()
+        shell: bash
+        run: node spike/wasm/vmux-host.mjs "$RUNNER_TEMP/image/coach-pi.wasm" "$RUNNER_TEMP/vmux"
   agentvm:
     strategy:
       fail-fast: false
