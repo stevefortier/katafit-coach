@@ -27,7 +27,7 @@ const relayGuidance = {
   NATIVE_REST_TIMEOUT:
     "The read took longer than 8 seconds and was abandoned; nothing was changed. Narrow it (shorter date range, smaller limit, one member or type) and read again.",
   NATIVE_REST_TOO_LARGE:
-    "The read returned more than 256 KiB of JSON and was withheld; nothing was changed. Narrow it (smaller limit, shorter date range, a single type, or a detail route instead of a list) and read again.",
+    "The read returned more than 256 KiB of JSON and was withheld; nothing was changed. Ask only for the fields you need with ?fields=a,b.c, or narrow it (smaller limit, shorter date range, a single type), and read again.",
   NATIVE_REST_UNAVAILABLE:
     "The read could not be completed (connection failure, redirect or non-JSON response); nothing was changed. Retry once; if it fails again, report that the data is unavailable.",
   NATIVE_REST_REJECTED:

@@ -24,14 +24,14 @@ test("native catalog serializes efficient fetching guidance while pinned Pi load
     const tool = catalog.tools.find(
       (entry: any) => entry.name === "katafit_rest_request",
     );
-    assert.match(tool.description, /type=media&limit=20&pagination=cursor/);
-    assert.match(tool.description, /nextCursor/);
-    assert.match(tool.description, /cursor=.*nextCursor/);
-    assert.match(tool.description, /types=media,metric/);
-    assert.match(tool.description, /startDate.*endDate.*beforeDate/);
-    assert.match(tool.description, /sequential.*pages.*details.*images/i);
-    assert.match(tool.description, /reuse.*acquired.*bytes/i);
-    assert.match(tool.description, /previews/);
+    // The tool states the transport contract and where routes are documented;
+    // route-by-route advice lives in the backend docs and the on-demand skill.
+    assert.match(tool.description, /GET \/api\/docs\/coach/);
+    assert.match(tool.description, /\?fields=a,b\.c/);
+    assert.match(tool.description, /katafit-api skill/);
+    assert.match(tool.description, /Reuse what you already acquired/);
+    assert.doesNotMatch(tool.description, /pagination=cursor|beforeDate/);
+    assert.ok(tool.description.length < 1200, String(tool.description.length));
     assert.match(catalog.skills[0].body, /type=media&limit=20/);
     assert.match(catalog.skills[0].body, /same type and date filters/);
     assert.match(
@@ -65,7 +65,8 @@ test("native catalog serializes efficient fetching guidance while pinned Pi load
         tools: [{ type: "function", function: tool }],
       }),
     );
-    assert.match(wire.tools[0].function.description, /type=media/);
+    assert.match(wire.tools[0].function.description, /\/api\/docs\/coach/);
+    assert.match(wire.messages[1].content, /type=media&limit=20/);
     assert.match(wire.messages[1].content, /types=media,metric/);
     assert.ok(!JSON.stringify(wire).includes(f.store.secrets.token));
     assert.equal(
