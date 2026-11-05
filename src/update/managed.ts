@@ -13,6 +13,11 @@ import {
 import { constants } from "node:fs";
 import { join, dirname, resolve, parse } from "node:path";
 import { repository, validSha } from "./updates.js";
+import {
+  verifyProvenanceFile,
+  type Artifact,
+  type Platform,
+} from "../release/manifest.js";
 
 // Code-only injection for deterministic tests. Never read a URL/ref from HTTP or env.
 export interface SourceBoundary {
@@ -243,6 +248,82 @@ export async function stage(
     await managedFile(join(checkout, "dist/server/admin.js"), 1024 * 1024);
     await rm(join(checkout, ".git"), { recursive: true, force: true });
     return await publishCandidate(home, sha, checkout, boundary.candidateToken);
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
+}
+
+/** This machine's self-contained archive platform, if releases build one. */
+export function hostPlatform(): Platform | undefined {
+  if (process.platform === "linux" && process.arch === "x64")
+    return "linux-x64";
+  if (process.platform === "linux" && process.arch === "arm64")
+    return "linux-arm64";
+  if (process.platform === "win32" && process.arch === "x64") return "win-x64";
+  return undefined;
+}
+
+/**
+ * Stages a release from its self-contained platform archive instead of
+ * building source: no git, npm or build tools. The archive must match its
+ * published size and digest and carry a valid attestation for exactly `sha`;
+ * its application directory becomes the candidate, like a source build's.
+ */
+export async function stageArchive(
+  home: string,
+  sha: string,
+  archive: Artifact & { url: string },
+  boundary: {
+    candidateToken?: string;
+    download: (
+      url: string,
+      target: string,
+      size: number,
+      sha256: string,
+    ) => Promise<void>;
+    verify?: (path: string, revision: string) => Promise<void>;
+    /** Test seam: the platform whose archive this is. */
+    platform?: Platform;
+  },
+  signal?: AbortSignal,
+) {
+  const platform = boundary.platform ?? hostPlatform();
+  if (
+    !validSha(sha) ||
+    !platform ||
+    archive.name !==
+      `coach-${sha}-${platform}.${platform.startsWith("win-") ? "zip" : "tar.gz"}`
+  )
+    throw new Error("TARGET_REJECTED");
+  const versions = join(home, "versions"),
+    staging = join(home, "update-staging");
+  await directory(home);
+  await directory(versions, true);
+  const space = await statfs(home);
+  if (space.bavail * space.bsize < 1536 * 1024 * 1024)
+    throw new Error("INSUFFICIENT_DISK");
+  await rm(staging, { recursive: true, force: true });
+  await mkdir(staging, { mode: 0o700 });
+  try {
+    const file = join(staging, archive.name);
+    await boundary.download(archive.url, file, archive.size, archive.sha256);
+    if (signal?.aborted) throw new Error("BUILD_CANCELLED");
+    await (boundary.verify ?? verifyProvenanceFile)(file, sha);
+    const extracted = join(staging, "extract");
+    await mkdir(extracted, { mode: 0o700 });
+    // bsdtar (Windows) reads zip too; the archive is attested, not user data.
+    await command(
+      "tar",
+      ["-xf", file, "-C", extracted],
+      staging,
+      staging,
+      signal,
+    );
+    const app = join(extracted, "katafit-coach", "app");
+    if ((await metadata(app)).revision !== sha)
+      throw new Error("SOURCE_MISMATCH");
+    await managedFile(join(app, "dist/server/admin.js"), 1024 * 1024);
+    return await publishCandidate(home, sha, app, boundary.candidateToken);
   } finally {
     await rm(staging, { recursive: true, force: true });
   }

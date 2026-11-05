@@ -689,3 +689,33 @@ test("without a delivering launcher, a missing image still defers as before", as
   assert.equal(state.deliverySupported, false);
   await assert.rejects(updates.prepare(sha), /UPDATE_DELIVERY_PENDING/);
 });
+
+test("a checked release reports its self-contained archive for a platform", async () => {
+  const remote = source();
+  const archive = {
+    id: 99,
+    name: `coach-${sha}-linux-x64.tar.gz`,
+    size: 1234,
+    digest: "sha256:" + "9".repeat(64),
+    browser_download_url: `https://github.com/stevefortier/katafit-coach/releases/download/coach-${sha}/coach-${sha}-linux-x64.tar.gz`,
+  };
+  const request: typeof fetch = async (input, init) => {
+    const response = await remote.request(input, init);
+    if (!String(input).endsWith("/releases/latest")) return response;
+    const release = await response.json();
+    return new Response(
+      JSON.stringify({ ...release, assets: [...release.assets, archive] }),
+    );
+  };
+  const updates = new Updates(old, async () => {}, request);
+  await updates.check();
+  assert.deepEqual(updates.archiveFor(sha, "linux-x64"), {
+    name: archive.name,
+    size: 1234,
+    sha256: "9".repeat(64),
+    url: archive.browser_download_url,
+  });
+  assert.equal(updates.archiveFor(sha, "win-x64"), undefined);
+  assert.equal(updates.archiveFor("e".repeat(40), "linux-x64"), undefined);
+  assert.equal(updates.archiveFor(sha, undefined), undefined);
+});

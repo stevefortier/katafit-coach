@@ -1,4 +1,4 @@
-import { deliverRelease } from "../release/operator.js";
+import { deliverRelease, downloadFile } from "../release/operator.js";
 import {
   asNativeBinding,
   recordEngine,
@@ -27,6 +27,8 @@ import { ledgerObligations } from "../autonomy/ledger.js";
 import { UpdateJournal, atomicWrite } from "./journal.js";
 import {
   stage,
+  stageArchive,
+  hostPlatform,
   metadata,
   command,
   buildEnvironment,
@@ -492,7 +494,19 @@ export async function supervise(
           ? join(home, "versions", sha)
           : await (
               boundary.prepare ??
-              ((s, signal) => stage(home, s, { candidateToken }, signal))
+              ((s, signal) => {
+                // A self-contained archive needs no git, npm or build tools.
+                const archive = updates.archiveFor(s, hostPlatform());
+                return archive
+                  ? stageArchive(
+                      home,
+                      s,
+                      archive,
+                      { candidateToken, download: downloadFile },
+                      signal,
+                    )
+                  : stage(home, s, { candidateToken }, signal);
+              })
             )(sha, controller.signal, candidateToken);
         if (
           !retainedCandidate &&
