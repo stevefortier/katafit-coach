@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { fixture } from "./helpers/native.js";
+import { fixture, withAgentSessions } from "./helpers/native.js";
 import { startRelay, loadExtension, piTurn } from "./helpers/native-relay.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 
@@ -9,15 +9,17 @@ import { Actions } from "../src/chat/actions.js";
 
 test("actual relay sends REST mutations once, without journaling or automatic retry", async () => {
   const calls: string[] = [];
-  const server = createServer((req, res) => {
-    calls.push(req.method + " " + req.url);
-    if (req.url === "/api/lost") {
-      req.socket.destroy();
-      return;
-    }
-    res.setHeader("content-type", "application/json");
-    res.end('{"version":1,"domains":[]}');
-  });
+  const server = createServer(
+    withAgentSessions((req, res) => {
+      calls.push(req.method + " " + req.url);
+      if (req.url === "/api/lost") {
+        req.socket.destroy();
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end('{"version":1,"domains":[]}');
+    }),
+  );
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const f = await fixture();
   await f.store.save({
@@ -83,18 +85,20 @@ test("actual relay sends REST mutations once, without journaling or automatic re
 
 test("actual Pi continuations may reuse a mutation ID for distinct canonical occurrences", async () => {
   const writes: unknown[] = [];
-  const backend = createServer(async (req, res) => {
-    let body = "";
-    for await (const chunk of req) body += chunk;
-    if (req.url !== "/api/future") {
-      res.writeHead(404);
-      res.end();
-      return;
-    }
-    writes.push(JSON.parse(body));
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ saved: writes.length }));
-  });
+  const backend = createServer(
+    withAgentSessions(async (req, res) => {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      if (req.url !== "/api/future") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      writes.push(JSON.parse(body));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ saved: writes.length }));
+    }),
+  );
   await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
   const args = { method: "POST", path: "/api/future", body: { value: 0 } };
   const f = await fixture((name, _value, body) => {
@@ -191,20 +195,22 @@ test("invalid REST mutation arguments are rejected before dispatch or journaling
 for (const lost of [false, true])
   test(`real Pi serialization retains REST mutation ${lost ? "unknown" : "success"} outcome in the live turn`, async () => {
     let mutations = 0;
-    const backend = createServer(async (req, res) => {
-      for await (const _chunk of req) {
-        /* drain */
-      }
-      if (req.url !== "/api/future") {
-        res.writeHead(404);
-        res.end();
-        return;
-      }
-      mutations++;
-      if (lost) return req.socket.destroy();
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end('{"saved":true}');
-    });
+    const backend = createServer(
+      withAgentSessions(async (req, res) => {
+        for await (const _chunk of req) {
+          /* drain */
+        }
+        if (req.url !== "/api/future") {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        mutations++;
+        if (lost) return req.socket.destroy();
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"saved":true}');
+      }),
+    );
     await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
     const args = {
       method: "PUT",
@@ -321,11 +327,13 @@ test("extension transport loss emits fixed unknown-outcome guidance, not a retry
 
 test("rows left by earlier journaled REST writes no longer fence writes", async () => {
   const writes: string[] = [];
-  const server = createServer((req, res) => {
-    writes.push(req.method + " " + req.url);
-    res.setHeader("content-type", "application/json");
-    res.end("{}");
-  });
+  const server = createServer(
+    withAgentSessions((req, res) => {
+      writes.push(req.method + " " + req.url);
+      res.setHeader("content-type", "application/json");
+      res.end("{}");
+    }),
+  );
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const f = await fixture();
   await f.store.save({

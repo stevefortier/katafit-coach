@@ -1,3 +1,4 @@
+import { AGENT_TOKEN, agentSession } from "./native.js";
 import { createServer, type IncomingMessage } from "node:http";
 
 /**
@@ -38,6 +39,19 @@ export async function memberBackend(accounts: Record<string, string>) {
       res.writeHead(404, { "content-type": "text/html" });
       res.end("Cannot " + req.method);
       return;
+    }
+    // The gateway mints an agent session for Pi's own calls (regimen#1140);
+    // it then acts as the minting installation's account.
+    if (url.pathname.startsWith("/api/coach/agent-sessions")) {
+      const minter = account(req);
+      res.writeHead(minter ? (req.method === "DELETE" ? 204 : 201) : 401, {
+        "content-type": "application/json",
+      });
+      if (minter && req.method !== "DELETE") {
+        accounts[AGENT_TOKEN] = minter;
+        return void res.end(JSON.stringify(agentSession()));
+      }
+      return void res.end();
     }
     calls.push({
       method: req.method!,

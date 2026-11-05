@@ -2,6 +2,7 @@
 // wait their turn, failed reads name their cause, and a definite backend
 // rejection of a write does not fence later writes.
 import test from "node:test";
+import { withAgentSessions } from "./helpers/native.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -14,17 +15,19 @@ async function setup() {
   let release!: () => void;
   const slow = new Promise<void>((r) => (release = r));
   const calls: string[] = [];
-  const server = createServer(async (req, res) => {
-    for await (const _ of req);
-    calls.push(`${req.method} ${req.url}`);
-    res.setHeader("content-type", "application/json");
-    if (req.url === "/api/slow") await slow;
-    if (req.url === "/api/large")
-      return res.end(JSON.stringify({ rows: "x".repeat(300 * 1024) }));
-    if (req.url === "/api/invalid")
-      return res.writeHead(400).end('{"error":"synthetic validation"}');
-    return res.end(JSON.stringify({ path: req.url }));
-  });
+  const server = createServer(
+    withAgentSessions(async (req, res) => {
+      for await (const _ of req);
+      calls.push(`${req.method} ${req.url}`);
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/slow") await slow;
+      if (req.url === "/api/large")
+        return res.end(JSON.stringify({ rows: "x".repeat(300 * 1024) }));
+      if (req.url === "/api/invalid")
+        return res.writeHead(400).end('{"error":"synthetic validation"}');
+      return res.end(JSON.stringify({ path: req.url }));
+    }),
+  );
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${(server.address() as any).port}`;
   const dir = await mkdtemp(tmpdir() + "/native-rest-outcomes-");
@@ -112,5 +115,44 @@ test("a rejected write reports its HTTP status and does not fence the next write
     assert.deepEqual(f.calls, ["POST /api/invalid", "POST /api/valid"]);
   } finally {
     await f.close();
+  }
+});
+
+test("without an agent session Pi's call fails; it never falls back to the installation token", async () => {
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url} ${req.headers.authorization}`);
+    // An older backend with no agent sessions.
+    res.writeHead(404, { "content-type": "application/json" }).end("{}");
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const dir = await mkdtemp(tmpdir() + "/native-rest-no-agent-");
+  const store = new Store(dir);
+  await store.init();
+  const origin = `http://127.0.0.1:${(server.address() as any).port}`;
+  await store.save({
+    ...store.publicConfig(),
+    origin,
+    provider: { baseUrl: origin + "/v1", model: "approved-custom-model" },
+    token: "synthetic-backend-credential",
+    apiKey: "synthetic-provider-credential",
+  });
+  const gateway = await openNativeGateway(store);
+  const relay = await startRelay(gateway);
+  try {
+    const ext = await loadExtension(relay);
+    await assert.rejects(
+      () => ext.call("katafit_rest_request", get("/api/friends/feed/dojo")),
+      /NATIVE_REST_UNAVAILABLE/,
+    );
+    assert.deepEqual(seen, [
+      "POST /api/coach/agent-sessions Bearer synthetic-backend-credential",
+    ]);
+  } finally {
+    await relay.close();
+    await gateway.close();
+    server.closeAllConnections();
+    await new Promise<void>((r) => server.close(() => r()));
+    await rm(dir, { recursive: true, force: true });
   }
 });

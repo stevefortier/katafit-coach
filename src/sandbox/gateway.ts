@@ -40,7 +40,7 @@ import {
   type PlannerCallbacks,
 } from "../autonomy/tools.js";
 import { restSession } from "../katafit/restSession.js";
-import { classifyAutonomyRequest } from "../katafit/autonomyNamespace.js";
+import { AgentSession } from "../katafit/agentSession.js";
 import {
   MemberMessageFailure,
   classifyMemberMessageRequest,
@@ -251,6 +251,17 @@ export async function openNativeGateway(
         store.secrets[k as keyof typeof secrets],
     );
   const owner = hooks.attachments;
+  // Pi's own REST calls use a short-lived agent token, never the installation
+  // token; the backend refuses it the host-only routes.
+  const agent = secrets.token
+    ? new AgentSession(config.origin, secrets.token, () =>
+        Object.values(secrets).filter((v): v is string => !!v),
+      )
+    : undefined;
+  const screened = () =>
+    [...Object.values(secrets), agent?.current()].filter(
+      (v): v is string => !!v,
+    );
   // Account memory: per-turn recall acquisition and delivered-only learning.
   // The bearer stays here; Pi only sees the bounded untrusted evidence block.
   const memory = new NativeMemory({
@@ -317,6 +328,7 @@ export async function openNativeGateway(
     receipts.clear();
     attachments.clear();
     selections.retire();
+    void agent?.close();
     return (disposal ??= session.dispose());
   };
   // Continuity failures invalidate this gateway and ask the owner to destroy
@@ -879,11 +891,7 @@ export async function openNativeGateway(
     if (request.kind === "tool") {
       if (request.name === restRequestTool.name && secrets.token) {
         const args = restRequestArgs(request.args);
-        assertNoSecrets(request.args, Object.values(secrets));
-        // The continuous Coach control plane is host-only: a model must never
-        // change its own mandate, claim work or certify actions.
-        if (classifyAutonomyRequest(args.method, args.path).kind === "reject")
-          throw new NativeFailure("NATIVE_REQUEST_REJECTED");
+        assertNoSecrets(request.args, screened());
         // Memory writes carry their own exact key/receipt contract: bound to
         // the selected call, host-keyed, reconciled by receipt, never resent.
         const memoryWrite = classifyMemoryWrite(
@@ -918,16 +926,20 @@ export async function openNativeGateway(
         // Ordinary writes are not journaled: the backend validates each one,
         // and a lost response is reported as unknown without a retry.
         const mutation = args.method !== "GET";
+        const scope = requestSignal
+          ? AbortSignal.any([lifetime, requestSignal])
+          : lifetime;
+        const bearer = await agent!.token(scope).catch(() => {
+          throw new NativeFailure("NATIVE_REST_UNAVAILABLE");
+        });
         let result;
         try {
           result = await restRequest(
             config.origin,
-            secrets.token,
+            bearer,
             request.args,
-            requestSignal
-              ? AbortSignal.any([lifetime, requestSignal])
-              : lifetime,
-            Object.values(secrets),
+            scope,
+            screened(),
           );
           check();
         } catch (error) {

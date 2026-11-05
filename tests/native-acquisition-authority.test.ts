@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fixture } from "./helpers/native.js";
+import { fixture, AGENT_TOKEN } from "./helpers/native.js";
 import { openNativeGateway } from "../src/sandbox/gateway.js";
 
 const request = {
@@ -12,7 +12,8 @@ const request = {
 test("new ordinary REST reads use current backend authority without acquiring legacy sessions", async () => {
   let allowed = true;
   const f = await fixture(undefined, (_url, headers) => {
-    assert.equal(headers.authorization, "Bearer synthetic-backend-credential");
+    // Pi's reads carry its agent session token, never the installation one.
+    assert.equal(headers.authorization, `Bearer ${AGENT_TOKEN}`);
     return allowed
       ? { body: '{"activity":"private"}' }
       : { status: 403, body: '{"error":"denied"}' };

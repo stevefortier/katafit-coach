@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
+import { AGENT_TOKEN, agentSession } from "./native.js";
 
 // Contract-faithful synthetic fake of the Slice1 account-private memory REST
 // (task-evidence contract.md). It is a deterministic wiring fixture only; the
@@ -789,7 +790,21 @@ export async function startAccountMemoryBackend(
       );
       return;
     }
-    if (request.auth !== "Bearer " + token) {
+    // The gateway mints an agent session for Pi's own calls (regimen#1140);
+    // like the real backend, it then acts as the same account.
+    if (request.path.startsWith("/api/coach/agent-sessions")) {
+      if (request.auth !== "Bearer " + token) {
+        res.writeHead(403, { "content-type": "application/json" });
+        return void res.end("{}");
+      }
+      if (request.method === "DELETE") return void res.writeHead(204).end();
+      res.writeHead(201, { "content-type": "application/json" });
+      return void res.end(JSON.stringify(agentSession()));
+    }
+    if (
+      request.auth !== "Bearer " + token &&
+      request.auth !== "Bearer " + AGENT_TOKEN
+    ) {
       res.writeHead(401, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "Unauthorized" }));
       return;
