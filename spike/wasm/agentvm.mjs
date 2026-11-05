@@ -7,8 +7,11 @@ const work = process.argv[2];
 mkdirSync(work, { recursive: true });
 writeFileSync(`${work}/notes.txt`, "alpha\nbeta needle\ngamma\n");
 const summary = process.env.GITHUB_STEP_SUMMARY;
-const row = (line) =>
-  summary ? appendFileSync(summary, line + "\n") : console.log(line);
+let failures = 0;
+const row = (line) => {
+  console.log(line);
+  if (summary) appendFileSync(summary, line + "\n");
+};
 row(
   `### AgentVM ${process.platform}\n| Step | Seconds | Result |\n|---|---|---|`,
 );
@@ -20,6 +23,7 @@ const timed = async (name, work) => {
       `| ${name} | ${((performance.now() - start) / 1000).toFixed(1)} | ok: ${String(result).trim().split("\n").at(-1).slice(0, 60)} |`,
     );
   } catch (error) {
+    failures++;
     row(
       `| ${name} | ${((performance.now() - start) / 1000).toFixed(1)} | FAILED: ${String(error?.message ?? error).slice(0, 60)} |`,
     );
@@ -47,3 +51,4 @@ await timed("10 shell commands", () =>
   ),
 );
 await timed("stop", () => vm.stop().then(() => "stopped"));
+process.exitCode = failures > 0 ? 1 : 0;
