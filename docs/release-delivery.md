@@ -29,14 +29,17 @@ build/activation. Main membership AND installed→candidate forward ancestry are
 required, under the same cooldown, without any signature-verification fallback
 that needs daemon credentials. It never needs GitHub CLI/login/token. This is **not cryptographic
 artifact verification**: artifacts must be verified by the external operator
-before npm/code staging or Docker load. The operator uses modern `gh attestation
-verify` with the fixed repository AND signer workflow
-`stevefortier/katafit-coach/.github/workflows/release.yml`, exact source digest,
-`refs/heads/main`, and deny-self-hosted-runners. Manifest original bytes and both
+before npm/code staging or Docker load. Delivery verifies each file's GitHub
+artifact attestation in process (`verifyAttestation`): it fetches the public
+attestation unauthenticated and checks its Sigstore bundle against the
+public-good trust root, requiring the fixed repository AND signer workflow
+`stevefortier/katafit-coach/.github/workflows/release.yml` on `refs/heads/main`,
+the exact source digest, a GitHub-hosted runner, and SLSA provenance whose
+subject is the file's digest. No GitHub account, token or `gh` is needed. Manifest original bytes and both
 assets require successful trusted GitHub provenance. Hostile caller JSON, image
 labels alone, a registry digest or a runner-local image never establishes release
-readiness. The external controller may require its own GitHub authentication;
-keep that credential outside Coach config, child/Pi and model tools.
+readiness. Verification needs no GitHub credential; never add one to Coach
+config, the child application, Pi or model tools.
 
 ## Finite publication path
 
@@ -85,8 +88,8 @@ downloads each asset with size and digest checks into
 as usual. Studio shows "its Pi image is not on this host yet" and keeps Upgrade
 available; a failure reports `RELEASE_DELIVERY_FAILED` with Coach untouched.
 An image already on the host (same native fingerprint) is never delivered
-again. The launcher's service user needs `gh` on `PATH`, able to run
-`gh attestation verify`, and outbound GitHub access.
+again. The launcher needs only outbound HTTPS to GitHub and Sigstore; no
+GitHub account or token.
 
 An external controller is therefore optional. Older stable launchers, which do
 not report `deliverySupported`, still need it.
@@ -95,8 +98,8 @@ not report `deliverySupported`, still need it.
 
 Build/install this reviewed operator package outside the daemon. Discover actual
 service UID, protected home, host runtime/socket and staging directory; do not
-ship private Warden endpoints or SSH keys. Run with Node>=26.10.0,<27 and modern
-`gh` on PATH, with service-UID Docker access, private owned staging/home paths.
+ship private Warden endpoints or SSH keys. Run with Node>=26.10.0,<27, with
+service-UID Docker access, private owned staging/home paths.
 Never run as root or give Pi the socket/network/credentials.
 
 ```sh
@@ -207,11 +210,8 @@ retired async contexts before a closed descriptor can be reused.
 Normal nonrelease runtime behavior and the pinned Docker socket remain unchanged.
 
 The worker verifies original manifest bytes inside the operator lock, before
-artifact validation or staging. `validateReleaseFiles` defaults to the owned
-attestation runner in that scope. Both provenance functions retain ordinary
-execFile defaults for other callers. The `gh attestation verify` arguments still
-pin the repository, release workflow, `refs/heads/main`, source revision and
-non-self-hosted runners; timeout remains 30 seconds and maxBuffer 65,536 bytes.
+artifact validation or staging. `validateReleaseFiles` verifies each artifact's
+attestation the same way, in process; no verifier subprocess is started.
 Only structural manifest/platform checks and protected lock-directory preparation
 precede manifest attestation; no archive validation, extraction or install does.
 

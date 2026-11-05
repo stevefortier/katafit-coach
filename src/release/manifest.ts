@@ -1,9 +1,5 @@
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createReadStream } from "node:fs";
 export const releaseRepository = "stevefortier/katafit-coach";
 export const releaseWorkflow = `${releaseRepository}/.github/workflows/release.yml`;
 export const releaseApi = `https://api.github.com/repos/${releaseRepository}/releases/latest`;
@@ -94,49 +90,107 @@ export async function boundedBytes(
   return Buffer.concat(chunks);
 }
 export type Verify = (bytes: Buffer, revision: string) => Promise<void>;
-export type ProvenanceExec = (
-  file: string,
-  args: string[],
-  options: { timeout: number; maxBuffer: number },
-) => Promise<unknown>;
-const provenanceExec = promisify(execFile);
+/** Test seam only: network and trust-root options for attestation checks. */
+export type ProvenanceOptions = {
+  request?: typeof fetch;
+  tufCachePath?: string;
+  tufForceCache?: boolean;
+};
+// DER UTF8String, as Fulcio encodes these GitHub workflow extensions.
+const der = (value: string) => {
+  if (!/^[\x20-\x7e]{1,127}$/.test(value)) throw Error("PROVENANCE_REJECTED");
+  return "\x0c" + String.fromCharCode(value.length) + value;
+};
+const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+/**
+ * Verifies a release file's GitHub artifact attestation in process, with no
+ * GitHub account: the public attestation is fetched unauthenticated and its
+ * Sigstore bundle is checked against the public-good trust root. Same policy
+ * as `gh attestation verify --repo --signer-workflow --source-ref
+ * --source-digest --deny-self-hosted-runners`: issued to this repository's
+ * release workflow on main, built from exactly `revision` on a GitHub-hosted
+ * runner, as SLSA provenance whose subject is this exact digest.
+ */
+export async function verifyAttestation(
+  digest: string,
+  revision: string,
+  options: ProvenanceOptions = {},
+) {
+  if (!/^[a-f0-9]{64}$/.test(digest) || !/^[a-f0-9]{40}$/.test(revision))
+    throw Error("PROVENANCE_REJECTED");
+  const response = await (options.request ?? fetch)(
+    `https://api.github.com/repos/${releaseRepository}/attestations/sha256:${digest}`,
+    requestOptions(),
+  );
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw Error("PROVENANCE_UNAVAILABLE");
+  }
+  let attestations: unknown;
+  try {
+    attestations = JSON.parse(
+      (await boundedBytes(response, 4 * 1024 * 1024)).toString("utf8"),
+    ).attestations;
+  } catch {
+    throw Error("PROVENANCE_UNAVAILABLE");
+  }
+  const { verify } = await import("sigstore");
+  for (const entry of Array.isArray(attestations)
+    ? attestations.slice(0, 16)
+    : []) {
+    const bundle = (entry as any)?.bundle;
+    const envelope = bundle?.dsseEnvelope;
+    try {
+      if (envelope?.payloadType !== "application/vnd.in-toto+json") continue;
+      await verify(bundle, {
+        certificateIssuer: "https://token.actions.githubusercontent.com",
+        certificateIdentityURI: `^${escape(`https://github.com/${releaseWorkflow}@refs/heads/main`)}$`,
+        certificateOIDs: {
+          "1.3.6.1.4.1.57264.1.12": der(
+            `https://github.com/${releaseRepository}`,
+          ),
+          "1.3.6.1.4.1.57264.1.13": der(revision),
+          "1.3.6.1.4.1.57264.1.14": der("refs/heads/main"),
+          "1.3.6.1.4.1.57264.1.11": der("github-hosted"),
+        },
+        ...(options.tufCachePath ? { tufCachePath: options.tufCachePath } : {}),
+        ...(options.tufForceCache ? { tufForceCache: true } : {}),
+      });
+      // The signature covers this payload, so its claims can be trusted now.
+      const statement = JSON.parse(
+        Buffer.from(envelope.payload, "base64").toString("utf8"),
+      );
+      if (
+        statement?.predicateType === "https://slsa.dev/provenance/v1" &&
+        Array.isArray(statement.subject) &&
+        statement.subject.some((s: any) => s?.digest?.sha256 === digest)
+      )
+        return;
+    } catch {
+      // Another attestation for the same digest may satisfy the policy.
+    }
+  }
+  throw Error("PROVENANCE_REJECTED");
+}
 export async function verifyProvenanceFile(
   path: string,
   revision: string,
-  run: ProvenanceExec = provenanceExec,
+  options: ProvenanceOptions = {},
 ) {
-  await run(
-    "gh",
-    [
-      "attestation",
-      "verify",
-      path,
-      "--repo",
-      releaseRepository,
-      "--signer-workflow",
-      releaseWorkflow,
-      "--source-ref",
-      "refs/heads/main",
-      "--source-digest",
-      revision,
-      "--deny-self-hosted-runners",
-    ],
-    { timeout: 30000, maxBuffer: 65536 },
-  );
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  await verifyAttestation(hash.digest("hex"), revision, options);
 }
 export async function verifyProvenance(
   bytes: Buffer,
   revision: string,
-  run: ProvenanceExec = provenanceExec,
+  options: ProvenanceOptions = {},
 ) {
-  const folder = await mkdtemp(join(tmpdir(), "coach-provenance-"));
-  try {
-    const path = join(folder, "subject");
-    await writeFile(path, bytes, { mode: 0o600 });
-    await verifyProvenanceFile(path, revision, run);
-  } finally {
-    await rm(folder, { recursive: true, force: true });
-  }
+  await verifyAttestation(
+    createHash("sha256").update(bytes).digest("hex"),
+    revision,
+    options,
+  );
 }
 export const requestOptions = () => ({
   headers: {

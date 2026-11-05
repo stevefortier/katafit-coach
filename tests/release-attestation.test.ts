@@ -1,104 +1,129 @@
+// Release provenance is verified in process, with no GitHub account or `gh`:
+// the public attestation is fetched unauthenticated and its Sigstore bundle is
+// checked against the bundled public-good trust root (offline here). The
+// fixture is the real, public attestation of release d25e2ad's manifest.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile, stat, mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
+  verifyAttestation,
   verifyProvenance,
   verifyProvenanceFile,
 } from "../src/release/manifest.js";
-const revision = "a".repeat(40);
-function expected(path: string) {
-  return [
-    "attestation",
-    "verify",
-    path,
-    "--repo",
-    "stevefortier/katafit-coach",
-    "--signer-workflow",
-    "stevefortier/katafit-coach/.github/workflows/release.yml",
-    "--source-ref",
-    "refs/heads/main",
-    "--source-digest",
-    revision,
-    "--deny-self-hosted-runners",
-  ];
+
+const revision = "d25e2ad66e470ae43d048907799611b7a8aeeb01";
+const fixture = (name: string) =>
+  readFile(new URL(`./fixtures/release-attestation/${name}`, import.meta.url));
+
+async function setup(body?: (digest: string) => unknown, status = 200) {
+  const manifest = await readFile(
+    new URL("./fixtures/release-attestation/manifest.json", import.meta.url),
+  );
+  const attestations = JSON.parse(
+    (await fixture("attestations.json")).toString(),
+  );
+  const digest = createHash("sha256").update(manifest).digest("hex");
+  const requests: { url: string; headers: Record<string, string> }[] = [];
+  const request = (async (input: any, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      headers: { ...(init?.headers as any) },
+    });
+    return new Response(JSON.stringify(body ? body(digest) : attestations), {
+      status,
+    });
+  }) as typeof fetch;
+  const cache = await mkdtemp(join(tmpdir(), "attestation-tuf-"));
+  const options = { request, tufCachePath: cache, tufForceCache: true };
+  return { manifest, attestations, digest, requests, options, cache };
 }
-test("provenance runner preserves exact trust arguments, byte subject and bounded options; failure propagates and cleans subject", async () => {
-  const bytes = Buffer.from("original\0subject"),
-    failure = Error("verifier rejected");
-  let path = "";
-  let calls = 0;
-  await assert.rejects(
-    verifyProvenance(bytes, revision, async (file, args, options) => {
-      calls++;
-      path = args[2];
-      assert.equal(file, "gh");
-      assert.deepEqual(args, expected(path));
-      assert.deepEqual(options, { timeout: 30000, maxBuffer: 65536 });
-      assert.deepEqual(await readFile(path), bytes);
-      assert.equal((await stat(path)).mode & 0o777, 0o600);
-      throw failure;
-    }),
-    (e) => e === failure,
-  );
-  assert.equal(calls, 1);
-  await assert.rejects(readFile(path), { code: "ENOENT" });
-  await verifyProvenanceFile(
-    "/fixed/artifact",
-    revision,
-    async (file, args, options) => {
-      calls++;
-      assert.equal(file, "gh");
-      assert.deepEqual(args, expected("/fixed/artifact"));
-      assert.deepEqual(options, { timeout: 30000, maxBuffer: 65536 });
-    },
-  );
-  assert.equal(calls, 2);
+
+test("a real release attestation verifies without a GitHub account", async () => {
+  const f = await setup();
+  try {
+    await verifyProvenance(f.manifest, revision, f.options);
+    assert.deepEqual(
+      f.requests.map((r) => r.url),
+      [
+        `https://api.github.com/repos/stevefortier/katafit-coach/attestations/sha256:${f.digest}`,
+      ],
+    );
+    // Unauthenticated: no credential of any kind is sent.
+    assert.ok(f.requests.every((r) => !("Authorization" in r.headers)));
+  } finally {
+    await rm(f.cache, { recursive: true, force: true });
+  }
 });
-for (const overflow of [false, true])
-  test(`ordinary nonrelease default attestation retains execFile ${overflow ? "stdout limit" : "success"} behavior without ownership`, async () => {
-    const state = await mkdtemp("/dev/shm/native-final-default-");
-    const script = String.raw`
-  const cp=await import('node:child_process'),fs=await import('node:fs'),mod=await import('node:module');
-  const original=cp.default.execFile;
-  cp.default.execFile=(file,args,options,callback)=>{
-   if(file!=='gh')throw Error('real executable forbidden');
-   fs.writeFileSync(process.argv[1],JSON.stringify({file,args,options}));
-   return original(process.execPath,['-e',process.argv[3]==='true'?'process.stdout.write("x".repeat(65537))':'process.stdout.write("verified")'],options,callback);
-  };
-  mod.syncBuiltinESMExports();
-  const {verifyProvenanceFile}=await import(process.argv[2]);
-  try{await verifyProvenanceFile('/fixed/artifact','a'.repeat(40));process.stdout.write('accepted');}
-  catch(e){process.stdout.write(e.code);}
- `;
-    try {
-      const { stdout } = await promisify(execFile)(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          "--input-type=module",
-          "-e",
-          script,
-          join(state, "execution.json"),
-          new URL("../src/release/manifest.ts", import.meta.url).href,
-          String(overflow),
-        ],
-        { timeout: 5000 },
+
+test("a file is verified by its digest", async () => {
+  const f = await setup();
+  const dir = await mkdtemp(join(tmpdir(), "attestation-file-"));
+  try {
+    await writeFile(join(dir, "manifest.json"), f.manifest);
+    await verifyProvenanceFile(join(dir, "manifest.json"), revision, f.options);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(f.cache, { recursive: true, force: true });
+  }
+});
+
+test("another revision, another subject, a tampered payload or no attestation is rejected", async () => {
+  const f = await setup();
+  try {
+    // Built from a different commit: the certificate's source digest differs.
+    await assert.rejects(
+      verifyProvenance(f.manifest, "0".repeat(40), f.options),
+      /PROVENANCE_REJECTED/,
+    );
+    // The same attestations served for different bytes: subject mismatch.
+    await assert.rejects(
+      verifyProvenance(Buffer.from("other bytes"), revision, f.options),
+      /PROVENANCE_REJECTED/,
+    );
+    // A payload edited after signing no longer matches its signature.
+    const tampered = structuredClone(f.attestations);
+    for (const a of tampered.attestations) {
+      const statement = JSON.parse(
+        Buffer.from(a.bundle.dsseEnvelope.payload, "base64").toString(),
       );
-      assert.equal(
-        stdout,
-        overflow ? "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" : "accepted",
-      );
-      const record = JSON.parse(
-        await readFile(join(state, "execution.json"), "utf8"),
-      );
-      assert.equal(record.file, "gh");
-      assert.deepEqual(record.args, expected("/fixed/artifact"));
-      assert.deepEqual(record.options, { timeout: 30000, maxBuffer: 65536 });
-    } finally {
-      await rm(state, { recursive: true, force: true });
+      statement.subject = [{ name: "x", digest: { sha256: "0".repeat(64) } }];
+      a.bundle.dsseEnvelope.payload = Buffer.from(
+        JSON.stringify(statement),
+      ).toString("base64");
     }
-  });
+    const edited = await setup(() => tampered);
+    await assert.rejects(
+      verifyProvenance(f.manifest, revision, edited.options),
+      /PROVENANCE_REJECTED/,
+    );
+    await rm(edited.cache, { recursive: true, force: true });
+    const none = await setup(() => ({ attestations: [] }));
+    await assert.rejects(
+      verifyProvenance(f.manifest, revision, none.options),
+      /PROVENANCE_REJECTED/,
+    );
+    await rm(none.cache, { recursive: true, force: true });
+  } finally {
+    await rm(f.cache, { recursive: true, force: true });
+  }
+});
+
+test("an unavailable attestation service is not an acceptance", async () => {
+  const f = await setup(() => ({ message: "Not Found" }), 404);
+  try {
+    await assert.rejects(
+      verifyAttestation(f.digest, revision, f.options),
+      /PROVENANCE_UNAVAILABLE/,
+    );
+    await assert.rejects(
+      verifyAttestation("not-a-digest", revision, f.options),
+      /PROVENANCE_REJECTED/,
+    );
+    assert.equal(f.requests.length, 1);
+  } finally {
+    await rm(f.cache, { recursive: true, force: true });
+  }
+});
