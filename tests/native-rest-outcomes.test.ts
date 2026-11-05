@@ -81,7 +81,7 @@ test("an oversized read names its cause and how to narrow it", async () => {
     await assert.rejects(
       () => f.ext.call("katafit_rest_request", get("/api/large")),
       (e: any) =>
-        /^NATIVE_REST_TOO_LARGE: .*256 KiB.*Narrow it/.test(e.message) &&
+        /^NATIVE_REST_TOO_LARGE: .*256 KiB.*\?fields=a,b\.c/.test(e.message) &&
         !/xxxx/.test(e.message),
     );
   } finally {
