@@ -1,16 +1,23 @@
 import { createHash, randomBytes } from "node:crypto";
 import { History, type Message } from "./history.js";
 import { Store, assertNoSecrets } from "../config/store.js";
+/**
+ * A row left by an earlier native Pi REST write. Those writes are no longer
+ * journaled and had no way to be reconciled, so retained rows never fence.
+ * Other writers key their rows with a prefix (invocation_, work_, legacy:).
+ */
+export const ordinaryNativeRest = (action: {
+  tool_name?: string;
+  idempotency_key?: string;
+}) =>
+  action.tool_name === "katafit_rest_request" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+    action.idempotency_key ?? "",
+  );
 type RecordedAction = {
   session_id: string;
   idempotency_key: string;
-  status:
-    | "pending"
-    | "delivered"
-    | "completed"
-    | "unknown"
-    | "not_found"
-    | "rejected";
+  status: "pending" | "delivered" | "completed" | "unknown" | "not_found";
   tool_name?: string;
   recipient_id?: string;
   member_ref?: string; // retained only for private historical receipts
@@ -205,14 +212,9 @@ export class Actions {
             "turn_generation",
           ].includes(k),
       ) ||
-      ![
-        "pending",
-        "unknown",
-        "not_found",
-        "delivered",
-        "completed",
-        "rejected",
-      ].includes(v.status)
+      !["pending", "unknown", "not_found", "delivered", "completed"].includes(
+        v.status,
+      )
     )
       throw new Error("UNSAFE_STORAGE");
     if (
@@ -318,7 +320,7 @@ export class Actions {
       return false;
     if (rows[i - 1].text === MEMBER_ROW)
       return this.decodeMember(rows[i].text).status === "delivered";
-    return ["delivered", "completed", "not_found", "rejected"].includes(
+    return ["delivered", "completed", "not_found"].includes(
       this.decode(rows[i].text).status,
     );
   }
@@ -473,8 +475,9 @@ export class Actions {
   unresolved(exceptKey?: string) {
     return this.snapshot().some(
       (a) =>
-        a.status === "unknown" ||
-        (a.status === "pending" && a.idempotency_key !== exceptKey),
+        !ordinaryNativeRest(a) &&
+        (a.status === "unknown" ||
+          (a.status === "pending" && a.idempotency_key !== exceptKey)),
     );
   }
   memberDeliveries(): MemberDelivery[] {

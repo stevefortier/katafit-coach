@@ -286,12 +286,6 @@ export async function openNativeGateway(
   let hostSeq = 0;
   let hostWorkSeq = 0;
   const actions = new Actions(store, hooks.onDiagnostic);
-  // An HTTP response is not yet a deliverable native result. Keep its action
-  // fenced until emitted() validates the actual Pi-facing result budget.
-  const completionByResult = new WeakMap<
-    object,
-    Parameters<Actions["save"]>[0]
-  >();
   // Shared member delivery for this exact credential/origin. A POST may have
   // committed before this process died: recover recorded sends of the same
   // backend account by read-only receipt, never by a second POST.
@@ -765,13 +759,6 @@ export async function openNativeGateway(
     )
       failure = new NativeFailure("NATIVE_RESULT_TOO_LARGE");
     if (failure) throw failure;
-    if (result && typeof result === "object") {
-      const completion = completionByResult.get(result);
-      if (completion) {
-        actions.save(completion);
-        completionByResult.delete(result);
-      }
-    }
     return result;
   }
   // Map any failure to one fixed code. Session state dominates: a revoked or
@@ -928,18 +915,9 @@ export async function openNativeGateway(
           throw new NativeFailure("NATIVE_REQUEST_REJECTED");
         if (target.kind === "send")
           return memberSend(request, target.recipient, requestSignal);
+        // Ordinary writes are not journaled: the backend validates each one,
+        // and a lost response is reported as unknown without a retry.
         const mutation = args.method !== "GET";
-        const pending = {
-          session_id: session.session_id,
-          idempotency_key: randomUUID(),
-          tool_name: restRequestTool.name,
-          status: "pending" as const,
-        };
-        if (mutation) {
-          if (actions.unresolved())
-            throw new NativeFailure("NATIVE_DELIVERY_UNVERIFIED");
-          actions.save(pending);
-        }
         let result;
         try {
           result = await restRequest(
@@ -952,20 +930,13 @@ export async function openNativeGateway(
             Object.values(secrets),
           );
           check();
-          if (mutation)
-            completionByResult.set(result, { ...pending, status: "completed" });
         } catch (error) {
-          // A definite backend rejection was not applied, so it never fences
-          // later writes the way an unknown outcome does.
-          if (mutation && error instanceof RestMutationRejected) {
-            actions.save({ ...pending, status: "rejected" });
+          if (mutation && error instanceof RestMutationRejected)
             throw new NativeFailure(
               "NATIVE_REST_REJECTED",
               error.message,
               error.status,
             );
-          }
-          if (mutation) actions.save({ ...pending, status: "unknown" });
           if ((error as Error).message === "REST_REQUEST_REJECTED")
             throw new NativeFailure("NATIVE_REQUEST_REJECTED");
           // A lost response leaves a write's outcome unknown. No automatic retry.

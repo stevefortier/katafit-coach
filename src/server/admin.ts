@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-import { Actions } from "../chat/actions.js";
+import { Actions, ordinaryNativeRest } from "../chat/actions.js";
 import { NativeTerminal } from "./terminal.js";
 import { contentDisposition } from "../sandbox/attachments.js";
 import { StudioReads } from "../katafit/studio.js";
@@ -1066,7 +1066,9 @@ export async function admin(
       }
       if (req.method === "GET" && path === "/api/terminal/receipts")
         return send(200, {
-          actions: new Actions(store, onBackendDiagnostic).snapshot(),
+          actions: new Actions(store, onBackendDiagnostic)
+            .snapshot()
+            .filter((action) => !ordinaryNativeRest(action)),
         });
 
       if (
