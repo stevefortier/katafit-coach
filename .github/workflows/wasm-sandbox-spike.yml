@@ -17,7 +17,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/coach-pi.wasm
-          key: coach-pi-wasm-${{ hashFiles('spike/wasm/Dockerfile', 'spike/wasm/vmux.mjs', 'spike/wasm/patch-tinyemu.py') }}
+          key: coach-pi-wasm-512-${{ hashFiles('spike/wasm/Dockerfile', 'spike/wasm/vmux.mjs', 'spike/wasm/patch-tinyemu.py') }}
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: docker/setup-qemu-action@v3
         with:
@@ -51,7 +51,7 @@ jobs:
           # ISA requires it to execute as an ordinary fence; patch the check.
           c2w --show-dockerfile > "$RUNNER_TEMP/c2w.Dockerfile"
           python3 spike/wasm/patch-tinyemu.py "$RUNNER_TEMP/c2w.Dockerfile"
-          c2w --dockerfile "$RUNNER_TEMP/c2w.Dockerfile" --target-arch=riscv64 coach-pi-wasm "$RUNNER_TEMP/coach-pi.wasm"
+          c2w --dockerfile "$RUNNER_TEMP/c2w.Dockerfile" --build-arg VM_MEMORY_SIZE_MB=512 --target-arch=riscv64 coach-pi-wasm "$RUNNER_TEMP/coach-pi.wasm"
           echo "Conversion: $(( $(date +%s) - start ))s, size $(du -h "$RUNNER_TEMP/coach-pi.wasm" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:

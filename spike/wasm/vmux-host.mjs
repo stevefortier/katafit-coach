@@ -96,8 +96,8 @@ await step("pty resize to 120x40", async () => {
   send({ t: "resize", c: "tty", cols: 120, rows: 40 });
   await shell("tty", "stty size", /40 120/);
 });
-await step("pty runs as uid 1000 in /workspace", () =>
-  shell("tty", 'echo "$(id -u):$(pwd)"', /1000:\/workspace/),
+await step("pty runs in /workspace with 512 MB", () =>
+  shell("tty", 'echo "$(pwd):$(free -m | awk \'/Mem/{print $2}\')MB"', /\/workspace:(4[6-9]\d|5\d\d)MB/),
 );
 await step("relay stream: 20 round trips beside the pty", async () => {
   send({ t: "start", c: "relay", argv: ["node", "/workspace/echo.mjs"] });

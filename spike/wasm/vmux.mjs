@@ -12,7 +12,9 @@
 //                  {t:"exit", c, code}
 //
 // Streams started with pty:true get a terminal (Pi's TUI); others are plain
-// pipes framed by line (the relay's JSON lines, Pi's RPC mode).
+// pipes framed by line (the relay's JSON lines, Pi's RPC mode). Streams run
+// as guest root: the shared folders appear root-owned, and the VM boundary,
+// not a guest uid, is what isolates the host.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import pty from "node-pty";
@@ -20,11 +22,10 @@ import pty from "node-pty";
 process.stdin.setRawMode?.(true);
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 const streams = new Map();
-const uid = Number(process.env.VMUX_UID ?? 1000);
 
 function start({ c, argv, pty: terminal, cols = 80, rows = 24 }) {
   if (streams.has(c) || !Array.isArray(argv) || !argv.length) return;
-  const options = { cwd: process.env.VMUX_CWD ?? "/workspace", env: { ...process.env, TERM: "xterm-256color" }, uid, gid: uid };
+  const options = { cwd: process.env.VMUX_CWD ?? "/workspace", env: { ...process.env, TERM: "xterm-256color" } };
   if (terminal) {
     const term = pty.spawn(argv[0], argv.slice(1), { ...options, cols, rows, name: "xterm-256color" });
     term.onData((data) => send({ t: "out", c, d: Buffer.from(data).toString("base64") }));
