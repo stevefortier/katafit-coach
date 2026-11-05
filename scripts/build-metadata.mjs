@@ -41,9 +41,11 @@ const copied = readdirSync("sandbox")
   .sort();
 if (copied.join(",") !== [...sandboxModules].sort().join(","))
   throw new Error("UNFINGERPRINTED_SANDBOX_INPUT: " + copied.join(","));
+// The Pi image installs only the sandbox's own dependencies, so the host app's
+// dependency changes never require a new image.
 for (const name of [
-  "package.json",
-  "package-lock.json",
+  "sandbox/package.json",
+  "sandbox/package-lock.json",
   "sandbox/Dockerfile",
   ...sandboxModules,
 ]) {
@@ -52,9 +54,14 @@ for (const name of [
 }
 const fingerprint = identity.digest("hex");
 mkdirSync("dist/native", { recursive: true });
-// npm deliberately omits root package-lock.json. Ship the exact locked input
-// under a non-special name so the unpacked package is a complete image context.
+// npm pack omits package-lock.json files. Ship each exact locked input under a
+// non-special name: the app's (installed with the package) and the sandbox's
+// (the Pi image's only dependencies), so the unpacked package is complete.
 writeFileSync("dist/native/npm-lock.json", readFileSync("package-lock.json"));
+writeFileSync(
+  "dist/native/sandbox-lock.json",
+  readFileSync("sandbox/package-lock.json"),
+);
 writeFileSync(
   "dist/build.json",
   JSON.stringify({
