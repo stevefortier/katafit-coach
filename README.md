@@ -32,9 +32,32 @@ Coach upgrades itself from Studio afterwards. At the end, the installer prints
 Studio's address. Studio listens on `127.0.0.1` only; from another machine,
 use an SSH tunnel.
 
+## Install on Windows (one line)
+
+In PowerShell, as your ordinary Windows user:
+
+```powershell
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/stevefortier/katafit-coach/main/install.ps1).Content))
+```
+
+The x64 installer includes Node and Coach; no admin rights or Docker are needed.
+It checks the release digest and build attestation, installs into
+`%LOCALAPPDATA%\katafit-coach`, and keeps data in `%USERPROFILE%\.katafit-coach`.
+It protects both folders with per-user access lists, starts Studio, and prints
+its local address. Coach starts at login through a scheduled task, or the user's
+Startup folder if task registration is restricted. Open a new terminal to use
+`katafit-coach status`, `open`, or `stop`. Rerunning the installer keeps your
+data and settings. Subsequent upgrades run from Studio.
+
+The one-line command becomes available after this change is merged and a release
+containing Windows support is published. See [Coach on Windows](docs/windows.md).
+
 ## Install from this repository
 
-Requires Linux or macOS and **Node 26.10+ (major 26 only)**. Linux is the tested platform. Windows permissions/service management are not supported by this pilot. See [supported Node and CI qualification policy](docs/ci.md) for the latest-patch policy and parallel gates.
+Requires **Node 26.10+ (major 26 only)**. Linux and Windows are tested platforms;
+macOS can run the source in legacy mode. For Windows, use the installer above
+for a managed installation. See [supported Node and CI qualification policy](docs/ci.md)
+for the latest-patch policy and parallel gates.
 
 ```sh
 git clone https://github.com/stevefortier/katafit-coach.git

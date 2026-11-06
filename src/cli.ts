@@ -202,8 +202,14 @@ async function main() {
     await call("status");
     const url = t.origin + "/#" + store.secrets.admin;
     const child = spawn(
-      process.platform === "darwin" ? "open" : "xdg-open",
-      [url],
+      process.platform === "win32"
+        ? "rundll32.exe"
+        : process.platform === "darwin"
+          ? "open"
+          : "xdg-open",
+      process.platform === "win32"
+        ? ["url.dll,FileProtocolHandler", url]
+        : [url],
       { stdio: "ignore" },
     );
     child.once("error", () => {

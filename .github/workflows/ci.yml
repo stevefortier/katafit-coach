@@ -215,6 +215,33 @@ jobs:
       - name: Bootstrap, handover and upgrade suites on Windows
         shell: bash
         run: npx tsx --test --test-concurrency=1 --test-force-exit tests/boot.test.ts tests/boot-handover.test.ts tests/handover-resume.test.ts tests/workspace-upgrades.test.ts
+      - name: Install, reinstall and restart as a standard Windows user
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:PUBLIC ('coach-smoke-' + [guid]::NewGuid().ToString('N'))
+          $null = New-Item -ItemType Directory -Path $root
+          $password = ConvertTo-SecureString (([guid]::NewGuid().ToString('N')) + 'aA!9') -AsPlainText -Force
+          $user = New-LocalUser -Name 'coach-smoke' -Password $password -AccountNeverExpires
+          Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
+          $credential = New-Object Management.Automation.PSCredential ("$env:COMPUTERNAME\coach-smoke", $password)
+          try {
+            Copy-Item "$env:RUNNER_TEMP\archives\coach-*-win-x64.zip" "$root\archive.zip"
+            Copy-Item install.ps1 "$root\install.ps1"
+            Copy-Item scripts/windows-installer-smoke.ps1 "$root\smoke.ps1"
+            $null = & icacls.exe $root /grant "*$($user.SID.Value):(OI)(CI)F" /T
+            if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the smoke folder.' }
+            $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $root + '\smoke.ps1" -Archive "' + $root + '\archive.zip" -Installer "' + $root + '\install.ps1" -Root "' + $root + '"'
+            $process = Start-Process powershell.exe -Credential $credential -LoadUserProfile -ArgumentList $arguments -Wait -PassThru -RedirectStandardOutput "$root\stdout.log" -RedirectStandardError "$root\stderr.log"
+            # Installer output contains a disposable local admin URL; redact it.
+            foreach ($log in @('stdout.log', 'stderr.log')) {
+              (Get-Content "$root\$log" -Raw) -replace '(http://127\.0\.0\.1:\d+/#)[A-Za-z0-9_-]+', '$1[redacted]' | Write-Host
+            }
+            if ($process.ExitCode -ne 0) { throw "Windows installer smoke exited $($process.ExitCode)" }
+          } finally {
+            Remove-LocalUser -Name 'coach-smoke' -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          }
   installer:
     # The one-line Linux installer, from this source's archive, as an ordinary
     # user in clean containers with nothing preinstalled.
