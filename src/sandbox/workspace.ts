@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { AttachmentFailure } from "./attachments.js";
+import { AttachmentFailure, validWorkspaceRead } from "./attachments.js";
 import type { NativeGateway } from "./gateway.js";
 import { serveRelay } from "./relayChannel.js";
 import {
@@ -48,7 +49,11 @@ export function workspacePermissions(session: string): string[] {
 }
 
 /** Environment of a workspace-mode Pi: its own home and temp, nothing else. */
-function workspaceEnvironment(session: string, profile: NativeProfile) {
+function workspaceEnvironment(
+  session: string,
+  mode: "interactive" | "rpc",
+  profile?: NativeProfile,
+) {
   const home = join(session, "home");
   const tmp = join(session, "tmp");
   return {
@@ -63,7 +68,12 @@ function workspaceEnvironment(session: string, profile: NativeProfile) {
     PI_OFFLINE: "1",
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
-    NATIVE_PROFILE: profile,
+    NATIVE_MODE: mode,
+    ...(profile ? { NATIVE_PROFILE: profile } : {}),
+    // Studio's xterm is the terminal (workspace/terminal.mjs).
+    ...(mode === "interactive"
+      ? { TERM: "xterm-256color", COLORTERM: "truecolor", FORCE_COLOR: "3" }
+      : {}),
   };
 }
 
@@ -96,7 +106,8 @@ export async function sweepWorkspaceSessions(home: string): Promise<number> {
 /**
  * Pi as an ordinary process under Node's permission model, its tools backed
  * by just-bash (workspace/tools.mjs), its only channel out the relay over
- * Node's IPC channel. Same surface as NativeRuntime for headless RPC sessions.
+ * Node's IPC channel. Same surface as NativeRuntime, for headless RPC and
+ * interactive sessions.
  */
 export class WorkspaceRuntime {
   readonly name = "katafit-pi-ws-" + randomUUID();
@@ -108,6 +119,7 @@ export class WorkspaceRuntime {
   private readonly session: string;
   private gateway?: NativeGateway;
   private profile?: NativeProfile;
+  private mode: "interactive" | "rpc" = "interactive";
   private child?: ChildProcess;
   private created = false;
   private closing = false;
@@ -139,14 +151,14 @@ export class WorkspaceRuntime {
     options: { mode?: "interactive" | "rpc"; profile?: NativeProfile } = {},
   ) {
     if (this.closing) throw new Error("RUNTIME_CLEANUP_PENDING");
-    if (
-      options.mode !== "rpc" ||
-      !gateway ||
-      !NATIVE_PROFILES.includes(options.profile as NativeProfile)
-    )
+    // Workspace sessions always have a gateway: it is Pi's only provider.
+    if (!gateway) throw new Error("GATEWAY_REQUIRED");
+    const rpc = options.mode === "rpc";
+    if (rpc && !NATIVE_PROFILES.includes(options.profile as NativeProfile))
       throw new Error("RPC_PROFILE_REQUIRED");
     this.gateway = gateway;
-    this.profile = options.profile;
+    this.mode = rpc ? "rpc" : "interactive";
+    this.profile = rpc ? options.profile : undefined;
     this.created = true;
     live.add(this.name);
     try {
@@ -169,7 +181,7 @@ export class WorkspaceRuntime {
       ],
       {
         cwd: join(this.session, "workspace"),
-        env: workspaceEnvironment(this.session, this.profile!),
+        env: workspaceEnvironment(this.session, this.mode, this.profile),
         stdio: ["pipe", "pipe", "pipe", "ipc"],
         windowsHide: true,
       },
@@ -227,7 +239,8 @@ export class WorkspaceRuntime {
   }
   /** Writes one allowlisted Pi RPC command. */
   rpc(command: RpcCommand): Promise<void> {
-    if (!validRpc(command)) throw new Error("RPC_COMMAND_REJECTED");
+    if (this.mode !== "rpc" || !validRpc(command))
+      throw new Error("RPC_COMMAND_REJECTED");
     const line = JSON.stringify(command) + "\n";
     const stdin = this.child?.stdin;
     if (
@@ -240,14 +253,100 @@ export class WorkspaceRuntime {
     // Resolves once flushed, so a final abort is not lost to teardown.
     return new Promise((resolve) => stdin.write(line, () => resolve()));
   }
-  input(_data: string): void {
-    throw new Error("RPC_MODE");
+  /** Studio keystrokes, raw: there is no line discipline in between. */
+  input(data: string) {
+    if (this.mode === "rpc") throw new Error("RPC_MODE");
+    const stdin = this.child?.stdin;
+    if (
+      !stdin ||
+      stdin.destroyed ||
+      Buffer.byteLength(data) > 8192 ||
+      stdin.writableLength > 65536
+    )
+      throw new Error("TERMINAL_BACKPRESSURE");
+    stdin.write(data);
   }
-  async resize(_cols: number, _rows: number): Promise<void> {
-    throw new Error("RPC_MODE");
+  async resize(cols: number, rows: number) {
+    if (![cols, rows].every((n) => Number.isInteger(n) && n >= 2 && n <= 500))
+      throw new Error("INVALID_SIZE");
+    if (this.mode === "rpc" || !this.child?.connected)
+      throw new Error("RUNTIME_NOT_STARTED");
+    this.child.send({ resize: [cols, rows] });
   }
-  async readWorkspaceFile(): Promise<Buffer> {
-    throw new AttachmentFailure("ATTACHMENT_UNAVAILABLE");
+  /**
+   * Host-initiated, bounded read of one regular file below this session's
+   * workspace, by plain name parts. Like the container's reader it never
+   * follows links and stays on the workspace's device.
+   */
+  async readWorkspaceFile(
+    parts: string[],
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<Buffer> {
+    if (this.closing || !this.created)
+      throw new AttachmentFailure("ATTACHMENT_UNAVAILABLE");
+    if (
+      !validWorkspaceRead(parts, limit) ||
+      // Windows: no separators or drive/stream syntax inside a name.
+      (process.platform === "win32" && parts.some((p) => /[\\:]/.test(p)))
+    )
+      throw new AttachmentFailure("ATTACHMENT_PATH_REJECTED");
+    const root = join(this.session, "workspace");
+    let path = root;
+    let device: number;
+    try {
+      device = (await lstat(root)).dev;
+      for (const [index, part] of parts.entries()) {
+        path = join(path, part);
+        const info = await lstat(path);
+        const last = index === parts.length - 1;
+        if (
+          info.isSymbolicLink() ||
+          info.dev !== device ||
+          (last ? !info.isFile() : !info.isDirectory())
+        )
+          throw new AttachmentFailure("ATTACHMENT_FILE_UNAVAILABLE");
+      }
+    } catch (error: any) {
+      if (error instanceof AttachmentFailure) throw error;
+      throw new AttachmentFailure(
+        error?.code === "ENOENT"
+          ? "ATTACHMENT_FILE_NOT_FOUND"
+          : "ATTACHMENT_FILE_UNAVAILABLE",
+      );
+    }
+    signal?.throwIfAborted();
+    const file = await open(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    ).catch(() => {
+      throw new AttachmentFailure("ATTACHMENT_FILE_UNAVAILABLE");
+    });
+    try {
+      const opened = await file.stat();
+      if (!opened.isFile() || opened.dev !== device)
+        throw new AttachmentFailure("ATTACHMENT_FILE_UNAVAILABLE");
+      if (opened.size > limit)
+        throw new AttachmentFailure("ATTACHMENT_TOO_LARGE");
+      const buffer = Buffer.alloc(limit + 1);
+      let size = 0;
+      for (;;) {
+        const { bytesRead } = await file.read(
+          buffer,
+          size,
+          buffer.length - size,
+          null,
+        );
+        if (!bytesRead) break;
+        size += bytesRead;
+        if (size > limit) throw new AttachmentFailure("ATTACHMENT_TOO_LARGE");
+      }
+      if (!size) throw new AttachmentFailure("ATTACHMENT_FILE_EMPTY");
+      if (this.closing) throw new AttachmentFailure("ATTACHMENT_UNAVAILABLE");
+      return buffer.subarray(0, size);
+    } finally {
+      await file.close();
+    }
   }
   stop(): Promise<void> {
     this.boundary(8);

@@ -4,6 +4,12 @@ import type { Server } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Store } from "../config/store.js";
 import { NativeRuntime } from "../sandbox/runtime.js";
+import { sandboxMode } from "../sandbox/mode.js";
+import { WorkspaceRuntime } from "../sandbox/workspace.js";
+
+/** resolveImage() in workspace mode: no Docker image, a workspace runtime. */
+const WORKSPACE = Symbol("workspace");
+type Sandbox = string | NativeBinding | typeof WORKSPACE;
 import { nativeBinding } from "../sandbox/artifact.js";
 import { openNativeGateway, type NativeGateway } from "../sandbox/gateway.js";
 import { AttachmentFailure } from "../sandbox/attachments.js";
@@ -20,7 +26,7 @@ export class NativeTerminal {
   private tickets = new Map<string, { expires: number; authority: string }>();
   private sockets = new Set<WebSocket>();
   private ws?: WebSocket;
-  private runtime?: NativeRuntime;
+  private runtime?: NativeRuntime | WorkspaceRuntime;
   private gateway?: NativeGateway;
   private starting?: Promise<void>;
   private stopping?: Promise<void>;
@@ -216,7 +222,7 @@ export class NativeTerminal {
       const controller = (this.controller = new AbortController());
       const session = randomBytes(16).toString("hex");
       const authority = this.authority();
-      let owned: NativeRuntime | undefined;
+      let owned: NativeRuntime | WorkspaceRuntime | undefined;
       const gateway = await this.openGateway(this.store, controller.signal, {
         onDiagnostic: this.onDiagnostic,
         memory: {
@@ -273,7 +279,7 @@ export class NativeTerminal {
           void this.stop().catch(() => {});
         },
       });
-      let image: string | NativeBinding;
+      let image: Sandbox;
       try {
         image = await this.resolveImage();
       } catch (error) {
@@ -374,15 +380,19 @@ export class NativeTerminal {
       }
     }
   }
-  /** Test seam: the Docker-backed runtime for one generation. */
+  /** Test seam: the runtime for one generation (Docker or workspace). */
   protected openGateway(...args: Parameters<typeof openNativeGateway>) {
     return openNativeGateway(...args);
   }
-  protected createRuntime(image: string | NativeBinding) {
-    return new NativeRuntime(image);
+  protected createRuntime(image: Sandbox): NativeRuntime | WorkspaceRuntime {
+    return image === WORKSPACE
+      ? new WorkspaceRuntime({ home: this.store.dir })
+      : new NativeRuntime(image);
   }
-  protected resolveImage(): Promise<string | NativeBinding> {
-    return nativeBinding(this.store.dir);
+  protected async resolveImage(): Promise<Sandbox> {
+    return (await sandboxMode(this.store.dir)) === "workspace"
+      ? WORKSPACE
+      : nativeBinding(this.store.dir);
   }
   /**
    * Fenced attachment bytes for the exact current native session. Unknown,
