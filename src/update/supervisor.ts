@@ -328,6 +328,14 @@ export async function supervise(
             .catch(() => {})
             .finally(async () => {
               manualPending = undefined;
+              // Under the bootstrap a successful upgrade hands over. Resuming
+              // here would start the worker on an application that stops with
+              // this supervisor; the successor resumes it on the one it keeps,
+              // from update-resume.json, which therefore stays pending.
+              if (resume && handover) {
+                send({ type: "state", data: updates.snapshot() });
+                return;
+              }
               if (resume) {
                 ambiguousQuiesce = true;
                 recoveryOutcome =
