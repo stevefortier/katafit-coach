@@ -1175,6 +1175,8 @@ header {
   overflow: hidden;
   font-size: 24px;
   box-shadow: none;
+  /* Double tap focuses the map; it must never zoom the page. */
+  touch-action: manipulation;
 }
 .dashboard-member-portrait img {
   position: absolute;

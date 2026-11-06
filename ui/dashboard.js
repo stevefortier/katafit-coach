@@ -229,7 +229,35 @@ window.CoachDashboard = (() => {
   let syncMap = () => {};
   let refreshMap = () => {};
   let revealEvent = () => {};
+  let focusMapMember = () => {};
+  let focusMapEvent = () => {};
+  // The timeline's selected event category while its legend is shown.
+  let timelineCategory = () => null;
   let forgetMember = () => {};
+  // Camera focus never zooms past street level (OSM tiles stop at 19).
+  const FOCUS_ZOOM = 18;
+  // A repeated pointer activation of the same member picture or event, keyed
+  // to survive the re-render a first activation causes: the platform's click
+  // count, or a quick nearby repeat for taps that do not count. Every repeat
+  // counts, so a triple click still ends focused rather than re-selected.
+  // Keyboard clicks (detail 0) never count: Shift+Enter is the equivalent.
+  let lastActivation = null;
+  function doubleActivation(key, event) {
+    if (event.type === "click" && event.detail === 0) return false;
+    const prior = lastActivation;
+    lastActivation = {
+      key,
+      at: event.timeStamp,
+      x: event.clientX,
+      y: event.clientY,
+    };
+    return (
+      prior?.key === key &&
+      (event.detail >= 2 ||
+        (event.timeStamp - prior.at <= 500 &&
+          Math.hypot(event.clientX - prior.x, event.clientY - prior.y) <= 24))
+    );
+  }
   // Only a true 401/403 means access was denied; 429, 5xx and network
   // failures are transient and must never be treated as revoked sharing.
   const httpError = (message, status) =>
@@ -709,7 +737,7 @@ window.CoachDashboard = (() => {
           entry.append(info, tooltip);
         }
       }
-      button.addEventListener("click", () => {
+      const select = () => {
         selectedMember = id;
         selectionEpoch++;
         $("dashboardMapSelection")?.replaceChildren();
@@ -718,7 +746,26 @@ window.CoachDashboard = (() => {
         filterMap();
         filterFeed();
         filterTimeline();
+      };
+      button.addEventListener("click", (event) => {
+        select();
+        // Double-clicking (or double-tapping) the picture also focuses the map.
+        if (
+          !all &&
+          event.target.closest(".dashboard-member-portrait") &&
+          doubleActivation(`member:${id}`, event)
+        )
+          focusMapMember(id);
       });
+      if (!all) {
+        button.setAttribute("aria-keyshortcuts", "Shift+Enter");
+        button.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" || !event.shiftKey) return;
+          event.preventDefault();
+          select();
+          focusMapMember(id);
+        });
+      }
       rail.append(entry || button);
     };
     makeCard(null, {}, true);
@@ -1484,6 +1531,8 @@ window.CoachDashboard = (() => {
       const item = gesture.mode === "scrub" ? nearest(event.clientX) : null;
       cancelGesture();
       if (item) select(item);
+      if (item && interactive() && doubleActivation(`event:${item.id}`, event))
+        focusMapEvent(item);
     };
     track.onpointercancel = () => {
       if (interactive()) cancelGesture();
@@ -1492,8 +1541,11 @@ window.CoachDashboard = (() => {
       if (interactive() && gesture) cancelGesture();
     };
     track.onclick = (event) => {
-      if (event.detail > 0 && !suppressPointerClick)
-        select(nearest(event.clientX));
+      if (event.detail === 0 || suppressPointerClick) return;
+      const item = nearest(event.clientX);
+      select(item);
+      if (item && interactive() && doubleActivation(`event:${item.id}`, event))
+        focusMapEvent(item);
     };
     track.onpointerleave = () => {
       if (interactive() && !gesture) dismiss();
@@ -1609,6 +1661,14 @@ window.CoachDashboard = (() => {
         };
         mark.onclick = (event) => {
           if (event.detail === 0 && mark.isConnected) select(item);
+        };
+        mark.setAttribute("aria-keyshortcuts", "Shift+Enter");
+        mark.onkeydown = (event) => {
+          if (event.key !== "Enter" || !event.shiftKey || !interactive())
+            return;
+          event.preventDefault();
+          select(item);
+          focusMapEvent(item);
         };
         track.append(mark);
       }
@@ -1791,6 +1851,7 @@ window.CoachDashboard = (() => {
       }
     };
     filterTimeline = draw;
+    timelineCategory = () => (scroll.isConnected ? selectedCategory : null);
     reconcileTimelineSelection = (item) => {
       if (!interactive()) return;
       if (selectedMember && selectedMember !== item.user_id) {
@@ -2167,6 +2228,8 @@ window.CoachDashboard = (() => {
     syncMap = () => {};
     refreshMap = () => {};
     revealEvent = () => {};
+    focusMapMember = () => {};
+    focusMapEvent = () => {};
     mapEpoch++;
     mapController?.abort();
     mapController = new AbortController();
@@ -2222,6 +2285,10 @@ window.CoachDashboard = (() => {
       instance.setView(keptView.center, keptView.zoom, { animate: false });
     else instance.setView([0, 0], 2);
     const overlay = text("div", "", "dashboard-map-overlay");
+    // Markers are not Leaflet layers: their (double) activations must never
+    // reach Leaflet's click handling or its double-click/double-tap zoom.
+    for (const type of ["click", "dblclick"])
+      overlay.addEventListener(type, (event) => event.stopPropagation());
     map.append(overlay);
     let chooserOwner = null;
     const chooser = text("div", "", "dashboard-map-chooser");
@@ -2271,7 +2338,9 @@ window.CoachDashboard = (() => {
       links = [],
       groups = [],
       fitted = false,
-      initialView;
+      initialView,
+      // Outcome of the last camera focus request, until the next filter.
+      focusNote = "";
     const initials = (memberId) =>
       (memberName(memberId).match(/[\p{L}\p{N}]+/gu) || ["M"])
         .slice(-2)
@@ -2300,6 +2369,7 @@ window.CoachDashboard = (() => {
         ).length;
         status.textContent = `${date} event occurrence time (device timezone) · ${dots.length} of ${total} authorized events have a shared location${day.complete ? " · complete day as loaded (not live)." : " · partial day: not every event is loaded, so event connections are hidden."}${rosterNote}`;
       }
+      if (focusNote) status.textContent += ` ${focusNote}`;
     };
     const choose = (original, generation) => {
       const item = scoped()?.items.get(original.id);
@@ -2410,7 +2480,17 @@ window.CoachDashboard = (() => {
           "aria-pressed",
           String(item.id === selectedEventId),
         );
-        marker.onclick = () => choose(item, generation);
+        marker.onclick = (event) => {
+          choose(item, generation);
+          if (doubleActivation(`event:${item.id}`, event)) focusMapEvent(item);
+        };
+        marker.setAttribute("aria-keyshortcuts", "Shift+Enter");
+        marker.onkeydown = (event) => {
+          if (event.key !== "Enter" || !event.shiftKey) return;
+          event.preventDefault();
+          choose(item, generation);
+          focusMapEvent(item);
+        };
         const dot = { item, fix, marker };
         dots.push(dot);
         const key = `${fix.latitude},${fix.longitude}`;
@@ -2563,17 +2643,23 @@ window.CoachDashboard = (() => {
     };
     filterMap = (clearSelection = true) => {
       closeChooser(false);
+      focusNote = "";
       if (clearSelection) {
         selectionEpoch++;
         selection.replaceChildren();
         highlightEvent(null);
       }
+      // Unanimated: an in-flight zoom animation would overwrite a focus that
+      // the second click of a double activation applies right after this.
       if (clearSelection && initialView)
-        instance.setView(initialView.center, initialView.zoom);
+        instance.setView(initialView.center, initialView.zoom, {
+          animate: false,
+        });
       refreshMap();
+      showStatus();
     };
     instance.on("move zoom resize", placePins);
-    const fitPins = (pins) => {
+    const fitPins = (pins, maxZoom = 16) => {
       if (!pins.length) return;
       const longitudes = pins
         .map(({ fix }) => (fix.longitude + 360) % 360)
@@ -2596,16 +2682,18 @@ window.CoachDashboard = (() => {
         return [fix.latitude, wrapped < arcStart ? wrapped + 360 : wrapped];
       });
       if (coords.length === 1)
-        instance.setView([pins[0].fix.latitude, pins[0].fix.longitude], 16, {
-          animate: false,
-        });
+        instance.setView(
+          [pins[0].fix.latitude, pins[0].fix.longitude],
+          maxZoom,
+          { animate: false },
+        );
       else
         instance.fitBounds(L.latLngBounds(coords), {
           padding: [
             Math.min(48, map.clientWidth / 4),
             Math.min(48, map.clientHeight / 4),
           ],
-          maxZoom: 16,
+          maxZoom,
           animate: false,
         });
     };
@@ -2616,6 +2704,55 @@ window.CoachDashboard = (() => {
     });
     const markUserView = () => {
       userViewChanged = mapViewSettled = true;
+    };
+    // Focus is a deliberate view: resizes keep it like panning. Only the
+    // canonical ledger's currently shared fixes count; nothing found is a
+    // truthful no-op that leaves the camera alone.
+    focusMapMember = (memberId) => {
+      if (!live()) return;
+      const category = timelineCategory();
+      const pins = dots
+        .filter(
+          ({ item }) =>
+            item.user_id === memberId &&
+            !suppressedMembers.has(memberId) &&
+            (!category || eventCategory(item) === category),
+        )
+        .map(({ item }) => ({
+          fix: eventPosition(scoped()?.items.get(item.id)),
+        }))
+        .filter(({ fix }) => fix);
+      const name = memberName(memberId);
+      if (pins.length) {
+        markUserView();
+        fitPins(pins, FOCUS_ZOOM);
+        focusNote = `Map zoomed to ${name}'s ${pins.length} shown event location${pins.length === 1 ? "" : "s"}.`;
+      } else
+        focusNote = `${name} has no shared event location${category ? ` in ${category === "status_change" ? "Readiness" : eventLabel(category)}` : ""} on ${date}; the map view was not changed.`;
+      showStatus();
+    };
+    focusMapEvent = (original) => {
+      if (!live()) return;
+      const item = scoped()?.items.get(original.id);
+      const fix =
+        item && !suppressedMembers.has(item.user_id) && eventPosition(item);
+      if (fix) {
+        markUserView();
+        // The exact recorded point, in the world copy nearest the view.
+        const center = instance.getCenter().lng;
+        instance.setView(
+          [
+            fix.latitude,
+            fix.longitude + 360 * Math.round((center - fix.longitude) / 360),
+          ],
+          FOCUS_ZOOM,
+          { animate: false },
+        );
+        focusNote = `Map zoomed to the recorded location of ${memberName(item.user_id)} · ${eventLabel(item.event_type)} · ${clock(item)}.`;
+      } else
+        focusNote =
+          "This event has no shared location; the map view was not changed.";
+      showStatus();
     };
     map.addEventListener(
       "keydown",
