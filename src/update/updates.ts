@@ -140,9 +140,8 @@ export class Updates {
     private readonly persistPreparation?: (
       attempt: PreparationAttempt,
     ) => Promise<void>,
-    private readonly observeReadiness?: (
-      target: Manifest,
-    ) => Promise<string | import("../sandbox/binding.js").NativeBinding>,
+    /** Resolves when the release can run here; throws an artifact reason. */
+    private readonly observeReadiness?: (target: Manifest) => Promise<unknown>,
     /** Fetches and provisions the exact release's Pi image when missing. */
     private readonly deliverTarget?: (target: Manifest) => Promise<unknown>,
   ) {

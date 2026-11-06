@@ -98,6 +98,22 @@ the container reader's rules:
 - on Windows, no `\` or `:` inside a name, which would allow alternate data
   streams.
 
+## Upgrades
+
+A workspace-mode installation needs no Pi image, so upgrades skip every image
+step (`src/update/supervisor.ts`):
+
+- **Readiness:** every published release is ready at once; there is never a
+  "delivery pending" state.
+- **Delivery:** no image is downloaded or provisioned.
+- **Preflight:** the Pi image check before launching a build is skipped.
+
+Builds declare `workspace-sandbox-1` in `dist/build.json`. A workspace-mode
+supervisor never launches a build without it, including when rolling back to
+a previous version, because an older build would expect Docker for every
+session. Such a launch fails with `WORKSPACE_SANDBOX_UNSUPPORTED`, and the
+upgrade rolls back.
+
 ## Sessions
 
 Each session gets a private folder under `sandbox/` in Coach's home, with

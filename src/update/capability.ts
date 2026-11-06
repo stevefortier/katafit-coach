@@ -13,3 +13,11 @@ export const updatePreparationProtocol = 2;
  * Already dispatched operations drain normally and retain unknown outcomes.
  */
 export const AUTONOMY_LEDGER_CAPABILITY = "autonomy-ledger-1";
+
+/**
+ * Application capability: the build can run Pi without Docker when the
+ * installation chose workspace mode (`sandbox.json`, src/sandbox/mode.ts).
+ * A workspace-mode installation never launches a build without it, since an
+ * older build would expect Docker for every session.
+ */
+export const WORKSPACE_SANDBOX_CAPABILITY = "workspace-sandbox-1";
