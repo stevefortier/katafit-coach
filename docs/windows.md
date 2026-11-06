@@ -48,6 +48,7 @@ restricted environment, and release-download tests check digest verification
 and publication on Windows too.
 The installer smoke runs separately as a newly created standard user under
 Windows PowerShell 5.1. It checks private ACLs, user PATH, paths containing
-spaces and an apostrophe, rejection of an incorrect release digest without
+spaces, an apostrophe, a percent sign and Unicode, rejection of an incorrect release digest without
 stopping the running copy, preservation of data and credentials on reinstall,
-the saved login action, and clean shutdown.
+refusal of junctions at the installation paths, the saved login action, and
+clean shutdown.

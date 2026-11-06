@@ -6,8 +6,9 @@ function Check($Condition, [string]$Message) { if (-not $Condition) { throw $Mes
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal $identity
 Check (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'The smoke must run without admin rights.'
-$runtime = Join-Path $Root "User space's Coach\runtime"
-$dataHome = Join-Path $Root "User space's Coach\data"
+$folderName = "User space's 100% " + [char]0x00E9 + ' Coach'
+$runtime = Join-Path (Join-Path $Root $folderName) 'runtime'
+$dataHome = Join-Path (Join-Path $Root $folderName) 'data'
 $node = Join-Path $runtime 'node\node.exe'
 $cli = Join-Path $runtime 'app\dist\cli.js'
 $env:KATAFIT_COACH_HOME = $dataHome
@@ -48,6 +49,19 @@ function Stop-Coach {
 try {
     & $Installer -Archive $Archive -InstallRoot $runtime -CoachHome $dataHome
     Status
+    # A junction must never redirect runtime replacement into another folder.
+    $outside = Join-Path $Root 'outside'
+    $null = New-Item -ItemType Directory -Path $outside
+    [IO.File]::WriteAllText((Join-Path $outside 'keep-me'), 'untouched')
+    $linked = Join-Path $Root 'linked-runtime'
+    $null = New-Item -ItemType Junction -Path $linked -Target $outside
+    $rejectedLink = $false
+    try { & $Installer -Archive $Archive -InstallRoot $linked -CoachHome $dataHome } catch {
+        Check ($_.Exception.Message -like '*Refusing a linked installation folder*') ('Unexpected link rejection: ' + $_.Exception.Message)
+        $rejectedLink = $true
+    } finally { [IO.Directory]::Delete($linked) }
+    Check $rejectedLink 'A linked runtime folder was accepted.'
+    Check ((Get-Content -LiteralPath (Join-Path $outside 'keep-me') -Raw) -eq 'untouched') 'The linked folder was modified.'
     Check ((Get-Content -LiteralPath (Join-Path $dataHome 'sandbox.json') -Raw | ConvertFrom-Json).mode -eq 'workspace') 'The installer must choose workspace mode.'
     $admin = (Get-Content -LiteralPath (Join-Path $dataHome 'secrets.json') -Raw | ConvertFrom-Json).admin
     [IO.File]::WriteAllText((Join-Path $dataHome 'keep-me'), 'preserved')
@@ -115,7 +129,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
     Status
-    Write-Host 'Windows installer smoke passed as a standard user: install, digest rejection, reinstall, login action and clean stop.'
+    Write-Host 'Windows installer smoke passed as a standard user: install, digest and junction rejection, reinstall, login action and clean stop.'
 } finally {
     Stop-Coach
     Unregister-ScheduledTask -TaskName ('KatafitCoach-' + $identity.User.Value) -Confirm:$false -ErrorAction SilentlyContinue

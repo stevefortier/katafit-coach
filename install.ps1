@@ -40,9 +40,6 @@ function Protect-Folder([string]$Path) {
 function Write-Utf8([string]$Path, [string]$Content) {
     [IO.File]::WriteAllText($Path, $Content, (New-Object Text.UTF8Encoding $false))
 }
-# Values in the generated startup script are single-quoted PowerShell literals.
-function Literal([string]$Value) { return "'" + $Value.Replace("'", "''") + "'" }
-
 $work = Join-Path ([IO.Path]::GetTempPath()) ('coach-install-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $work
 try {
@@ -93,6 +90,12 @@ await verifyProvenanceFile(archive, revision);
         if ($LASTEXITCODE -ne 0) { throw 'Release attestation verification failed.' }
     }
 
+    foreach ($folder in @($InstallRoot, $CoachHome)) {
+        if ((Test-Path -LiteralPath $folder) -and
+            ((Get-Item -LiteralPath $folder).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Refusing a linked installation folder: $folder"
+        }
+    }
     # Stop through the authenticated CLI, then wait for the bootstrap to leave
     # its executable before replacing the runtime (Windows locks running EXEs).
     $env:KATAFIT_COACH_HOME = $CoachHome
@@ -131,7 +134,7 @@ await verifyProvenanceFile(archive, revision);
     # is carried into every future logon without depending on shell variables.
     $startup = @'
 $ErrorActionPreference = 'Stop'
-$env:KATAFIT_COACH_HOME = __HOME__
+$env:KATAFIT_COACH_HOME = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'coach-home.json') -Encoding UTF8 -Raw | ConvertFrom-Json
 $node = Join-Path $PSScriptRoot 'node\node.exe'
 $boot = Join-Path $PSScriptRoot 'app\dist\boot.js'
 $child = Start-Process -FilePath $node -ArgumentList ('"' + $boot + '"') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:KATAFIT_COACH_HOME 'boot.log') -RedirectStandardError (Join-Path $env:KATAFIT_COACH_HOME 'boot-error.log')
@@ -139,10 +142,16 @@ $child = Start-Process -FilePath $node -ArgumentList ('"' + $boot + '"') -Window
 $child.WaitForExit()
 exit $child.ExitCode
 '@
-    Write-Utf8 (Join-Path $next 'start-coach.ps1') ($startup.Replace('__HOME__', (Literal $CoachHome)))
-    # The command must use the same data folder even in a new terminal. Batch
-    # files require doubled percent signs for literal percent signs in paths.
-    $command = "@echo off`r`nsetlocal`r`nset `"KATAFIT_COACH_HOME=$($CoachHome.Replace('%', '%%'))`"`r`n@`"%~dp0node\node.exe`" `"%~dp0app\dist\cli.js`" %*`r`n"
+    Write-Utf8 (Join-Path $next 'start-coach.ps1') $startup
+    # Keep paths in UTF-8 JSON rather than executable PowerShell or batch text.
+    # This also avoids Windows PowerShell 5.1's default ANSI script decoding.
+    Write-Utf8 (Join-Path $next 'coach-home.json') (ConvertTo-Json -InputObject $CoachHome -Compress)
+    Write-Utf8 (Join-Path $next 'cli.mjs') @'
+import { readFileSync } from 'node:fs';
+process.env.KATAFIT_COACH_HOME = JSON.parse(readFileSync(new URL('./coach-home.json', import.meta.url), 'utf8'));
+await import('./app/dist/cli.js');
+'@
+    $command = '@"%~dp0node\node.exe" "%~dp0cli.mjs" %*' + "`r`n"
     Write-Utf8 (Join-Path $next 'katafit-coach.cmd') $command
     if (Test-Path -LiteralPath $InstallRoot) { Move-Item -LiteralPath $InstallRoot -Destination $old }
     try { Move-Item -LiteralPath $next -Destination $InstallRoot } catch {
