@@ -74,6 +74,8 @@ writeFileSync(
       "autonomy-ledger-1",
       "ready-releases-v1",
       "bootstrap-handoff-1",
+      // Keep in sync with WORKSPACE_SANDBOX_CAPABILITY.
+      "workspace-sandbox-1",
     ],
   }) + "\n",
 );

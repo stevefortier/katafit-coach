@@ -18,8 +18,10 @@ import { Store } from "../config/store.js";
 import { launcherSkillCatalog } from "../config/skills.js";
 import { PreparationJournal } from "./preparation.js";
 import { Updates, validSha, validPreparationToken } from "./updates.js";
+import { sandboxMode } from "../sandbox/mode.js";
 import {
   AUTONOMY_LEDGER_CAPABILITY,
+  WORKSPACE_SANDBOX_CAPABILITY,
   manualOnlySourceUpdates,
 } from "./capability.js";
 import { ledgerObligations } from "../autonomy/ledger.js";
@@ -69,6 +71,11 @@ interface Boundary {
   ) => Promise<string | NativeBinding | undefined>;
   recoveryTimer?: typeof setTimeout;
   request?: typeof fetch;
+}
+/** The Pi image check before launching a build; none in workspace mode. */
+async function imagePreflight(root: string, home: string, signal: AbortSignal) {
+  if ((await sandboxMode(home)) === "workspace") return undefined;
+  return nativeBindingPreflight(root, home, { signal });
 }
 export async function supervise(
   store: Store,
@@ -154,10 +161,17 @@ export async function supervise(
       } catch {}
       if (!capable) throw new Error("AUTONOMY_LEDGER_UNSUPPORTED");
     }
+    // Workspace mode: only builds that can run Pi without Docker.
+    if (
+      (await sandboxMode(home)) === "workspace" &&
+      !(await metadata(path)).capabilities?.includes(
+        WORKSPACE_SANDBOX_CAPABILITY,
+      )
+    )
+      throw new Error("WORKSPACE_SANDBOX_UNSUPPORTED");
     if (revision) {
       const image = await (
-        boundary.preflight ??
-        ((r, h, signal) => nativeBindingPreflight(r, h, { signal }))
+        boundary.preflight ?? ((r, h, signal) => imagePreflight(r, h, signal))
       )(path, home, controller.signal);
       if (
         preparedImage !== undefined &&
@@ -518,8 +532,7 @@ export async function supervise(
           throw new Error("SOURCE_MISMATCH");
         await updates.preparationStage("artifact");
         const image = await (
-          boundary.preflight ??
-          ((r, h, signal) => nativeBindingPreflight(r, h, { signal }))
+          boundary.preflight ?? ((r, h, signal) => imagePreflight(r, h, signal))
         )(candidate, home, controller.signal);
         await rm(probeHome, { recursive: true, force: true });
         await mkdir(probeHome, { mode: 0o700 });
@@ -689,7 +702,12 @@ export async function supervise(
     (sha, token) => prepareReservation(sha, token),
     (sha, token) => releaseReservation(sha, token),
     (attempt) => preparationJournal.write(attempt),
-    boundary.readiness ?? ((target) => nativeBindingForBuild(home, target)),
+    // Workspace mode needs no Pi image: every release is ready as published.
+    boundary.readiness ??
+      (async (target) =>
+        (await sandboxMode(home)) === "workspace"
+          ? undefined
+          : nativeBindingForBuild(home, target)),
     // A confirmed upgrade fetches a missing Pi image here, in the launcher:
     // the Studio app and Pi never download or load images.
     boundary.deliver ??
