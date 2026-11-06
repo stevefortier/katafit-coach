@@ -1,3 +1,4 @@
+import { windows } from "../runtime/platform.js";
 import {
   asNativeBinding,
   recordEngine,
@@ -274,6 +275,9 @@ export async function drainNativePreflightCleanup(
   home: string,
   boundary: { engine?: NativeProbeEngine; signal?: AbortSignal } = {},
 ) {
+  // Docker mode is Linux-only, so Windows never has probes to clean up (and
+  // has no flock for the cleanup lock).
+  if (windows) return;
   const key = resolve(home);
   await withCleanupLock(
     home,
