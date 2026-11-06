@@ -149,6 +149,7 @@ $env:KATAFIT_COACH_HOME = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'coa
 $node = Join-Path $PSScriptRoot 'node\node.exe'
 $boot = Join-Path $PSScriptRoot 'app\dist\boot.js'
 $child = Start-Process -FilePath $node -ArgumentList ('"' + $boot + '"') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:KATAFIT_COACH_HOME 'boot.log') -RedirectStandardError (Join-Path $env:KATAFIT_COACH_HOME 'boot-error.log')
+$null = $child.Handle
 [IO.File]::WriteAllText((Join-Path $env:KATAFIT_COACH_HOME 'boot.pid'), [string]$child.Id)
 $child.WaitForExit()
 exit $child.ExitCode

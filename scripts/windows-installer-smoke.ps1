@@ -81,13 +81,14 @@ try {
     # A bad published digest must fail before disturbing the running copy.
     Write-Host 'Checking rejection of a corrupt release digest...'
     $originalPid = Get-Content -LiteralPath (Join-Path $dataHome 'boot.pid') -Raw
-    $script:smokeArchive = $Archive
+    # The mocked function is called from install.ps1's script scope.
+    $global:coachSmokeArchive = $Archive
     function Invoke-RestMethod {
         return @{ tag_name = 'coach-' + ('a' * 40); assets = @(@{ name = 'coach-' + ('a' * 40) + '-win-x64.zip'; digest = 'sha256:' + ('0' * 64) }) }
     }
     function Invoke-WebRequest {
         param($Uri, $OutFile, [switch]$UseBasicParsing)
-        Copy-Item -LiteralPath $script:smokeArchive -Destination $OutFile
+        Copy-Item -LiteralPath $global:coachSmokeArchive -Destination $OutFile
     }
     $rejected = $false
     try { & $Installer -InstallRoot $runtime -CoachHome $dataHome } catch {
@@ -96,6 +97,7 @@ try {
     } finally {
         Remove-Item Function:\Invoke-RestMethod
         Remove-Item Function:\Invoke-WebRequest
+        Remove-Variable -Name coachSmokeArchive -Scope Global
     }
     Check $rejected 'A corrupt release digest was accepted.'
     Check ((Get-Content -LiteralPath (Join-Path $dataHome 'boot.pid') -Raw) -eq $originalPid) 'A rejected download disturbed the running installation.'

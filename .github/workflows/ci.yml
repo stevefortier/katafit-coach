@@ -234,6 +234,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the smoke folder.' }
             $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $root + '\smoke.ps1" -Archive "' + $root + '\archive.zip" -Installer "' + $root + '\install.ps1" -Root "' + $root + '"'
             $process = Start-Process powershell.exe -Credential $credential -LoadUserProfile -ArgumentList $arguments -PassThru -RedirectStandardOutput "$root\stdout.log" -RedirectStandardError "$root\stderr.log"
+            # Keep a handle so PowerShell can read ExitCode after it exits.
+            $null = $process.Handle
             # Wait for the test process, not all descendants (a failed smoke
             # may leave a background bootstrap). Stream complete log lines so
             # diagnostics remain visible even while the installer is running.
