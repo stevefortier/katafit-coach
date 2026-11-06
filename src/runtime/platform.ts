@@ -27,6 +27,12 @@ export const sharedWritable = (stat: Pick<Stats, "mode">) =>
 /** Flags that refuse a symlink at the last component, where supported. */
 export const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
+/**
+ * Access for reopening a file only to fsync it. Windows flushes a file only
+ * through a handle with write access; elsewhere read-only suffices.
+ */
+export const SYNC_ACCESS = windows ? constants.O_RDWR : constants.O_RDONLY;
+
 /** Makes a directory's entries durable (renames, creations, removals). */
 export async function syncDirectory(path: string) {
   if (windows) return;

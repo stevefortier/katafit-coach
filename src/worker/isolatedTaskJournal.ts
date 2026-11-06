@@ -1,4 +1,4 @@
-import { windows } from "../runtime/platform.js";
+import { NOFOLLOW, SYNC_ACCESS, windows } from "../runtime/platform.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
@@ -73,7 +73,7 @@ export class IsolatedTaskJournal {
     if (windows && (await lstat(path)).isDirectory()) return;
     const handle = await open(
       path,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      SYNC_ACCESS | NOFOLLOW | (constants.O_NONBLOCK ?? 0),
     );
     try {
       const info = await handle.stat();

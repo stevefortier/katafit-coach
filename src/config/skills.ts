@@ -1,4 +1,4 @@
-import { syncDirectory } from "../runtime/platform.js";
+import { NOFOLLOW, SYNC_ACCESS, syncDirectory } from "../runtime/platform.js";
 import {
   chmod,
   link,
@@ -486,7 +486,7 @@ export class SkillStore {
         JSON.stringify({ version: 1, revision, head }, null, 2),
         { flag: "wx", mode: 0o600 },
       );
-      const file = await open(temp, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const file = await open(temp, SYNC_ACCESS | NOFOLLOW);
       try {
         await file.sync();
       } finally {
