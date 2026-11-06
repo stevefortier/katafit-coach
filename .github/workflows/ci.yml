@@ -238,11 +238,15 @@ jobs:
             # may leave a background bootstrap). Stream complete log lines so
             # diagnostics remain visible even while the installer is running.
             $seen = @{ 'stdout.log' = 0; 'stderr.log' = 0 }
-            $deadline = [DateTime]::UtcNow.AddMinutes(12)
+            $deadline = [DateTime]::UtcNow.AddMinutes(8)
             do {
               $ended = $process.WaitForExit(1000)
               foreach ($log in @('stdout.log', 'stderr.log')) {
-                try { $content = [IO.File]::ReadAllText("$root\$log") } catch { continue }
+                try {
+                  $stream = New-Object IO.FileStream("$root\$log", 'Open', 'Read', 'ReadWrite')
+                  $reader = New-Object IO.StreamReader($stream)
+                  try { $content = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                } catch { continue }
                 $end = if ($ended) { $content.Length } else { $content.LastIndexOf("`n") + 1 }
                 if ($end -gt $seen[$log]) {
                   # Installer output contains a disposable local admin URL.
@@ -253,7 +257,10 @@ jobs:
             } while (-not $ended -and [DateTime]::UtcNow -lt $deadline)
             if (-not $ended) {
               $null = & taskkill.exe /PID $process.Id /T /F
-              throw 'Windows installer smoke exceeded 12 minutes.'
+              foreach ($log in @('stdout.log', 'stderr.log')) {
+                (Get-Content "$root\$log" -Raw) -replace '(http://127\.0\.0\.1:\d+/#)[A-Za-z0-9_-]+', '$1[redacted]' | Write-Host
+              }
+              throw 'Windows installer smoke exceeded 8 minutes.'
             }
             if ($process.ExitCode -ne 0) { throw "Windows installer smoke exited $($process.ExitCode)" }
           } finally {

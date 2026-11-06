@@ -6,6 +6,7 @@ function Check($Condition, [string]$Message) { if (-not $Condition) { throw $Mes
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal $identity
 Check (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'The smoke must run without admin rights.'
+Write-Host 'Standard-user smoke started.'
 $folderName = "User space's 100% " + [char]0x00E9 + ' Coach'
 $runtime = Join-Path (Join-Path $Root $folderName) 'runtime'
 $dataHome = Join-Path (Join-Path $Root $folderName) 'data'
@@ -47,6 +48,7 @@ function Stop-Coach {
     }
 }
 try {
+    Write-Host 'Checking the initial installation...'
     & $Installer -Archive $Archive -InstallRoot $runtime -CoachHome $dataHome
     Status
     # A junction must never redirect runtime replacement into another folder.
@@ -77,6 +79,7 @@ try {
     Check ($runtime -in ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';')) 'The command must be on the user PATH.'
 
     # A bad published digest must fail before disturbing the running copy.
+    Write-Host 'Checking rejection of a corrupt release digest...'
     $originalPid = Get-Content -LiteralPath (Join-Path $dataHome 'boot.pid') -Raw
     $script:smokeArchive = $Archive
     function Invoke-RestMethod {
@@ -99,6 +102,7 @@ try {
     Status
 
     # Reinstallation must stop the locked Windows runtime before replacing it.
+    Write-Host 'Checking reinstallation...'
     & $Installer -Archive $Archive -InstallRoot $runtime -CoachHome $dataHome
     Status
     Check ((Get-Content -LiteralPath (Join-Path $dataHome 'secrets.json') -Raw | ConvertFrom-Json).admin -eq $admin) 'Reinstall changed the admin credential.'
@@ -106,6 +110,7 @@ try {
     Check (-not (Test-Path -LiteralPath ($runtime + '.old'))) 'An old runtime was left behind.'
 
     Stop-Coach
+    Write-Host 'Checking the saved login action...'
     # Exercise the actual persisted login action, including its saved data path.
     $taskName = 'KatafitCoach-' + $identity.User.Value
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue

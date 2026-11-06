@@ -254,7 +254,13 @@ for (const width of [320, 390, 760, 1440]) {
           timelineBox!.y + timelineBox!.height / 2,
         );
         await page.mouse.wheel(0, 600);
-        await page.waitForTimeout(100);
+        await page.waitForFunction(() => {
+          const timeline = document.getElementById("dashboardTimeline")!;
+          return (
+            timeline.scrollHeight <= timeline.clientHeight ||
+            timeline.scrollTop > 0
+          );
+        });
         assert.equal(
           await page.evaluate(
             () =>

@@ -41,6 +41,12 @@ function Write-Utf8([string]$Path, [string]$Content) {
     [IO.File]::WriteAllText($Path, $Content, (New-Object Text.UTF8Encoding $false))
 }
 $work = Join-Path ([IO.Path]::GetTempPath()) ('coach-install-' + [guid]::NewGuid().ToString('N'))
+foreach ($folder in @($InstallRoot, $CoachHome)) {
+    if ((Test-Path -LiteralPath $folder) -and
+        ((Get-Item -LiteralPath $folder).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing a linked installation folder: $folder"
+    }
+}
 $null = New-Item -ItemType Directory -Path $work
 try {
     $zip = Join-Path $work 'archive.zip'
@@ -67,7 +73,11 @@ try {
             throw 'The download does not match the digest GitHub publishes for it.'
         }
     }
-    Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $work 'extract')
+    Write-Host 'Extracting the Windows archive...'
+    $extract = Join-Path $work 'extract'
+    $null = New-Item -ItemType Directory -Path $extract
+    & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $zip -C $extract
+    if ($LASTEXITCODE -ne 0) { throw 'The Windows archive could not be extracted.' }
     $source = Join-Path $work 'extract\katafit-coach'
     $node = Join-Path $source 'node\node.exe'
     $build = Get-Content -LiteralPath (Join-Path $source 'app\dist\build.json') -Raw | ConvertFrom-Json
@@ -90,12 +100,6 @@ await verifyProvenanceFile(archive, revision);
         if ($LASTEXITCODE -ne 0) { throw 'Release attestation verification failed.' }
     }
 
-    foreach ($folder in @($InstallRoot, $CoachHome)) {
-        if ((Test-Path -LiteralPath $folder) -and
-            ((Get-Item -LiteralPath $folder).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Refusing a linked installation folder: $folder"
-        }
-    }
     # Stop through the authenticated CLI, then wait for the bootstrap to leave
     # its executable before replacing the runtime (Windows locks running EXEs).
     $env:KATAFIT_COACH_HOME = $CoachHome
@@ -128,8 +132,15 @@ await verifyProvenanceFile(archive, revision);
     if ((Test-Path -LiteralPath $next) -or (Test-Path -LiteralPath $old)) {
         throw 'A previous install is incomplete. Recover the .new/.old runtime folders before reinstalling.'
     }
-    Protect-Folder $next
-    Copy-Item -Path (Join-Path $source '*') -Destination $next -Recurse -Force
+    Write-Host 'Installing the runtime...'
+    if ([IO.Path]::GetPathRoot($source) -eq [IO.Path]::GetPathRoot($next)) {
+        $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($next)) -Force
+        Move-Item -LiteralPath $source -Destination $next
+        Protect-Folder $next
+    } else {
+        Protect-Folder $next
+        Copy-Item -Path (Join-Path $source '*') -Destination $next -Recurse -Force
+    }
     # Generate the startup wrapper before switching runtimes. The data folder
     # is carried into every future logon without depending on shell variables.
     $startup = @'
@@ -169,6 +180,7 @@ await import('./app/dist/cli.js');
     $startupFolder = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup, [Environment+SpecialFolderOption]::Create)
     $shortcutPath = Join-Path $startupFolder 'KatafitCoach.lnk'
     $autostart = 'a scheduled task'
+    Write-Host 'Configuring startup at login...'
     try {
         $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
