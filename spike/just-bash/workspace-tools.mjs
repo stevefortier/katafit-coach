@@ -18,13 +18,29 @@ import { Bash, InMemoryFs, MountableFs, ReadWriteFs } from "just-bash";
 const ROOT = "/workspace";
 const MAX_OUTPUT = 512 * 1024;
 
+// Windows reports folders without execute bits (0o40666), and just-bash's
+// Python runtime then refuses to enter them. Report folders as searchable;
+// this changes only what the sandbox is told, not host permissions.
+function searchableFolders(fs) {
+  const fix = (stat) =>
+    stat?.isDirectory ? { ...stat, mode: stat.mode | 0o111 } : stat;
+  return new Proxy(fs, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if ((key === "stat" || key === "lstat") && typeof value === "function")
+        return async (...args) => fix(await value.apply(target, args));
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 export function workspaceShell(hostWorkspace) {
   const fs = new MountableFs({
     base: new InMemoryFs(),
     mounts: [
       {
         mountPoint: ROOT,
-        filesystem: new ReadWriteFs({ root: hostWorkspace, allowSymlinks: false }),
+        filesystem: searchableFolders(new ReadWriteFs({ root: hostWorkspace, allowSymlinks: false })),
       },
     ],
   });
