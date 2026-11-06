@@ -13,7 +13,7 @@ import {
 } from "./helpers/exact-map-fixture.js";
 
 // Map camera focus: a double activation (real mouse double-click, CDP touch
-// double tap or Shift+Enter) on a member picture tightly fits that member's
+// double tap or Shift+Enter) on a member selection card tightly fits that member's
 // shown event locations; on an event it centres its exact recorded point.
 
 const cy = "cccccccccccccccccccccccc",
@@ -286,6 +286,263 @@ test("a member picture double-click fits only that member's shown locations; one
     await assertCentred(page, TOKYO);
     await dotExact(page, ev(6), TOKYO);
   }, options));
+
+// Exercise every surface of the one native selection button, not a synthetic
+// click handler. The border point is blank card space outside its descendants.
+for (const touch of [false, true]) {
+  for (const surface of ["portrait", "name", "stats", "space"] as const) {
+    test(`whole member card ${surface} ${touch ? "double tap" : "double-click"} focuses like the portrait`, async () =>
+      fixture(
+        async (page) => {
+          await settle(page);
+          const initial = await view(page);
+          const card = portrait(page, ada).locator("..");
+          const target =
+            surface === "portrait"
+              ? portrait(page, ada)
+              : surface === "name"
+                ? card.locator("strong")
+                : surface === "stats"
+                  ? card.locator(":scope > span").nth(1)
+                  : card;
+          await target.scrollIntoViewIfNeeded();
+          const point = async () => {
+            const box = await target.boundingBox();
+            return surface === "space"
+              ? { x: box.x + box.width - 8, y: box.y + 1 }
+              : { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+          };
+          if (surface === "space") {
+            assert.equal(
+              await page.evaluate(
+                ({ x, y }: { x: number; y: number }) =>
+                  document
+                    .elementFromPoint(x, y)
+                    ?.classList.contains("dashboard-member-card"),
+                await point(),
+              ),
+              true,
+              "blank space really hits the selection button",
+            );
+          }
+          const cdp = touch ? await page.context().newCDPSession(page) : null;
+          const activate = async (count = 1) => {
+            const { x, y } = await point();
+            if (cdp) {
+              await cdp.send("Input.dispatchTouchEvent", {
+                type: "touchStart",
+                touchPoints: [
+                  { x, y, id: 1, radiusX: 4, radiusY: 4, force: 1 },
+                ],
+              });
+              await cdp.send("Input.dispatchTouchEvent", {
+                type: "touchEnd",
+                touchPoints: [],
+              });
+            } else {
+              await page.mouse.click(x, y, { clickCount: count });
+            }
+          };
+          await activate();
+          await settle(page);
+          assert.equal(await pressed(page, ada), "true");
+          assert.deepEqual(
+            await view(page),
+            initial,
+            "single activation only selects",
+          );
+          await page.waitForTimeout(600);
+          await activate();
+          await page.waitForTimeout(90);
+          await activate(2);
+          await settle(page);
+          await shot(
+            page,
+            `synthetic-card-${surface}-${touch ? "touch" : "desktop"}.png`,
+          );
+          if (evidence) {
+            await page.screenshot({
+              path: join(
+                evidence,
+                `synthetic-card-${surface}-${touch ? "touch" : "desktop"}-full.png`,
+              ),
+              fullPage: true,
+            });
+            await card.screenshot({
+              path: join(
+                evidence,
+                `synthetic-card-${surface}-${touch ? "touch" : "desktop"}-card.png`,
+              ),
+            });
+          }
+          assert.equal(await pressed(page, ada), "true");
+          await assertTightFit(page, [A1, A2, A3, BOSTON]);
+          assert.ok(await offscreen(page, TOKYO));
+          if (touch) {
+            assert.equal(
+              await page.evaluate(() => visualViewport!.scale),
+              1,
+              "no page zoom",
+            );
+            assert.equal(
+              await card.evaluate(
+                (node: HTMLElement) => getComputedStyle(node).touchAction,
+              ),
+              "manipulation",
+            );
+          }
+          await page.locator(".dashboard-member-all").click();
+          await settle(page);
+          assert.deepEqual(await view(page), initial, "All resets the day fit");
+        },
+        {
+          ...options,
+          touch,
+          ...(touch ? { viewport: { width: 390, height: 844 } } : {}),
+        },
+      ));
+  }
+  test(`body-fat sibling ${touch ? "double tap" : "double-click"} never selects or focuses the member`, async () =>
+    fixture(
+      async (page) => {
+        await settle(page);
+        const initial = await view(page);
+        const info = page.getByRole("button", {
+          name: "About body fat estimate for Synthetic Ada",
+        });
+        assert.equal(
+          await info.evaluate((node: HTMLElement) =>
+            node
+              .parentElement!.querySelector(".dashboard-member-card")!
+              .contains(node),
+          ),
+          false,
+        );
+        const cdp = touch ? await page.context().newCDPSession(page) : null;
+        if (cdp) await touchTap(page, cdp, info, 2);
+        else await mouseDouble(page, info);
+        assert.equal(await pressed(page, ada), "false");
+        assert.deepEqual(
+          await view(page),
+          initial,
+          "tooltip is not a camera target",
+        );
+        // A normal activation still exposes provenance on either input path.
+        await page.keyboard.press("Escape");
+        if (cdp) await touchTap(page, cdp, info);
+        else await info.click();
+        assert.equal(
+          await page.locator(".dashboard-member-tooltip:popover-open").count(),
+          1,
+        );
+        assert.equal(await pressed(page, ada), "false");
+        assert.deepEqual(await view(page), initial);
+      },
+      {
+        ...options,
+        touch,
+        ...(touch ? { viewport: { width: 390, height: 844 } } : {}),
+        override: (url, rows) =>
+          url.pathname === "/api/dashboard/members"
+            ? {
+                body: {
+                  members: users.map((user) => ({
+                    ...user,
+                    stats: {
+                      body_fat_percent: 18,
+                      body_fat_estimate: {
+                        source: "ai",
+                        estimated: true,
+                        value: 18,
+                      },
+                    },
+                  })),
+                },
+              }
+            : byDay(url, rows),
+      },
+    ));
+  for (const pair of [
+    "name-stats",
+    "stats-name",
+    "portrait-stats",
+    "stats-portrait",
+  ] as const) {
+    test(`mixed ${pair} native ${touch ? "taps" : "clicks"} share the member gesture`, async () =>
+      fixture(
+        async (page) => {
+          await settle(page);
+          const card = portrait(page, ada).locator("..");
+          await card.scrollIntoViewIfNeeded();
+          const cdp = touch ? await page.context().newCDPSession(page) : null;
+          const initial = await view(page);
+          for (const surface of pair.split("-")) {
+            const nameBox = await card.locator("strong").boundingBox();
+            const statsBox = await card
+              .locator(":scope > span")
+              .nth(1)
+              .boundingBox();
+            const photoBox = await portrait(page, ada).boundingBox();
+            // Adjacent points straddle the actual child boundary (<24px apart),
+            // so Chromium may emit detail 1 for both; the card identity must win.
+            const photoPair = pair.includes("portrait");
+            const x = photoPair
+              ? surface === "portrait"
+                ? photoBox.x + photoBox.width - 3
+                : statsBox.x + 3
+              : nameBox.x + nameBox.width / 2;
+            const y = photoPair
+              ? statsBox.y + statsBox.height / 2
+              : surface === "name"
+                ? nameBox.y + nameBox.height - 3
+                : statsBox.y + 3;
+            assert.equal(
+              await page.evaluate(
+                ({ x, y }: { x: number; y: number }) => {
+                  const node = document.elementFromPoint(x, y)!;
+                  return node.classList.contains("dashboard-member-portrait")
+                    ? "portrait"
+                    : node.tagName === "STRONG"
+                      ? "name"
+                      : "stats";
+                },
+                { x, y },
+              ),
+              surface,
+            );
+            if (cdp) {
+              await cdp.send("Input.dispatchTouchEvent", {
+                type: "touchStart",
+                touchPoints: [{ x, y, id: 1 }],
+              });
+              await cdp.send("Input.dispatchTouchEvent", {
+                type: "touchEnd",
+                touchPoints: [],
+              });
+            } else await page.mouse.click(x, y);
+            if (surface === pair.split("-")[0]) {
+              assert.equal(await pressed(page, ada), "true");
+              assert.deepEqual(
+                await view(page),
+                initial,
+                "first subtarget only selects",
+              );
+              await page.waitForTimeout(90);
+            }
+          }
+          await settle(page);
+          await assertTightFit(page, [A1, A2, A3, BOSTON]);
+          if (touch)
+            assert.equal(await page.evaluate(() => visualViewport!.scale), 1);
+        },
+        {
+          ...options,
+          touch,
+          ...(touch ? { viewport: { width: 390, height: 844 } } : {}),
+        },
+      ));
+  }
+}
 
 test("category filter, privacy fence, no-GPS member and other dates scope the focus truthfully", async () =>
   fixture(async (page) => {
