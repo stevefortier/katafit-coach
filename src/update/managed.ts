@@ -110,6 +110,69 @@ async function bytes(path: string): Promise<number> {
   }
   return total;
 }
+/** Hard-stop a build tree, not the IPC-aware graceful Coach stopChild path. */
+function killWindowsBuildTree(
+  child: import("node:child_process").ChildProcess,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const pid = child.pid;
+    if (!Number.isSafeInteger(pid) || pid! <= 0) {
+      reject(new Error("BUILD_TREE_CLEANUP_FAILED"));
+      return;
+    }
+    let killer: import("node:child_process").ChildProcess | undefined;
+    let done = false,
+      killed = false,
+      exited = child.exitCode !== null || child.signalCode !== null;
+    const finish = (error?: Error) => {
+      if (done || (!error && (!killed || !exited))) return;
+      done = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onExit = () => {
+      exited = true;
+      finish();
+    };
+    // Bounds both taskkill and the root's exit receipt. Never retry a PID.
+    const timer = setTimeout(() => {
+      if (killer && killer.exitCode === null && killer.signalCode === null) {
+        try {
+          killer.kill("SIGKILL");
+        } catch {}
+      }
+      finish(new Error("BUILD_TREE_CLEANUP_FAILED"));
+    }, 5000);
+    child.once("exit", onExit);
+    try {
+      killer = spawn(
+        join(env.SystemRoot!, "System32", "taskkill.exe"),
+        ["/T", "/F", "/PID", String(pid)],
+        {
+          env,
+          shell: false,
+          windowsHide: true,
+          stdio: "ignore",
+        },
+      );
+      killer.once("error", () =>
+        finish(new Error("BUILD_TREE_CLEANUP_FAILED")),
+      );
+      killer.once("exit", (code) => {
+        if (code !== 0) finish(new Error("BUILD_TREE_CLEANUP_FAILED"));
+        else {
+          killed = true;
+          finish();
+        }
+      });
+    } catch {
+      finish(new Error("BUILD_TREE_CLEANUP_FAILED"));
+    }
+  });
+}
 export async function command(
   file: string,
   args: string[],
@@ -128,16 +191,60 @@ export async function command(
     });
     let failed = false,
       cancelled = false,
-      finished = false;
+      finished = false,
+      exited = false,
+      exitCode: number | null = null,
+      toolError = false,
+      cleaning = false,
+      cleanupError: unknown;
+    const finish = () => {
+      if (finished || cleaning || (!exited && !toolError && !cleanupError))
+        return;
+      clear();
+      if (exitCode === 0 && !failed && !toolError) resolve();
+      else
+        reject(
+          new Error(
+            toolError
+              ? "BUILD_TOOL_UNAVAILABLE"
+              : cancelled
+                ? "BUILD_CANCELLED"
+                : "BUILD_FAILED",
+            cleanupError ? { cause: cleanupError } : undefined,
+          ),
+        );
+    };
     const stop = () => {
       // An in-flight scan may settle after exit; never signal a stale PID.
-      if (finished) return;
-      if (failed) return;
+      if (
+        finished ||
+        failed ||
+        child.exitCode !== null ||
+        child.signalCode !== null
+      )
+        return;
       failed = true;
-      try {
-        if (windows) child.kill("SIGKILL");
-        else process.kill(-child.pid!, "SIGKILL");
-      } catch {}
+      if (windows) {
+        cleaning = true;
+        void killWindowsBuildTree(child, buildEnvironment(home))
+          .catch((error) => {
+            cleanupError = error;
+            // Exact live handle only. This is NOT proof of tree cleanup.
+            if (child.exitCode === null && child.signalCode === null) {
+              try {
+                child.kill("SIGKILL");
+              } catch {}
+            }
+          })
+          .finally(() => {
+            cleaning = false;
+            finish();
+          });
+      } else {
+        try {
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {}
+      }
     };
     const timer = setTimeout(stop, 180000);
     let checking = false;
@@ -173,13 +280,14 @@ export async function command(
       signal?.removeEventListener("abort", abort);
     };
     child.once("error", () => {
-      clear();
-      reject(new Error("BUILD_TOOL_UNAVAILABLE"));
+      toolError = true;
+      if (windows && child.pid !== undefined) stop();
+      finish();
     });
     child.once("exit", (code) => {
-      clear();
-      if (code === 0 && !failed) resolve();
-      else reject(new Error(cancelled ? "BUILD_CANCELLED" : "BUILD_FAILED"));
+      exited = true;
+      exitCode = code;
+      finish();
     });
   });
 }
