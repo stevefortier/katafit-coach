@@ -36,6 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get install -y --no-install-recommends patchelf >/dev/null
           for platform in linux-x64 linux-arm64 win-x64; do
             node scripts/platform-archive.mjs "$RUNNER_TEMP/coach-release/coach-${GITHUB_SHA}.tgz" "$platform" "$RUNNER_TEMP/coach-release"
           done

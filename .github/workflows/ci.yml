@@ -152,6 +152,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get install -y --no-install-recommends patchelf >/dev/null
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
           for platform in linux-x64 linux-arm64 win-x64; do
             node scripts/platform-archive.mjs "$RUNNER_TEMP"/katafit-coach-*.tgz "$platform" "$RUNNER_TEMP/archives"
@@ -166,6 +167,9 @@ jobs:
           coach="$run/katafit-coach"
           clean() { env -i HOME="$run/home" PATH=/usr/sbin:/usr/bin:/sbin:/bin "$@"; }
           test "$(clean "$coach/node/bin/node" -v)" = v26.10.0
+          # Node finds the bundled libatomic relative to itself.
+          readelf -d "$coach/node/bin/node" | grep -F 'RUNPATH' | grep -qF '$ORIGIN/../lib'
+          test -f "$coach/node/lib/libatomic.so.1"
           clean "$coach/bin/katafit-coach" help | grep -q "katafit-coach start"
           # Native modules load from the bundled runtime.
           (cd "$coach/app" && clean "$coach/node/bin/node" -e 'import("sharp").then((s) => s.default({ create: { width: 2, height: 2, channels: 3, background: "red" } }).png().toBuffer()).then((b) => { if (!b.length) process.exit(1); })')
@@ -201,6 +205,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get install -y --no-install-recommends patchelf >/dev/null
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
           node scripts/platform-archive.mjs "$RUNNER_TEMP"/katafit-coach-*.tgz linux-x64 "$RUNNER_TEMP/archives"
       - name: Install, run and reinstall in clean containers
