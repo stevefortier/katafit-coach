@@ -187,10 +187,39 @@ jobs:
           name: coach-archives-${{ github.sha }}
           path: ${{ runner.temp }}/archives
           retention-days: 7
+  installer:
+    # The one-line Linux installer, from this source's archive, as an ordinary
+    # user in clean containers with nothing preinstalled.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: ./.github/actions/prepare
+      - name: Build the Linux archive from this source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          node scripts/platform-archive.mjs "$RUNNER_TEMP"/katafit-coach-*.tgz linux-x64 "$RUNNER_TEMP/archives"
+      - name: Install, run and reinstall in clean containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in ubuntu:24.04 debian:12 fedora:42; do
+            echo "::group::$image"
+            docker run --rm \
+              -v "$PWD/install.sh:/install.sh:ro" \
+              -v "$PWD/scripts/installer-smoke.sh:/smoke.sh:ro" \
+              -v "$RUNNER_TEMP/archives:/archives:ro" \
+              "$image" sh /smoke.sh
+            echo "::endgroup::"
+          done
   verify:
     # Stable required check: skipped, cancelled and failed dependencies all fail.
     if: always()
-    needs: [build, tests, native, workspace, package, updater, browser, docker, archives]
+    needs: [build, tests, native, workspace, installer, package, updater, browser, docker, archives]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -198,4 +227,4 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==9 and all(job["result"]=="success" for job in results.values()), results'
+          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==10 and all(job["result"]=="success" for job in results.values()), results'

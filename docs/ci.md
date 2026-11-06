@@ -8,11 +8,12 @@ Full qualification runs on PR `opened`, `synchronize`, and `reopened`, including
 
 ## Parallel gates
 
-The stable aggregate `verify` check depends on every gate and runs even if dependencies fail. It succeeds only when all nine dependencies are successful; failures, cancellation, and skipped gates cannot pass it. No repository branch-protection settings are changed by this workflow.
+The stable aggregate `verify` check depends on every gate and runs even if dependencies fail. It succeeds only when all ten dependencies are successful; failures, cancellation, and skipped gates cannot pass it. No repository branch-protection settings are changed by this workflow.
 
 - `build`: build, formatting, test inventory, production dependency audit.
 - `tests`: eight duration-balanced isolated runners, serial test files on each (`--test-concurrency=1`).
 - `native`: exact native image and all existing real-Docker immutable-pair/runtime tests.
+- `installer`: the one-line Linux installer (`install.sh` with this source's archive) as an ordinary user in clean Ubuntu, Debian and Fedora containers: install, Studio answers in workspace mode, reinstall keeps the data.
 - `workspace`: workspace-mode Pi without Docker ([workspace sandbox](workspace-sandbox.md)) on Linux and Windows: a real headless cycle, the just-bash tool escapes and the Node permission probes.
 - `package`: exact native image and production-only packed installation smoke.
 - `updater`: exact native image and packed upgrade/rollback/restart smoke.
