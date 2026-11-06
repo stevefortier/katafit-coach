@@ -28,12 +28,12 @@ Snapshots use safe text DOM and an explicit bounded scalar DTO-field union, not 
 
 ## Map camera focus
 
-A single click/tap keeps its ordinary meaning: a member picture selects that member (and restores the day's fitted view), and a map dot or timeline occurrence selects that event. Double-clicking or double-tapping the same target then also moves the map camera; Shift+Enter on a focused member card, map dot or timeline occurrence does both at once. For a timeline occurrence, the camera moves only after that event's fresh read authorizes it (see below).
+A single click/tap keeps its ordinary meaning: a member selection card selects that member (and restores the day's fitted view), and a map dot or timeline occurrence selects that event. Double-clicking or double-tapping anywhere on the same member selection button—portrait, name, stats or blank card space—also moves the map camera. Nearby repeated activations across those subtargets share the same member gesture; the separate sibling body-fat information button only shows provenance and never selects or focuses a member. Select All still resets the day's fitted view. Shift+Enter on a focused member card, map dot or timeline occurrence does selection and focus at once. For a timeline occurrence, the camera moves only after that event's fresh read authorizes it (see below).
 
-- **Member picture:** fits only that member's currently shown located events: the selected date's loaded ledger, positions that are still shared (not missing, unavailable or privacy-withheld), and the timeline's selected category, if any. Other members never widen the fit. An event that another member recorded at exactly the same coordinate still stays in place on the map. The fit takes the shortest longitude arc across the dateline, keeps marker padding and zooms in no further than 18. A single location is centered at zoom 18.
+- **Member selection card:** fits only that member's currently shown located events: the selected date's loaded ledger, positions that are still shared (not missing, unavailable or privacy-withheld), and the timeline's selected category, if any. Other members never widen the fit. An event that another member recorded at exactly the same coordinate still stays in place on the map. The fit takes the shortest longitude arc across the dateline, keeps marker padding and zooms in no further than 18. A single location is centered at zoom 18.
 - **Map dot or timeline occurrence:** centers that event's exact recorded coordinate at zoom 18, in the world copy nearest the current view. Timeline occurrences also reach co-located events behind a location badge.
 - **Nothing to show:** a member or event without a shared location leaves the camera unchanged, and the map status says so.
-- **Member picture before the day loads:** member cards are clickable before the day's paged ledger has fully loaded. A double activation in that window does not claim the member has no location. The status says the map will zoom to that member once the day's events load, and the camera stays where it is until then. When the complete day publishes, the camera fits that member as above, but only if that member is still selected. The day's default fit is still recorded, so All later restores it. The pending focus is cancelled by:
+- **Member selection card before the day loads:** member cards are clickable before the day's paged ledger has fully loaded. A double activation in that window does not claim the member has no location. The status says the map will zoom to that member once the day's events load, and the camera stays where it is until then. When the complete day publishes, the camera fits that member as above, but only if that member is still selected. The day's default fit is still recorded, so All later restores it. The pending focus is cancelled by:
   - All, or another member's ordinary selection
   - panning, wheel or zoom-control navigation
   - a date change, reload or lock
@@ -45,7 +45,7 @@ A single click/tap keeps its ordinary meaning: a member picture selects that mem
   - navigation, All or a newer member or event selection
   - a category change, or a reload of the day
   - the member was denied, or the event no longer has a shared position
-- **Member cards updating mid-gesture:** member cards are keyed by member and updated in place. A roster arrival, an older feed page, a selection or another member's denial never replaces or moves a card it does not need to. A press already under way on a picture therefore still produces its click, and a double activation still focuses that member. A confirmed denial still removes that member's card, avatar and map locations at once, even during a press. Releasing over a removed card activates nothing.
+- **Member cards updating mid-gesture:** member cards are keyed by member and updated in place. A roster arrival, an older feed page, a selection or another member's denial never replaces or moves a card it does not need to. A press already under way on a card therefore still produces its click, and a double activation still focuses that member. A confirmed denial still removes that member's card, avatar and map locations at once, even during a press. Releasing over a removed card activates nothing.
 
 ### Timeline occurrence: single versus repeat activation
 
@@ -57,11 +57,13 @@ A single click/tap keeps its ordinary meaning: a member picture selects that mem
   - 401/403 (the member is purged), 404 (the event is removed), 409 (the day reloads) or a transient failure
   - a newer selection, a filter that hides the event, a date change, a reload or a lock before the reply arrives
 
-Map dots and member pictures keep their existing immediate focus (the dot path is unchanged).
+Map dots and member selection cards keep their existing immediate focus (the dot path is unchanged).
 
-The opening day fit still stops at zoom 16. A focused camera counts as a deliberate view, so resizing keeps it, the same as panning. Dots are not Leaflet layers, so their double activations never trigger Leaflet's own double-click or double-tap zoom. Member pictures use `touch-action: manipulation`, so a double tap never zooms the page. Double-clicking or double-tapping empty map space still zooms in as before.
+The opening day fit still stops at zoom 16. A focused camera counts as a deliberate view, so resizing keeps it, the same as panning. Dots are not Leaflet layers, so their double activations never trigger Leaflet's own double-click or double-tap zoom. Whole member selection buttons use `touch-action: manipulation`, so a double tap never zooms the page. Double-clicking or double-tapping empty map space still zooms in as before.
 
 ## Qualification
+
+The whole-card cases in `map-focus-browser.test.ts` qualify portrait, name, stats and blank selection-button space with native mouse and touch input, including nearby mixed-subtarget pairs in both directions. They preserve ordinary single selection, All reset, stable page zoom and the independent sibling provenance tooltip. The canonical Regimen cross-repository design summary is `docs/coach-design.md` (Studio Dojo Map & events); this document specifies the Coach renderer's interaction contract.
 
 `timeline-redesign-browser.test.ts` exercises dense mixed-category clusters, non-overlapping targets, nearby-time zoom, previews without layout shifts, keyboard/touch selection, category/member filters, related activity reads and historical 404/denial behavior. `map-focus-browser.test.ts` drives real CDP mouse double-clicks and touch double taps on a phone viewport. It checks fit tightness, excluded members, category/date/privacy fences, dateline fractional longitudes, resize retention, keyboard focus and a stable page zoom. `map-focus-retention-browser.test.ts` holds the second page of a paged day while it drives a real CDP mouse double-click and a native touch double tap on a member picture. After the day publishes, it asserts:
 

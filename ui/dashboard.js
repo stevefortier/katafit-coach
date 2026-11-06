@@ -239,7 +239,7 @@ window.CoachDashboard = (() => {
   let forgetMember = () => {};
   // Camera focus never zooms past street level (OSM tiles stop at 19).
   const FOCUS_ZOOM = 18;
-  // A repeated pointer activation of the same member picture or event, keyed
+  // A repeated pointer activation of the same member card or event, keyed
   // to survive the re-render a first activation causes: the platform's click
   // count, or a quick nearby repeat for taps that do not count. Every repeat
   // counts, so a triple click still ends focused rather than re-selected.
@@ -722,13 +722,8 @@ window.CoachDashboard = (() => {
       };
       button.addEventListener("click", (event) => {
         select();
-        // Double-clicking (or double-tapping) the picture also focuses the map.
-        if (
-          !all &&
-          event.target.closest(".dashboard-member-portrait") &&
-          doubleActivation(`member:${id}`, event)
-        )
-          focusMapMember(id);
+        // Every surface of this member's selection button shares one gesture.
+        if (!all && doubleActivation(`member:${id}`, event)) focusMapMember(id);
       });
       if (all)
         return {
