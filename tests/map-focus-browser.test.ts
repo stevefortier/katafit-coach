@@ -287,6 +287,74 @@ test("a member picture double-click fits only that member's shown locations; one
     await dotExact(page, ev(6), TOKYO);
   }, options));
 
+for (const afterPan of [false, true]) {
+  test(`single member selection preserves focused camera ${afterPan ? "after manual pan" : "without manual pan"}`, async () =>
+    fixture(async (page) => {
+      await settle(page);
+      await mouseDouble(page, portrait(page, bob));
+      await assertCentred(page, TOKYO);
+      if (afterPan) {
+        const box = await page.locator("#dashboardMap").boundingBox();
+        await page.mouse.move(
+          box!.x + box!.width / 2,
+          box!.y + box!.height / 2,
+        );
+        await page.mouse.down();
+        await page.mouse.move(
+          box!.x + box!.width / 2 + 100,
+          box!.y + box!.height / 2 + 60,
+          { steps: 10 },
+        );
+        await page.mouse.up();
+        await settle(page);
+      }
+      const before = await view(page);
+      await portrait(page, ada).click();
+      await settle(page);
+      assert.equal(await pressed(page, ada), "true");
+      assert.deepEqual(
+        await view(page),
+        before,
+        "member selection must never restore the day frame",
+      );
+    }, options));
+}
+
+test("single offscreen timeline selection and hover preserve the camera", async () =>
+  fixture(async (page) => {
+    await settle(page);
+    await mouseDouble(page, portrait(page, bob));
+    // Explicit All resets filters; then choose a deliberate local view.
+    await page.locator(".dashboard-member-all").click();
+    await nearby(page);
+    await settle(page);
+    assert.ok(await offscreen(page, TOKYO));
+    const before = await view(page);
+    const mark = page.locator(
+      `.dashboard-timeline-mark[data-event-id="${ev(6)}"]`,
+    );
+    await mark.hover();
+    await settle(page);
+    assert.deepEqual(
+      await view(page),
+      before,
+      "hover must not pan to an offscreen point",
+    );
+    await mark.click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#dashboardMapSelection")
+        ?.textContent?.includes("Event access rechecked"),
+    );
+    await settle(page);
+    assert.deepEqual(
+      await view(page),
+      before,
+      "single datapoint selection must not pan",
+    );
+    assert.equal(await mark.getAttribute("aria-pressed"), "true");
+  }, options));
+
 // Exercise every surface of the one native selection button, not a synthetic
 // click handler. The border point is blank card space outside its descendants.
 for (const touch of [false, true]) {

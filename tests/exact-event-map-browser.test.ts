@@ -620,7 +620,7 @@ const onscreen = (page: any, eventId: string) =>
       );
     });
 
-test("timeline selection pans only to an offscreen event, keeps zoom, and map selection scrolls its timeline occurrence", async () =>
+test("timeline selection preserves the camera even offscreen, and map selection scrolls its timeline occurrence", async () =>
   fixture(async (page) => {
     const view = () =>
       page.evaluate(() => {
@@ -634,10 +634,23 @@ test("timeline selection pans only to an offscreen event, keeps zoom, and map se
       fitted.zoom,
     );
     assert.equal(await onscreen(page, ev(7)), false);
+    const away = await view();
     await selectFromTimeline(page, ev(7));
-    assert.equal(await onscreen(page, ev(7)), true);
+    assert.equal(await onscreen(page, ev(7)), false);
+    assert.deepEqual(
+      await view(),
+      away,
+      "selection never changes center or zoom",
+    );
+    // Return deliberately to the day frame to exercise visible selection.
+    await page.evaluate(
+      (v) =>
+        (window as any).fixtureMap.setView([v.lat, v.lng], v.zoom, {
+          animate: false,
+        }),
+      fitted,
+    );
     const panned = await view();
-    assert.equal(panned.zoom, fitted.zoom, "selection never changes zoom");
     // Already visible: the view stays exactly where the user left it.
     assert.equal(await onscreen(page, ev(6)), true);
     await selectFromTimeline(page, ev(6));
