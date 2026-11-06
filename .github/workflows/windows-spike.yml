@@ -1,0 +1,36 @@
+name: Windows spike
+# Spike only: run the Windows archive like an installed copy and report.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["spike/windows/**", ".github/workflows/windows-spike.yml"]
+permissions:
+  contents: read
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/prepare
+      - run: |
+          sudo apt-get install -y --no-install-recommends patchelf >/dev/null
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          node scripts/platform-archive.mjs "$RUNNER_TEMP"/katafit-coach-*.tgz win-x64 "$RUNNER_TEMP/archives"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-archive
+          path: ${{ runner.temp }}/archives
+  run:
+    needs: archive
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: win-archive
+          path: ${{ runner.temp }}/archives
+      - name: Run the archive under its bootstrap
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP" && unzip -q archives/coach-*-win-x64.zip -d run
+          run/katafit-coach/node/node.exe "$GITHUB_WORKSPACE/spike/windows/run.mjs" "$RUNNER_TEMP/run/katafit-coach" "$RUNNER_TEMP/home"
