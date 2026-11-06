@@ -44,6 +44,23 @@ export const RUNTIMES = {
   },
 };
 
+// Official Node 26 Linux builds need libatomic.so.1, which minimal and some
+// fresh installations lack. Ship Debian's (glibc >= 2.17) next to Node.
+// SHA256 from https://deb.debian.org/debian/dists/bookworm/main/binary-*/Packages
+const LIBATOMIC_DEB = "libatomic1_12.2.0-14+deb12u1";
+export const LIBATOMIC = {
+  x64: {
+    arch: "amd64",
+    triplet: "x86_64-linux-gnu",
+    sha256: "fbd4e154a6b444229ea002cc209df099209c0adc09102e5fd21239a3d2b55e2d",
+  },
+  arm64: {
+    arch: "arm64",
+    triplet: "aarch64-linux-gnu",
+    sha256: "1693aa13ce2b30d061a519fc28b77b9bab8c8e45804ced5969d99821e1bc2159",
+  },
+};
+
 const run = (file, args, cwd) =>
   execFileSync(file, args, { cwd, stdio: ["ignore", "inherit", "inherit"] });
 
@@ -51,6 +68,50 @@ async function sha256(path) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
+}
+
+async function download(urls, path, expected) {
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(180000),
+      });
+      if (!response.ok) continue;
+      writeFileSync(path, Buffer.from(await response.arrayBuffer()));
+      if ((await sha256(path)) === expected) return path;
+    } catch {}
+  }
+  throw Error("DOWNLOAD_FAILED " + urls[0]);
+}
+
+/** Puts libatomic.so.1 in node/lib and points Node's RUNPATH at it. */
+async function bundleLibatomic(cpu, node, work) {
+  const { arch, triplet, sha256: expected } = LIBATOMIC[cpu];
+  const file = `${LIBATOMIC_DEB}_${arch}.deb`;
+  const pool = "pool/main/g/gcc-12/" + file;
+  const deb = await download(
+    [
+      `https://deb.debian.org/debian/${pool}`,
+      `https://snapshot.debian.org/archive/debian/20250701T000000Z/${pool}`,
+    ],
+    join(work, file),
+    expected,
+  );
+  const unpack = join(work, "libatomic");
+  mkdirSync(unpack);
+  run("ar", ["x", deb], unpack);
+  run("tar", ["-xJf", "data.tar.xz"], unpack);
+  mkdirSync(join(node, "lib"));
+  copyFileSync(
+    join(unpack, "usr/lib", triplet, "libatomic.so.1.2.0"),
+    join(node, "lib/libatomic.so.1"),
+  );
+  writeFileSync(
+    join(node, "lib/README"),
+    `libatomic.so.1 from Debian ${LIBATOMIC_DEB}_${arch} (GCC runtime library,\nGPL-3.0 with the GCC Runtime Library Exception), shipped because Node needs it.\n`,
+  );
+  // Node finds it relative to itself, however it is started.
+  run("patchelf", ["--set-rpath", "$ORIGIN/../lib", join(node, "bin/node")]);
 }
 
 async function runtime(platform, work) {
@@ -123,6 +184,7 @@ export async function buildArchive(pkg, platform, out) {
       copyFileSync(join(extracted, "bin/node"), join(node, "bin/node"));
       chmodSync(join(node, "bin/node"), 0o755);
       copyFileSync(join(extracted, "LICENSE"), join(node, "LICENSE"));
+      await bundleLibatomic(target.cpu, node, work);
       mkdirSync(join(root, "bin"));
       for (const [name, entry] of [
         ["katafit-coach", "cli.js"],
@@ -130,7 +192,8 @@ export async function buildArchive(pkg, platform, out) {
       ]) {
         writeFileSync(
           join(root, "bin", name),
-          `#!/bin/sh\nhere="$(cd "$(dirname "$0")/.." && pwd)"\nexec "$here/node/bin/node" "$here/app/dist/${entry}" "$@"\n`,
+          // Resolve links: the installer links bin/katafit-coach into ~/.local/bin.
+          `#!/bin/sh\nhere="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"\nexec "$here/node/bin/node" "$here/app/dist/${entry}" "$@"\n`,
         );
         chmodSync(join(root, "bin", name), 0o755);
       }

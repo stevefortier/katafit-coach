@@ -338,7 +338,11 @@ platform (`coach-<SHA>-linux-x64.tar.gz`, `coach-<SHA>-linux-arm64.tar.gz`,
 `coach-<SHA>-win-x64.zip`): the official Node 26.10.0 runtime for that platform
 (checked against digests pinned from nodejs.org), the application with its
 production dependencies installed for that platform, and `katafit-coach` /
-`katafit-coach-boot` launch scripts. Nothing is needed from the target machine.
+`katafit-coach-boot` launch scripts. Linux archives also carry
+`libatomic.so.1`, which official Node 26 Linux builds need and minimal systems
+lack. It comes from Debian's `libatomic1` package, pinned by digest, in
+`node/lib`, and Node's RUNPATH is set to `$ORIGIN/../lib`, so Node finds it
+however it is started. Nothing is needed from the target machine.
 CI builds all three and runs the Linux one with an empty environment.
 
 Discovery accepts these archives as optional release assets, and still refuses
