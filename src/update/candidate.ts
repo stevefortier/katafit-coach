@@ -243,8 +243,11 @@ export class CandidateOwnership {
         // Never over anything already there, even an empty directory.
         if (await exists(join(path, adopted))) throw unsafe();
         await rename(runtime, join(path, adopted));
-        await syncDirectory(dirname(path));
       }
+      // Sync both sides of adoption before committing removal authority,
+      // including recovery after the rename but before these syncs.
+      await syncDirectory(path);
+      await syncDirectory(dirname(path));
       // rm may remove the marker before it fails or the owner crashes. Persist
       // the exact protected directory identity before beginning removal.
       await atomicWrite(this.home, name, {

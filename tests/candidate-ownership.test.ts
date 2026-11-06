@@ -413,6 +413,61 @@ for (const kind of ["an empty directory", "a payload"])
     }
   });
 
+test(
+  "runtime adoption is directory-synced before its removing lease is committed",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const home = await fs.mkdtemp(join(tmpdir(), "candidate-pair-sync-"));
+    try {
+      const owner = new CandidateOwnership(home),
+        token = await owner.begin(sha),
+        { app, runtime } = await stagedPair(home),
+        target = join(home, "versions", sha);
+      await publishCandidate(home, sha, app, token, runtime);
+      // Exercise recovery after adoption but before the removing lease write.
+      await fs.rename(runtimeOf(home), join(target, ".update-runtime"));
+      let adoptedSynced = false;
+      const open = fs.open,
+        rename = fs.rename;
+      t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+        const handle = await open(...args);
+        if (String(args[0]) === target) {
+          const sync = handle.sync.bind(handle);
+          handle.sync = async () => {
+            await sync();
+            adoptedSynced = true;
+          };
+        }
+        return handle;
+      });
+      t.mock.method(
+        fs,
+        "rename",
+        async (...args: Parameters<typeof fs.rename>) => {
+          if (String(args[1]) === join(home, "update-candidate.json")) {
+            const value = JSON.parse(await fs.readFile(args[0], "utf8"));
+            if (value.state === "removing")
+              assert.equal(
+                adoptedSynced,
+                true,
+                "adoption destination must be durable before removal authority",
+              );
+          }
+          return rename(...args);
+        },
+      );
+      syncBuiltinESMExports();
+      await owner.recover();
+      assert.equal(adoptedSynced, true);
+      assert.deepEqual(await fs.readdir(join(home, "versions")), []);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  },
+);
+
 test("a runtime already moved inside its application before an interruption is removed with it", async () => {
   const home = await fs.mkdtemp(join(tmpdir(), "candidate-pair-adopted-"));
   try {
