@@ -61,6 +61,41 @@ Map dots and member selection cards keep their existing immediate focus (the dot
 
 The opening day fit still stops at zoom 16. A focused camera counts as a deliberate view, so resizing keeps it, the same as panning. Dots are not Leaflet layers, so their double activations never trigger Leaflet's own double-click or double-tap zoom. Whole member selection buttons use `touch-action: manipulation`, so a double tap never zooms the page. Double-clicking or double-tapping empty map space still zooms in as before.
 
+## Latest known member positions
+
+Separately from the selected day's event dots, the map shows each member's **latest known recorded position** as a round profile-photo pin (initials when no authorized avatar decoded). It is the last recorded GPS fix, never live tracking or continuous capture.
+
+- **Source.** `GET /api/dashboard/latest-positions` (BFF, no parameters) proxies `GET /api/friends/dojo/latest-positions`.
+  - "Latest" is the maximum validated capture time (`captured_at`) the backend can prove, not ledger order.
+  - It is read once per map load (dashboard load, date change or reload) and on an explicit Retry, through the shared dashboard read admission. There is no polling. A `409` restarts the read once.
+  - Avatars reuse the roster's revocable Blob URLs, so no extra or arbitrary image URL is fetched.
+  - The existing `dashboard/members` `last_position` field is unchanged and not used for pins.
+- **Independence.** The layer does not depend on the selected day or category: changing either never turns a day's dot into "latest" or hides the age. Selecting a member (card or pin) applies the existing explicit member filter to pins; Select All restores every pin.
+- **Initial view.** The map frames the selected day's shown fixes together with the latest pins, including when the day has no events. It never overrides a kept view from another day, a camera the operator moved, or an explicit latest focus; All restores this view.
+- **Anchors and grouping.** Each pin is anchored at the exact recorded coordinate (pointer tip).
+  - Pins whose anchors would overlap on screen at the current zoom become one neutral aggregate marker. It shows the count, never one member's portrait or age.
+  - Its badge says truthfully whether some ("N older") or all ("all older") of the fixes are older than ten minutes; the dashed border marks a mix.
+  - Activating the marker opens a chooser. Each entry shows that member's own round photo or initials, own age, and own faded or full-opacity state.
+  - The chooser is clamped inside the map and supports arrow keys and Escape (which returns focus to the marker). It closes on pan, zoom or resize, and grouping is recomputed at zoom end.
+- **Age.** Age uses the validated `captured_at` only.
+  - At or under ten minutes the pin is at full opacity. Strictly older, it is faded with a visible age note ("11 min ago", "3 days ago").
+  - A capture more than a minute ahead of the device clock is faded and labelled "capture time is ahead of this device", never fresh.
+  - One shared 15-second ticker (no per-member timers, no requests) re-evaluates ages, and `visibilitychange`/`pageshow` re-evaluate on resume.
+  - Each accessible name and title gives the member, relative age and exact local capture time.
+- **Selection and focus.** A single click or tap on a pin or chooser entry only selects that member (camera unchanged).
+  - Double activation or Shift+Enter is an explicit focus through the shared map-focus protocol (`markUserView`/camera epoch). It centers that member's exact coordinate on the nearest world copy at zoom 18.
+  - During a wheel animation the focus re-applies at zoom end only if it is still current.
+  - The focus survives resize and a later day publication. Navigation, All, category, date or a denial supersedes it.
+- **Statuses and invalidation.**
+  - **private, none.** These show no pin. Position is withheld for `private`; no recorded fix exists for `none`.
+  - **incomplete.** No pin, plus a persistent warning naming the members and a Retry button.
+  - **Malformed or failed read.** A malformed `200` fails the whole read closed, as does any other failure: no pins, a persistent "unavailable" note and Retry.
+  - **Position-only denial, any source.** A private DTO from the latest read, the day timeline or an exact event removes that member's latest pin and day geometry immediately. An earlier-started read's held positive never resurrects it, in either response order. The member's identity and authorized photo stay.
+  - **Whole-scope denial.** A roster, timeline or dojo `401`/`403` removes every pin, the chooser and associations, and discards earlier reads.
+  - **Member denial.** A confirmed per-member denial, including stats, removes that member's pin and revokes their avatar Blob URL.
+
+Qualification: `tests/latest-position-pins-browser.test.ts` (served UI with actual CSS, intercepted tiles, decoded synthetic PNG avatar; aggregate/chooser, both invalidation orders, scope denial, incomplete/malformed/409 Retry, framing and focus/resize; wide and narrow screenshots) and `tests/latest-position-pins-paired.test.ts` (real MongoMemoryReplSet + Express backend via `KATAFIT_MEMORY_BACKEND`, legacy Coach REST credential, BFF and served dashboard under the production admin CSP, decoded avatar bytes through the BFF, UTF-8 names, and Position revocation while the UI is open).
+
 ## Qualification
 
 The whole-card cases in `map-focus-browser.test.ts` qualify portrait, name, stats and blank selection-button space with native mouse and touch input, including nearby mixed-subtarget pairs in both directions. They preserve ordinary single selection, All reset, stable page zoom and the independent sibling provenance tooltip. The canonical Regimen cross-repository design summary is `docs/coach-design.md` (Studio Dojo Map & events); this document specifies the Coach renderer's interaction contract.

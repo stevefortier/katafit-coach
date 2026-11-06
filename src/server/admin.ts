@@ -851,7 +851,9 @@ export async function admin(
                             ? ["activity_id", "file_id"]
                             : [];
         if (
-          (url.pathname !== "/api/dashboard/members" && !allowed.length) ||
+          (url.pathname !== "/api/dashboard/members" &&
+            url.pathname !== "/api/dashboard/latest-positions" &&
+            !allowed.length) ||
           [...params.keys()].some(
             (k) => !allowed.includes(k) || params.getAll(k).length !== 1,
           )
@@ -881,6 +883,10 @@ export async function admin(
         } else if (url.pathname === "/api/dashboard/members") {
           if (params.size) throw new SafeError("ARGUMENTS_REJECTED");
           target = "/api/friends/dojo/dashboard-members";
+        } else if (url.pathname === "/api/dashboard/latest-positions") {
+          // Latest known recorded fix per member; no day, member or client ids.
+          if (params.size) throw new SafeError("ARGUMENTS_REJECTED");
+          target = "/api/friends/dojo/latest-positions";
         } else if (url.pathname === "/api/dashboard/activity")
           target = `/api/friends/activity/${segment("id")}`;
         else {

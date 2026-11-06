@@ -1309,6 +1309,186 @@ header {
   pointer-events: none;
   z-index: 400;
 }
+/* Latest known recorded positions: round photo pins under the day's event
+   dots. Not live tracking; strictly older than ten minutes is faded. */
+.dashboard-latest-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 399;
+}
+.dashboard-latest-pin {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.dashboard-latest-pin[hidden] {
+  display: none;
+}
+.dashboard-latest-pin::after {
+  content: "";
+  width: 0;
+  height: 0;
+  border: 6px solid transparent;
+  border-top-color: #1a73e8;
+  margin-top: -1px;
+}
+.dashboard-latest-photo {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 3px solid #1a73e8;
+  background: #e8f0fe;
+  color: #174ea6;
+  font:
+    700 14px/34px system-ui,
+    sans-serif;
+  text-align: center;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+}
+.dashboard-latest-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.dashboard-latest-count {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  min-width: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #202124;
+  color: #fff;
+  font:
+    700 11px/18px system-ui,
+    sans-serif;
+}
+.dashboard-latest-age {
+  order: 2;
+  margin-top: 2px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.92);
+  color: #3c4043;
+  font:
+    600 11px/16px system-ui,
+    sans-serif;
+  white-space: nowrap;
+}
+.dashboard-latest-age[hidden] {
+  display: none;
+}
+.dashboard-latest-stale .dashboard-latest-photo {
+  opacity: 0.5;
+  border-color: #80868b;
+  filter: grayscale(0.6);
+}
+.dashboard-latest-stale::after {
+  border-top-color: #80868b;
+  opacity: 0.5;
+}
+.dashboard-latest-pin:focus-visible .dashboard-latest-photo {
+  outline: 3px solid #fbbc04;
+  outline-offset: 2px;
+}
+.dashboard-latest-mixed .dashboard-latest-photo {
+  border-style: dashed;
+  border-color: #80868b;
+}
+/* Overlap marker: a neutral aggregate count, never one member's portrait. */
+.dashboard-latest-aggregate {
+  background: #fff;
+  color: #202124;
+  font-size: 16px;
+}
+.dashboard-latest-caption {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 24px;
+  z-index: 401;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.92);
+  color: #202124;
+  font-size: 12px;
+  width: fit-content;
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
+}
+.dashboard-latest-caption[hidden] {
+  display: none;
+}
+.dashboard-latest-chooser {
+  position: absolute;
+  z-index: 402;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
+  box-sizing: border-box;
+  max-width: calc(100% - 8px);
+  max-height: calc(100% - 8px);
+  overflow: auto;
+}
+.dashboard-latest-chooser[hidden] {
+  display: none;
+}
+.dashboard-latest-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: #fff;
+  color: #202124;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.dashboard-latest-choice:focus-visible {
+  outline: 3px solid #fbbc04;
+}
+.dashboard-latest-choice .dashboard-latest-photo {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
+  line-height: 26px;
+}
+.dashboard-latest-choice-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.dashboard-latest-choice-name {
+  font-weight: 600;
+}
+.dashboard-latest-choice-age {
+  font-size: 11px;
+  color: #3c4043;
+}
 .dashboard-map-marker[hidden] {
   display: none;
 }
