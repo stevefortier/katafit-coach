@@ -111,6 +111,20 @@ try {
     Check ((Get-Content -LiteralPath (Join-Path $dataHome 'keep-me') -Raw) -eq 'preserved') 'Reinstall lost existing data.'
     Check (-not (Test-Path -LiteralPath ($runtime + '.old'))) 'An old runtime was left behind.'
 
+    # A crashed Coach leaves its record, and an interrupted install leaves its
+    # folders; neither may block reinstalling.
+    Write-Host 'Checking reinstallation over a stale record and leftover folders...'
+    Stop-Coach
+    [IO.File]::WriteAllText((Join-Path $dataHome 'service.json'), '{"origin":"http://127.0.0.1:9","pid":1,"runtimePid":1}')
+    $null = New-Item -ItemType Directory -Path ($runtime + '.new') -Force
+    [IO.File]::WriteAllText((Join-Path ($runtime + '.new') 'partial'), 'interrupted')
+    $null = New-Item -ItemType Directory -Path ($runtime + '.old') -Force
+    & $Installer -Archive $Archive -InstallRoot $runtime -CoachHome $dataHome
+    Status
+    Check (-not (Test-Path -LiteralPath ($runtime + '.new'))) 'A leftover .new runtime was kept.'
+    Check (-not (Test-Path -LiteralPath ($runtime + '.old'))) 'A leftover .old runtime was kept.'
+    Check ((Get-Content -LiteralPath (Join-Path $dataHome 'keep-me') -Raw) -eq 'preserved') 'Recovery lost existing data.'
+
     Stop-Coach
     Write-Host 'Checking the saved login action...'
     # Exercise the actual persisted login action, including its saved data path.
@@ -136,7 +150,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
     Status
-    Write-Host 'Windows installer smoke passed as a standard user: install, digest and junction rejection, reinstall, login action and clean stop.'
+    Write-Host 'Windows installer smoke passed as a standard user: install, digest and junction rejection, reinstall, recovery from a stale record and leftover folders, login action and clean stop.'
 } finally {
     Stop-Coach
     Unregister-ScheduledTask -TaskName ('KatafitCoach-' + $identity.User.Value) -Confirm:$false -ErrorAction SilentlyContinue
