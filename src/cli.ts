@@ -229,7 +229,8 @@ main().catch((error) => {
         : reason === "LAUNCHER_UPGRADE_REQUIRED" ||
             reason === "INVALID_SKILL_STORAGE"
           ? `Coach command failed: ${reason}. Keep the full protected home and hash-linked skill history intact; install a reviewed compatible launcher side by side before restarting. See docs/source-updates.md.`
-          : "Coach command failed. Check service status, protected installation directory and port availability. Use help for commands.",
+          : // A fixed code names the cause; other messages may carry paths.
+            `Coach command failed${/^[A-Z][A-Z0-9_]{2,63}$/.test(reason) ? `: ${reason}` : ""}. Check service status, protected installation directory and port availability. Use help for commands.`,
   );
   process.exitCode = 1;
 });
