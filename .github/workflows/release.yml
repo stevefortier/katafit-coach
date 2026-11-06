@@ -29,6 +29,17 @@ jobs:
       - uses: ./.github/actions/native-image
       - name: Produce immutable exact-source artifacts
         run: node scripts/release-build.mjs "$RUNNER_TEMP/coach-release"
+      - name: Build one self-contained archive per platform from the release package
+        # The same script the CI `archives` job qualifies on every PR. Archives
+        # are attested and uploaded with the other assets; the installer and
+        # upgrades (stageArchive) use them, verified by their own attestation.
+        shell: bash
+        run: |
+          set -euo pipefail
+          for platform in linux-x64 linux-arm64 win-x64; do
+            node scripts/platform-archive.mjs "$RUNNER_TEMP/coach-release/coach-${GITHUB_SHA}.tgz" "$platform" "$RUNNER_TEMP/coach-release"
+          done
+          ls -l "$RUNNER_TEMP/coach-release"
       - name: Qualify the actual package bytes and native image
         env:
           # Branch protection requires PR CI, which already ran this chain once.
@@ -126,6 +137,6 @@ jobs:
             import fs from "node:fs";
             const r=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/published.json"));
             if(r.immutable!==true) throw Error("Repository administrator must ENABLE IMMUTABLE RELEASES. Published release is NOT eligible; publication gate failed.");
-            if(r.draft || r.prerelease || r.target_commitish!==process.env.GITHUB_SHA || r.assets.length!==3 || r.assets.some(a=>!/^sha256:[a-f0-9]{64}$/.test(a.digest))) throw Error("Published artifacts incomplete or mismatched");'
+            if(r.draft || r.prerelease || r.target_commitish!==process.env.GITHUB_SHA || r.assets.length!==6 || r.assets.some(a=>!/^sha256:[a-f0-9]{64}$/.test(a.digest))) throw Error("Published artifacts incomplete or mismatched");'
       - name: Verify public ready-source readback
-        run: node --input-type=module -e 'import {discoverRelease} from "./dist/release/manifest.js"; const r=await discoverRelease(); if(r.manifest.revision!==process.env.GITHUB_SHA) throw Error("Published release not advertised exactly");'
+        run: node --input-type=module -e 'import {discoverRelease} from "./dist/release/manifest.js"; const r=await discoverRelease(); if(r.manifest.revision!==process.env.GITHUB_SHA) throw Error("Published release not advertised exactly"); if(Object.keys(r.archives).sort().join()!=="linux-arm64,linux-x64,win-x64") throw Error("Published release lacks a platform archive");'
