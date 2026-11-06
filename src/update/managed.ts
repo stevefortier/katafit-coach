@@ -10,6 +10,7 @@ import {
   readdir,
   lstat,
   open,
+  chmod,
 } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, dirname, resolve, parse, delimiter } from "node:path";
@@ -284,10 +285,48 @@ export function hostPlatform(): Platform | undefined {
 }
 
 /**
+ * Checks the Node runtime an archive carries before it is kept: plain
+ * directories and singly-linked regular files only, within bounds, with the
+ * platform's executable where the bootstrap looks for it.
+ */
+async function archiveRuntime(root: string, platform: Platform) {
+  let entries = 0,
+    total = 0;
+  const walk = async (path: string, depth: number) => {
+    for (const name of await readdir(path)) {
+      const entry = join(path, name),
+        info = await lstat(entry);
+      if (++entries > 256 || depth > 8) throw new Error("PACKAGE_REJECTED");
+      if (info.isDirectory()) await walk(entry, depth + 1);
+      else if (!info.isFile() || info.nlink !== 1)
+        throw new Error("UNSAFE_PATH");
+      else if ((total += info.size) > 512 * 1024 * 1024)
+        throw new Error("PACKAGE_REJECTED");
+    }
+  };
+  let info;
+  try {
+    info = await lstat(root);
+  } catch (e: any) {
+    if (e.code === "ENOENT") throw new Error("PACKAGE_REJECTED");
+    throw e;
+  }
+  if (!info.isDirectory()) throw new Error("UNSAFE_PATH");
+  await walk(root, 0);
+  const win = platform.startsWith("win-"),
+    node = await lstat(
+      win ? join(root, "node.exe") : join(root, "bin", "node"),
+    ).catch(() => undefined);
+  if (!node?.isFile() || (!win && !(node.mode & 0o100)))
+    throw new Error("PACKAGE_REJECTED");
+}
+
+/**
  * Stages a release from its self-contained platform archive instead of
  * building source: no git, npm or build tools. The archive must match its
  * published size and digest and carry a valid attestation for exactly `sha`;
- * its application directory becomes the candidate, like a source build's.
+ * its application directory becomes the candidate, like a source build's, and
+ * its whole Node runtime is kept beside it as `versions/<SHA>.node`.
  */
 export async function stageArchive(
   home: string,
@@ -341,26 +380,56 @@ export async function stageArchive(
       staging,
       signal,
     );
-    const app = join(extracted, "katafit-coach", "app");
+    const root = join(extracted, "katafit-coach"),
+      app = join(root, "app"),
+      node = join(root, "node");
     if ((await metadata(app)).revision !== sha)
       throw new Error("SOURCE_MISMATCH");
     await managedFile(join(app, "dist/server/admin.js"), 1024 * 1024);
-    return await publishCandidate(home, sha, app, boundary.candidateToken);
+    await archiveRuntime(node, platform);
+    // Extraction applies the umask; ownership marks need private directories.
+    for (const path of [root, app, node]) await chmod(path, 0o700);
+    return await publishCandidate(
+      home,
+      sha,
+      app,
+      boundary.candidateToken,
+      node,
+    );
   } finally {
     await rm(staging, { recursive: true, force: true });
   }
 }
 
-/** Marker moves atomically with staged code; a crash cannot publish unowned code. */
+/**
+ * Marker moves atomically with staged code; a crash cannot publish unowned
+ * code. A runtime is published after its application, with the same marker,
+ * so it never exists without owned code its cleanup can find.
+ */
 export async function publishCandidate(
   home: string,
   sha: string,
   checkout: string,
   token?: string,
+  runtime?: string,
 ) {
-  if (token) await new CandidateOwnership(home).mark(checkout, sha, token);
-  const destination = join(home, "versions", sha);
+  const destination = join(home, "versions", sha),
+    node = `${destination}.node`;
+  // Never replace anything already at either name: not even an empty
+  // directory or a dangling link, and never a runtime for source code.
+  for (const path of [destination, node]) {
+    const existing = await lstat(path).catch((e) => {
+      if (e.code !== "ENOENT") throw e;
+    });
+    if (existing) throw new Error("UNSAFE_PATH");
+  }
+  if (token) {
+    const ownership = new CandidateOwnership(home);
+    await ownership.mark(checkout, sha, token);
+    if (runtime) await ownership.mark(runtime, sha, token);
+  }
   await rename(checkout, destination);
+  if (runtime) await rename(runtime, node);
   await syncDirectory(join(home, "versions"));
   return destination;
 }

@@ -134,7 +134,7 @@ The Linux CLI's foreground owner holds a kernel `flock` for the whole lifetime a
 
 Source is fetched into `update-staging/source` at the **approved full SHA**, with depth one and no tags. The detached checkout HEAD, package name, lockfile, and generated `dist/build.json` must agree. Dependencies use `npm ci --include=dev --ignore-scripts`; only the trusted repository's build command runs. Git/npm use a small explicit environment, isolated HOME/cache, no inherited model/admin/cloud tokens, no user/global Git config, and separate empty npm user/global config paths. Child output is discarded, not streamed to Studio or copied into logs. This is isolation from accidental credentials/configuration inheritance, **not an OS sandbox against malicious trusted source**.
 
-Each build subprocess is limited to three minutes and a process group that is killed on abort/timeout. There must be at least 1.5 GiB free before staging; staging is monitored once a second and aborted above 1 GiB. That is a monitored limit, not a hard filesystem quota. Staging/cache and probe homes are removed after success/failure. Current and previous managed versions are retained after a successful activation; failed candidate directories are removed. Existing application diagnostic logs retain their own bounded rotation. Build stdout/stderr is not retained.
+Each build subprocess is limited to three minutes and a process group that is killed on abort/timeout. There must be at least 1.5 GiB free before staging; staging is monitored once a second and aborted above 1 GiB. That is a monitored limit, not a hard filesystem quota. Staging/cache and probe homes are removed after success/failure. Current and previous managed versions are retained after a successful activation, each with its `versions/<SHA>.node` runtime; older versions are removed with theirs, and failed candidates are removed together with any runtime they brought. Existing application diagnostic logs retain their own bounded rotation. Build stdout/stderr is not retained.
 
 Managed directory ancestors cannot be symlinks; metadata/lockfile reads require bounded regular files with no-follow/nonblocking opens, rejecting symlinks and FIFOs. This prevents accidental redirected writes/reads, not a defense against a hostile same-user process racing filesystem operations. Protect the home as you would its plaintext credentials.
 
@@ -436,6 +436,33 @@ records `<home>/boot-rollback.json` and starts the previous version. A stop
 requested during that window is not treated as a failure. The bootstrap uses
 only Node built-ins, with no network, Docker or settings access. Builds that
 support the handover declare `bootstrap-handoff-1` in `dist/build.json`.
+
+Each version runs under the Node it brought. A version staged from a platform
+archive keeps the archive's whole `node/` directory as
+`<home>/versions/<SHA>.node`, and the bootstrap starts that version's
+supervisor with `versions/<SHA>.node/bin/node` (`node.exe` on Windows), so a
+release can move to a newer Node without replacing the bootstrap. Versions built
+from source, and the seed package, have no such directory and run under the
+bootstrap's own Node; the seed never looks for one. A runtime that is present
+but unusable (a link, one reached through a linked home or `versions`
+ancestor, a missing, linked or non-executable `node`, or one the system cannot
+start) is never replaced by the bootstrap's Node: that version
+fails to start, and after a handover the previous version is restored, under
+its own runtime. The outgoing runtime-aware supervisor also uses the candidate's
+validated runtime for the empty-home probe and first activation, before the
+bootstrap handover; activation backout selects the previous application's own
+runtime again. Only the matching managed application can select that sibling;
+a seed never borrows one. A missing sibling keeps legacy fallback, while a
+present invalid or unstartable runtime fails preparation/startup without fallback.
+
+**One-time installation prerequisite:** an older frozen installed `dist/boot.js`
+does not acquire this selector through an application update. Replace that
+installed bootstrap once through the separately approved launcher/package
+installation procedure, with backup, quiescence and selected-runtime/rollback
+verification. The outgoing supervisor must also include candidate-runtime
+probing/activation before attempting a release incompatible with its current
+Node; first install a compatible bridge release if necessary. This source change
+does not migrate an already installed bootstrap or certify an existing host.
 
 ### Rollback notice
 

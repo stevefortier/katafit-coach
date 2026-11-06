@@ -352,8 +352,19 @@ When a release carries the archive for this machine (`linux-x64`,
 `linux-arm64` or `win-x64`), preparing an upgrade stages it instead of building
 source: it is downloaded with its published size and digest checked, its
 attestation must name exactly the release revision, and its `app/` directory
-becomes `versions/<SHA>`, as a source build's checkout would. No git, npm or
-build tools are needed. Without an archive, preparation builds source as before.
+becomes `versions/<SHA>`, as a source build's checkout would. Its whole `node/`
+directory is kept unchanged beside it as `versions/<SHA>.node`, private
+libraries included, so Linux Node still finds `libatomic.so.1` through its
+`$ORIGIN/../lib` RUNPATH; the bootstrap starts that version under it (see
+[running under the bootstrap](source-updates.md#running-under-the-bootstrap)).
+Before anything is published the runtime must hold only plain directories and
+singly-linked regular files (no links, devices or pipes), at most 256 entries
+and 512 MiB, with an executable `bin/node` (`node.exe` on Windows). Nothing
+already at either name is replaced, even an empty directory or a dangling link.
+The application is published first and the runtime second, both carrying the
+preparation's ownership marker, so an interrupted publication or removal leaves
+only state its owner can prove and finish removing. No git, npm or build tools
+are needed. Without an archive, preparation builds source as before.
 The release workflow publishes all three with every release, attested like the
 other assets. Launchers installed before discovery accepted archives (before
 #218) refuse any release with more than three assets, so publication waits until
