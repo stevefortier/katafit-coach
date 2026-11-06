@@ -1092,12 +1092,15 @@ window.CoachDashboard = (() => {
   // One shared selected ledger event for map and timeline. Selection freshly
   // reauthorizes that exact event; subject detail is optional enrichment.
   // The timeline stays selectable without the map: absent a ledger, the day
-  // window comes from the selected local date.
+  // window comes from the selected local date. `focus` (a timeline repeat
+  // activation) moves the camera only after this exact read authorizes the
+  // event and the selection is still current.
   async function selectEvent(
     item,
     adminKey,
     pan = false,
     name = memberName(item.user_id),
+    focus = false,
   ) {
     if (suppressedMembers.has(item.user_id)) return;
     const choice = ++selectionEpoch,
@@ -1235,7 +1238,8 @@ window.CoachDashboard = (() => {
       eventLocation(fresh),
       text("p", "Event access rechecked for this read.", "hint"),
     );
-    if (pan) revealEvent(fresh);
+    if (focus) focusMapEvent(fresh);
+    else if (pan) revealEvent(fresh);
     if (
       !Object.hasOwn(activityColors, fresh.subject?.type) ||
       !/^[0-9a-f]{24}$/.test(fresh.subject?.id || "")
@@ -1486,6 +1490,30 @@ window.CoachDashboard = (() => {
         null,
       );
     };
+    // The exact rendered mark under the pointer takes priority over the
+    // coordinate's nearest event, so dense marks keep their identity. Marks at
+    // the same instant stack exactly; that stack resolves to its first event,
+    // as `nearest` does, whatever the z-order (twins remain keyboard reachable).
+    const markItem = (node) => {
+      const mark = node?.closest?.(".dashboard-timeline-mark");
+      const hit =
+        mark && !mark.hidden && track.contains(mark)
+          ? items.get(mark.dataset.eventId)
+          : null;
+      if (!hit) return null;
+      const at = Date.parse(hit.occurred_at);
+      return (
+        visibleItems().find((item) => Date.parse(item.occurred_at) === at) ||
+        hit
+      );
+    };
+    const pointed = (event) => markItem(event.target) || nearest(event.clientX);
+    // A repeat activation of the same event asks for map focus, which waits
+    // for that selection's fresh exact read (selectEvent) to authorize it.
+    const activate = (item, event) => {
+      if (!item || !interactive()) return;
+      select(item, doubleActivation(`event:${item.id}`, event));
+    };
     const cancelGesture = () => {
       const old = gesture;
       gesture = null;
@@ -1510,10 +1538,16 @@ window.CoachDashboard = (() => {
             : "scrub",
         x: event.clientX,
         left: scroll.scrollLeft,
+        // The touched mark, kept until the finger moves into a scrub.
+        mark: markItem(event.target),
       };
       track.setPointerCapture(event.pointerId);
       if (gesture.mode === "scrub")
-        preview(nearest(event.clientX), event.clientX, event.clientY);
+        preview(
+          gesture.mark || nearest(event.clientX),
+          event.clientX,
+          event.clientY,
+        );
       else dismiss();
       event.preventDefault();
     };
@@ -1522,17 +1556,25 @@ window.CoachDashboard = (() => {
       if (gesture?.id === event.pointerId) {
         if (gesture.mode === "pan")
           scroll.scrollLeft = gesture.left + gesture.x - event.clientX;
-        else preview(nearest(event.clientX), event.clientX, event.clientY);
+        else {
+          if (Math.abs(event.clientX - gesture.x) > 10) gesture.mark = null;
+          preview(
+            gesture.mark || nearest(event.clientX),
+            event.clientX,
+            event.clientY,
+          );
+        }
       } else if (event.pointerType !== "touch")
-        preview(nearest(event.clientX), event.clientX, event.clientY);
+        preview(pointed(event), event.clientX, event.clientY);
     };
     track.onpointerup = (event) => {
       if (gesture?.id !== event.pointerId) return;
-      const item = gesture.mode === "scrub" ? nearest(event.clientX) : null;
+      const item =
+        gesture.mode === "scrub"
+          ? gesture.mark || nearest(event.clientX)
+          : null;
       cancelGesture();
-      if (item) select(item);
-      if (item && interactive() && doubleActivation(`event:${item.id}`, event))
-        focusMapEvent(item);
+      activate(item, event);
     };
     track.onpointercancel = () => {
       if (interactive()) cancelGesture();
@@ -1542,10 +1584,7 @@ window.CoachDashboard = (() => {
     };
     track.onclick = (event) => {
       if (event.detail === 0 || suppressPointerClick) return;
-      const item = nearest(event.clientX);
-      select(item);
-      if (item && interactive() && doubleActivation(`event:${item.id}`, event))
-        focusMapEvent(item);
+      activate(pointed(event), event);
     };
     track.onpointerleave = () => {
       if (interactive() && !gesture) dismiss();
@@ -1566,10 +1605,10 @@ window.CoachDashboard = (() => {
             Date.parse(a.occurred_at) - Date.parse(b.occurred_at) ||
             a.id.localeCompare(b.id),
         );
-    const select = (item) => {
+    const select = (item, focus = false) => {
       if (!interactive() || !item) return;
       if (!visibleItems().some((event) => event.id === item.id)) return;
-      void selectEvent(item, adminKey, true, name(item));
+      void selectEvent(item, adminKey, true, name(item), focus);
       dismiss();
     };
     const draw = () => {
@@ -1667,8 +1706,7 @@ window.CoachDashboard = (() => {
           if (event.key !== "Enter" || !event.shiftKey || !interactive())
             return;
           event.preventDefault();
-          select(item);
-          focusMapEvent(item);
+          select(item, true);
         };
         track.append(mark);
       }
