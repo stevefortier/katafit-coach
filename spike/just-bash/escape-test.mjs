@@ -35,7 +35,10 @@ const check = async (name, run, ok) => {
   const t = Date.now();
   const out = await run();
   const pass = ok(out);
-  if (!pass) failures++;
+  if (!pass) {
+    failures++;
+    console.log(`--- ${name} output:\n${out}`);
+  }
   rows.push(`| ${pass ? "ok" : "FAIL"} | ${name} | ${Date.now() - t} ms | ${out.replace(/\s+/g, " ").slice(0, 90).replaceAll("|", "\\|")} |`);
 };
 const leaked = (out) => out.includes("TOP-SECRET");
