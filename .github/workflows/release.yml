@@ -46,7 +46,7 @@ jobs:
           # Branch protection requires PR CI, which already ran this chain once.
           # Here it qualifies the published bytes: two cycles keep a repeated
           # good/second round trip; further identical repeats add ~6 s each.
-          COACH_RELEASE_CYCLES: '2'
+          COACH_RELEASE_CYCLES: "2"
           COACH_RELEASE_EVIDENCE_DIR: ${{ runner.temp }}/coach-release-evidence
         run: |
           export COACH_RELEASE_PACKAGE="$RUNNER_TEMP/coach-release/coach-${GITHUB_SHA}.tgz"
@@ -87,6 +87,8 @@ jobs:
             import assert from "node:assert/strict";
             import {provisionRelease} from "./dist/release/provision.js";
             import {nativeImage} from "./dist/sandbox/artifact.js";
+            import {withProvenanceEvidence} from "./scripts/release-provenance-evidence.mjs";
+            await withProvenanceEvidence(process.env.RUNNER_TEMP+"/coach-operator-diagnostics/provenance.json", async () => {
             const artifacts=process.env.RUNNER_TEMP+"/coach-release";
             const bytes=await fs.readFile(artifacts+"/manifest.json");
             const manifest=JSON.parse(bytes);
@@ -103,7 +105,8 @@ jobs:
             assert.equal(state.selectedImage,manifest.image);
             for(const name of ["active.json","config.json","service.json","native-probe-cleanup.json"]) {
               await assert.rejects(fs.readFile(home+"/"+name),{code:"ENOENT"});
-            }'
+            }
+            });'
       - name: Publish complete release then require GitHub immutable readback
         shell: bash
         run: |
@@ -141,3 +144,12 @@ jobs:
             if(r.draft || r.prerelease || r.target_commitish!==process.env.GITHUB_SHA || r.assets.length!==6 || r.assets.some(a=>!/^sha256:[a-f0-9]{64}$/.test(a.digest))) throw Error("Published artifacts incomplete or mismatched");'
       - name: Verify public ready-source readback
         run: node --input-type=module -e 'import {discoverRelease} from "./dist/release/manifest.js"; const r=await discoverRelease(); if(r.manifest.revision!==process.env.GITHUB_SHA) throw Error("Published release not advertised exactly"); if(Object.keys(r.archives).sort().join()!=="linux-arm64,linux-x64,win-x64") throw Error("Published release lacks a platform archive");'
+
+      - name: Preserve sanitized operator diagnostics after qualification including failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coach-operator-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/coach-operator-diagnostics/provenance.json
+          if-no-files-found: ignore
+          retention-days: 14

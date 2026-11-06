@@ -76,6 +76,41 @@ if immutable readback is false. Such a release is never offered by discovery.
 No release currently exists: real hosted attestations and publication remain
 unverified until the merged workflow runs. Do not call skipped native gates GREEN.
 
+## Release qualification diagnostics
+
+The release operator qualification subscribes locally to the optional
+`katafit.release-provenance` diagnostics channel. The actual supervised native
+worker forwards at most eight sanitized observations per request over its
+existing authenticated IPC channel; the supervisor validates them again before
+publishing locally. Ordinary callers without a subscriber do not enable this
+forwarding. Subscribers are trusted, bounded and nonthrowing, as with the existing
+native-cleanup diagnostics channel.
+
+Observations contain only protocol 1, a fixed stage (`attestation-fetch`,
+`attestation-read`, `attestation-parse`), a fixed failure class (`http`, `network`,
+`body-unavailable`, `read`, `cap`, `parse`), HTTP status when available, and
+strictly validated GitHub hexadecimal request ID / bounded numeric rate-limit,
+reset and delta-seconds Retry-After metadata. Nonconforming metadata is omitted,
+not truncated. No response prose, arbitrary exception text, URLs, credentials or
+other headers are collected. A read failure is not evidence of a provider outage
+or transience, and an HTTP refusal alone does not identify its underlying cause.
+
+The qualification collector writes at most eight observations plus a saturated
+dropped-row count to one explicit `coach-operator-diagnostics/provenance.json`
+file in runner temp, in `finally` after success or failure. A final `if: always()`
+upload publishes that file under the distinct
+`coach-operator-diagnostics-<SHA>-<attempt>` artifact name, separately from the
+earlier package/native qualification evidence. It does not upload the operator
+home, staged packages or archives. If the operator step is never reached, no
+operator diagnostic file is expected. Collection is process-local, not a durable
+operational telemetry service, and an absent observation does not establish
+provenance readiness.
+
+Public errors and unauthenticated requests are unchanged. Failed or uncertain
+provenance still prevents readiness; the exact digest/workflow/main/hosted-runner
+certificate constraints, 4 MiB response cap and 10-second fetch deadline remain
+in force, without extra requests or retries.
+
 ## Delivery on a confirmed upgrade
 
 A current stable launcher delivers the Pi image itself. When you confirm an

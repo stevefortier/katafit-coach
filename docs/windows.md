@@ -43,6 +43,18 @@ installed copy:
 - `katafit-coach stop` ends everything cleanly.
 
 It also runs the bootstrap, handover and workspace upgrade suites on Windows.
+Build commands have a three-minute deadline and a one-GiB staging-size limit.
+Cancellation, deadline expiry, or a disk-monitor failure stops the Windows build
+with `taskkill.exe /T /F /PID <child-pid>` (no shell), including its descendants.
+Cleanup waits up to five seconds for both taskkill success and the direct child's
+exit. Failed or unconfirmed cleanup remains a failed/cancelled build, with
+`BUILD_TREE_CLEANUP_FAILED` as its error cause; killing only the direct child is
+not treated as confirmation that the tree stopped. A completed child is never
+retargeted by a late monitor result. Linux retains its process-group kill.
+The Windows CI selection includes real child/grandchild heartbeat regressions
+for cancellation and the deadline callback, plus portable adapter race/failure
+tests; adapter passes on Linux do not qualify native Windows tree termination.
+
 Archive staging uses the real Windows ZIP extractor under the service's
 restricted environment, and release-download tests check digest verification
 and publication on Windows too.
