@@ -1237,6 +1237,18 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               <p class="hint" id="updateChecked">Not checked yet.</p>
               <p id="updatePreparation" class="hint" role="status" hidden></p>
               <p id="updateOutcome" class="hint" role="status" hidden></p>
+              <div id="updateRollback" hidden>
+                <p id="updateRollbackText"></p>
+                <p
+                  id="updateRollbackStatus"
+                  class="hint"
+                  role="status"
+                  aria-live="polite"
+                ></p>
+                <button id="updateRollbackDismiss" class="secondary">
+                  Dismiss
+                </button>
+              </div>
               <p class="hint">
                 Source is checked only when you open Updates or press Check for
                 updates. Every installation requires your confirmation.

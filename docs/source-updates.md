@@ -436,3 +436,38 @@ records `<home>/boot-rollback.json` and starts the previous version. A stop
 requested during that window is not treated as a failure. The bootstrap uses
 only Node built-ins, with no network, Docker or settings access. Builds that
 support the handover declare `bootstrap-handoff-1` in `dist/build.json`.
+
+### Rollback notice
+
+`boot-rollback.json` is `{revision, restored, at}`: the version that never
+became healthy, the version restored (`null` when the bootstrap fell back to
+the package it shipped in) and the time in milliseconds. The restored
+supervisor reads it once in its startup recovery and exposes it as
+`bootRollback` in the update snapshot (`null` when there is none). Studio shows
+it under **Server Settings → Updates**, for example "Version aaaaaaaaaaaa
+didn't start; Coach went back to bbbbbbbbbbbb at …", or "went back to the
+bundled version" when `restored` is `null`. Reading it changes nothing: it
+stays across restarts until dismissed. Only a small regular file (not a
+symlink) with exactly those three fields, two lowercase 40-hex revisions (or
+`null`) and a valid integer time is shown; anything else is ignored and left
+in place, and never stops Coach from starting.
+
+**Dismiss** sends the notice it shows to the authenticated, same-origin
+`POST /api/update/rollback-notice/dismiss` with exactly `{revision, restored,
+at}`. The application forwards it to the supervisor, which owns the file. The
+supervisor removes the file only if the request equals the notice it read and
+the path still names the same file (device and inode) with the same content;
+otherwise it answers `409 ROLLBACK_NOTICE_STALE` and removes nothing, so a page
+showing an older rollback can never dismiss a newer one, even for the same
+revision. Removal is refused with `409 UPDATE_IN_PROGRESS` while an upgrade is
+applying (a failed activation restores its JSON snapshot, marker included).
+If the file cannot be removed the answer is `503
+ROLLBACK_NOTICE_DISMISS_FAILED` and the notice stays. Dismissing is not an
+update operation: it changes no version, journal or worker state.
+
+The check and removal run synchronously in the supervisor, with no await in
+between, so no other request in that process interleaves. The bootstrap is the
+only other writer, and it writes the marker only after the supervisor it
+started has exited, so it never writes while a supervisor can dismiss. A
+rollback that restores a version older than this notice shows nothing in
+Studio; the file stays until a version with the notice starts.

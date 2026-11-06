@@ -7,6 +7,7 @@ import { StudioReads } from "../katafit/studio.js";
 import { accountMemoryError, accountMemoryRoutes } from "./accountMemory.js";
 import { restGet } from "../katafit/restGet.js";
 import { Updates } from "../update/updates.js";
+import { validBootRollback } from "../update/rollback.js";
 
 import { Diagnostics } from "../diagnostics/log.js";
 import { SafeError, safeError } from "../runtime/errors.js";
@@ -1573,6 +1574,27 @@ export async function admin(
           (!configuration && path !== "/api/preview"))
       )
         return send(400, { error: "ARGUMENTS_REJECTED" });
+      // Clears the bootstrap's rollback notice: exactly the one shown, and
+      // never during an upgrade. Touches no configuration or worker state.
+      if (path === "/api/update/rollback-notice/dismiss") {
+        if (!validBootRollback(body))
+          return send(400, { error: "ARGUMENTS_REJECTED" });
+        if (updates.applying) return send(409, { error: "UPDATE_IN_PROGRESS" });
+        // An older stable launcher predates the notice.
+        if (typeof updates.dismissBootRollback !== "function")
+          return send(409, { error: "LAUNCHER_UPGRADE_REQUIRED" });
+        try {
+          await updates.dismissBootRollback(body);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "";
+          return ["ROLLBACK_NOTICE_STALE", "UPDATE_IN_PROGRESS"].includes(
+            reason,
+          )
+            ? send(409, { error: reason })
+            : send(503, { error: "ROLLBACK_NOTICE_DISMISS_FAILED" });
+        }
+        return send(200, await updateSnapshot());
+      }
       if (
         configurationUncertain &&
         !["/api/stop", "/api/cancel", "/api/shutdown"].includes(path)
