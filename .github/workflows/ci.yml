@@ -233,10 +233,27 @@ jobs:
             $null = & icacls.exe $root /grant "*$($user.SID.Value):(OI)(CI)F" /T
             if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the smoke folder.' }
             $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $root + '\smoke.ps1" -Archive "' + $root + '\archive.zip" -Installer "' + $root + '\install.ps1" -Root "' + $root + '"'
-            $process = Start-Process powershell.exe -Credential $credential -LoadUserProfile -ArgumentList $arguments -Wait -PassThru -RedirectStandardOutput "$root\stdout.log" -RedirectStandardError "$root\stderr.log"
-            # Installer output contains a disposable local admin URL; redact it.
-            foreach ($log in @('stdout.log', 'stderr.log')) {
-              (Get-Content "$root\$log" -Raw) -replace '(http://127\.0\.0\.1:\d+/#)[A-Za-z0-9_-]+', '$1[redacted]' | Write-Host
+            $process = Start-Process powershell.exe -Credential $credential -LoadUserProfile -ArgumentList $arguments -PassThru -RedirectStandardOutput "$root\stdout.log" -RedirectStandardError "$root\stderr.log"
+            # Wait for the test process, not all descendants (a failed smoke
+            # may leave a background bootstrap). Stream complete log lines so
+            # diagnostics remain visible even while the installer is running.
+            $seen = @{ 'stdout.log' = 0; 'stderr.log' = 0 }
+            $deadline = [DateTime]::UtcNow.AddMinutes(12)
+            do {
+              $ended = $process.WaitForExit(1000)
+              foreach ($log in @('stdout.log', 'stderr.log')) {
+                try { $content = [IO.File]::ReadAllText("$root\$log") } catch { continue }
+                $end = if ($ended) { $content.Length } else { $content.LastIndexOf("`n") + 1 }
+                if ($end -gt $seen[$log]) {
+                  # Installer output contains a disposable local admin URL.
+                  $content.Substring($seen[$log], $end - $seen[$log]) -replace '(http://127\.0\.0\.1:\d+/#)[A-Za-z0-9_-]+', '$1[redacted]' | Write-Host
+                  $seen[$log] = $end
+                }
+              }
+            } while (-not $ended -and [DateTime]::UtcNow -lt $deadline)
+            if (-not $ended) {
+              $null = & taskkill.exe /PID $process.Id /T /F
+              throw 'Windows installer smoke exceeded 12 minutes.'
             }
             if ($process.ExitCode -ne 0) { throw "Windows installer smoke exited $($process.ExitCode)" }
           } finally {
