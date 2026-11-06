@@ -33,4 +33,9 @@ jobs:
         shell: bash
         run: |
           cd "$RUNNER_TEMP" && unzip -q archives/coach-*-win-x64.zip -d run
-          run/katafit-coach/node/node.exe "$GITHUB_WORKSPACE/spike/windows/run.mjs" "$RUNNER_TEMP/run/katafit-coach" "$RUNNER_TEMP/home"
+          run/katafit-coach/node/node.exe "$GITHUB_WORKSPACE/spike/windows/run.mjs" "$RUNNER_TEMP/run/katafit-coach" "$RUNNER_TEMP/home" || true
+      - name: Each startup step, with its real error
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          run/katafit-coach/node/node.exe "$GITHUB_WORKSPACE/spike/windows/probe.mjs" "$RUNNER_TEMP/run/katafit-coach" "$RUNNER_TEMP/home2"
