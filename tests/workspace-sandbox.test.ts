@@ -23,6 +23,7 @@ import {
   sweepWorkspaceSessions,
   workspacePermissions,
   workspaceSessions,
+  workspaceStderr,
 } from "../src/sandbox/workspace.js";
 // @ts-expect-error untyped sandbox module
 import { workspaceTools } from "../workspace/tools.mjs";
@@ -97,12 +98,11 @@ test("a headless cycle runs Pi without Docker, its tools on just-bash", async ()
   ]);
   const runtime = new HeadlessCycleRuntime({ workspace: { home } });
   const started = Date.now();
-  const result = await runtime.run({
-    profile: "worker",
-    gateway,
-    message: "go",
-    cycleMs: 90000,
-  });
+  const result = await runtime
+    .run({ profile: "worker", gateway, message: "go", cycleMs: 90000 })
+    .catch((error) => {
+      throw new Error(`${error.message}; Pi stderr: ${workspaceStderr()}`);
+    });
   assert.equal(result.text, "cycle complete");
   assert.ok(Date.now() - started < 60000);
   assert.equal(results.length, 3);

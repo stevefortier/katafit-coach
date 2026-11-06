@@ -19,6 +19,10 @@ import {
 /** The installed application: Pi, just-bash and the workspace launcher. */
 const app = fileURLToPath(new URL("../../", import.meta.url));
 const SESSION = /^katafit-pi-ws-[0-9a-f-]{36}$/;
+/** Last stderr of recent sessions, bounded; see workspaceStderr(). */
+const lastStderr = new Map<string, string>();
+/** The most recent session's stderr tail (tests and local debugging). */
+export const workspaceStderr = () => [...lastStderr.values()].at(-1) ?? "";
 /** Session folders owned by a live runtime in this process. */
 const live = new Set<string>();
 /** Sessions live here, one private folder each, removed on stop. */
@@ -175,7 +179,12 @@ export class WorkspaceRuntime {
       const text = decoder.write(bytes);
       if (text) this.onOutput(text);
     });
-    child.stderr!.resume();
+    // A short tail for tests and local debugging; untrusted, never logged.
+    child.stderr!.on("data", (bytes: Buffer) => {
+      lastStderr.set(this.name, (lastStderr.get(this.name) ?? "") + bytes);
+      const tail = lastStderr.get(this.name)!;
+      if (tail.length > 4096) lastStderr.set(this.name, tail.slice(-4096));
+    });
     child.stdin!.on("error", () => {});
     child.once("error", () => {
       this.boundary(9);
@@ -249,6 +258,9 @@ export class WorkspaceRuntime {
         maxRetries: 5,
       }).catch(() => {});
       live.delete(this.name);
+      // Keep only the latest few tails.
+      for (const key of [...lastStderr.keys()].slice(0, -4))
+        lastStderr.delete(key);
       this.created = false;
       this.onExit();
     })());
