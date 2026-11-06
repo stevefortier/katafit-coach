@@ -46,6 +46,30 @@ function Protect-Folder([string]$Path) {
         $directory.SetAccessControl($acl)
     }
 }
+# Removes an installer leftover. A link is removed itself, never followed:
+# Windows PowerShell 5.1's recursive removal can delete a junction's target.
+function Remove-Leftover([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if ((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        [IO.Directory]::Delete($Path)
+    } else { Remove-Item -LiteralPath $Path -Recurse -Force }
+}
+# Whether the Studio recorded in service.json still answers.
+function Test-Studio([string]$ServiceFile) {
+    try {
+        $origin = (Get-Content -LiteralPath $ServiceFile -Raw | ConvertFrom-Json).origin
+        if ($origin -notmatch '^http://127\.0\.0\.1:\d+$') { return $false }
+        $null = Invoke-WebRequest -UseBasicParsing -Uri ($origin + '/') -TimeoutSec 5
+        return $true
+    } catch [Net.WebException] {
+        # An HTTP error status still means something is listening.
+        return $null -ne $_.Exception.Response
+    } catch { return $false }
+}
+function Is-CoachNode($Process, [string]$Node) {
+    try { return [string]::Equals($Process.Path, $Node, [StringComparison]::OrdinalIgnoreCase) }
+    catch { return $true } # Unreadable: assume it may be Coach and keep waiting.
+}
 function Write-Utf8([string]$Path, [string]$Content) {
     [IO.File]::WriteAllText($Path, $Content, (New-Object Text.UTF8Encoding $false))
 }
@@ -109,21 +133,46 @@ await verifyProvenanceFile(archive, revision);
         if ($LASTEXITCODE -ne 0) { throw 'Release attestation verification failed.' }
     }
 
+    # Recover an interrupted earlier install. `.new` is never the live
+    # runtime. `.old` is the previous runtime: restore it if the swap stopped
+    # before the new one was moved in, otherwise it is no longer needed.
+    $next = $InstallRoot + '.new'
+    $old = $InstallRoot + '.old'
+    Remove-Leftover $next
+    if (Test-Path -LiteralPath $old) {
+        if (Test-Path -LiteralPath $InstallRoot) { Remove-Leftover $old }
+        elseif ((Get-Item -LiteralPath $old).Attributes -band [IO.FileAttributes]::ReparsePoint) { Remove-Leftover $old }
+        else { Move-Item -LiteralPath $old -Destination $InstallRoot }
+    }
+
     # Stop through the authenticated CLI, then wait for the bootstrap to leave
     # its executable before replacing the runtime (Windows locks running EXEs).
     $env:KATAFIT_COACH_HOME = $CoachHome
     $installedNode = Join-Path $InstallRoot 'node\node.exe'
-    if (Test-Path -LiteralPath (Join-Path $CoachHome 'service.json')) {
-        if (-not (Test-Path -LiteralPath $installedNode)) { throw 'Stop the existing Coach before installing.' }
-        & $installedNode (Join-Path $InstallRoot 'app\dist\cli.js') stop
-        if ($LASTEXITCODE -ne 0) { throw 'The existing Coach could not be stopped.' }
+    $serviceFile = Join-Path $CoachHome 'service.json'
+    if (Test-Path -LiteralPath $serviceFile) {
+        $stopped = $false
+        if (Test-Path -LiteralPath $installedNode) {
+            & $installedNode (Join-Path $InstallRoot 'app\dist\cli.js') stop
+            $stopped = $LASTEXITCODE -eq 0
+        }
+        if (-not $stopped) {
+            # A crash or a hard stop at logoff leaves the record behind. Only a
+            # Studio that no longer answers is treated as stopped.
+            if (Test-Studio $serviceFile) { throw 'The existing Coach could not be stopped. Stop it, then install again.' }
+            Write-Host 'Found the record of a Coach that is no longer running; continuing.'
+            Remove-Item -LiteralPath $serviceFile -Force
+        }
     }
     $pidFile = Join-Path $CoachHome 'boot.pid'
     if (Test-Path -LiteralPath $pidFile) {
         $bootPid = 0
         if ([int]::TryParse((Get-Content -LiteralPath $pidFile -Raw).Trim(), [ref]$bootPid) -and $bootPid -gt 1) {
             $deadline = [DateTime]::UtcNow.AddSeconds(30)
-            while (Get-Process -Id $bootPid -ErrorAction SilentlyContinue) {
+            # Only the installed Node is Coach's bootstrap: a reused process id
+            # belongs to something else and is not waited on.
+            while (($process = Get-Process -Id $bootPid -ErrorAction SilentlyContinue) -and
+                (Is-CoachNode $process $installedNode)) {
                 if ([DateTime]::UtcNow -gt $deadline) { throw 'The previous bootstrap has not stopped.' }
                 Start-Sleep -Milliseconds 200
             }
@@ -136,11 +185,6 @@ await verifyProvenanceFile(archive, revision);
     $mode = Get-Content -LiteralPath $modeFile -Raw | ConvertFrom-Json
     if ($mode.mode -ne 'workspace') { throw 'Windows requires workspace sandbox mode.' }
 
-    $next = $InstallRoot + '.new'
-    $old = $InstallRoot + '.old'
-    if ((Test-Path -LiteralPath $next) -or (Test-Path -LiteralPath $old)) {
-        throw 'A previous install is incomplete. Recover the .new/.old runtime folders before reinstalling.'
-    }
     Write-Host 'Installing the runtime...'
     if ([IO.Path]::GetPathRoot($source) -eq [IO.Path]::GetPathRoot($next)) {
         $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($next)) -Force
