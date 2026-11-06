@@ -4,7 +4,7 @@
 // with the same arguments the Docker launcher (sandbox/launch.mjs) uses, plus
 // the just-bash tools in place of Pi's host-backed built-ins.
 import { fileURLToPath } from "node:url";
-import { connectRelay } from "./pipe-relay.mjs";
+import { connectRelay } from "./ipc-relay.mjs";
 
 const config = await connectRelay();
 const extension = (name) => fileURLToPath(new URL(name, import.meta.url));

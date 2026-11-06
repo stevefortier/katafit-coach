@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { Duplex } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AttachmentFailure } from "./attachments.js";
@@ -70,7 +70,7 @@ function workspaceEnvironment(session: string, profile: NativeProfile) {
 /**
  * Removes session folders no live runtime in this process owns: those left
  * by a crashed process. Session processes end with Coach: their stdin and
- * relay pipe close, and Pi exits.
+ * relay channel close, and Pi exits.
  */
 export async function sweepWorkspaceSessions(home: string): Promise<number> {
   let removed = 0;
@@ -95,8 +95,8 @@ export async function sweepWorkspaceSessions(home: string): Promise<number> {
 
 /**
  * Pi as an ordinary process under Node's permission model, its tools backed
- * by just-bash (workspace/tools.mjs), its only channel out the relay pipe on
- * fd 3. Same surface as NativeRuntime for headless RPC sessions.
+ * by just-bash (workspace/tools.mjs), its only channel out the relay over
+ * Node's IPC channel. Same surface as NativeRuntime for headless RPC sessions.
  */
 export class WorkspaceRuntime {
   readonly name = "katafit-pi-ws-" + randomUUID();
@@ -170,7 +170,7 @@ export class WorkspaceRuntime {
       {
         cwd: join(this.session, "workspace"),
         env: workspaceEnvironment(this.session, this.profile!),
-        stdio: ["pipe", "pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe", "ipc"],
         windowsHide: true,
       },
     ));
@@ -195,14 +195,30 @@ export class WorkspaceRuntime {
       this.onDetached();
       void this.stop().catch(() => {});
     });
-    const relay = child.stdio[3] as Duplex;
-    relay.on("error", () => {
+    // The relay speaks over Node's IPC channel, one frame per message; these
+    // adapters give serveRelay the byte streams it frames and bounds.
+    const input = new PassThrough();
+    child.on("message", (frame) => {
+      if (typeof frame === "string") input.write(frame);
+      else void this.stop().catch(() => {});
+    });
+    child.once("disconnect", () => {
+      this.boundary(7);
+      void this.stop().catch(() => {});
+    });
+    const output = new Writable({
+      write: (chunk: Buffer, _encoding, done) => {
+        if (!child.connected) return done(new Error("RELAY_CLOSED"));
+        child.send(chunk.toString("utf8"), (error) => done(error ?? undefined));
+      },
+    });
+    output.on("error", () => {
       this.boundary(10);
       void this.stop().catch(() => {});
     });
     serveRelay({
-      input: relay,
-      output: relay,
+      input,
+      output,
       requests: this.requests,
       gateway: () => this.gateway,
       closing: () => this.closing,

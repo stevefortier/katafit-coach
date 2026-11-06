@@ -1,9 +1,9 @@
 // The workspace relay: the same relay logic as the Docker relay
-// (sandbox/relay-core.mjs), over a pipe the host passes as fd 3 instead of
+// (sandbox/relay-core.mjs), over Node's IPC channel with Coach instead of
 // docker-exec stdio, and answering Pi's fetch calls in-process instead of
-// over loopback HTTP. Pi's process has no network permission: this pipe is
-// its only channel out, and only Coach holds the other end.
-import { Socket } from "node:net";
+// over loopback HTTP. Pi's process has no network permission (Node refuses
+// sockets, even on inherited descriptors): the IPC channel is its only way
+// out, and only Coach holds the other end. One message carries one frame.
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -29,16 +29,24 @@ const reply = (status, headers, body) =>
 
 /** Connects to the host, provisions Pi's config, and returns the catalog. */
 export async function connectRelay() {
-  const pipe = new Socket({ fd: 3, readable: true, writable: true });
+  if (typeof process.send !== "function") throw new Error("RELAY_UNAVAILABLE");
   const fatal = () => process.exit(1);
-  pipe.on("error", fatal);
-  pipe.on("end", () => process.exit(0));
+  let queued = 0;
   const link = relayLink({
-    write: (frame) => pipe.write(frame),
-    pressure: () => pipe.writableLength,
+    write: (frame) => {
+      queued += frame.length;
+      process.send(frame, (error) => {
+        queued -= frame.length;
+        if (error) fatal();
+      });
+    },
+    pressure: () => queued,
     fatal,
   });
-  pipe.on("data", link.data);
+  process.on("message", (frame) =>
+    typeof frame === "string" ? link.data(Buffer.from(frame)) : fatal(),
+  );
+  process.on("disconnect", () => process.exit(0));
 
   // Pi installs its own fetch at startup, after this module runs, so the
   // relay's fetch is installed by an extension (workspace/fetch.mjs).

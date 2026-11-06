@@ -1,7 +1,7 @@
 // The relay's sandbox side, shared by every transport: the Docker relay
 // (relay.mjs: HTTP for Pi, docker-exec stdio to the host) and the workspace
-// relay (workspace/pipe-relay.mjs: in-process fetch for Pi, an inherited pipe
-// to the host). Everything here runs inside the sandbox and is untrusted; the
+// relay (workspace/ipc-relay.mjs: in-process fetch for Pi, Node IPC to the
+// host). Everything here runs inside the sandbox and is untrusted; the
 // host validates every frame (src/sandbox/relayChannel.ts).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

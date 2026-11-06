@@ -48,29 +48,36 @@ look absent to `existsSync`, because Pi probes parent folders for project
 resources and Node would otherwise throw. It grants nothing. Pi also starts
 with `--no-approve`, so project resources in the workspace are never trusted.
 
-## The relay over a pipe
+## The relay over Node IPC
 
 The relay logic is shared with Docker (`sandbox/relay-core.mjs`); only the
 transport differs.
 
 - **Docker:** Pi calls the relay over loopback HTTP inside the network-none
   container, and the relay talks to the host over `docker exec` stdio.
-- **Workspace mode:** the launcher (`workspace/launch.mjs`) connects to a pipe
-  the host passes as fd 3, applies the catalog, and starts Pi in the same
-  process, since child processes are forbidden. An extension
-  (`workspace/fetch.mjs`) installs a `fetch` that answers the relay's address
-  in-process and fails for every other origin. It is installed after Pi has
-  set up its own HTTP client.
+- **Workspace mode:** the launcher (`workspace/launch.mjs`) connects to Coach
+  over Node's IPC channel (one frame per message), applies the catalog, and
+  starts Pi in the same process, since child processes are forbidden. An
+  extension (`workspace/fetch.mjs`) installs a `fetch` that answers the
+  relay's address in-process and fails for every other origin. It is
+  installed after Pi has set up its own HTTP client.
 
 Pi's process therefore has no network permission, and its only channel out is
-the pipe, which only Coach holds. A localhost port would be reachable by any
-local process; the pipe is not. The host side of the protocol is the same
-`serveRelay` the Docker runtime uses (`src/sandbox/relayChannel.ts`).
+the IPC channel, which only Coach holds. A localhost port would be reachable
+by any local process. An inherited pipe is no alternative: recent Node
+releases refuse sockets on inherited descriptors without `--allow-net`. The
+host side of the protocol is the same `serveRelay` the Docker runtime uses
+(`src/sandbox/relayChannel.ts`), fed by small stream adapters.
+
+One limit is specific to IPC: Node reads each message whole before Coach's
+frame limits apply, so a compromised Pi process could make Coach buffer one
+large message. Reaching that needs code running inside Pi's process; the
+model's tools run in just-bash and cannot send IPC messages.
 
 ## Sessions
 
 Each session gets a private folder under `sandbox/` in Coach's home, with
 `workspace`, `home` and `tmp`. The folder is removed when the session stops.
-The Pi process ends with Coach: its stdin and relay pipe close. Folders left
+The Pi process ends with Coach: its stdin and IPC channel close. Folders left
 by a crash are removed at the next startup sweep; folders owned by a live
 runtime in this process are kept.
