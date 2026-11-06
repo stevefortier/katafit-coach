@@ -45,7 +45,10 @@ async function setup(revision = sha) {
   );
   await writeFile(join(tree, "app/dist/server/admin.js"), "export {};");
   const archive = join(dir, name);
-  execFileSync("tar", [
+  const tar = windows
+    ? join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
+    : "tar";
+  execFileSync(tar, [
     ...(windows ? ["-a", "-cf"] : ["-czf"]),
     archive,
     "-C",

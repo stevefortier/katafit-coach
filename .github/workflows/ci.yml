@@ -216,6 +216,7 @@ jobs:
         shell: bash
         run: npx tsx --test --test-concurrency=1 --test-force-exit tests/boot.test.ts tests/boot-handover.test.ts tests/handover-resume.test.ts tests/workspace-upgrades.test.ts tests/archive-stage.test.ts tests/release-provision.test.ts
       - name: Install, reinstall and restart as a standard Windows user
+        if: ${{ !cancelled() }}
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'

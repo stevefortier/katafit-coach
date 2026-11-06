@@ -333,7 +333,9 @@ export async function stageArchive(
     await mkdir(extracted, { mode: 0o700 });
     // bsdtar (Windows) reads zip too; the archive is attested, not user data.
     await command(
-      "tar",
+      windows
+        ? join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe")
+        : "tar",
       ["-xf", file, "-C", extracted],
       staging,
       staging,
