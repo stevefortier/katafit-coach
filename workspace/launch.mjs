@@ -36,7 +36,12 @@ if (process.env.NATIVE_MODE === "rpc") {
   process.argv = [process.execPath, fileURLToPath(entry), ...args];
   await import(entry);
 } else {
-  // Interactive: Pi's CLI (the package's `bin`) on Studio's terminal.
+  // Interactive: all native managed-tool consumers are replaced in workspace
+  // mode (including composer completion). Apply the pinned bootstrap patch
+  // before importing Pi, then install its supported autocomplete extension.
+  const { installWorkspacePiStartup } = await import("./pi-startup.mjs");
+  installWorkspacePiStartup();
+  args.push("-e", extension("./autocomplete.mjs"));
   presentTerminal();
   const cli = new URL(
     "./bundle/cli.js",

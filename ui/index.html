@@ -52,18 +52,6 @@
           <button id="lockStudio" class="secondary" hidden>Lock studio</button>
         </header>
         <div
-          id="studioReloadNotice"
-          class="studio-reload-notice"
-          role="status"
-          aria-live="polite"
-          hidden
-        >
-          <p>
-            <strong>Studio update ready</strong> Refresh to use the new version.
-          </p>
-          <button id="studioReload" type="button">Refresh</button>
-        </div>
-        <div
           id="noticeDetails"
           popover="auto"
           role="dialog"
@@ -1487,6 +1475,20 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
           Check operation status
         </button>
       </main>
+    </div>
+    <!-- Outside the workspace scroll/stacking/inert boundary: refresh stays
+         available when Coach covers the workspace. -->
+    <div
+      id="studioReloadNotice"
+      class="studio-reload-notice"
+      role="status"
+      aria-live="polite"
+      hidden
+    >
+      <p>
+        <strong>Studio update ready</strong> Refresh to use the new version.
+      </p>
+      <button id="studioReload" type="button">Refresh</button>
     </div>
     <aside id="coachPane" aria-labelledby="coachPaneName" hidden>
       <div
