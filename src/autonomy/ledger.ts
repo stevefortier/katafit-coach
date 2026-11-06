@@ -1,3 +1,4 @@
+import { syncDirectory as platformSync } from "../runtime/platform.js";
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
@@ -47,17 +48,7 @@ export const LEDGER_DIR = "autonomy";
 
 /** fsync one directory (its entries); never follows a symlink. */
 export type SyncDirectory = (path: string) => Promise<void>;
-export const syncDirectory: SyncDirectory = async (path) => {
-  const handle = await open(
-    path,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-};
+export const syncDirectory: SyncDirectory = (path) => platformSync(path);
 
 /**
  * C5 R3: ensure `folder` exists as a private real directory (no symlinks)

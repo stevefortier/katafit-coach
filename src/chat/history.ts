@@ -1,3 +1,4 @@
+import { windows } from "../runtime/platform.js";
 import {
   openSync,
   closeSync,
@@ -119,6 +120,8 @@ export class History {
   }
   // The rename is durable only once the containing directory is flushed.
   private syncDirectory() {
+    // Windows refuses fsync on directories; NTFS journals the rename.
+    if (windows) return;
     const fd = openSync(
       resolve(this.dir),
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,

@@ -1,3 +1,4 @@
+import { syncDirectory } from "../runtime/platform.js";
 import { open, rename, rm } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
@@ -59,15 +60,7 @@ export async function atomicWrite(home: string, name: string, value: unknown) {
       await receipt.close();
     }
     await rename(temporary, target);
-    const parent = await open(
-      home,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
-    }
+    await syncDirectory(home);
   } finally {
     await rm(temporary, { force: true });
   }

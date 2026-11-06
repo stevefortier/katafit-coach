@@ -19,6 +19,7 @@ import { launcherSkillCatalog } from "../config/skills.js";
 import { PreparationJournal } from "./preparation.js";
 import { Updates, validSha, validPreparationToken } from "./updates.js";
 import { sandboxMode } from "../sandbox/mode.js";
+import { stopChild } from "../runtime/platform.js";
 import {
   AUTONOMY_LEDGER_CAPABILITY,
   WORKSPACE_SANDBOX_CAPABILITY,
@@ -117,7 +118,7 @@ export async function supervise(
   let cancelling = false;
   let manualWork: Promise<void> | undefined;
   let supported =
-    process.platform === "linux" &&
+    (process.platform === "linux" || process.platform === "win32") &&
     process.env.KATAFIT_COACH_UPDATES !== "disabled";
   try {
     await access(home, constants.W_OK);
@@ -125,18 +126,8 @@ export async function supervise(
     supported = false;
   }
   async function stop(target = child) {
-    if (!target || target.exitCode !== null || target.signalCode !== null)
-      return;
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        target.kill("SIGKILL");
-      }, 5000);
-      target.once("exit", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      target.kill("SIGTERM");
-    });
+    if (!target) return;
+    await stopChild(target, 5000);
   }
   const send = (data: unknown) => {
     if (child?.connected) child.send(data as any, () => {});

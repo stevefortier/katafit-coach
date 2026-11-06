@@ -1,3 +1,4 @@
+import { syncDirectory } from "../runtime/platform.js";
 import { CandidateOwnership } from "./candidate.js";
 import { spawn } from "node:child_process";
 import {
@@ -339,14 +340,6 @@ export async function publishCandidate(
   if (token) await new CandidateOwnership(home).mark(checkout, sha, token);
   const destination = join(home, "versions", sha);
   await rename(checkout, destination);
-  const parent = await open(
-    join(home, "versions"),
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  try {
-    await parent.sync();
-  } finally {
-    await parent.close();
-  }
+  await syncDirectory(join(home, "versions"));
   return destination;
 }

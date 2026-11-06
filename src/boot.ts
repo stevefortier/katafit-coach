@@ -46,9 +46,12 @@ function writeAtomic(path: string, value: unknown) {
   writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 });
   renameSync(temporary, path);
 }
+const windows = process.platform === "win32";
 const startSupervisor = (root: string, home: string) =>
   spawn(process.execPath, [join(root, "dist/cli.js"), "serve"], {
-    stdio: "inherit",
+    // On Windows a stop reaches it over this IPC channel (see ask()). Not
+    // elsewhere: an open channel would keep Linux's `serve` wrapper alive.
+    stdio: windows ? ["inherit", "inherit", "inherit", "ipc"] : "inherit",
     env: {
       ...process.env,
       KATAFIT_COACH_HOME: home,
@@ -97,9 +100,19 @@ async function healthy(
   return ready();
 }
 
+/**
+ * Asks a supervisor to stop. On Windows a signal is a hard termination that
+ * skips cleanup, so the IPC channel is closed instead; the supervisor shuts
+ * down cleanly on disconnect.
+ */
+function ask(child: ChildProcess, signal: NodeJS.Signals) {
+  if (windows && child.connected) child.disconnect();
+  else child.kill(signal);
+}
+
 async function stop(child: ChildProcess) {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
+  ask(child, "SIGTERM");
   const timer = setTimeout(() => child.kill("SIGKILL"), 15000);
   await exited(child);
   clearTimeout(timer);
@@ -114,7 +127,7 @@ export async function boot(options: Options): Promise<number> {
   let stopping = false;
   const forward = (signal: NodeJS.Signals) => () => {
     stopping = true;
-    current?.kill(signal);
+    if (current) ask(current, signal);
   };
   const onTerm = forward("SIGTERM"),
     onInt = forward("SIGINT");

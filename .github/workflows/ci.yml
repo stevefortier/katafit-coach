@@ -191,6 +191,30 @@ jobs:
           name: coach-archives-${{ github.sha }}
           path: ${{ runner.temp }}/archives
           retention-days: 7
+  windows:
+    # Coach on Windows: the archive under its bootstrap like an installed copy,
+    # then the bootstrap, handover and workspace upgrade suites natively.
+    needs: archives
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: ./.github/actions/prepare
+      - uses: actions/download-artifact@v4
+        with:
+          name: coach-archives-${{ github.sha }}
+          path: ${{ runner.temp }}/archives
+      - name: Run the Windows archive under its bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP" && unzip -q archives/coach-*-win-x64.zip -d run
+          run/katafit-coach/node/node.exe "$GITHUB_WORKSPACE/scripts/windows-smoke.mjs" "$RUNNER_TEMP/run/katafit-coach" "$RUNNER_TEMP/home"
+      - name: Bootstrap, handover and upgrade suites on Windows
+        shell: bash
+        run: npx tsx --test --test-concurrency=1 --test-force-exit tests/boot.test.ts tests/boot-handover.test.ts tests/handover-resume.test.ts tests/workspace-upgrades.test.ts
   installer:
     # The one-line Linux installer, from this source's archive, as an ordinary
     # user in clean containers with nothing preinstalled.
@@ -229,7 +253,7 @@ jobs:
   verify:
     # Stable required check: skipped, cancelled and failed dependencies all fail.
     if: always()
-    needs: [build, tests, native, workspace, installer, package, updater, browser, docker, archives]
+    needs: [build, tests, native, workspace, installer, windows, package, updater, browser, docker, archives]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -237,4 +261,4 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==10 and all(job["result"]=="success" for job in results.values()), results'
+          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==11 and all(job["result"]=="success" for job in results.values()), results'
