@@ -1,3 +1,4 @@
+import { windows } from "../runtime/platform.js";
 import {
   constants,
   mkdirSync,
@@ -40,6 +41,8 @@ export class DiscardJournal {
       } catch (error: any) {
         if (error.code !== "ENOENT") throw error;
         mkdirSync(path, { mode: 0o700 });
+        // Windows refuses fsync on directories; NTFS journals the change.
+        if (windows) return;
         const parent = openSync(
           dirname(path),
           constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
@@ -53,6 +56,7 @@ export class DiscardJournal {
     }
   }
   private sync() {
+    if (windows) return;
     const fd = openSync(
       this.dir,
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,

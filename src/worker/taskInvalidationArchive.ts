@@ -1,3 +1,4 @@
+import { windows } from "../runtime/platform.js";
 import { constants } from "node:fs";
 import { link, open, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
@@ -24,6 +25,9 @@ async function syncDirectory(
   sync: (handle: FileHandle, path: string) => Promise<void>,
   protectedHome = false,
 ) {
+  // Windows refuses fsync on directories and has no POSIX modes or uids; the
+  // per-user profile's access list protects the home (runtime/platform.ts).
+  if (windows) return;
   const handle = await open(path, directoryFlags);
   try {
     const info = await handle.stat();

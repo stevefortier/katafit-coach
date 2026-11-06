@@ -1,3 +1,4 @@
+import { syncDirectory } from "../runtime/platform.js";
 import { isDeepStrictEqual } from "node:util";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -207,12 +208,7 @@ export class InvocationActions {
         await f.close();
       }
       await rename(temp, target);
-      const d = await open(dir, "r");
-      try {
-        await d.sync();
-      } finally {
-        await d.close();
-      }
+      await syncDirectory(dir);
     } finally {
       await rm(temp, { force: true });
     }

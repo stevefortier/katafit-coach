@@ -1,3 +1,4 @@
+import { syncDirectory } from "../runtime/platform.js";
 import {
   chmod,
   link,
@@ -185,17 +186,6 @@ function assertCredentialFree(value: unknown) {
 
 const hashName = (bytes: Buffer) =>
   "skills-" + createHash("sha256").update(bytes).digest("hex") + ".json";
-async function syncDirectory(path: string) {
-  const directory = await open(
-    path,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
-  }
-}
 async function regularBytes(path: string, limit: number) {
   let file;
   try {
