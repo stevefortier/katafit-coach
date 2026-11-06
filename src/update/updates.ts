@@ -8,6 +8,7 @@ import {
 } from "../release/manifest.js";
 import { failureReason, type FailureReason } from "./failure.js";
 import { artifactReason, type PreparationAttempt } from "./preparation.js";
+import type { BootRollback } from "./rollback.js";
 export type Readiness = {
   sha: string;
   fingerprint: string;
@@ -121,6 +122,8 @@ export class Updates {
   };
   accepted: Promise<void> = Promise.resolve();
   lastOperation: LastOperation | undefined;
+  /** The bootstrap's last rollback, until Studio dismisses it. */
+  bootRollback: BootRollback | null = null;
   guidance = "Use a managed Linux launcher to enable upgrades.";
   private preparationHeld = false;
   private pending?: Promise<ReturnType<Updates["snapshot"]>>;
@@ -193,7 +196,12 @@ export class Updates {
       guidance: this.guidance,
       lastOperation: this.lastOperation,
       recoveryOutcome: this.recoveryOutcome,
+      bootRollback: this.bootRollback,
     };
+  }
+  /** Only a supervisor owns a rollback marker; the application asks it. */
+  async dismissBootRollback(_notice: BootRollback): Promise<void> {
+    throw new Error("ROLLBACK_NOTICE_STALE");
   }
   /** Manual local observation never renews remote approval or contacts source. */
   private heldApproval(value: unknown, token?: string) {

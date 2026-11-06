@@ -92,6 +92,9 @@ class RemoteUpdates extends Updates {
     const state = await rpc("cancelPreparation", { sha, token });
     this.receiveState(state);
   }
+  override async dismissBootRollback(notice: unknown) {
+    this.receiveState(await rpc("dismissBootRollback", notice));
+  }
   override async apply(
     sha: unknown,
     resume = false,

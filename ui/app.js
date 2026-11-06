@@ -3551,6 +3551,7 @@ const logJSON = () =>
           updateData?.preparationJournalIssue,
         ),
         lastAdmission: safeUpdateOperation(updateData?.lastAdmission),
+        bootRollback: safeBootRollback(updateData?.bootRollback),
       },
     },
     null,
@@ -3588,9 +3589,40 @@ let updateData,
   updateForceRequest = false,
   updateForceController,
   updateForceQueue,
-  updateInitialRevision;
+  updateInitialRevision,
+  rollbackDismissing = false,
+  rollbackStatus = "",
+  // The exact notice this page removed; a read already in flight may still
+  // carry it.
+  rollbackDismissed;
 const sourceSha = (value) =>
   typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+// The bootstrap's notice that a new version never started and it went back.
+function safeBootRollback(notice) {
+  if (
+    !notice ||
+    typeof notice !== "object" ||
+    !sourceSha(notice.revision) ||
+    !(notice.restored === null || sourceSha(notice.restored)) ||
+    !Number.isSafeInteger(notice.at) ||
+    notice.at <= 0 ||
+    !Number.isFinite(new Date(notice.at).getTime())
+  )
+    return undefined;
+  return {
+    revision: notice.revision,
+    restored: notice.restored,
+    at: notice.at,
+  };
+}
+const rollbackKey = (notice) =>
+  `${notice.revision}:${notice.restored}:${notice.at}`;
+function shownBootRollback(data = updateData) {
+  const notice = safeBootRollback(data?.bootRollback);
+  return notice && rollbackKey(notice) !== rollbackDismissed
+    ? notice
+    : undefined;
+}
 const updateFailureHelp = {
   UPDATE_BUSY:
     "Stop Coach, wait for confirmed stopped presence and publication safety, then check and confirm again. No installation was accepted and no actions will be replayed.",
@@ -4014,6 +4046,16 @@ function renderUpdate() {
   $("updateOutcome").title = validOutcome
     ? `Operation ${outcome.id}; target ${outcome.sha}`
     : "";
+  const rollback = shownBootRollback(data);
+  $("updateRollback").hidden = !rollback;
+  $("updateRollbackText").textContent = rollback
+    ? `Version ${rollback.revision.slice(0, 12)} didn't start; Coach went back to ${rollback.restored ? rollback.restored.slice(0, 12) : "the bundled version"} at ${formatTimestamp(rollback.at)}.`
+    : "";
+  $("updateRollbackText").title = rollback
+    ? `Failed ${rollback.revision}; restored ${rollback.restored ?? "the version bundled with the bootstrap"}`
+    : "";
+  $("updateRollbackStatus").textContent = rollback ? rollbackStatus : "";
+  $("updateRollbackDismiss").disabled = rollbackDismissing;
   $("updateChecked").textContent = data.checkedAt
     ? "Last check · " + formatTimestamp(data.checkedAt)
     : "Not checked yet.";
@@ -4182,6 +4224,32 @@ async function refreshUpdate(check = false, local = false) {
       );
   }
 }
+// Removes exactly the notice shown; a newer rollback is never dismissed unseen.
+action("updateRollbackDismiss", async () => {
+  const notice = shownBootRollback();
+  if (!notice || rollbackDismissing) return;
+  rollbackDismissing = true;
+  rollbackStatus = "";
+  renderUpdate();
+  try {
+    await api("update/rollback-notice/dismiss", notice);
+    rollbackDismissed = rollbackKey(notice);
+  } catch (error) {
+    if (error.stale) throw error;
+    rollbackStatus =
+      error.code === "ROLLBACK_NOTICE_STALE"
+        ? "This notice changed since it was shown. The current one is shown now."
+        : error.code === "UPDATE_IN_PROGRESS"
+          ? "An upgrade is in progress. Dismiss this notice after it finishes."
+          : error.code === "ROLLBACK_NOTICE_DISMISS_FAILED"
+            ? "The notice could not be removed and stays until it is. Check that Coach's home folder is writable, then try again."
+            : "Dismissing was not confirmed; the notice stays. Try again.";
+  } finally {
+    rollbackDismissing = false;
+    renderUpdate();
+  }
+  await refreshUpdate();
+});
 action("updateQueueCancel", async () => {
   const queue = manualUpdateQueue();
   if (!queue || !manualUpdateWaiting()) return;
