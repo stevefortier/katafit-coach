@@ -192,7 +192,8 @@ export async function buildArchive(pkg, platform, out) {
       ]) {
         writeFileSync(
           join(root, "bin", name),
-          `#!/bin/sh\nhere="$(cd "$(dirname "$0")/.." && pwd)"\nexec "$here/node/bin/node" "$here/app/dist/${entry}" "$@"\n`,
+          // Resolve links: the installer links bin/katafit-coach into ~/.local/bin.
+          `#!/bin/sh\nhere="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"\nexec "$here/node/bin/node" "$here/app/dist/${entry}" "$@"\n`,
         );
         chmodSync(join(root, "bin", name), 0o755);
       }
