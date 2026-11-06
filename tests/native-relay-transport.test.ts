@@ -345,14 +345,21 @@ test("unclassified failures stay content-free; only allowlisted codes and intege
   );
 });
 
+// The relay's sandbox side: the shared core plus each transport.
+const relaySources = async () =>
+  (
+    await Promise.all(
+      ["../sandbox/relay-core.mjs", "../sandbox/relay.mjs"].map((path) =>
+        readFile(new URL(path, import.meta.url), "utf8"),
+      ),
+    )
+  ).join("\n");
+
 test("relay limits mirror the host constants and the relay carries no image or compaction logic", async () => {
-  const relay = await readFile(
-    new URL("../sandbox/relay.mjs", import.meta.url),
-    "utf8",
-  );
+  const relay = await relaySources();
   const scope: Record<string, number> = {};
   for (const [, name, expr] of relay.matchAll(
-    /^const ([A-Z_]+_LIMIT) =\s*([^;]+);/gm,
+    /^(?:export )?const ([A-Z_]+_LIMIT) =\s*([^;]+);/gm,
   ))
     scope[name] = new Function(...Object.keys(scope), `return ${expr};`)(
       ...Object.values(scope),
@@ -372,10 +379,7 @@ test("relay limits mirror the host constants and the relay carries no image or c
 });
 
 test("every host failure code has exactly one fixed relay message with the pinned Pi retry semantics", async () => {
-  const relay = await readFile(
-    new URL("../sandbox/relay.mjs", import.meta.url),
-    "utf8",
-  );
+  const relay = await relaySources();
   const table = new Map<string, [number, string]>();
   for (const [, code, status, text] of relay.matchAll(
     /^\s+(NATIVE_[A-Z_]+): \[\s*(\d+),\s*("(?:[^"\\]|\\.)*"),?\s*\]/gm,

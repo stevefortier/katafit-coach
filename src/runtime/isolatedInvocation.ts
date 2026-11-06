@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Store } from "../config/store.js";
 import type { RuntimeContext } from "../autonomy/host.js";
 import { HeadlessCycleRuntime } from "../autonomy/headless.js";
+import { sandboxMode } from "../sandbox/mode.js";
 import { nativeBinding } from "../sandbox/artifact.js";
 import {
   openProfileGateway,
@@ -68,13 +69,21 @@ export function isolatedWorkerCompletion(
     const owner = await context();
     const timed = nativeSpans(owner.onDiagnostic, ref, budget, signal);
     const runtime = await timed(SPAN_CODES.nativeSetup, async () => {
-      const image = await nativeBinding(store.dir);
+      const diagnostic = timed.lifecycle
+        ? { onDiagnostic: timed.lifecycle }
+        : {};
+      const runtime =
+        (await sandboxMode(store.dir)) === "workspace"
+          ? new HeadlessCycleRuntime({
+              workspace: { home: store.dir },
+              ...diagnostic,
+            })
+          : new HeadlessCycleRuntime({
+              image: await nativeBinding(store.dir),
+              cleanup: owner.cleanup,
+              ...diagnostic,
+            });
       signal.throwIfAborted();
-      const runtime = new HeadlessCycleRuntime({
-        image,
-        cleanup: owner.cleanup,
-        ...(timed.lifecycle ? { onDiagnostic: timed.lifecycle } : {}),
-      });
       await runtime.sweep();
       signal.throwIfAborted();
       return runtime;

@@ -4,6 +4,7 @@ import type { Store } from "../config/store.js";
 import type { LogInput } from "../diagnostics/log.js";
 import type { Admission } from "../runtime/admission.js";
 import { nativeBinding } from "../sandbox/artifact.js";
+import { sandboxMode } from "../sandbox/mode.js";
 import type { NativeProbeEngine } from "../sandbox/runtime.js";
 import { CleanupRegistry } from "./cleanup.js";
 import { AutonomyBackend, AutonomyFailure, type Effect } from "./backend.js";
@@ -27,7 +28,10 @@ export interface AutonomyRuntimes {
   /** [AC1] Always a different runtime: one fresh container per composition. */
   composer: Runtime;
 }
-type Engine = ConstructorParameters<typeof HeadlessCycleRuntime>[0]["engine"];
+type Engine = Extract<
+  ConstructorParameters<typeof HeadlessCycleRuntime>[0],
+  { image: unknown }
+>["engine"];
 
 /** Installation identity every production headless container is owned by. */
 export interface RuntimeContext {
@@ -41,6 +45,8 @@ export interface RuntimeContext {
  * headless runtime on the installation's verified native image, sharing the
  * installation-owned cleanup registry. This installation's leftover
  * containers from a crashed process are swept first (never another owner's).
+ * In workspace mode (src/sandbox/mode.ts) both run Pi without Docker, and
+ * stale session folders are swept instead.
  */
 export async function productionRuntimes(
   home: string,
@@ -49,9 +55,22 @@ export async function productionRuntimes(
     engine?: Engine;
   } = {},
 ): Promise<AutonomyRuntimes> {
-  const image = await (o.image ?? nativeBinding)(home);
   if (!o.owner || !o.cleanup || o.cleanup.owner !== o.owner)
     throw new Error("HEADLESS_OWNER_REQUIRED");
+  if ((await sandboxMode(home)) === "workspace") {
+    const workspace = { home };
+    const planner = new HeadlessCycleRuntime({
+      workspace,
+      onDiagnostic: o.onDiagnostic,
+    });
+    const composer = new HeadlessCycleRuntime({
+      workspace,
+      onDiagnostic: o.onDiagnostic,
+    });
+    await planner.sweep();
+    return { planner, composer };
+  }
+  const image = await (o.image ?? nativeBinding)(home);
   const planner = new HeadlessCycleRuntime({
     image,
     engine: o.engine,

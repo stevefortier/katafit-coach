@@ -8,15 +8,17 @@ Full qualification runs on PR `opened`, `synchronize`, and `reopened`, including
 
 ## Parallel gates
 
-The stable aggregate `verify` check depends on every gate and runs even if dependencies fail. It succeeds only when all seven dependencies are successful; failures, cancellation, and skipped gates cannot pass it. No repository branch-protection settings are changed by this workflow.
+The stable aggregate `verify` check depends on every gate and runs even if dependencies fail. It succeeds only when all nine dependencies are successful; failures, cancellation, and skipped gates cannot pass it. No repository branch-protection settings are changed by this workflow.
 
 - `build`: build, formatting, test inventory, production dependency audit.
 - `tests`: eight duration-balanced isolated runners, serial test files on each (`--test-concurrency=1`).
 - `native`: exact native image and all existing real-Docker immutable-pair/runtime tests.
+- `workspace`: workspace-mode Pi without Docker ([workspace sandbox](workspace-sandbox.md)) on Linux and Windows: a real headless cycle, the just-bash tool escapes and the Node permission probes.
 - `package`: exact native image and production-only packed installation smoke.
 - `updater`: exact native image and packed upgrade/rollback/restart smoke.
 - `browser`: all five existing browser qualifications, serial on a separate runner.
 - `docker`: exact native image, clean `git archive HEAD` control-plane image build, ownership and persistent-restart smoke.
+- `archives`: self-contained platform archives (Node runtime plus the application) for Linux x64/arm64 and Windows x64.
 
 Every independent runner installs from the lockfile and builds its own exact checked-out source. Native-consuming jobs build their own immutable native image from that build's fingerprint and Git revision; no cross-revision cached artifact is substituted. Real timeout tests are unchanged. Browser/native tests do not share hosts or ports across jobs.
 
