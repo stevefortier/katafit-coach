@@ -2903,7 +2903,8 @@ window.CoachDashboard = (() => {
     const loadLatest = (restarts = 0) => {
       const started = ++authoritySeq;
       latestRetry = null;
-      if (!latestNote) latestNote = "Loading latest known positions…";
+      // Keep ordinary refresh camera/layout-neutral. Retain an existing
+      // failure/partial warning, but do not add a transient header row.
       renderLatest();
       void dashboardFetch("/api/dashboard/latest-positions", {
         headers: { Authorization: `Bearer ${adminKey}` },
