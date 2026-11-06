@@ -19,11 +19,13 @@ import { join } from "node:path";
 import test from "node:test";
 import { HeadlessCycleRuntime } from "../src/autonomy/headless.js";
 import { sandboxMode, sandboxModeFile } from "../src/sandbox/mode.js";
+import { NativeTerminal } from "../src/server/terminal.js";
 import {
   sweepWorkspaceSessions,
   workspacePermissions,
   workspaceSessions,
   workspaceStderr,
+  WorkspaceRuntime,
 } from "../src/sandbox/workspace.js";
 // @ts-expect-error untyped sandbox module
 import { workspaceTools } from "../workspace/tools.mjs";
@@ -289,4 +291,103 @@ test("the sandbox mode is Docker unless the installation chose workspace", async
     writeFileSync(sandboxModeFile(home), invalid);
     await assert.rejects(sandboxMode(home), /SANDBOX_MODE_INVALID/);
   }
+});
+
+test("an interactive session paints Pi's terminal, resizes, and runs typed turns and ! commands", async () => {
+  const home = scratch();
+  const chunk = (delta: object, finish: string | null = null) =>
+    `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+  const gateway: any = {
+    async handle(request: any) {
+      if (request.kind === "catalog")
+        return {
+          model: "m",
+          prompt: "Synthetic.",
+          tools: [],
+          skills: [],
+          vision: false,
+        };
+      return {
+        type: "text/event-stream",
+        body:
+          chunk({ role: "assistant", content: "Synthetic-reply" }) +
+          chunk({}, "stop") +
+          "data: [DONE]\n\n",
+      };
+    },
+    async close() {},
+  };
+  const runtime = new WorkspaceRuntime({ home });
+  let output = "";
+  runtime.onOutput = (chunk) => (output += chunk);
+  const until = async (test: () => boolean, label: string) => {
+    const deadline = Date.now() + 30000;
+    while (!test()) {
+      if (Date.now() > deadline)
+        throw new Error(`${label}; Pi stderr: ${workspaceStderr()}`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  const type = async (text: string) => {
+    runtime.input(text);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    runtime.input("\r");
+  };
+  try {
+    await runtime.start(gateway);
+    await runtime.attach();
+    await until(() => output.length > 300, "no first paint");
+    await runtime.resize(100, 30);
+    await assert.rejects(runtime.resize(1, 30), /INVALID_SIZE/);
+    assert.throws(() => runtime.rpc({ type: "abort" }), /RPC_COMMAND_REJECTED/);
+    await type("hello");
+    await until(() => output.includes("Synthetic-reply"), "no reply shown");
+    await type("!echo ws-$((6*7)) > made.txt; cat made.txt");
+    await until(() => output.includes("ws-42"), "no ! output");
+
+    // Attachments: one regular file of the session workspace, by name parts.
+    assert.equal(
+      (await runtime.readWorkspaceFile(["made.txt"], 1024)).toString().trim(),
+      "ws-42",
+    );
+    const workspace = join(workspaceSessions(home), runtime.name, "workspace");
+    writeFileSync(join(workspace, "empty.txt"), "");
+    writeFileSync(join(workspace, "big.txt"), "x".repeat(2048));
+    const secret = join(home, "secret.txt");
+    writeFileSync(secret, "TOP-SECRET");
+    let linked = false;
+    try {
+      symlinkSync(secret, join(workspace, "link.txt"));
+      linked = true;
+    } catch {} // Windows without symlink rights.
+    const code = (parts: string[], limit = 1024) =>
+      runtime.readWorkspaceFile(parts, limit).then(
+        (bytes) => `READ ${bytes}`,
+        (error) => error.code,
+      );
+    assert.equal(await code([".."]), "ATTACHMENT_PATH_REJECTED");
+    assert.equal(await code(["a/b"]), "ATTACHMENT_PATH_REJECTED");
+    assert.equal(await code(["missing.txt"]), "ATTACHMENT_FILE_NOT_FOUND");
+    assert.equal(await code(["empty.txt"]), "ATTACHMENT_FILE_EMPTY");
+    assert.equal(await code(["big.txt"]), "ATTACHMENT_TOO_LARGE");
+    if (linked)
+      assert.equal(await code(["link.txt"]), "ATTACHMENT_FILE_UNAVAILABLE");
+    if (process.platform === "win32")
+      assert.equal(await code(["made.txt:stream"]), "ATTACHMENT_PATH_REJECTED");
+  } finally {
+    await runtime.stop();
+  }
+  assert.deepEqual(readdirSync(workspaceSessions(home)), []);
+});
+
+test("Studio's terminal uses a workspace runtime when the installation chose workspace", async () => {
+  const home = scratch();
+  writeFileSync(sandboxModeFile(home), '{"mode":"workspace"}');
+  const terminal = { store: { dir: home } };
+  const proto = NativeTerminal.prototype as any;
+  const sandbox = await proto.resolveImage.call(terminal);
+  assert.equal(typeof sandbox, "symbol");
+  assert.ok(
+    proto.createRuntime.call(terminal, sandbox) instanceof WorkspaceRuntime,
+  );
 });

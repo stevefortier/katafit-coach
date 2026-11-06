@@ -22,6 +22,7 @@ import type { Duplex } from "node:stream";
 import { sandboxArgs } from "./policy.js";
 import {
   AttachmentFailure,
+  validWorkspaceRead,
   WORKSPACE_READ_CODES,
   workspaceReadScript,
 } from "./attachments.js";
@@ -533,23 +534,7 @@ export class NativeRuntime {
   ): Promise<Buffer> {
     if (this.closing || !this.created)
       throw new AttachmentFailure("ATTACHMENT_UNAVAILABLE");
-    if (
-      !Array.isArray(parts) ||
-      parts.length < 1 ||
-      parts.length > 8 ||
-      parts.some(
-        (part) =>
-          typeof part !== "string" ||
-          !part ||
-          part === "." ||
-          part === ".." ||
-          /[/\u0000]/.test(part) ||
-          Buffer.byteLength(part) > 128,
-      ) ||
-      !Number.isSafeInteger(limit) ||
-      limit < 1 ||
-      limit > 16 * 1024 * 1024
-    )
+    if (!validWorkspaceRead(parts, limit))
       throw new AttachmentFailure("ATTACHMENT_PATH_REJECTED");
     let stdout: unknown;
     try {

@@ -401,6 +401,26 @@ if (!size) fail("ATTACHMENT_FILE_EMPTY");
 process.stdout.write(buffer.subarray(0, size));
 `;
 }
+/** One file below /workspace, by at most 8 plain name parts, within 16 MiB. */
+export function validWorkspaceRead(parts: unknown, limit: unknown) {
+  return (
+    Array.isArray(parts) &&
+    parts.length >= 1 &&
+    parts.length <= 8 &&
+    parts.every(
+      (part) =>
+        typeof part === "string" &&
+        !!part &&
+        part !== "." &&
+        part !== ".." &&
+        !/[/\u0000]/.test(part) &&
+        Buffer.byteLength(part) <= 128,
+    ) &&
+    Number.isSafeInteger(limit) &&
+    (limit as number) >= 1 &&
+    (limit as number) <= 16 * 1024 * 1024
+  );
+}
 export const WORKSPACE_READ_CODES = [
   "ATTACHMENT_PATH_REJECTED",
   "ATTACHMENT_FILE_NOT_FOUND",

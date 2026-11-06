@@ -3,7 +3,8 @@
 // docker-exec stdio, and answering Pi's fetch calls in-process instead of
 // over loopback HTTP. Pi's process has no network permission (Node refuses
 // sockets, even on inherited descriptors): the IPC channel is its only way
-// out, and only Coach holds the other end. One message carries one frame.
+// out, and only Coach holds the other end. One message carries one frame;
+// interactive sessions also receive terminal sizes (workspace/terminal.mjs).
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +17,7 @@ import {
   provision,
   relayLink,
 } from "../sandbox/relay-core.mjs";
+import { resizeTerminal } from "./terminal.mjs";
 
 // The address Pi's provider entry and the Kata.fit tools extension use. It is
 // never dialled: fetch to this origin is answered here; anything else fails.
@@ -43,9 +45,11 @@ export async function connectRelay() {
     pressure: () => queued,
     fatal,
   });
-  process.on("message", (frame) =>
-    typeof frame === "string" ? link.data(Buffer.from(frame)) : fatal(),
-  );
+  process.on("message", (message) => {
+    if (typeof message === "string") link.data(Buffer.from(message));
+    else if (Array.isArray(message?.resize)) resizeTerminal(message.resize);
+    else fatal();
+  });
   process.on("disconnect", () => process.exit(0));
 
   // Pi installs its own fetch at startup, after this module runs, so the

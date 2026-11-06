@@ -10,8 +10,8 @@ Windows. Docker stays the default; an installation opts in with
 
 An absent file means Docker. A file that is unreadable or invalid fails closed
 (`SANDBOX_MODE_INVALID`): sessions refuse to start rather than choose a mode.
-Today workspace mode covers headless sessions (autonomy cycles and worker
-requests); the interactive terminal still uses Docker.
+It covers every Pi session: headless ones (autonomy cycles and worker
+requests) and Studio's interactive terminal.
 
 ## Two layers
 
@@ -73,6 +73,30 @@ One limit is specific to IPC: Node reads each message whole before Coach's
 frame limits apply, so a compromised Pi process could make Coach buffer one
 large message. Reaching that needs code running inside Pi's process; the
 model's tools run in just-bash and cannot send IPC messages.
+
+## The interactive terminal
+
+A pty-spawned process could not also hold the relay's IPC channel, so Pi's
+process gets pipes, and `workspace/terminal.mjs` presents them as a terminal:
+
+- `isTTY`, a size and a raw-mode stub, so Pi chooses interactive mode and its
+  TUI renders;
+- `FORCE_COLOR`, `COLORTERM` and `TERM`, so it renders in colour.
+
+Studio's xterm is the real terminal emulator. Keystrokes reach Pi raw, since
+no line discipline sits in between. Sizes arrive as IPC messages
+(`{ resize: [columns, rows] }`). Input keeps the Docker runtime's limits.
+
+Attachments are read by the host, directly from the session workspace, with
+the container reader's rules:
+
+- plain name parts only;
+- no links;
+- the same device;
+- a regular file;
+- bounded size;
+- on Windows, no `\` or `:` inside a name, which would allow alternate data
+  streams.
 
 ## Sessions
 
