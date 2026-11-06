@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
 import { fixture, ada, bob, ev, id, gps } from "./helpers/exact-map-fixture.js";
@@ -546,6 +546,9 @@ test("latest pins: denial shows no geometry; narrow viewport keeps pins reachabl
         url.pathname === "/api/dashboard/latest-positions"
           ? { status: 403, body: { error: "DOJO_ACCESS_DENIED" } }
           : undefined,
+      // A whole-dojo latest denial also revokes the day: it never completes.
+      ready: "denied (403)",
+      marks: null,
     },
   );
   await run(
@@ -731,6 +734,276 @@ test("latest pins: dojo timeline denial clears pins, chooser and held positives"
           return ++latestReads > 2
             ? { body: latestBody, hold: held }
             : { body: latestBody };
+        return undefined;
+      },
+    },
+  );
+});
+
+const dayGone = async (page: any) => {
+  assert.equal(await page.locator(".dashboard-event-dot").count(), 0);
+  assert.equal(await page.locator(".dashboard-timeline-mark").count(), 0);
+  assert.equal(
+    await page.locator(".dashboard-map-chooser:not([hidden])").count(),
+    0,
+  );
+  assert.equal(
+    (await page.locator("#dashboardMapSelection").innerText()).trim(),
+    "",
+  );
+  const status = await page.locator("#dashboardMapStatus").innerText();
+  assert.doesNotMatch(status, /complete day|authorized events have/);
+  assert.match(status, /Event locations denied \(403\)/);
+  assert.match(
+    await page.locator("#dashboardTimeline").innerText(),
+    /Timeline removed: dojo access denied \(403\)/,
+  );
+  assert.equal(
+    await page.$$eval(".dashboard-latest-pin", (n: any[]) => n.length),
+    0,
+  );
+};
+
+test("latest pins: a whole-dojo latest denial after the day loaded clears day, selection and chooser", async () => {
+  let latestReads = 0,
+    release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await run(
+    async (page) => {
+      await page.click(`.dashboard-timeline-mark[data-event-id="${ev(2)}"]`);
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#dashboardMapSelection")!.textContent!.trim()
+            .length > 0,
+      );
+      assert.equal(await page.locator(".dashboard-event-dot").count(), 2);
+      release();
+      await page.waitForFunction(() =>
+        document
+          .querySelector(".dashboard-latest-caption")
+          ?.textContent?.includes("dojo access denied (403)"),
+      );
+      await dayGone(page);
+      if (evidence)
+        await page.screenshot({
+          path: join(evidence, "latest-denial-after-day.png"),
+          fullPage: true,
+        });
+      // Only a fresh explicit day load re-reads (and re-authorizes).
+      await page.evaluate(() => {
+        const input =
+          document.querySelector<HTMLInputElement>("#dashboardMapDate")!;
+        input.value = "2026-09-28";
+        input.dispatchEvent(new Event("change"));
+      });
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector("#dashboardMapStatus")
+            ?.textContent?.includes("complete day") &&
+          document.querySelectorAll(".dashboard-timeline-mark").length === 2,
+      );
+    },
+    {
+      override: (url) => {
+        if (url.pathname !== "/api/dashboard/latest-positions") return;
+        ++latestReads;
+        if (latestReads === 2)
+          return {
+            status: 403,
+            body: { error: "DOJO_ACCESS_DENIED" },
+            hold: held,
+          };
+        return { body: latestBody };
+      },
+    },
+  );
+});
+
+test("latest pins: a whole-dojo latest denial discards a held day read that later succeeds", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await run(
+    async (page, requests) => {
+      await page.waitForFunction(() =>
+        document
+          .querySelector(".dashboard-latest-caption")
+          ?.textContent?.includes("dojo access denied (403)"),
+      );
+      const reads = requests.filter((r) =>
+        r.startsWith("/api/dashboard/timeline?date=2026-09-28"),
+      ).length;
+      assert.equal(reads, 1);
+      release();
+      await page.waitForTimeout(400);
+      await dayGone(page);
+      if (evidence)
+        await page.screenshot({
+          path: join(evidence, "latest-denial-held-day.png"),
+          fullPage: true,
+        });
+    },
+    {
+      ready: "2026-09-28",
+      marks: null,
+      override: (url, all) => {
+        if (url.pathname === "/api/dashboard/latest-positions")
+          return { status: 403, body: { error: "DOJO_ACCESS_DENIED" } };
+        if (
+          url.pathname === "/api/dashboard/timeline" &&
+          url.searchParams.get("date") === "2026-09-28"
+        )
+          return { body: { users, events: all, hasMore: false }, hold: held };
+        return undefined;
+      },
+    },
+  );
+});
+
+test("latest pins: a real Stats 403 is a full member denial; held avatar and later latest positive stay out", async () => {
+  const stats = await readFile(new URL("../ui/stats.js", import.meta.url));
+  let releaseAvatar!: () => void;
+  const avatarHeld = new Promise<void>((r) => (releaseAvatar = r));
+  const png = await avatarPng();
+  await run(
+    async (page, requests) => {
+      await showPins(page);
+      const ada$ = `[data-member-id="${ada}"]`;
+      assert.equal(
+        await page.locator(`.dashboard-member-portrait${ada$}`).count(),
+        1,
+      );
+      assert.equal(
+        await page.locator(`.dashboard-event-dot${ada$}`).count(),
+        1,
+      );
+      assert.match(await latestIds(page), new RegExp(ada));
+      await page
+        .locator(".dashboard-member-card", { hasText: "Synthetic Ada" })
+        .click();
+      await page
+        .locator("#dashboardStats button", { hasText: "member Stats" })
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector("#dashboardStats")
+          ?.textContent?.includes("Stats read denied (403)"),
+      );
+      assert.ok(
+        requests.some((r) =>
+          r.startsWith(`/api/dashboard/stats?user_id=${ada}`),
+        ),
+      );
+      const gone = async () => {
+        assert.equal(
+          await page.locator(`.dashboard-member-portrait${ada$}`).count(),
+          0,
+        );
+        assert.equal(
+          await page
+            .locator(".dashboard-member-card", { hasText: "Synthetic Ada" })
+            .count(),
+          0,
+        );
+        assert.equal(
+          await page.locator(`.dashboard-event-dot${ada$}`).count(),
+          0,
+        );
+        assert.equal(
+          await page.locator(`.dashboard-timeline-mark${ada$}`).count(),
+          0,
+        );
+        assert.equal(
+          await page.locator(`.dashboard-latest-choice${ada$}`).count(),
+          0,
+        );
+        assert.doesNotMatch(await latestIds(page), new RegExp(ada));
+        assert.doesNotMatch(
+          await page.locator("#dashboardStats").innerText(),
+          /Synthetic Ada/,
+        );
+        assert.equal(
+          await page.evaluate(
+            () =>
+              [...document.querySelectorAll("img")].filter((i) =>
+                i.src.startsWith("blob:"),
+              ).length,
+          ),
+          0,
+        );
+      };
+      await gone();
+      // Bob's day dot and other members are untouched.
+      assert.equal(
+        await page
+          .locator(`.dashboard-event-dot[data-member-id="${bob}"]`)
+          .count(),
+        1,
+      );
+      if (evidence)
+        await page.screenshot({
+          path: join(evidence, "stats-denial-full-member.png"),
+          fullPage: true,
+        });
+      releaseAvatar();
+      await page.waitForTimeout(400);
+      await gone();
+      // A later day load's latest read still carries Ada's positive.
+      const before = requests.filter((r) =>
+        r.startsWith("/api/dashboard/latest-positions"),
+      ).length;
+      await page.evaluate(() => {
+        const input =
+          document.querySelector<HTMLInputElement>("#dashboardMapDate")!;
+        input.value = "2026-09-27";
+        input.dispatchEvent(new Event("change"));
+      });
+      for (let i = 0; i < 50; i++) {
+        if (
+          requests.filter((r) =>
+            r.startsWith("/api/dashboard/latest-positions"),
+          ).length > before
+        )
+          break;
+        await page.waitForTimeout(100);
+      }
+      await page.waitForTimeout(600);
+      assert.ok(
+        requests.filter((r) => r.startsWith("/api/dashboard/latest-positions"))
+          .length > before,
+      );
+      await gone();
+    },
+    {
+      beforeLoad: async (page: any) => {
+        await page.route("**/api/dashboard/avatar?**", async (route: any) => {
+          const member = new URL(route.request().url()).searchParams.get("id");
+          if (member !== ada) return route.fulfill({ status: 404, body: "{}" });
+          await avatarHeld;
+          return route
+            .fulfill({ contentType: "image/png", body: png })
+            .catch(() => {});
+        });
+        await page.route("**/stats.js", (route: any) =>
+          route.fulfill({ contentType: "text/javascript", body: stats }),
+        );
+        await page.route(
+          (url: URL) => url.pathname === "/",
+          async (route: any) => {
+            const response = await route.fetch();
+            const html = (await response.text()).replace(
+              '<script src="/dashboard.js">',
+              '<div id="dashboardStats"></div><script src="/stats.js"></script><script src="/dashboard.js">',
+            );
+            return route.fulfill({ response, body: html });
+          },
+        );
+      },
+      override: (url) => {
+        if (url.pathname === "/api/dashboard/stats")
+          return { status: 403, body: { error: "Forbidden" } };
+        if (url.pathname === "/api/dashboard/latest-positions")
+          return { body: latestBody };
         return undefined;
       },
     },

@@ -554,6 +554,7 @@ window.CoachDashboard = (() => {
     filterFeed = () => {};
     filterMap = () => {};
     forgetMember = () => {};
+    $("dashboardLatestStatus")?.replaceChildren();
     if ($("dashboardMapStatus")) $("dashboardMapStatus").textContent = "";
     $("dashboardMapStatus")?.removeAttribute("data-tone");
     for (const url of urls.splice(0)) URL.revokeObjectURL(url);
@@ -1139,6 +1140,38 @@ window.CoachDashboard = (() => {
     latestRetry = null;
     latestNote = `Latest known positions removed: dojo access denied${status ? ` (${status})` : ""}.`;
     renderLatest();
+  }
+  // A whole-dojo denial observed by the latest reader revokes the loaded day
+  // too (the reverse of a timeline denial clearing latest): ledger, GPS,
+  // selection/detail and choosers go, and a pending day read is discarded.
+  // Only a fresh explicit reload (date change or dashboard reload) re-reads.
+  function denyDojoScope(status) {
+    denyLatestScope(status);
+    timelineEpoch++;
+    timelineController?.abort();
+    timelinePending = false;
+    ledgerFailure = status || 0;
+    ledgerGeneration++;
+    ledger = null;
+    highlightEvent(null);
+    selectionEpoch++;
+    $("dashboardMapSelection")?.replaceChildren();
+    timelineInteraction(false);
+    timelineInteraction = () => {};
+    filterTimeline = () => {};
+    timelineResize?.disconnect();
+    const target = $("dashboardTimeline");
+    if (target) {
+      delete target.dataset.date;
+      const note = text(
+        "p",
+        `Timeline removed: dojo access denied${status ? ` (${status})` : ""}. Reload the dashboard or choose a date to reauthorize.`,
+        "hint",
+      );
+      note.setAttribute("role", "status");
+      target.replaceChildren(note);
+    }
+    syncMap();
   }
   function withholdMember(memberId) {
     withheldMembers.add(memberId);
@@ -2444,7 +2477,10 @@ window.CoachDashboard = (() => {
     map.append(overlay);
     const latestCaption = text("p", "", "dashboard-latest-caption");
     latestCaption.setAttribute("aria-live", "polite");
-    map.append(latestCaption);
+    // Keep warnings and Retry outside the geographic hit area: an error must
+    // never cover event dots or latest-position photo pins.
+    const latestStatus = $("dashboardLatestStatus");
+    if (latestStatus) latestStatus.replaceChildren(latestCaption);
     const latestChooser = text("div", "", "dashboard-latest-chooser");
     latestChooser.hidden = true;
     latestChooser.setAttribute("role", "group");
@@ -2916,7 +2952,7 @@ window.CoachDashboard = (() => {
         .catch((error) => {
           if (!live() || latestScopeDeniedAt > started) return;
           if (error.status === 409 && restarts < 1) return loadLatest(1);
-          if (denied(error)) return denyLatestScope(error.status);
+          if (denied(error)) return denyDojoScope(error.status);
           // Unverified: no pin is shown and the failure stays visible.
           latestPositions = new Map();
           latestIncomplete = [];
@@ -3932,16 +3968,8 @@ window.CoachDashboard = (() => {
       getMembers: () =>
         [...mapMembers.values()].filter((m) => !suppressedMembers.has(m._id)),
       getSelected: () => selectedMember,
-      onDenial: (id) => {
-        forgetMember(id);
-        latestPositions.delete(id);
-        const url = avatarCache.get(id);
-        if (url) {
-          URL.revokeObjectURL(url);
-          avatarCache.delete(id);
-        }
-        renderLatest();
-      },
+      // A Stats 401/403 is a full member denial, not Position-only.
+      onDenial: (id) => denyMember(id),
     });
     loadRoster(adminKey);
     if ($("dashboardMapDate")?.type === "date") {
