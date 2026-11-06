@@ -136,6 +136,9 @@ export async function fixture(
     timezone?: string;
     leaflet?: boolean;
     viewport?: { width: number; height: number };
+    // Emulate a touch phone so CDP touch input follows Chromium's tap path.
+    touch?: boolean;
+    users?: { _id: string; display_name: string }[];
     // Per-test API responses; undefined falls through to the default ledger.
     override?: Override;
     ready?: string;
@@ -146,7 +149,7 @@ export async function fixture(
   } = {},
 ) {
   const events = options.events || ledger();
-  const users = [
+  const users = options.users || [
     { _id: ada, display_name: "Synthetic Ada" },
     { _id: bob, display_name: "Synthetic Bob" },
   ];
@@ -254,6 +257,7 @@ export async function fixture(
     const page = await browser.newPage({
       viewport: options.viewport || { width: 1440, height: 1000 },
       timezoneId: options.timezone || "UTC",
+      ...(options.touch ? { hasTouch: true, isMobile: true } : {}),
     });
     await page.addInitScript("window.__name = (value) => value");
     await page.clock.setFixedTime(
