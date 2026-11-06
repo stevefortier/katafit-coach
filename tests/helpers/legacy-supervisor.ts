@@ -26,7 +26,12 @@ async function legacyRoot(home: string) {
     await symlink(resolve("node_modules"), join(root, "node_modules"));
     await writeFile(
       join(root, "dist/build.json"),
-      JSON.stringify({ revision: "1".repeat(40), protocol: 1 }),
+      JSON.stringify({
+        revision: "1".repeat(40),
+        protocol: 1,
+        // Current source: runs Pi without Docker (default mode on Windows).
+        capabilities: ["workspace-sandbox-1"],
+      }),
     );
     await writeFile(join(root, "package.json"), '{"type":"module"}');
   }

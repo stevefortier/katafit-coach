@@ -47,7 +47,11 @@ test("a handed-over upgrade leaves the worker resume to the successor supervisor
     await writeFile(join(root, "package.json"), '{"type":"module"}');
     await writeFile(
       join(root, "dist/build.json"),
-      JSON.stringify({ revision: sha, protocol: 1 }),
+      JSON.stringify({
+        revision: sha,
+        protocol: 1,
+        capabilities: ["workspace-sandbox-1"],
+      }),
     );
     await writeFile(
       join(root, "dist/config/store.js"),

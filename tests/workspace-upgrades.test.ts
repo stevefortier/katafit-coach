@@ -26,7 +26,9 @@ async function workspaceHome(rootCapable: boolean) {
   // The helper's current-source root, with or without the capability.
   await prepareLegacyNativeGateway(home);
   const build = join(home, "legacy-bootstrap-fixture/dist/build.json");
-  const metadata = JSON.parse(await readFile(build, "utf8"));
+  const { capabilities: _, ...metadata } = JSON.parse(
+    await readFile(build, "utf8"),
+  );
   await writeFile(
     build,
     JSON.stringify(rootCapable ? { ...metadata, ...CAPABLE } : metadata),
