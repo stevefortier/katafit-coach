@@ -6,6 +6,32 @@ A local Node service with a browser studio for your Kata.fit connection, an expl
 
 The Coach's product and system design, shared with the Kata.fit backend, is in [regimen `docs/coach-design.md`](https://github.com/stevefortier/regimen/blob/main/docs/coach-design.md).
 
+## Install on Linux (one line)
+
+For the current user, with no admin rights and nothing to install first:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/stevefortier/katafit-coach/main/install.sh | sh
+```
+
+The installer downloads the latest release's self-contained archive (Node and
+Coach) for x64 or arm64 Linux. It checks the archive against the digest GitHub
+publishes for it, and verifies its build attestation before installing. It
+then:
+
+- installs it into `~/.local/share/katafit-coach`, with the `katafit-coach`
+  command in `~/.local/bin`;
+- keeps Coach's data in `~/.katafit-coach`;
+- starts Coach as a systemd user service. If lingering is allowed, it runs at
+  boot; otherwise at login, and the installer prints the one `sudo` command
+  that makes it start at boot. Without systemd it uses cron `@reboot`.
+
+A new installation runs Pi without Docker ([workspace mode](docs/workspace-sandbox.md)).
+Rerunning the installer updates the runtime and keeps your data and settings.
+Coach upgrades itself from Studio afterwards. At the end, the installer prints
+Studio's address. Studio listens on `127.0.0.1` only; from another machine,
+use an SSH tunnel.
+
 ## Install from this repository
 
 Requires Linux or macOS and **Node 26.10+ (major 26 only)**. Linux is the tested platform. Windows permissions/service management are not supported by this pilot. See [supported Node and CI qualification policy](docs/ci.md) for the latest-patch policy and parallel gates.
