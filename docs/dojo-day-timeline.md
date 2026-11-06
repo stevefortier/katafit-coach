@@ -28,16 +28,36 @@ Snapshots use safe text DOM and an explicit bounded scalar DTO-field union, not 
 
 ## Map camera focus
 
-A single click/tap keeps its ordinary meaning: a member picture selects that member (and restores the day's fitted view), and a map dot or timeline occurrence selects that event. Double-clicking or double-tapping the same target then also moves the map camera; Shift+Enter on a focused member card, map dot or timeline occurrence does both at once.
+A single click/tap keeps its ordinary meaning: a member picture selects that member (and restores the day's fitted view), and a map dot or timeline occurrence selects that event. Double-clicking or double-tapping the same target then also moves the map camera; Shift+Enter on a focused member card, map dot or timeline occurrence does both at once. For a timeline occurrence, the camera moves only after that event's fresh read authorizes it (see below).
 
 - **Member picture:** fits only that member's currently shown located events: the selected date's loaded ledger, positions that are still shared (not missing, unavailable or privacy-withheld), and the timeline's selected category, if any. Other members never widen the fit. An event that another member recorded at exactly the same coordinate still stays in place on the map. The fit takes the shortest longitude arc across the dateline, keeps marker padding and zooms in no further than 18. A single location is centered at zoom 18.
 - **Map dot or timeline occurrence:** centers that event's exact recorded coordinate at zoom 18, in the world copy nearest the current view. Timeline occurrences also reach co-located events behind a location badge.
 - **Nothing to show:** a member or event without a shared location leaves the camera unchanged, and the map status says so.
 
+### Timeline occurrence: single versus repeat activation
+
+- **Which event:** a click, tap or hover on a rendered timeline mark means that mark's event rather than another event chronologically nearest to the pointer's x position. Exactly coincident marks use the deterministic stack rule below. Only a press on the band between marks, or a touch drag that moves more than 10 px (a scrub), uses the nearest event in time. The selected mark is drawn above its overlapping neighbours, so a repeat press at the same point reaches the same event after the selection redraws. Marks at exactly the same instant stack on one spot; a pointer on that stack always means its first event (in time, then ID order), whatever the drawing order. Its twins stay reachable with the arrow keys or the previous/next event buttons, and with Shift+Enter.
+- **Single click/tap:** selects the event and starts a fresh exact read (`/api/dashboard/event`) of that event ID. The inspector shows "Checking current event access…" while the read is pending, including while it waits in the shared read queue. On success, the authoritative fresh row replaces the loaded one and the map pans only if the point is offscreen.
+- **Repeat activation (double-click, double tap or Shift+Enter):** selects the same exact event again and records a focus request for that pending fresh read. The camera does not move until that read returns the same event ID, member and occurrence time, and the selection, date, ledger generation and dashboard load are all still current. It then centers the fresh row's own recorded coordinate at zoom 18. Pending focus never uses another event's or a stale row's coordinates.
+- **No focus:** these outcomes leave the camera where it is:
+  - a fresh row without a shared location (missing, or a private Position that also withholds the member's other loaded fixes); the status says the view was not changed
+  - 401/403 (the member is purged), 404 (the event is removed), 409 (the day reloads) or a transient failure
+  - a newer selection, a filter that hides the event, a date change, a reload or a lock before the reply arrives
+
+Map dots and member pictures keep their existing immediate focus (the dot path is unchanged).
+
 The opening day fit still stops at zoom 16. A focused camera counts as a deliberate view, so resizing keeps it, the same as panning. Dots are not Leaflet layers, so their double activations never trigger Leaflet's own double-click or double-tap zoom. Member pictures use `touch-action: manipulation`, so a double tap never zooms the page. Double-clicking or double-tapping empty map space still zooms in as before.
 
 ## Qualification
 
-`timeline-redesign-browser.test.ts` exercises dense mixed-category clusters, non-overlapping targets, nearby-time zoom, previews without layout shifts, keyboard/touch selection, category/member filters, related activity reads and historical 404/denial behavior. `map-focus-browser.test.ts` drives real CDP mouse double-clicks and touch double taps on a phone viewport. It checks fit tightness, excluded members, category/date/privacy fences, dateline fractional longitudes, resize retention, keyboard focus and a stable page zoom. Existing catalog, unknown-kind, paging, DST, map, sticky-roster and monochrome tests remain; real Mongo/Express/BFF/browser paired tests select clustered occurrences and verify persisted IDs and snapshot fields.
+`timeline-redesign-browser.test.ts` exercises dense mixed-category clusters, non-overlapping targets, nearby-time zoom, previews without layout shifts, keyboard/touch selection, category/member filters, related activity reads and historical 404/denial behavior. `map-focus-browser.test.ts` drives real CDP mouse double-clicks and touch double taps on a phone viewport. It checks fit tightness, excluded members, category/date/privacy fences, dateline fractional longitudes, resize retention, keyboard focus and a stable page zoom. `timeline-exact-focus-browser.test.ts` serves the real Studio layout with a dense, synthetic day in which overlapping marks and a coincident pair make the mark under the pointer differ from the chronologically nearest event. While every exact detail reply is held, it drives a real CDP mouse double-click and a native CDP touch double tap on those rendered marks. It asserts the following:
+
+- both presses hit the same mark, and only that event ID is read
+- the camera stays still until the reply is released
+- the inspector then shows that event's time and subject, and the camera centers its exact coordinate at zoom 18
+- a pointer on a coincident stack reads its first event, and the twin remains reachable by keyboard; Shift+Enter also waits for authorization
+- withdrawn Position, a superseding selection, a late 403 and a date change never focus
+
+Existing catalog, unknown-kind, paging, DST, map, sticky-roster and monochrome tests remain; real Mongo/Express/BFF/browser paired tests select clustered occurrences and verify persisted IDs and snapshot fields.
 
 Synthetic screenshots and RED/GREEN logs stay outside the checkout and are labeled fixture evidence. Local candidate UI using live read-only APIs is not a deployed release. Production delivery additionally requires reviewed exact-head CI, a supported pinned upgrade, exact installed revision and served-asset readback, fresh authenticated browser verification, and resource cleanup.

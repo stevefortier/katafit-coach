@@ -2195,6 +2195,11 @@ html.coach-covered #workspaceScroll {
   outline: 2px solid white;
   outline-offset: -2px;
 }
+/* The selected mark stays on top of overlapping neighbours, so a repeat
+   activation at the same point hits the same event after re-rendering. */
+.dashboard-timeline-mark[aria-pressed="true"] {
+  z-index: 3;
+}
 .dashboard-timeline-mark[data-preview="true"] {
   box-shadow: 0 0 0 2px white;
   z-index: 4;
