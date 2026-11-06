@@ -35,7 +35,16 @@ function Protect-Folder([string]$Path) {
         $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
         $acl.AddAccessRule($rule)
     }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    # Windows PowerShell's Set-Acl provider can try to write the audit section
+    # when the existing DACL is protected, requiring SeSecurityPrivilege on a
+    # reinstall. The .NET API persists only the owner/access entries changed
+    # above, without touching audit policy.
+    $directory = Get-Item -LiteralPath $Path
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        [IO.FileSystemAclExtensions]::SetAccessControl($directory, $acl)
+    } else {
+        $directory.SetAccessControl($acl)
+    }
 }
 function Write-Utf8([string]$Path, [string]$Content) {
     [IO.File]::WriteAllText($Path, $Content, (New-Object Text.UTF8Encoding $false))
