@@ -6,13 +6,15 @@ import {
   syncDirectory,
 } from "../runtime/platform.js";
 import { constants } from "node:fs";
-import { lstat, open, rm } from "node:fs/promises";
+import { lstat, open, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { directory } from "./managed.js";
 import { atomicWrite } from "./journal.js";
 const name = "update-candidate.json",
-  marker = ".update-candidate.json";
+  marker = ".update-candidate.json",
+  // Where cleanup moves a runtime, so one directory identity covers the pair.
+  adopted = ".update-runtime";
 type Lease = {
   version: 1;
   sha: string;
@@ -59,6 +61,15 @@ async function read(path: string) {
     return JSON.parse(bytes.subarray(0, r.bytesRead).toString());
   } finally {
     await h.close();
+  }
+}
+async function exists(path: string) {
+  try {
+    await lstat(path);
+    return true;
+  } catch (e: any) {
+    if (e.code === "ENOENT") return false;
+    throw e;
   }
 }
 function valid(value: any): Lease {
@@ -131,6 +142,9 @@ export class CandidateOwnership {
       } catch (m: any) {
         if (m.code !== "ENOENT") throw m;
       }
+      // Nor is a runtime without its application: never publish beside it.
+      if (await exists(join(this.home, "versions", `${sha}.node`)))
+        throw unsafe();
     }
     const lease: Lease = { version: 1, sha, token: randomUUID(), state };
     await atomicWrite(this.home, name, lease);
@@ -162,6 +176,22 @@ export class CandidateOwnership {
     });
     await atomicWrite(this.home, name, { ...lease, state: "retained" });
   }
+  /** A runtime is ours only as a private directory marked with our lease. */
+  private async owned(runtime: string, lease: Lease) {
+    let owned: Lease;
+    try {
+      await privateDirectory(runtime);
+      owned = valid(await read(join(runtime, marker)));
+    } catch {
+      throw unsafe();
+    }
+    if (
+      owned.sha !== lease.sha ||
+      owned.token !== lease.token ||
+      owned.state !== "preparing"
+    )
+      throw unsafe();
+  }
   async cleanup(sha: string) {
     const lease = await this.read();
     if (!lease || lease.sha !== sha) throw unsafe();
@@ -177,13 +207,18 @@ export class CandidateOwnership {
       if (e.code !== "ENOENT") throw unsafe();
     }
     if (active?.revision === sha) throw unsafe();
-    const path = join(this.home, "versions", sha);
-    try {
-      await lstat(path);
-    } catch (e: any) {
-      if (e.code !== "ENOENT") throw e;
-      await this.clear();
-      return;
+    const path = join(this.home, "versions", sha),
+      runtime = `${path}.node`;
+    if (!(await exists(path))) {
+      // A runtime is published only after its application. If it is still
+      // here alone and provably ours, it is removed as the application would be.
+      if (lease.state === "removing" || !(await exists(runtime))) {
+        await this.clear();
+        return;
+      }
+      await this.owned(runtime, lease);
+      await rename(runtime, path);
+      await syncDirectory(dirname(path));
     }
     await privateDirectory(path);
     const identity = await lstat(path);
@@ -201,6 +236,15 @@ export class CandidateOwnership {
         return;
       }
       if (owned.state !== "preparing") throw unsafe();
+      // Move a runtime published beside it inside, once proven ours, so the
+      // identity recorded below protects both through an interrupted removal.
+      if (await exists(runtime)) {
+        await this.owned(runtime, lease);
+        // Never over anything already there, even an empty directory.
+        if (await exists(join(path, adopted))) throw unsafe();
+        await rename(runtime, join(path, adopted));
+        await syncDirectory(dirname(path));
+      }
       // rm may remove the marker before it fails or the owner crashes. Persist
       // the exact protected directory identity before beginning removal.
       await atomicWrite(this.home, name, {

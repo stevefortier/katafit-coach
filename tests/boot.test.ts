@@ -1,10 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { constants, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import * as bootModule from "../src/boot.js";
 import { boot, HANDOVER_EXIT } from "../src/boot.js";
 
 const A = "a".repeat(40),
@@ -144,6 +155,308 @@ test("a stop requested during the health window is not a failed version", async 
     assert.deepEqual(s.started, ["B"]);
     assert.equal((await read(home, "active.json")).revision, B);
     assert.equal(existsSync(join(home, "boot-rollback.json")), false);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// Each managed version may bring its own Node as versions/<SHA>.node. These
+// run the real supervisor start, so the recorded executable and argv are the
+// spawned child's own.
+const C = "c".repeat(40);
+const exe = windows() ? ["node.exe"] : ["bin", "node"];
+function windows() {
+  return process.platform === "win32";
+}
+const runtimeOf = (home: string, sha: string) =>
+  join(home, "versions", `${sha}.node`, ...exe);
+
+async function realSetup(behaviour: Record<string, "healthy" | "crash">) {
+  const home = await mkdtemp(join(realpathSync(tmpdir()), "boot-node-"));
+  const seed = join(home, "seed");
+  const roots: Record<string, string> = {
+    seed,
+    A: join(home, "versions", A),
+    B: join(home, "versions", B),
+    C: join(home, "versions", C),
+  };
+  for (const [name, root] of Object.entries(roots)) {
+    if (!behaviour[name]) continue;
+    const started = JSON.stringify(join(home, "started.jsonl"));
+    const service = JSON.stringify(join(home, "service.json"));
+    await mkdir(join(root, "dist"), { recursive: true });
+    await writeFile(
+      join(root, "dist/cli.js"),
+      `const fs = require("fs");
+      fs.appendFileSync(${started}, JSON.stringify({ name: ${JSON.stringify(name)}, execPath: process.execPath, argv: process.argv.slice(1), protocol: process.env.KATAFIT_BOOT_PROTOCOL, home: process.env.KATAFIT_COACH_HOME }) + "\\n");
+      ${behaviour[name] === "healthy" ? `fs.writeFileSync(${service}, "{}"); setTimeout(() => process.exit(0), 100);` : "process.exit(1);"}`,
+    );
+  }
+  return { home, seed, roots };
+}
+/** A copy of this Node, as an archive's node/ directory would carry. */
+async function bringNode(home: string, sha: string) {
+  const path = runtimeOf(home, sha);
+  await mkdir(dirname(path), { recursive: true });
+  await copyFile(process.execPath, path, constants.COPYFILE_FICLONE);
+  await chmod(path, 0o755);
+  return path;
+}
+const startedIn = async (home: string) =>
+  existsSync(join(home, "started.jsonl"))
+    ? (await readFile(join(home, "started.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+    : [];
+const bootNode = realpathSync(process.execPath);
+
+test("the active version's supervisor runs under the Node that version brought", async () => {
+  const { home, seed, roots } = await realSetup({ A: "healthy" });
+  try {
+    const node = await bringNode(home, A);
+    await write(home, "active.json", { revision: A });
+    assert.equal(await boot({ home, seed }), 0);
+    assert.deepEqual(await startedIn(home), [
+      {
+        name: "A",
+        execPath: node,
+        argv: [join(roots.A, "dist/cli.js"), "serve"],
+        protocol: "1",
+        home,
+      },
+    ]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a version without its own Node, and the seed, run under the bootstrap's Node", async () => {
+  const { home, seed, roots } = await realSetup({
+    A: "healthy",
+    seed: "healthy",
+  });
+  try {
+    await write(home, "active.json", { revision: A });
+    assert.equal(await boot({ home, seed }), 0);
+    // While no usable version is active, the seed runs: a runtime beside a
+    // version without an application, or beside the seed, is never used.
+    await bringNode(home, C);
+    await mkdir(join(`${seed}.node`, ...exe.slice(0, -1)), { recursive: true });
+    await copyFile(process.execPath, join(`${seed}.node`, ...exe));
+    await write(home, "active.json", { revision: C });
+    assert.equal(await boot({ home, seed }), 0);
+    assert.deepEqual(
+      (await startedIn(home)).map(({ name, execPath, argv }) => ({
+        name,
+        execPath,
+        argv,
+      })),
+      [
+        {
+          name: "A",
+          execPath: bootNode,
+          argv: [join(roots.A, "dist/cli.js"), "serve"],
+        },
+        {
+          name: "seed",
+          execPath: bootNode,
+          argv: [join(seed, "dist/cli.js"), "serve"],
+        },
+      ],
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a rolled-back version runs again under its own Node", async () => {
+  const { home, seed } = await realSetup({ A: "healthy", B: "crash" });
+  try {
+    const nodeA = await bringNode(home, A),
+      nodeB = await bringNode(home, B);
+    await write(home, "active.json", { revision: B });
+    await write(home, "handoff.json", {
+      revision: B,
+      previous: { revision: A },
+    });
+    assert.equal(await boot({ home, seed, healthMs: 5000 }), 0);
+    assert.deepEqual(
+      (await startedIn(home)).map(({ name, execPath }) => ({
+        name,
+        execPath,
+      })),
+      [
+        { name: "B", execPath: nodeB },
+        { name: "A", execPath: nodeA },
+      ],
+    );
+    assert.equal((await read(home, "active.json")).revision, A);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// A runtime that is present but unusable is refused, never silently replaced
+// by the bootstrap's own Node.
+const unusable: Record<string, (home: string, sha: string) => Promise<void>> = {
+  "no executable": async (home, sha) => {
+    await mkdir(join(home, "versions", `${sha}.node`), { recursive: true });
+  },
+  "a directory for the executable": async (home, sha) => {
+    await mkdir(runtimeOf(home, sha), { recursive: true });
+  },
+  // Laid out correctly, but the operating system cannot run it.
+  "an executable that is not a program": async (home, sha) => {
+    await mkdir(dirname(runtimeOf(home, sha)), { recursive: true });
+    await writeFile(runtimeOf(home, sha), "not a program", { mode: 0o755 });
+  },
+  ...(windows()
+    ? {}
+    : {
+        "a linked executable": async (home: string, sha: string) => {
+          await mkdir(dirname(runtimeOf(home, sha)), { recursive: true });
+          await symlink(process.execPath, runtimeOf(home, sha));
+        },
+        "a dangling executable": async (home: string, sha: string) => {
+          await mkdir(dirname(runtimeOf(home, sha)), { recursive: true });
+          await symlink(join(home, "missing"), runtimeOf(home, sha));
+        },
+        "a linked runtime directory": async (home: string, sha: string) => {
+          await mkdir(join(home, "versions"), { recursive: true });
+          await symlink(
+            dirname(dirname(process.execPath)),
+            join(home, "versions", `${sha}.node`),
+          );
+        },
+        "an executable whose interpreter is missing": async (
+          home: string,
+          sha: string,
+        ) => {
+          await mkdir(dirname(runtimeOf(home, sha)), { recursive: true });
+          await writeFile(runtimeOf(home, sha), "#!/missing/interpreter\n", {
+            mode: 0o755,
+          });
+        },
+        // Its owner lacks the execute bit others have: the spawn itself fails.
+        ...(process.getuid?.() === 0
+          ? {}
+          : {
+              "an executable its owner may not run": async (
+                home: string,
+                sha: string,
+              ) => {
+                await mkdir(dirname(runtimeOf(home, sha)), {
+                  recursive: true,
+                });
+                await writeFile(runtimeOf(home, sha), "#!/bin/sh\n");
+                await chmod(runtimeOf(home, sha), 0o055);
+              },
+            }),
+        "a non-executable file": async (home: string, sha: string) => {
+          await mkdir(dirname(runtimeOf(home, sha)), { recursive: true });
+          await writeFile(runtimeOf(home, sha), "#!/bin/sh\n", {
+            mode: 0o644,
+          });
+        },
+      }),
+};
+for (const [defect, make] of Object.entries(unusable))
+  test(`a version whose runtime has ${defect} is refused, and rolled back from after a handover`, async () => {
+    const { home, seed } = await realSetup({ A: "healthy", B: "healthy" });
+    try {
+      await make(home, B);
+      await write(home, "active.json", { revision: B });
+      assert.notEqual(await boot({ home, seed }), 0);
+      assert.deepEqual(await startedIn(home), []);
+      await write(home, "handoff.json", {
+        revision: B,
+        previous: { revision: A },
+      });
+      assert.equal(await boot({ home, seed, healthMs: 2000 }), 0);
+      assert.deepEqual(
+        (await startedIn(home)).map(({ name, execPath }) => ({
+          name,
+          execPath,
+        })),
+        [{ name: "A", execPath: bootNode }],
+      );
+      assert.equal((await read(home, "active.json")).revision, A);
+      assert.equal((await read(home, "boot-rollback.json")).revision, B);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+test(
+  "a runtime is never found through a linked versions directory or home ancestor",
+  { skip: windows() },
+  async () => {
+    const { home, seed } = await realSetup({ A: "healthy", seed: "healthy" });
+    const alias = `${home}-alias`;
+    try {
+      await bringNode(home, A);
+      await write(home, "active.json", { revision: A });
+      // The version and its runtime are real; only a link leads to them.
+      const real = join(home, "real-versions");
+      await rename(join(home, "versions"), real);
+      await symlink(real, join(home, "versions"));
+      assert.notEqual(await boot({ home, seed }), 0);
+      await rm(join(home, "versions"));
+      await rename(real, join(home, "versions"));
+      await symlink(home, alias);
+      assert.notEqual(await boot({ home: alias, seed }), 0);
+      assert.deepEqual(await startedIn(home), []);
+      assert.throws(() => bootModule.versionNode(alias, A), /UNSAFE_RUNTIME/);
+      // Without a runtime there is nothing to follow; the seed needs none.
+      assert.equal(bootModule.versionNode(alias, B), undefined);
+      await rm(join(home, "active.json"));
+      assert.equal(await boot({ home: alias, seed }), 0);
+      assert.deepEqual(
+        (await startedIn(home)).map(({ name, execPath }) => ({
+          name,
+          execPath,
+        })),
+        [{ name: "seed", execPath: bootNode }],
+      );
+    } finally {
+      await rm(alias, { force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+);
+
+test("runtime lookup follows each platform's archive layout", async () => {
+  assert.equal(typeof bootModule.versionNode, "function");
+  const home = await mkdtemp(join(realpathSync(tmpdir()), "boot-layout-"));
+  try {
+    const versionNode = bootModule.versionNode as (
+      home: string,
+      revision: string,
+      platform?: NodeJS.Platform,
+    ) => string | undefined;
+    assert.equal(versionNode(home, A, "win32"), undefined);
+    assert.equal(versionNode(home, A, "linux"), undefined);
+    const runtime = join(home, "versions", `${A}.node`);
+    await mkdir(join(runtime, "bin"), { recursive: true });
+    await writeFile(join(runtime, "node.exe"), "MZ");
+    await writeFile(join(runtime, "bin/node"), "\x7fELF", { mode: 0o755 });
+    await chmod(join(runtime, "bin/node"), 0o755);
+    assert.equal(versionNode(home, A, "win32"), join(runtime, "node.exe"));
+    if (!windows())
+      assert.equal(versionNode(home, A, "linux"), join(runtime, "bin/node"));
+    // One platform's layout is not the other's.
+    await rm(join(runtime, "node.exe"));
+    assert.throws(() => versionNode(home, A, "win32"), /UNSAFE_RUNTIME/);
+    await rm(join(runtime, "bin"), { recursive: true });
+    await writeFile(join(runtime, "node.exe"), "MZ");
+    assert.throws(() => versionNode(home, A, "linux"), /UNSAFE_RUNTIME/);
+    // Only a full SHA names a version's runtime.
+    for (const revision of ["../seed", "", "A".repeat(40), undefined])
+      assert.throws(
+        () => versionNode(home, revision as any, "linux"),
+        /UNSAFE_RUNTIME/,
+      );
   } finally {
     await rm(home, { recursive: true, force: true });
   }

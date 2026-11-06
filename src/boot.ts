@@ -3,11 +3,13 @@
 // startup task, a container entrypoint) runs. It starts the active version's
 // own supervisor, starts the next one when that supervisor hands over after an
 // upgrade, and restores the previous version if a newly handed-over one never
-// becomes healthy. It never touches the network, Docker or settings, and
-// imports nothing from the application, so upgrades never need to replace it.
+// becomes healthy. Each version runs under the Node it brought, if any. It
+// never touches the network, Docker or settings, and imports nothing from the
+// application, so upgrades never need to replace it.
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -30,8 +32,8 @@ type Options = {
   seed: string;
   /** How long a handed-over supervisor has to become healthy. */
   healthMs?: number;
-  /** Test seam: start one supervisor. */
-  start?: (root: string, home: string) => ChildProcess;
+  /** Test seam: start one supervisor under the given Node. */
+  start?: (root: string, home: string, node: string) => ChildProcess;
 };
 
 function readJson(path: string): any {
@@ -47,8 +49,8 @@ function writeAtomic(path: string, value: unknown) {
   renameSync(temporary, path);
 }
 const windows = process.platform === "win32";
-const startSupervisor = (root: string, home: string) =>
-  spawn(process.execPath, [join(root, "dist/cli.js"), "serve"], {
+const startSupervisor = (root: string, home: string, node: string) =>
+  spawn(node, [join(root, "dist/cli.js"), "serve"], {
     // On Windows a stop reaches it over this IPC channel (see ask()). Not
     // elsewhere: an open channel would keep Linux's `serve` wrapper alive.
     stdio: windows ? ["inherit", "inherit", "inherit", "ipc"] : "inherit",
@@ -59,13 +61,80 @@ const startSupervisor = (root: string, home: string) =>
     },
   });
 
-/** The active version's package, or the seed while none is active. */
-export function activeRoot(home: string, seed: string) {
-  const revision = readJson(join(home, "active.json"))?.revision;
+/** The active version and its package, or the seed while none is active. */
+function active(
+  home: string,
+  seed: string,
+  pointer = readJson(join(home, "active.json")),
+) {
+  const revision = pointer?.revision;
   const root = join(home, "versions", String(revision));
   return SHA.test(revision) && existsSync(join(root, "dist/cli.js"))
-    ? root
-    : seed;
+    ? { root, revision: revision as string }
+    : { root: seed };
+}
+export const activeRoot = (home: string, seed: string) =>
+  active(home, seed).root;
+
+/**
+ * The Node a version brought from its platform archive, kept beside it as
+ * `versions/<SHA>.node`, or undefined if it brought none. A runtime that is
+ * there but not a plain directory holding a plain executable is refused, not
+ * replaced by this bootstrap's own Node.
+ */
+export function versionNode(
+  home: string,
+  revision: string,
+  platform: NodeJS.Platform = process.platform,
+) {
+  if (!SHA.test(revision)) throw new Error("UNSAFE_RUNTIME");
+  const runtime = join(home, "versions", `${revision}.node`);
+  // Never follows links: lstat sees a link itself, which is neither.
+  const kind = (path: string) => lstatSync(path, { throwIfNoEntry: false });
+  if (!kind(runtime)) return undefined;
+  // Found through a linked home or versions ancestor, it is not this home's.
+  for (let path = resolve(runtime), depth = 0; ; depth++) {
+    const parent = dirname(path);
+    if (parent === path) break;
+    if (depth > 64 || !kind(parent)?.isDirectory())
+      throw new Error("UNSAFE_RUNTIME");
+    path = parent;
+  }
+  const win = platform === "win32",
+    node = win ? join(runtime, "node.exe") : join(runtime, "bin", "node"),
+    file = kind(node);
+  if (
+    !kind(runtime)!.isDirectory() ||
+    (!win && !kind(join(runtime, "bin"))?.isDirectory()) ||
+    !file?.isFile() ||
+    (!win && !(file.mode & 0o111))
+  )
+    throw new Error("UNSAFE_RUNTIME");
+  return node;
+}
+
+/**
+ * Starts a version's supervisor under its own Node, else this one. Undefined
+ * if that Node is unusable or the system cannot start it at all.
+ */
+function launch(
+  start: NonNullable<Options["start"]>,
+  home: string,
+  version: { root: string; revision?: string },
+) {
+  try {
+    const node = version.revision
+      ? (versionNode(home, version.revision) ?? process.execPath)
+      : process.execPath;
+    const child = start(version.root, home, node);
+    if (child.pid !== undefined) return child;
+    // Its spawn failure is reported as an error event, without an exit.
+    child.on("error", () => {});
+  } catch {}
+  process.stderr.write(
+    `katafit-coach-boot: cannot start ${version.revision ?? "the installed package"}\n`,
+  );
+  return undefined;
 }
 
 const exited = (child: ChildProcess) =>
@@ -136,23 +205,28 @@ export async function boot(options: Options): Promise<number> {
   try {
     for (;;) {
       const handoff = readJson(join(home, "handoff.json"));
-      const active = readJson(join(home, "active.json"));
+      const pointer = readJson(join(home, "active.json"));
       const since = Date.now() - 1000;
-      const child = (current = start(activeRoot(home, seed), home));
-      const code = exited(child);
+      // A version that cannot be started fails like one that exits at once.
+      const child = (current = launch(
+        start,
+        home,
+        active(home, seed, pointer),
+      ));
+      const code = child ? exited(child) : Promise.resolve(1);
       if (
         handoff &&
         SHA.test(handoff.revision) &&
-        handoff.revision === active?.revision
+        handoff.revision === pointer?.revision
       ) {
-        if (await healthy(home, child, since, healthMs)) {
+        if (child && (await healthy(home, child, since, healthMs))) {
           rmSync(join(home, "handoff.json"), { force: true });
         } else if (stopping) {
           // A requested stop is not a failed version; keep it for next start.
           return await code;
         } else {
           // The new version never became healthy: go back to the one before.
-          await stop(child);
+          if (child) await stop(child);
           if (handoff.previous && SHA.test(handoff.previous.revision))
             writeAtomic(join(home, "active.json"), handoff.previous);
           else rmSync(join(home, "active.json"), { force: true });

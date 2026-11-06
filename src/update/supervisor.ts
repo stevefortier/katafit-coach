@@ -643,12 +643,15 @@ export async function supervise(
         }
         try {
           await boundary.housekeeping?.();
-          for (const name of await readdir(join(home, "versions")))
-            if (validSha(name) && !keep.has(name))
+          // A version and the runtime it brought go together.
+          for (const name of await readdir(join(home, "versions"))) {
+            const version = name.replace(/\.node$/, "");
+            if (validSha(version) && !keep.has(version))
               await rm(join(home, "versions", name), {
                 recursive: true,
                 force: true,
               });
+          }
         } catch {
           updates.cleanupWarning = true;
         }
