@@ -214,7 +214,7 @@ jobs:
           run/katafit-coach/node/node.exe "$GITHUB_WORKSPACE/scripts/windows-smoke.mjs" "$RUNNER_TEMP/run/katafit-coach" "$RUNNER_TEMP/home"
       - name: Bootstrap, handover and upgrade suites on Windows
         shell: bash
-        run: npx tsx --test --test-concurrency=1 --test-force-exit tests/boot.test.ts tests/boot-handover.test.ts tests/handover-resume.test.ts tests/workspace-upgrades.test.ts
+        run: npx tsx --test --test-concurrency=1 --test-force-exit tests/boot.test.ts tests/boot-handover.test.ts tests/handover-resume.test.ts tests/workspace-upgrades.test.ts tests/archive-stage.test.ts tests/release-provision.test.ts
       - name: Install, reinstall and restart as a standard Windows user
         shell: powershell
         run: |

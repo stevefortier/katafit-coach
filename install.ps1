@@ -140,6 +140,10 @@ $child.WaitForExit()
 exit $child.ExitCode
 '@
     Write-Utf8 (Join-Path $next 'start-coach.ps1') ($startup.Replace('__HOME__', (Literal $CoachHome)))
+    # The command must use the same data folder even in a new terminal. Batch
+    # files require doubled percent signs for literal percent signs in paths.
+    $command = "@echo off`r`nsetlocal`r`nset `"KATAFIT_COACH_HOME=$($CoachHome.Replace('%', '%%'))`"`r`n@`"%~dp0node\node.exe`" `"%~dp0app\dist\cli.js`" %*`r`n"
+    Write-Utf8 (Join-Path $next 'katafit-coach.cmd') $command
     if (Test-Path -LiteralPath $InstallRoot) { Move-Item -LiteralPath $InstallRoot -Destination $old }
     try { Move-Item -LiteralPath $next -Destination $InstallRoot } catch {
         if (Test-Path -LiteralPath $old) { Move-Item -LiteralPath $old -Destination $InstallRoot }

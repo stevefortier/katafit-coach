@@ -14,11 +14,13 @@ import {
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { stageArchive } from "../src/update/managed.js";
 
 const sha = "a".repeat(40);
-const name = `coach-${sha}-linux-x64.tar.gz`;
+const windows = process.platform === "win32";
+const platform = windows ? "win-x64" : "linux-x64";
+const name = `coach-${sha}-${platform}.${windows ? "zip" : "tar.gz"}`;
 
 async function setup(revision = sha) {
   const dir = await mkdtemp(join(tmpdir(), "archive-stage-"));
@@ -44,7 +46,7 @@ async function setup(revision = sha) {
   await writeFile(join(tree, "app/dist/server/admin.js"), "export {};");
   const archive = join(dir, name);
   execFileSync("tar", [
-    "-czf",
+    ...(windows ? ["-a", "-cf"] : ["-czf"]),
     archive,
     "-C",
     join(dir, "tree"),
@@ -53,7 +55,7 @@ async function setup(revision = sha) {
   const downloads: unknown[] = [],
     verified: unknown[] = [];
   const boundary = {
-    platform: "linux-x64" as const,
+    platform,
     download: async (
       url: string,
       target: string,
@@ -64,7 +66,7 @@ async function setup(revision = sha) {
       await copyFile(archive, target);
     },
     verify: async (path: string, revision: string) => {
-      verified.push({ file: path.split("/").at(-1), revision });
+      verified.push({ file: basename(path), revision });
     },
   };
   const artifact = {
@@ -112,7 +114,10 @@ test("a failed attestation, another revision or the wrong archive publishes noth
       stageArchive(
         f.home,
         sha,
-        { ...f.artifact, name: `coach-${sha}-win-x64.zip` },
+        {
+          ...f.artifact,
+          name: `coach-${sha}-${windows ? "linux-x64.tar.gz" : "win-x64.zip"}`,
+        },
         f.boundary,
       ),
       /TARGET_REJECTED/,

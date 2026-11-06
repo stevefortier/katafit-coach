@@ -43,6 +43,9 @@ installed copy:
 - `katafit-coach stop` ends everything cleanly.
 
 It also runs the bootstrap, handover and workspace upgrade suites on Windows.
+Archive staging uses the real Windows ZIP extractor under the service's
+restricted environment, and release-download tests check digest verification
+and publication on Windows too.
 The installer smoke runs separately as a newly created standard user under
 Windows PowerShell 5.1. It checks private ACLs, user PATH, paths containing
 spaces and an apostrophe, rejection of an incorrect release digest without

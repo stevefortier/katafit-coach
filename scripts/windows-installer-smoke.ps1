@@ -22,6 +22,14 @@ function Status {
     $null = Invoke-WebRequest -UseBasicParsing -Uri ($service.origin + '/api/status') -Headers @{ Authorization = 'Bearer ' + $secrets.admin } -TimeoutSec 10
     & $node $cli status
     Check ($LASTEXITCODE -eq 0) 'The installed CLI status failed.'
+    # A new terminal has no inherited home override; the installed command
+    # carries it, including for a custom data location.
+    $savedHome = $env:KATAFIT_COACH_HOME
+    try {
+        Remove-Item Env:\KATAFIT_COACH_HOME
+        & (Join-Path $runtime 'katafit-coach.cmd') status
+        Check ($LASTEXITCODE -eq 0) 'The installed command lost its data path.'
+    } finally { $env:KATAFIT_COACH_HOME = $savedHome }
 }
 function Stop-Coach {
     if (Test-Path -LiteralPath (Join-Path $dataHome 'service.json')) {

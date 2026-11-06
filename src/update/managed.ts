@@ -1,4 +1,4 @@
-import { syncDirectory } from "../runtime/platform.js";
+import { syncDirectory, windows } from "../runtime/platform.js";
 import { CandidateOwnership } from "./candidate.js";
 import { spawn } from "node:child_process";
 import {
@@ -12,7 +12,7 @@ import {
   open,
 } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join, dirname, resolve, parse } from "node:path";
+import { join, dirname, resolve, parse, delimiter } from "node:path";
 import { repository, validSha } from "./updates.js";
 import {
   verifyProvenanceFile,
@@ -63,16 +63,33 @@ export async function managedFile(
   }
 }
 export function buildEnvironment(home: string): NodeJS.ProcessEnv {
+  const systemRoot = process.env.SystemRoot || "C:\\Windows";
   return {
-    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+    PATH: windows
+      ? [
+          dirname(process.execPath),
+          join(systemRoot, "System32"),
+          systemRoot,
+        ].join(delimiter)
+      : `${dirname(process.execPath)}:/usr/bin:/bin`,
+    ...(windows
+      ? {
+          SystemRoot: systemRoot,
+          USERPROFILE: home,
+          TEMP: home,
+          TMP: home,
+        }
+      : {}),
     HOME: home,
     LANG: "C.UTF-8",
     GIT_CONFIG_NOSYSTEM: "1",
-    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_GLOBAL: windows ? "NUL" : "/dev/null",
     GIT_TERMINAL_PROMPT: "0",
     npm_config_cache: join(home, ".npm"),
     npm_config_globalconfig: join(home, ".npm-global-empty"),
-    npm_config_userconfig: "/dev/null",
+    npm_config_userconfig: windows
+      ? join(home, ".npm-user-empty")
+      : "/dev/null",
     npm_config_audit: "false",
     npm_config_fund: "false",
   };
@@ -105,6 +122,7 @@ export async function command(
       cwd,
       env: buildEnvironment(home),
       detached: true,
+      windowsHide: true,
       stdio: "ignore",
     });
     let failed = false,
@@ -116,7 +134,8 @@ export async function command(
       if (failed) return;
       failed = true;
       try {
-        process.kill(-child.pid!, "SIGKILL");
+        if (windows) child.kill("SIGKILL");
+        else process.kill(-child.pid!, "SIGKILL");
       } catch {}
     };
     const timer = setTimeout(stop, 180000);
