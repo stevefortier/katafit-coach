@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { provenanceFailure } from "./provenance-diagnostics.js";
 export const releaseRepository = "stevefortier/katafit-coach";
 export const releaseWorkflow = `${releaseRepository}/.github/workflows/release.yml`;
 export const releaseApi = `https://api.github.com/repos/${releaseRepository}/releases/latest`;
@@ -121,20 +122,41 @@ export async function verifyAttestation(
 ) {
   if (!/^[a-f0-9]{64}$/.test(digest) || !/^[a-f0-9]{40}$/.test(revision))
     throw Error("PROVENANCE_REJECTED");
-  const response = await (options.request ?? fetch)(
-    `https://api.github.com/repos/${releaseRepository}/attestations/sha256:${digest}`,
-    requestOptions(),
-  );
+  let response: Response;
+  try {
+    response = await (options.request ?? fetch)(
+      `https://api.github.com/repos/${releaseRepository}/attestations/sha256:${digest}`,
+      requestOptions(),
+    );
+  } catch (error) {
+    provenanceFailure("attestation-fetch", "network");
+    throw error;
+  }
   if (!response.ok) {
+    provenanceFailure("attestation-fetch", "http", response);
     await response.body?.cancel();
+    throw Error("PROVENANCE_UNAVAILABLE");
+  }
+  let bytes: Buffer;
+  try {
+    bytes = await boundedBytes(response, 4 * 1024 * 1024);
+  } catch (error) {
+    provenanceFailure(
+      "attestation-read",
+      !response.body
+        ? "body-unavailable"
+        : error instanceof Error && error.message === "RELEASE_TOO_LARGE"
+          ? "cap"
+          : "read",
+      response,
+    );
     throw Error("PROVENANCE_UNAVAILABLE");
   }
   let attestations: unknown;
   try {
-    attestations = JSON.parse(
-      (await boundedBytes(response, 4 * 1024 * 1024)).toString("utf8"),
-    ).attestations;
+    attestations = JSON.parse(bytes.toString("utf8")).attestations;
   } catch {
+    provenanceFailure("attestation-parse", "parse", response);
     throw Error("PROVENANCE_UNAVAILABLE");
   }
   const { verify } = await import("sigstore");

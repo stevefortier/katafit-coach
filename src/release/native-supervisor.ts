@@ -1,5 +1,10 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import {
+  provenanceDiagnostics,
+  provenanceDiagnosticLimit,
+  sanitizeProvenanceDiagnostic,
+} from "./provenance-diagnostics.js";
 
 type Options = { signal?: AbortSignal; workMs?: number; drainMs?: number };
 // Internal test seam: executable code chosen by the caller, never request data,
@@ -26,6 +31,8 @@ export function superviseNativeWorker(
   if (options.signal?.aborted)
     return Promise.reject(Error("RELEASE_IMAGE_IDENTITY_CANCELLED"));
   const token = randomUUID();
+  const diagnosticsEnabled = provenanceDiagnostics.hasSubscribers;
+  let diagnosticCount = 0;
   const source = import.meta.url.endsWith(".ts");
   return new Promise((resolve, reject) => {
     const child = fork(
@@ -78,7 +85,15 @@ export function superviseNativeWorker(
     options.signal?.addEventListener("abort", cancel, { once: true });
     child.on("message", (message: any) => {
       if (done || message?.token !== token) return;
-      if (message.kind === "event") boundary.onEvent?.(message.value);
+      if (message.kind === "provenance-diagnostic") {
+        if (
+          diagnosticsEnabled &&
+          diagnosticCount++ < provenanceDiagnosticLimit
+        ) {
+          const safe = sanitizeProvenanceDiagnostic(message.value);
+          if (safe) provenanceDiagnostics.publish(safe);
+        }
+      } else if (message.kind === "event") boundary.onEvent?.(message.value);
       else if (message.kind === "settled" && !terminal) terminal = message;
       else cancel();
     });
@@ -99,9 +114,12 @@ export function superviseNativeWorker(
       else resolve(terminal.value);
     });
     boundary.onSpawn?.(child);
-    child.send({ kind: "start", token, request }, (error) => {
-      if (error) cancel();
-    });
+    child.send(
+      { kind: "start", token, request, diagnostics: diagnosticsEnabled },
+      (error) => {
+        if (error) cancel();
+      },
+    );
     if (options.signal?.aborted) cancel();
   });
 }
@@ -153,6 +171,14 @@ export function runNativeWorker(
     started = true;
     token = message.token;
     clearTimeout(idle);
+    let diagnosticCount = 0;
+    const diagnostic = (value: unknown) => {
+      if (diagnosticCount++ >= provenanceDiagnosticLimit) return;
+      const safe = sanitizeProvenanceDiagnostic(value);
+      if (safe) send({ kind: "provenance-diagnostic", value: safe });
+    };
+    if (message.diagnostics === true)
+      provenanceDiagnostics.subscribe(diagnostic);
     void (async () => {
       try {
         controller.signal.throwIfAborted();
@@ -169,6 +195,7 @@ export function runNativeWorker(
               : "RELEASE_WORKER_FAILED",
         });
       } finally {
+        provenanceDiagnostics.unsubscribe(diagnostic);
         clearInterval(live);
         if (process.connected) process.disconnect?.();
       }
