@@ -350,5 +350,8 @@ source: it is downloaded with its published size and digest checked, its
 attestation must name exactly the release revision, and its `app/` directory
 becomes `versions/<SHA>`, as a source build's checkout would. No git, npm or
 build tools are needed. Without an archive, preparation builds source as before.
-Archives are not published on releases yet: launchers installed before
-discovery accepted them refuse any release with more than three assets.
+The release workflow publishes all three with every release, attested like the
+other assets. Launchers installed before discovery accepted archives (before
+#218) refuse any release with more than three assets, so publication waits until
+every running launcher is newer, or runs under the bootstrap, where each
+version brings its own supervisor.
