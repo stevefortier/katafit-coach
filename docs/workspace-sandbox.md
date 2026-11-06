@@ -8,7 +8,9 @@ Windows. Docker stays the default; an installation opts in with
 { "mode": "workspace" }
 ```
 
-An absent file means Docker. A file that is unreadable or invalid fails closed
+An absent file means Docker on Linux and workspace mode on Windows, where
+Docker mode cannot run ([Coach on Windows](windows.md)). A file that is
+unreadable or invalid fails closed
 (`SANDBOX_MODE_INVALID`): sessions refuse to start rather than choose a mode.
 It covers every Pi session: headless ones (autonomy cycles and worker
 requests) and Studio's interactive terminal.
