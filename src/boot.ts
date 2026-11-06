@@ -5,7 +5,9 @@
 // upgrade, and restores the previous version if a newly handed-over one never
 // becomes healthy. Each version runs under the Node it brought, if any. It
 // never touches the network, Docker or settings, and imports nothing from the
-// application, so upgrades never need to replace it.
+// application. Once this runtime-aware bootstrap is installed, later runtime
+// upgrades need not replace it. An older frozen installed bootstrap needs a
+// one-time controlled replacement; application updates cannot update that copy.
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   existsSync,

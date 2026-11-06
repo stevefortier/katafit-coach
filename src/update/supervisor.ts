@@ -1,3 +1,4 @@
+import { versionNode } from "../boot.js";
 import { deliverRelease, downloadFile } from "../release/operator.js";
 import {
   asNativeBinding,
@@ -132,8 +133,14 @@ export async function supervise(
   } catch {
     supported = false;
   }
+  // Only a managed application's own sibling is eligible. A seed may have
+  // metadata with the same revision, but must not borrow a managed runtime.
+  const applicationNode = (path: string, revision: string | null) =>
+    revision && resolve(path) === resolve(home, "versions", revision)
+      ? (versionNode(home, revision) ?? process.execPath)
+      : process.execPath;
   async function stop(target = child) {
-    if (!target) return;
+    if (!target || target.pid === undefined) return;
     await stopChild(target, 5000);
   }
   const send = (data: unknown) => {
@@ -187,6 +194,7 @@ export async function supervise(
       [path, home, String(wantedPort), nonce],
       {
         execArgv: [],
+        execPath: applicationNode(path, revision),
         env: buildEnvironment(home),
         stdio: ["ignore", "ignore", "ignore", "ipc"],
       },
@@ -421,9 +429,11 @@ export async function supervise(
         const cleanup = () => {
           clearTimeout(timer);
           target.removeListener("exit", exit);
+          target.removeListener("error", exit);
           target.removeListener("message", receive);
         };
         target.once("exit", exit);
+        target.once("error", exit);
         target.on("message", receive);
         target.send(
           {
@@ -570,7 +580,7 @@ export async function supervise(
         await mkdir(probeHome, { mode: 0o700 });
         await updates.preparationStage("probe");
         await command(
-          process.execPath,
+          applicationNode(candidate, sha),
           [join(root, "dist/update/probe.js"), candidate, probeHome],
           candidate,
           probeHome,

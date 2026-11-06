@@ -448,7 +448,21 @@ but unusable (a link, one reached through a linked home or `versions`
 ancestor, a missing, linked or non-executable `node`, or one the system cannot
 start) is never replaced by the bootstrap's Node: that version
 fails to start, and after a handover the previous version is restored, under
-its own runtime.
+its own runtime. The outgoing runtime-aware supervisor also uses the candidate's
+validated runtime for the empty-home probe and first activation, before the
+bootstrap handover; activation backout selects the previous application's own
+runtime again. Only the matching managed application can select that sibling;
+a seed never borrows one. A missing sibling keeps legacy fallback, while a
+present invalid or unstartable runtime fails preparation/startup without fallback.
+
+**One-time installation prerequisite:** an older frozen installed `dist/boot.js`
+does not acquire this selector through an application update. Replace that
+installed bootstrap once through the separately approved launcher/package
+installation procedure, with backup, quiescence and selected-runtime/rollback
+verification. The outgoing supervisor must also include candidate-runtime
+probing/activation before attempting a release incompatible with its current
+Node; first install a compatible bridge release if necessary. This source change
+does not migrate an already installed bootstrap or certify an existing host.
 
 ### Rollback notice
 
