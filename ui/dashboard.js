@@ -231,7 +231,6 @@ window.CoachDashboard = (() => {
   let previewEventId = null;
   let syncMap = () => {};
   let refreshMap = () => {};
-  let revealEvent = () => {};
   let focusMapMember = () => {};
   let focusMapEvent = () => {};
   // The timeline's selected event category while its legend is shown.
@@ -716,7 +715,7 @@ window.CoachDashboard = (() => {
         $("dashboardMapSelection")?.replaceChildren();
         highlightEvent(null);
         renderMemberCards();
-        filterMap();
+        filterMap(true, all);
         filterFeed();
         filterTimeline();
       };
@@ -1151,7 +1150,6 @@ window.CoachDashboard = (() => {
   async function selectEvent(
     item,
     adminKey,
-    pan = false,
     name = memberName(item.user_id),
     focus = false,
   ) {
@@ -1292,7 +1290,6 @@ window.CoachDashboard = (() => {
       text("p", "Event access rechecked for this read.", "hint"),
     );
     if (focus) focusMapEvent(fresh);
-    else if (pan) revealEvent(fresh);
     if (
       !Object.hasOwn(activityColors, fresh.subject?.type) ||
       !/^[0-9a-f]{24}$/.test(fresh.subject?.id || "")
@@ -1521,7 +1518,6 @@ window.CoachDashboard = (() => {
       tooltip.style.top = `${Math.max(12, Math.min(innerHeight - card.height - 12, y + 16))}px`;
       previewEventId = eventPosition(item) ? item.id : null;
       refreshMap();
-      if (previewEventId) revealEvent(item);
     };
     const previewMark = (item, mark) => {
       const rect = mark.getBoundingClientRect();
@@ -1661,7 +1657,7 @@ window.CoachDashboard = (() => {
     const select = (item, focus = false) => {
       if (!interactive() || !item) return;
       if (!visibleItems().some((event) => event.id === item.id)) return;
-      void selectEvent(item, adminKey, true, name(item), focus);
+      void selectEvent(item, adminKey, name(item), focus);
       dismiss();
     };
     const draw = () => {
@@ -2318,7 +2314,6 @@ window.CoachDashboard = (() => {
     selectedEventId = null;
     syncMap = () => {};
     refreshMap = () => {};
-    revealEvent = () => {};
     focusMapMember = () => {};
     focusMapEvent = () => {};
     mapEpoch++;
@@ -2730,21 +2725,7 @@ window.CoachDashboard = (() => {
         );
       placePins();
     };
-    // Pan only when the event is offscreen, to its nearest world copy; keep zoom.
-    revealEvent = (item) => {
-      const fix = eventPosition(item);
-      if (!live() || !fix) return;
-      const center = instance.getCenter().lng;
-      if (offscreen(project(fix, center)))
-        instance.panTo(
-          [
-            fix.latitude,
-            fix.longitude + 360 * Math.round((center - fix.longitude) / 360),
-          ],
-          { animate: false },
-        );
-    };
-    filterMap = (clearSelection = true) => {
+    filterMap = (clearSelection = true, resetCamera = false) => {
       closeChooser(false);
       if (clearSelection) {
         pendingMember = null;
@@ -2758,7 +2739,7 @@ window.CoachDashboard = (() => {
       }
       // Unanimated: an in-flight zoom animation would overwrite a focus that
       // the second click of a double activation applies right after this.
-      if (clearSelection && initialView)
+      if (resetCamera && initialView)
         instance.setView(initialView.center, initialView.zoom, {
           animate: false,
         });
