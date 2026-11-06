@@ -179,7 +179,7 @@ export async function fixture(
         return;
       }
       res.end(
-        `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/leaflet.css"><section id="dashboardPanel"><input id="dashboardMapDate" type="date"><p id="dashboardMapStatus" role="status"></p><div class="dashboard-map-layout"><div class="dashboard-map-column"><div id="dashboardMap" class="dashboard-map"></div><section id="dashboardTimeline" class="dashboard-timeline"></section></div><aside id="dashboardMapSelection" class="dashboard-map-selection"></aside></div><h3 id="dashboardMemberHeading"></h3><div id="dashboardMemberCards"></div><p id="dashboardStatus"></p><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div></section>${options.leaflet === false ? "" : '<script src="/leaflet.js"></script><script>const original=L.map;L.map=(...args)=>window.fixtureMap=original(...args)</script>'}<script src="/dashboard.js"></script>`,
+        `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/leaflet.css"><section id="dashboardPanel"><input id="dashboardMapDate" type="date"><p id="dashboardMapStatus" role="status"></p><div id="dashboardLatestStatus"></div><div class="dashboard-map-layout"><div class="dashboard-map-column"><div id="dashboardMap" class="dashboard-map"></div><section id="dashboardTimeline" class="dashboard-timeline"></section></div><aside id="dashboardMapSelection" class="dashboard-map-selection"></aside></div><h3 id="dashboardMemberHeading"></h3><div id="dashboardMemberCards"></div><p id="dashboardStatus"></p><div id="dashboardCoverage"></div><div id="dashboardRoster"></div><div id="dashboardCharts"></div></section>${options.leaflet === false ? "" : '<script src="/leaflet.js"></script><script>const original=L.map;L.map=(...args)=>window.fixtureMap=original(...args)</script>'}<script src="/dashboard.js"></script>`,
       );
     } else if (
       ["/leaflet.js", "/leaflet.css", "/dashboard.js", "/style.css"].includes(
@@ -211,6 +211,17 @@ export async function fixture(
       );
     } else if (url.pathname === "/api/dashboard/members")
       res.end(JSON.stringify({ members: users }));
+    else if (url.pathname === "/api/dashboard/latest-positions")
+      res.end(
+        JSON.stringify({
+          members: users.map((user) => ({
+            user_id: user._id,
+            display_name: user.display_name,
+            status: "none",
+            latest: null,
+          })),
+        }),
+      );
     else if (url.pathname === "/api/dashboard/activity") {
       // Current subject state differs from the ledger: another day, moved GPS.
       const subject = url.searchParams.get("id")!;

@@ -236,6 +236,24 @@ window.CoachDashboard = (() => {
   // The timeline's selected event category while its legend is shown.
   let timelineCategory = () => null;
   let forgetMember = () => {};
+  // Latest known recorded GPS per member (dashboard scope, not the selected
+  // day or category): memberId -> {latitude, longitude, captured_at, ...}.
+  // This is a last recorded fix, never live tracking.
+  let latestPositions = new Map();
+  let renderLatest = () => {};
+  let latestNote = "";
+  // Members whose latest position could not be proven (bounded scan): never
+  // shown as absence. Retry is a bounded, operator-initiated re-read.
+  let latestIncomplete = [];
+  let latestRetry = null;
+  // Authority ordering: each read takes a sequence number when it starts and
+  // each observed Position/scope denial takes one when it is applied, so a
+  // positive response that started before a newer denial never resurrects.
+  let authoritySeq = 0;
+  const positionPrivateAt = new Map();
+  let latestScopeDeniedAt = 0;
+  // Ten minutes: at or under, a pin is fresh; strictly older is faded.
+  const LATEST_FRESH_MS = 10 * 60 * 1000;
   // Camera focus never zooms past street level (OSM tiles stop at 19).
   const FOCUS_ZOOM = 18;
   // A repeated pointer activation of the same member card or event, keyed
@@ -523,12 +541,20 @@ window.CoachDashboard = (() => {
     feedMembers = new Map();
     rosterCache = null;
     rosterReady = Promise.resolve({ note: "" });
+    latestPositions = new Map();
+    latestNote = "";
+    latestIncomplete = [];
+    latestRetry = null;
+    positionPrivateAt.clear();
+    latestScopeDeniedAt = 0;
+    renderLatest = () => {};
     avatarCache.clear();
     for (const url of avatarUrls.splice(0)) URL.revokeObjectURL(url);
     suppressedMembers.clear();
     filterFeed = () => {};
     filterMap = () => {};
     forgetMember = () => {};
+    $("dashboardLatestStatus")?.replaceChildren();
     if ($("dashboardMapStatus")) $("dashboardMapStatus").textContent = "";
     $("dashboardMapStatus")?.removeAttribute("data-tone");
     for (const url of urls.splice(0)) URL.revokeObjectURL(url);
@@ -718,6 +744,7 @@ window.CoachDashboard = (() => {
         filterMap(true, all);
         filterFeed();
         filterTimeline();
+        renderLatest();
       };
       button.addEventListener("click", (event) => {
         select();
@@ -1097,8 +1124,58 @@ window.CoachDashboard = (() => {
   }
   // A private Position DTO is member-scoped authority: every loaded fix for
   // that member leaves the map, while the permitted timeline rows remain.
+  // Position-only denial of the latest pin; the member's identity and
+  // authorized photo stay (they are separately authorized by the roster).
+  function withdrawLatest(memberId) {
+    positionPrivateAt.set(memberId, ++authoritySeq);
+    latestPositions.delete(memberId);
+    renderLatest();
+  }
+  // Whole-dojo/roster/timeline denial: every latest pin, chooser and
+  // association goes, and any read started earlier is discarded.
+  function denyLatestScope(status) {
+    latestScopeDeniedAt = ++authoritySeq;
+    latestPositions = new Map();
+    latestIncomplete = [];
+    latestRetry = null;
+    latestNote = `Latest known positions removed: dojo access denied${status ? ` (${status})` : ""}.`;
+    renderLatest();
+  }
+  // A whole-dojo denial observed by the latest reader revokes the loaded day
+  // too (the reverse of a timeline denial clearing latest): ledger, GPS,
+  // selection/detail and choosers go, and a pending day read is discarded.
+  // Only a fresh explicit reload (date change or dashboard reload) re-reads.
+  function denyDojoScope(status) {
+    denyLatestScope(status);
+    timelineEpoch++;
+    timelineController?.abort();
+    timelinePending = false;
+    ledgerFailure = status || 0;
+    ledgerGeneration++;
+    ledger = null;
+    highlightEvent(null);
+    selectionEpoch++;
+    $("dashboardMapSelection")?.replaceChildren();
+    timelineInteraction(false);
+    timelineInteraction = () => {};
+    filterTimeline = () => {};
+    timelineResize?.disconnect();
+    const target = $("dashboardTimeline");
+    if (target) {
+      delete target.dataset.date;
+      const note = text(
+        "p",
+        `Timeline removed: dojo access denied${status ? ` (${status})` : ""}. Reload the dashboard or choose a date to reauthorize.`,
+        "hint",
+      );
+      note.setAttribute("role", "status");
+      target.replaceChildren(note);
+    }
+    syncMap();
+  }
   function withholdMember(memberId) {
     withheldMembers.add(memberId);
+    withdrawLatest(memberId);
     syncMap();
     const shown = ledger?.items.get(selectedEventId);
     if (shown?.user_id === memberId)
@@ -1137,8 +1214,10 @@ window.CoachDashboard = (() => {
       avatarCache.delete(memberId);
     }
     forgetMember(memberId);
+    latestPositions.delete(memberId);
     filterTimeline();
     syncMap();
+    renderLatest();
     renderMemberCards();
   }
   // One shared selected ledger event for map and timeline. Selection freshly
@@ -1979,6 +2058,7 @@ window.CoachDashboard = (() => {
     $("dashboardMapSelection").replaceChildren();
     if (restarts) highlightEvent(null);
     const id = ++timelineEpoch;
+    const authorityStart = ++authoritySeq;
     timelinePending = true;
     ledgerFailure = null;
     timelineInteraction(false);
@@ -2130,7 +2210,12 @@ window.CoachDashboard = (() => {
             throw new Error("Invalid timeline event");
           pageIds.add(item.id);
         }
-        if (!resume && pages === 0) withheldMembers.clear();
+        if (!resume && pages === 0) {
+          withheldMembers.clear();
+          // A Position denial observed after this read began still holds.
+          for (const [memberId, at] of positionPrivateAt)
+            if (at > authorityStart) withheldMembers.add(memberId);
+        }
 
         for (const user of data.users) users.set(user._id, user);
         const newlyPrivate = new Set();
@@ -2171,6 +2256,7 @@ window.CoachDashboard = (() => {
       status.className = "hint";
       // A failed new day keeps no placeholder that could pass for an empty day.
       if (placeholder) target.replaceChildren(status);
+      if (denied(error)) denyLatestScope(error.status);
       if (denied(error) || error.status === 409) {
         ledgerGeneration++;
         ledger = null;
@@ -2255,6 +2341,7 @@ window.CoachDashboard = (() => {
             const url = URL.createObjectURL(blob);
             avatarUrls.push(url);
             avatarCache.set(memberId, url);
+            renderLatest();
             for (const pin of $("dashboardMemberCards").querySelectorAll(
               ".dashboard-member-portrait",
             )) {
@@ -2295,6 +2382,7 @@ window.CoachDashboard = (() => {
         if (members) rosterCache = members;
         else if (denied(error)) {
           rosterCache = null;
+          denyLatestScope(error.status);
           note = `Member roster access denied${code}; roster stats removed.`;
         } else
           note = rosterCache
@@ -2375,7 +2463,508 @@ window.CoachDashboard = (() => {
     // reach Leaflet's click handling or its double-click/double-tap zoom.
     for (const type of ["click", "dblclick"])
       overlay.addEventListener(type, (event) => event.stopPropagation());
+    // Latest known positions: a stable layer under the day's event dots,
+    // independent of the selected day/category and of the timeline.
+    const latestLayer = text("div", "", "dashboard-latest-overlay");
+    latestLayer.setAttribute("role", "group");
+    latestLayer.setAttribute(
+      "aria-label",
+      "Latest known recorded member positions (not live)",
+    );
+    for (const type of ["click", "dblclick"])
+      latestLayer.addEventListener(type, (event) => event.stopPropagation());
+    map.append(latestLayer);
     map.append(overlay);
+    const latestCaption = text("p", "", "dashboard-latest-caption");
+    latestCaption.setAttribute("aria-live", "polite");
+    // Keep warnings and Retry outside the geographic hit area: an error must
+    // never cover event dots or latest-position photo pins.
+    const latestStatus = $("dashboardLatestStatus");
+    if (latestStatus) latestStatus.replaceChildren(latestCaption);
+    const latestChooser = text("div", "", "dashboard-latest-chooser");
+    latestChooser.hidden = true;
+    latestChooser.setAttribute("role", "group");
+    latestChooser.setAttribute(
+      "aria-label",
+      "Members whose latest known positions overlap here",
+    );
+    for (const type of ["click", "dblclick"])
+      latestChooser.addEventListener(type, (event) => event.stopPropagation());
+    map.append(latestChooser);
+    const ageText = (ms) => {
+      const minutes = Math.floor(ms / 60000);
+      if (minutes < 1) return "just now";
+      if (minutes < 60) return `${minutes} min ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 48) return `${hours} h ago`;
+      return `${Math.floor(hours / 24)} days ago`;
+    };
+    // Age from the validated capture instant only, re-evaluated against the
+    // device clock; a capture ahead of the clock is shown as such, never "fresh".
+    const latestAge = (fix) => {
+      const age = Date.now() - Date.parse(fix.captured_at);
+      if (age < -60000)
+        return { fresh: false, note: "capture time is ahead of this device" };
+      if (age <= LATEST_FRESH_MS)
+        return { fresh: true, note: ageText(Math.max(0, age)) };
+      return { fresh: false, note: ageText(age) };
+    };
+    const latestName = (memberId) =>
+      mapMembers.get(memberId)?.display_name ||
+      latestPositions.get(memberId)?.display_name ||
+      "Member";
+    const latestInitials = (name) =>
+      (name.match(/[\p{L}\p{N}]+/gu) || ["M"])
+        .slice(-2)
+        .map((s) => s[0].toUpperCase())
+        .join("");
+    // One member's own round photo (or initials); never another member's.
+    const latestPhoto = (memberId) => {
+      const photo = text("span", "", "dashboard-latest-photo");
+      const url = avatarCache.get(memberId);
+      if (url) {
+        const image = text("img", "", "dashboard-latest-image");
+        image.alt = "";
+        image.src = url;
+        image.onerror = () => {
+          image.remove();
+          photo.textContent = latestInitials(latestName(memberId));
+        };
+        photo.append(image);
+      } else photo.textContent = latestInitials(latestName(memberId));
+      return photo;
+    };
+    const latestLabel = (memberId, fix) =>
+      `${latestName(memberId)}, latest known position recorded ${latestAge(fix).note} (${new Date(fix.captured_at).toLocaleString()})`;
+    const selectFromPin = (memberId) => {
+      // Ordinary selection: identical to a member card, never the camera.
+      selectedMember = memberId;
+      selectionEpoch++;
+      $("dashboardMapSelection")?.replaceChildren();
+      highlightEvent(null);
+      renderMemberCards();
+      filterMap(true, false);
+      filterFeed();
+      filterTimeline();
+      renderLatest();
+    };
+    // The latest pin explicitly focused, valid until the next deliberate
+    // camera change (cameraEpoch); resizes and day publication keep it.
+    let latestFocus = null;
+    const latestFocusHeld = () =>
+      !!latestFocus && latestFocus.epoch === cameraEpoch;
+    // Explicit focus follows the established camera protocol: a deliberate
+    // view (markUserView), FOCUS_ZOOM, the world copy nearest the view, and
+    // re-derivation from current authority after a settling zoom animation.
+    const focusLatest = (memberId) => {
+      if (!live()) return;
+      const current = () =>
+        selectedMember === memberId &&
+        !suppressedMembers.has(memberId) &&
+        latestPositions.get(memberId);
+      const fix = current();
+      if (!fix) return;
+      markUserView();
+      const epoch = cameraEpoch,
+        choice = selectionEpoch;
+      const apply = (point) => {
+        const center = instance.getCenter().lng;
+        instance.setView(
+          [
+            point.latitude,
+            point.longitude +
+              360 * Math.round((center - point.longitude) / 360),
+          ],
+          FOCUS_ZOOM,
+          { animate: false },
+        );
+        latestFocus = { memberId, epoch: cameraEpoch };
+        focusNote = `Map centered on ${latestName(memberId)}'s latest known recorded position (not live).`;
+        showStatus();
+      };
+      const animating = instance
+        .getPane("mapPane")
+        .classList.contains("leaflet-zoom-anim");
+      apply(fix);
+      if (!animating) return;
+      instance.once("zoomend", () => {
+        if (!live() || epoch !== cameraEpoch || choice !== selectionEpoch)
+          return;
+        const now = current();
+        if (now) apply(now);
+        else {
+          latestFocus = null;
+          focusNote = "";
+          showStatus();
+        }
+      });
+    };
+    let latestPins = [];
+    const latestProject = (fix, near) =>
+      instance.latLngToContainerPoint([
+        fix.latitude,
+        fix.longitude + 360 * Math.round((near - fix.longitude) / 360),
+      ]);
+    const latestOffscreen = (point) =>
+      point.x < -24 ||
+      point.x > map.clientWidth + 24 ||
+      point.y < -24 ||
+      point.y > map.clientHeight + 24;
+    let chooserIds = null;
+    const closeLatestChooser = () => {
+      chooserIds = null;
+      latestChooser.hidden = true;
+      latestChooser.replaceChildren();
+    };
+    const latestOwner = () =>
+      chooserIds &&
+      latestPins.find((pin) =>
+        pin.group.some((g) => g.memberId === chooserIds[0]),
+      )?.node;
+    // Kept inside the map: a narrow map or an edge anchor never clips a choice.
+    const placeLatestChooser = (owner) => {
+      const x = parseFloat(owner.style.left) || 0,
+        y = parseFloat(owner.style.top) || 0;
+      const w = latestChooser.offsetWidth,
+        h = latestChooser.offsetHeight;
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      latestChooser.style.left = `${clamp(x - w / 2, 4, Math.max(4, map.clientWidth - w - 4))}px`;
+      const below = y + 8;
+      latestChooser.style.top = `${clamp(below + h <= map.clientHeight - 4 ? below : y - 64 - h, 4, Math.max(4, map.clientHeight - h - 4))}px`;
+    };
+    const openLatestChooser = (group, owner, focusId = null) => {
+      latestChooser.replaceChildren();
+      chooserIds = group.map((g) => g.memberId);
+      for (const { memberId, fix } of group) {
+        const { fresh, note } = latestAge(fix);
+        const choice = text("button", "", "dashboard-latest-choice");
+        choice.type = "button";
+        choice.dataset.memberId = memberId;
+        choice.classList.toggle("dashboard-latest-stale", !fresh);
+        choice.setAttribute("aria-label", latestLabel(memberId, fix));
+        choice.setAttribute("aria-keyshortcuts", "Shift+Enter");
+        choice.title = latestLabel(memberId, fix);
+        const words = text("span", "", "dashboard-latest-choice-text");
+        words.append(
+          text("span", latestName(memberId), "dashboard-latest-choice-name"),
+          text("span", note, "dashboard-latest-choice-age"),
+        );
+        choice.append(latestPhoto(memberId), words);
+        choice.addEventListener("click", (event) => {
+          const repeat = doubleActivation(`latest:${memberId}`, event);
+          closeLatestChooser();
+          selectFromPin(memberId);
+          if (repeat) focusLatest(memberId);
+        });
+        choice.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            const node = latestOwner();
+            closeLatestChooser();
+            node?.focus({ preventScroll: true });
+          } else if (event.key === "Enter" && event.shiftKey) {
+            event.preventDefault();
+            closeLatestChooser();
+            selectFromPin(memberId);
+            focusLatest(memberId);
+          } else if (
+            ["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(
+              event.key,
+            )
+          ) {
+            event.preventDefault();
+            const choices = [...latestChooser.querySelectorAll("button")];
+            const step = ["ArrowDown", "ArrowRight"].includes(event.key)
+              ? 1
+              : -1;
+            choices[
+              Math.max(
+                0,
+                Math.min(choices.length - 1, choices.indexOf(choice) + step),
+              )
+            ]?.focus({ preventScroll: true });
+          }
+        });
+        latestChooser.append(choice);
+      }
+      latestChooser.hidden = false;
+      placeLatestChooser(owner);
+      (
+        (focusId &&
+          latestChooser.querySelector(`[data-member-id="${focusId}"]`)) ||
+        (focusId === null && latestChooser.querySelector("button"))
+      )?.focus({ preventScroll: true });
+    };
+    // Exact coordinates are the anchor; pins whose anchors would overlap on
+    // screen share one neutral aggregate marker and a chooser listing every
+    // identity with its own photo, age and opacity.
+    const placeLatest = () => {
+      if (!live()) return;
+      const center = instance.getCenter().lng;
+      for (const pin of latestPins) {
+        const point = latestProject(pin.anchor, center);
+        pin.node.hidden = latestOffscreen(point);
+        pin.node.style.left = `${point.x}px`;
+        pin.node.style.top = `${point.y}px`;
+      }
+    };
+    const ageLatest = () => {
+      if (!live()) return;
+      for (const pin of latestPins) {
+        const ages = pin.group.map(({ fix }) => latestAge(fix));
+        const stale = ages.filter((a) => !a.fresh).length;
+        const labels = pin.group.map(({ memberId, fix }) =>
+          latestLabel(memberId, fix),
+        );
+        pin.node.classList.toggle(
+          "dashboard-latest-stale",
+          stale === pin.group.length,
+        );
+        pin.node.classList.toggle(
+          "dashboard-latest-mixed",
+          stale > 0 && stale < pin.group.length,
+        );
+        pin.age.textContent =
+          pin.group.length === 1
+            ? ages[0].fresh
+              ? ""
+              : ages[0].note
+            : stale === pin.group.length
+              ? "all older"
+              : stale
+                ? `${stale} older`
+                : "";
+        pin.age.hidden = !pin.age.textContent;
+        pin.node.setAttribute(
+          "aria-label",
+          pin.group.length === 1
+            ? labels[0]
+            : `${pin.group.length} members' latest known positions overlap here${stale ? `, ${stale} older than ten minutes` : ""}: ${labels.join("; ")}`,
+        );
+        pin.node.title = labels.join("\n");
+      }
+      for (const choice of latestChooser.querySelectorAll("button")) {
+        const fix = latestPositions.get(choice.dataset.memberId);
+        if (!fix) continue;
+        const { fresh, note } = latestAge(fix);
+        choice.classList.toggle("dashboard-latest-stale", !fresh);
+        choice.querySelector(".dashboard-latest-choice-age").textContent = note;
+      }
+    };
+    // Pins currently eligible for display (scope, denial and member filter).
+    const latestShown = () =>
+      [...latestPositions]
+        .filter(
+          ([memberId]) =>
+            !suppressedMembers.has(memberId) &&
+            (!selectedMember || selectedMember === memberId),
+        )
+        .map(([memberId, fix]) => ({ memberId, fix }));
+    const latestCaptionText = text("span", "");
+    latestCaption.append(latestCaptionText);
+    renderLatest = () => {
+      if (!live()) return;
+      const reopen = chooserIds,
+        focused = latestChooser.contains(document.activeElement)
+          ? document.activeElement.dataset.memberId
+          : undefined;
+      closeLatestChooser();
+      latestLayer.replaceChildren();
+      latestPins = [];
+      latestCaptionText.textContent = latestNote;
+      latestCaption.querySelector("button")?.remove();
+      if (latestRetry) {
+        const retry = text("button", "Retry latest positions", "secondary");
+        retry.type = "button";
+        retry.onclick = () => latestRetry?.();
+        latestCaption.append(retry);
+      }
+      latestCaption.hidden = !latestNote;
+      const center = instance.getCenter().lng;
+      const groups = [];
+      for (const item of latestShown()) {
+        const point = latestProject(item.fix, center);
+        const near = groups.find(
+          (g) => Math.hypot(g.point.x - point.x, g.point.y - point.y) < 36,
+        );
+        if (near) near.group.push(item);
+        else groups.push({ point, group: [item], anchor: item.fix });
+      }
+      for (const { group, anchor } of groups) {
+        const node = text("button", "", "dashboard-latest-pin");
+        node.type = "button";
+        node.dataset.memberIds = group.map((g) => g.memberId).join(" ");
+        const single = group.length === 1 ? group[0].memberId : null;
+        if (single) {
+          node.setAttribute("aria-keyshortcuts", "Shift+Enter");
+          node.append(latestPhoto(single));
+        } else {
+          node.classList.add("dashboard-latest-group");
+          node.setAttribute("aria-haspopup", "true");
+          node.append(
+            text(
+              "span",
+              `${group.length}`,
+              "dashboard-latest-photo dashboard-latest-aggregate",
+            ),
+          );
+        }
+        const age = text("span", "", "dashboard-latest-age");
+        node.append(age);
+        node.addEventListener("click", (event) => {
+          if (!single) return openLatestChooser(group, node);
+          selectFromPin(single);
+          if (doubleActivation(`latest:${single}`, event)) focusLatest(single);
+        });
+        node.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" || !event.shiftKey) return;
+          event.preventDefault();
+          if (!single) return openLatestChooser(group, node);
+          selectFromPin(single);
+          focusLatest(single);
+        });
+        latestLayer.append(node);
+        latestPins.push({ node, group, anchor, age });
+      }
+      placeLatest();
+      ageLatest();
+      // Async avatar arrival or a denial keeps an open chooser truthful.
+      if (reopen) {
+        const pin = latestPins.find(
+          (p) =>
+            p.group.length > 1 &&
+            p.group.some((g) => reopen.includes(g.memberId)),
+        );
+        if (pin) openLatestChooser(pin.group, pin.node, focused);
+      }
+    };
+    instance.on("move zoom resize", placeLatest);
+    instance.on("movestart zoomstart resize", closeLatestChooser);
+    // Regroup only when the scale changes; panning keeps anchors and groups.
+    instance.on("zoomend", () => renderLatest());
+    // One shared clock for all pins (no per-member timers or polling); a
+    // hidden tab re-evaluates as soon as it is visible again.
+    const latestTimer = setInterval(ageLatest, 15000);
+    document.addEventListener(
+      "visibilitychange",
+      () => {
+        if (document.visibilityState === "visible") ageLatest();
+      },
+      { signal },
+    );
+    window.addEventListener("pageshow", ageLatest, { signal });
+    signal.addEventListener("abort", () => clearInterval(latestTimer), {
+      once: true,
+    });
+    // Initial all-members framing (and what All restores): the union of the
+    // selected day's fixes and the latest member fixes, independent of the
+    // current member selection. Never applied over a kept/deliberate view.
+    const defaultFrame = () => [
+      ...dots,
+      ...[...latestPositions]
+        .filter(([memberId]) => !suppressedMembers.has(memberId))
+        .map(([, fix]) => ({ fix })),
+    ];
+    const frameDefault = () => {
+      if (!live() || keptView || userViewChanged || latestFocusHeld()) return;
+      const points = defaultFrame();
+      if (!points.length) return;
+      fitPins(points);
+      mapViewSettled = true;
+      initialView = { center: instance.getCenter(), zoom: instance.getZoom() };
+    };
+    const LATEST_SHAPE = /^[0-9a-f]{24}$/;
+    const parseLatest = (body) => {
+      if (!body || typeof body !== "object" || !Array.isArray(body.members))
+        throw new Error("Invalid latest positions.");
+      return body.members.map((m) => {
+        const p = m?.latest;
+        const ok =
+          typeof m?.user_id === "string" &&
+          LATEST_SHAPE.test(m.user_id) &&
+          (m.status === "located"
+            ? p &&
+              Number.isFinite(p.latitude) &&
+              Math.abs(p.latitude) <= 90 &&
+              Number.isFinite(p.longitude) &&
+              Math.abs(p.longitude) <= 180 &&
+              typeof p.captured_at === "string" &&
+              Number.isFinite(Date.parse(p.captured_at))
+            : ["none", "private", "incomplete"].includes(m.status) &&
+              m.latest === null);
+        // A malformed 200 is not renewed authority: the whole read fails.
+        if (!ok) throw new Error("Invalid latest positions.");
+        return m;
+      });
+    };
+    // One read per dashboard/day load or explicit Retry (no polling), through
+    // the shared dashboard read admission; latest stays independent of the
+    // selected day/category.
+    const loadLatest = (restarts = 0) => {
+      const started = ++authoritySeq;
+      latestRetry = null;
+      // Keep ordinary refresh camera/layout-neutral. Retain an existing
+      // failure/partial warning, but do not add a transient header row.
+      renderLatest();
+      void dashboardFetch("/api/dashboard/latest-positions", {
+        headers: { Authorization: `Bearer ${adminKey}` },
+        signal,
+        cache: "no-store",
+        redirect: "error",
+      })
+        .then(async (response) => {
+          if (!response.ok)
+            throw httpError("Latest positions read failed.", response.status);
+          return parseLatest(await response.json());
+        })
+        .then((members) => {
+          if (!live() || latestScopeDeniedAt > started) return;
+          const next = new Map(),
+            incomplete = [];
+          for (const m of members) {
+            if (suppressedMembers.has(m.user_id)) continue;
+            if (m.status === "private") {
+              withholdMember(m.user_id);
+              continue;
+            }
+            if (m.status === "incomplete") incomplete.push(m.user_id);
+            if (m.status !== "located") continue;
+            // A denial applied after this read began wins over its positive.
+            if ((positionPrivateAt.get(m.user_id) || 0) > started) continue;
+            positionPrivateAt.delete(m.user_id);
+            const p = m.latest;
+            next.set(m.user_id, {
+              latitude: p.latitude,
+              longitude: p.longitude,
+              captured_at: p.captured_at,
+              display_name:
+                typeof m.display_name === "string" ? m.display_name : null,
+            });
+          }
+          latestPositions = next;
+          latestIncomplete = incomplete;
+          latestNote = incomplete.length
+            ? `Latest known position could not be confirmed for ${incomplete.map((id) => mapMembers.get(id)?.display_name || members.find((m) => m.user_id === id)?.display_name || "a member").join(", ")} (search limit reached); no pin is shown for ${incomplete.length === 1 ? "this member" : "these members"}.`
+            : "";
+          latestRetry = incomplete.length ? () => loadLatest() : null;
+          renderLatest();
+          frameDefault();
+        })
+        .catch((error) => {
+          if (!live() || latestScopeDeniedAt > started) return;
+          if (error.status === 409 && restarts < 1) return loadLatest(1);
+          if (denied(error)) return denyDojoScope(error.status);
+          // Unverified: no pin is shown and the failure stays visible.
+          latestPositions = new Map();
+          latestIncomplete = [];
+          latestNote =
+            error.status === 409
+              ? "Latest known positions unavailable (409): access changed while loading."
+              : `Latest known positions unavailable${error.status ? ` (${error.status})` : " (invalid response)"}.`;
+          latestRetry = () => loadLatest();
+          renderLatest();
+        });
+    };
     let chooserOwner = null;
     const chooser = text("div", "", "dashboard-map-chooser");
     chooser.hidden = true;
@@ -2626,9 +3215,13 @@ window.CoachDashboard = (() => {
       );
       if (!fitted && dots.length) {
         fitted = true;
-        // A kept view moves only when it would show none of the new day's events.
-        if (
-          !keptView ||
+        // The initial view frames the day's fixes with the latest member
+        // fixes. A kept view moves only when it would show none of the new
+        // day's events; an explicit latest focus is never overridden.
+        if (latestFocusHeld()) {
+          // Keep the explicit latest focus.
+        } else if (!keptView) fitPins(defaultFrame());
+        else if (
           dots.every(({ fix }) =>
             offscreen(project(fix, instance.getCenter().lng)),
           )
@@ -2963,16 +3556,19 @@ window.CoachDashboard = (() => {
       instance.invalidateSize();
       placePins();
       const shown = dots.filter(visible);
+      const frame = userViewChanged ? shown : defaultFrame();
       // A desktop fit may leave every event offscreen when the map narrows.
-      // Refit only then, preserving deliberate user panning when one is visible.
+      // Refit only then, preserving deliberate user panning when one is
+      // visible and always an explicit latest-position focus.
       if (
-        shown.length &&
+        !latestFocusHeld() &&
+        frame.length &&
         (!userViewChanged ||
           shown.every(({ fix }) =>
             offscreen(project(fix, instance.getCenter().lng)),
           ))
       ) {
-        fitPins(shown);
+        fitPins(frame);
         if (!selectedMember)
           initialView = {
             center: instance.getCenter(),
@@ -2983,6 +3579,7 @@ window.CoachDashboard = (() => {
     });
     mapResizeObserver.observe(map);
     syncMap();
+    loadLatest();
   }
   function startGallery({ request, detailFor, live, signal, users, revoked }) {
     const host = $("dashboardGallery");
@@ -3372,7 +3969,8 @@ window.CoachDashboard = (() => {
       getMembers: () =>
         [...mapMembers.values()].filter((m) => !suppressedMembers.has(m._id)),
       getSelected: () => selectedMember,
-      onDenial: (id) => forgetMember(id),
+      // A Stats 401/403 is a full member denial, not Position-only.
+      onDenial: (id) => denyMember(id),
     });
     loadRoster(adminKey);
     if ($("dashboardMapDate")?.type === "date") {
