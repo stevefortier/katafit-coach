@@ -278,9 +278,12 @@ test("the sweep removes stale session folders and nothing else", async () => {
   assert.equal(await sweepWorkspaceSessions(scratch()), 0);
 });
 
-test("the sandbox mode is Docker unless the installation chose workspace", async () => {
+test("the sandbox mode is Docker unless the installation chose workspace (workspace on Windows)", async () => {
   const home = scratch();
-  assert.equal(await sandboxMode(home), "docker");
+  assert.equal(
+    await sandboxMode(home),
+    process.platform === "win32" ? "workspace" : "docker",
+  );
   writeFileSync(sandboxModeFile(home), '{"mode":"workspace"}');
   assert.equal(await sandboxMode(home), "workspace");
   for (const invalid of [

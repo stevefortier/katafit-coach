@@ -191,6 +191,84 @@ jobs:
           name: coach-archives-${{ github.sha }}
           path: ${{ runner.temp }}/archives
           retention-days: 7
+  windows:
+    # Coach on Windows: the archive under its bootstrap like an installed copy,
+    # then the bootstrap, handover and workspace upgrade suites natively.
+    needs: archives
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: ./.github/actions/prepare
+      - uses: actions/download-artifact@v4
+        with:
+          name: coach-archives-${{ github.sha }}
+          path: ${{ runner.temp }}/archives
+      - name: Run the Windows archive under its bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP" && unzip -q archives/coach-*-win-x64.zip -d run
+          run/katafit-coach/node/node.exe "$GITHUB_WORKSPACE/scripts/windows-smoke.mjs" "$RUNNER_TEMP/run/katafit-coach" "$RUNNER_TEMP/home"
+      - name: Bootstrap, handover and upgrade suites on Windows
+        shell: bash
+        run: npx tsx --test --test-concurrency=1 --test-force-exit tests/boot.test.ts tests/boot-handover.test.ts tests/handover-resume.test.ts tests/workspace-upgrades.test.ts tests/archive-stage.test.ts tests/release-provision.test.ts
+      - name: Install, reinstall and restart as a standard Windows user
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:PUBLIC ('coach-smoke-' + [guid]::NewGuid().ToString('N'))
+          $null = New-Item -ItemType Directory -Path $root
+          $password = ConvertTo-SecureString (([guid]::NewGuid().ToString('N')) + 'aA!9') -AsPlainText -Force
+          $user = New-LocalUser -Name 'coach-smoke' -Password $password -AccountNeverExpires
+          Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
+          $credential = New-Object Management.Automation.PSCredential ("$env:COMPUTERNAME\coach-smoke", $password)
+          try {
+            Copy-Item "$env:RUNNER_TEMP\archives\coach-*-win-x64.zip" "$root\archive.zip"
+            Copy-Item install.ps1 "$root\install.ps1"
+            Copy-Item scripts/windows-installer-smoke.ps1 "$root\smoke.ps1"
+            $null = & icacls.exe $root /grant "*$($user.SID.Value):(OI)(CI)F" /T
+            if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the smoke folder.' }
+            $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $root + '\smoke.ps1" -Archive "' + $root + '\archive.zip" -Installer "' + $root + '\install.ps1" -Root "' + $root + '"'
+            $process = Start-Process powershell.exe -Credential $credential -LoadUserProfile -ArgumentList $arguments -PassThru -RedirectStandardOutput "$root\stdout.log" -RedirectStandardError "$root\stderr.log"
+            # Keep a handle so PowerShell can read ExitCode after it exits.
+            $null = $process.Handle
+            # Wait for the test process, not all descendants (a failed smoke
+            # may leave a background bootstrap). Stream complete log lines so
+            # diagnostics remain visible even while the installer is running.
+            $seen = @{ 'stdout.log' = 0; 'stderr.log' = 0 }
+            $deadline = [DateTime]::UtcNow.AddMinutes(8)
+            do {
+              $ended = $process.WaitForExit(1000)
+              foreach ($log in @('stdout.log', 'stderr.log')) {
+                try {
+                  $stream = New-Object IO.FileStream("$root\$log", 'Open', 'Read', 'ReadWrite')
+                  $reader = New-Object IO.StreamReader($stream)
+                  try { $content = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                } catch { continue }
+                $end = if ($ended) { $content.Length } else { $content.LastIndexOf("`n") + 1 }
+                if ($end -gt $seen[$log]) {
+                  # Installer output contains a disposable local admin URL.
+                  $content.Substring($seen[$log], $end - $seen[$log]) -replace '(http://127\.0\.0\.1:\d+/#)[A-Za-z0-9_-]+', '$1[redacted]' | Write-Host
+                  $seen[$log] = $end
+                }
+              }
+            } while (-not $ended -and [DateTime]::UtcNow -lt $deadline)
+            if (-not $ended) {
+              $null = & taskkill.exe /PID $process.Id /T /F
+              foreach ($log in @('stdout.log', 'stderr.log')) {
+                (Get-Content "$root\$log" -Raw) -replace '(http://127\.0\.0\.1:\d+/#)[A-Za-z0-9_-]+', '$1[redacted]' | Write-Host
+              }
+              throw 'Windows installer smoke exceeded 8 minutes.'
+            }
+            if ($process.ExitCode -ne 0) { throw "Windows installer smoke exited $($process.ExitCode)" }
+          } finally {
+            Remove-LocalUser -Name 'coach-smoke' -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          }
   installer:
     # The one-line Linux installer, from this source's archive, as an ordinary
     # user in clean containers with nothing preinstalled.
@@ -229,7 +307,7 @@ jobs:
   verify:
     # Stable required check: skipped, cancelled and failed dependencies all fail.
     if: always()
-    needs: [build, tests, native, workspace, installer, package, updater, browser, docker, archives]
+    needs: [build, tests, native, workspace, installer, windows, package, updater, browser, docker, archives]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -237,4 +315,4 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==10 and all(job["result"]=="success" for job in results.values()), results'
+          python3 -c 'import json, os; results=json.loads(os.environ["NEEDS_JSON"]); assert len(results)==11 and all(job["result"]=="success" for job in results.values()), results'

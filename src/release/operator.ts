@@ -3,6 +3,7 @@ import { open, rm, link } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { directory } from "../update/managed.js";
+import { syncDirectory } from "../runtime/platform.js";
 import {
   discoverRelease,
   verifyProvenance,
@@ -100,12 +101,7 @@ export async function downloadFile(
       if (existing.size !== size || existing.sha256 !== sha256)
         throw Error("RELEASE_REJECTED");
     }
-    const parent = await open(dirname(target), "r");
-    try {
-      await parent.sync();
-    } finally {
-      await parent.close();
-    }
+    await syncDirectory(dirname(target));
   } finally {
     await reader.cancel();
     await file.close();

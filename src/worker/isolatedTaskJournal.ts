@@ -1,3 +1,4 @@
+import { NOFOLLOW, SYNC_ACCESS, windows } from "../runtime/platform.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
@@ -68,15 +69,17 @@ export class IsolatedTaskJournal {
     return join(this.home, "isolated-tasks");
   }
   private async sync(path: string) {
+    // Windows: no directory fsync, POSIX modes or uids (runtime/platform.ts).
+    if (windows && (await lstat(path)).isDirectory()) return;
     const handle = await open(
       path,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      SYNC_ACCESS | NOFOLLOW | (constants.O_NONBLOCK ?? 0),
     );
     try {
       const info = await handle.stat();
       if (
         (!info.isDirectory() && !info.isFile()) ||
-        info.mode & 0o077 ||
+        (!windows && info.mode & 0o077) ||
         (typeof process.geteuid === "function" &&
           info.uid !== process.geteuid())
       )

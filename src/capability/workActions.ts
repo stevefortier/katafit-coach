@@ -1,3 +1,4 @@
+import { syncDirectory } from "../runtime/platform.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -146,12 +147,7 @@ export class WorkActions {
         await file.close();
       }
       await rename(temp, target);
-      const dir = await open(directory, "r");
-      try {
-        await dir.sync();
-      } finally {
-        await dir.close();
-      }
+      await syncDirectory(directory);
     } finally {
       await rm(temp, { force: true });
     }

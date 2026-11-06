@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { readFile, open, unlink, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -37,6 +39,17 @@ async function call(path: string, post = false) {
   if (!r.ok) throw new Error("SERVICE_REQUEST_FAILED");
   return r.json();
 }
+/** Windows: hold a home-specific named pipe, or refuse a second owner. */
+async function singleInstance(home: string) {
+  const id = createHash("sha256").update(resolve(home)).digest("hex");
+  const lock = createServer();
+  await new Promise<void>((done, fail) => {
+    lock.once("error", () => fail(new Error("SERVICE_ALREADY_RUNNING")));
+    lock.listen(`\\\\.\\pipe\\katafit-coach-${id.slice(0, 32)}`, done);
+  });
+  // Held while this process lives, without keeping it alive.
+  lock.unref();
+}
 async function main() {
   if (command === "help") {
     console.log(
@@ -44,7 +57,13 @@ async function main() {
     );
     return;
   }
-  if (command === "serve") {
+  if (command === "serve" && process.platform === "win32") {
+    // No flock on Windows: a named pipe derived from the home is held for
+    // the process lifetime instead; a second owner cannot listen on it, and
+    // Windows releases it when this process ends.
+    await mkdir(dir, { recursive: true });
+    await singleInstance(dir);
+  } else if (command === "serve") {
     if (process.platform !== "linux")
       return legacyServe(store, Number(process.env.KATAFIT_COACH_PORT ?? 4317));
     await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -75,7 +94,7 @@ async function main() {
     return;
   }
   await store.init();
-  if (command === "__serve") {
+  if (command === "__serve" || command === "serve") {
     let app: Awaited<ReturnType<typeof supervise>> | undefined;
     let closing = false;
     const close = async () => {
@@ -183,8 +202,14 @@ async function main() {
     await call("status");
     const url = t.origin + "/#" + store.secrets.admin;
     const child = spawn(
-      process.platform === "darwin" ? "open" : "xdg-open",
-      [url],
+      process.platform === "win32"
+        ? "rundll32.exe"
+        : process.platform === "darwin"
+          ? "open"
+          : "xdg-open",
+      process.platform === "win32"
+        ? ["url.dll,FileProtocolHandler", url]
+        : [url],
       { stdio: "ignore" },
     );
     child.once("error", () => {
@@ -210,7 +235,8 @@ main().catch((error) => {
         : reason === "LAUNCHER_UPGRADE_REQUIRED" ||
             reason === "INVALID_SKILL_STORAGE"
           ? `Coach command failed: ${reason}. Keep the full protected home and hash-linked skill history intact; install a reviewed compatible launcher side by side before restarting. See docs/source-updates.md.`
-          : "Coach command failed. Check service status, protected installation directory and port availability. Use help for commands.",
+          : // A fixed code names the cause; other messages may carry paths.
+            `Coach command failed${/^[A-Z][A-Z0-9_]{2,63}$/.test(reason) ? `: ${reason}` : ""}. Check service status, protected installation directory and port availability. Use help for commands.`,
   );
   process.exitCode = 1;
 });

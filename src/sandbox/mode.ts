@@ -1,12 +1,14 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
+import { windows } from "../runtime/platform.js";
 
 /**
  * Where Pi sessions run: "docker" (the hardened container) or "workspace"
  * (Pi as a permission-limited process with just-bash tools, no Docker).
  * Installation-owned: `sandbox.json` in Coach's home, `{"mode":"workspace"}`.
- * Absent means Docker; anything unreadable or invalid fails closed.
+ * Absent means Docker (workspace on Windows, where Docker mode cannot run);
+ * anything unreadable or invalid fails closed.
  */
 export type SandboxMode = "docker" | "workspace";
 export const sandboxModeFile = (home: string) => join(home, "sandbox.json");
@@ -19,7 +21,8 @@ export async function sandboxMode(home: string): Promise<SandboxMode> {
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
   } catch (error: any) {
-    if (error?.code === "ENOENT") return "docker";
+    // Docker mode is Linux-only: without a choice, Windows runs workspace.
+    if (error?.code === "ENOENT") return windows ? "workspace" : "docker";
     throw new Error("SANDBOX_MODE_INVALID");
   }
   try {

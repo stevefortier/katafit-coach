@@ -1,3 +1,4 @@
+import { syncDirectory } from "../runtime/platform.js";
 import {
   mkdir,
   writeFile,
@@ -26,17 +27,6 @@ function snapshotName(bytes: Buffer) {
   return (
     "persona-" + createHash("sha256").update(bytes).digest("hex") + ".json"
   );
-}
-async function syncDirectory(path: string) {
-  const directory = await open(
-    path,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
-  }
 }
 // Open before checking type: NOFOLLOW rejects symlinks and NONBLOCK prevents
 // FIFOs from hanging startup. Read at most the bound, even if a file grows.

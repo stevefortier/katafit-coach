@@ -24,7 +24,11 @@ async function fixture(home: string) {
     await writeFile(join(root, "package.json"), '{"type":"module"}');
     await writeFile(
       join(root, "dist/build.json"),
-      JSON.stringify({ revision: target, protocol: 1 }),
+      JSON.stringify({
+        revision: target,
+        protocol: 1,
+        capabilities: ["workspace-sandbox-1"],
+      }),
     );
     await writeFile(
       join(root, "dist/server/admin.js"),

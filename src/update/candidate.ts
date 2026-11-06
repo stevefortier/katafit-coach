@@ -1,3 +1,10 @@
+import {
+  NOFOLLOW,
+  ownedByUser,
+  ownedByUserOrRoot,
+  sharedWritable,
+  syncDirectory,
+} from "../runtime/platform.js";
 import { constants } from "node:fs";
 import { lstat, open, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -20,11 +27,8 @@ async function privateDirectory(path: string) {
     const s = await lstat(p),
       privatePath = p === resolve(path);
     if (
-      (privatePath
-        ? s.uid !== process.getuid?.()
-        : s.uid !== 0 && s.uid !== process.getuid?.()) ||
-      ((s.mode & 0o022) !== 0 &&
-        !(!privatePath && s.uid === 0 && s.mode & 0o1000))
+      !(privatePath ? ownedByUser(s) : ownedByUserOrRoot(s)) ||
+      (sharedWritable(s) && !(!privatePath && s.uid === 0 && s.mode & 0o1000))
     )
       throw unsafe();
     if (p === dirname(p)) break;
@@ -34,7 +38,7 @@ async function read(path: string) {
   await privateDirectory(dirname(path));
   const h = await open(
     path,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    constants.O_RDONLY | NOFOLLOW | (constants.O_NONBLOCK ?? 0),
   );
   try {
     const s = await h.stat(),
@@ -42,9 +46,9 @@ async function read(path: string) {
     for (const v of [s, p])
       if (
         !v.isFile() ||
-        v.uid !== process.getuid?.() ||
+        !ownedByUser(v) ||
         v.nlink !== 1 ||
-        v.mode & 0o022 ||
+        sharedWritable(v) ||
         v.size > 512
       )
         throw unsafe();
@@ -92,15 +96,7 @@ export class CandidateOwnership {
   }
   async clear() {
     await rm(join(this.home, name), { force: true });
-    const h = await open(
-      this.home,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
-    try {
-      await h.sync();
-    } finally {
-      await h.close();
-    }
+    await syncDirectory(this.home);
   }
   async recover() {
     const lease = await this.read();

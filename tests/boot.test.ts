@@ -38,7 +38,14 @@ function supervisors(home: string, plan: Record<string, string[]>) {
     const service = JSON.stringify(join(home, "service.json"));
     const script = {
       healthyExit0: `require("fs").writeFileSync(${service}, "{}"); setTimeout(() => process.exit(0), 100)`,
-      handover: `setTimeout(() => process.exit(${HANDOVER_EXIT}), 50)`,
+      // The upgrading supervisor publishes both records before handing over.
+      // Writing these from the parent races the child's exit on Windows.
+      handover: `
+        const fs = require("fs");
+        fs.writeFileSync(${JSON.stringify(join(home, "active.json"))}, ${JSON.stringify(JSON.stringify({ revision: B }))});
+        fs.writeFileSync(${JSON.stringify(join(home, "handoff.json"))}, ${JSON.stringify(JSON.stringify({ revision: B, previous: { revision: A } }))});
+        process.exit(${HANDOVER_EXIT});
+      `,
       hang: `setInterval(() => {}, 1000)`,
       crash: `process.exit(1)`,
     }[step]!;
@@ -68,12 +75,6 @@ test("a handover starts the newly active version's own supervisor", async () => 
       seed: [],
     });
     const run = boot({ home, seed, start: s.start, healthMs: 5000 });
-    // A's supervisor upgraded to B before handing over.
-    await write(home, "active.json", { revision: B });
-    await write(home, "handoff.json", {
-      revision: B,
-      previous: { revision: A },
-    });
     assert.equal(await run, 0);
     assert.deepEqual(s.started, ["A", "B"]);
     assert.equal(existsSync(join(home, "handoff.json")), false);
