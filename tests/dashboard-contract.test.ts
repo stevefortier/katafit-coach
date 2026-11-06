@@ -31,6 +31,28 @@ async function render(
       for (const node of nodes) node.parent = this;
       this.children.unshift(...nodes);
     }
+    // Standard DOM tree reads/moves used by the keyed member-card renderer.
+    get parentNode() {
+      return this.parent || null;
+    }
+    get firstChild() {
+      return this.children[0] || null;
+    }
+    get nextSibling() {
+      const siblings = this.parent?.children || [];
+      return siblings[siblings.indexOf(this) + 1] || null;
+    }
+    appendChild(node: Node) {
+      this.insertBefore(node, null);
+      return node;
+    }
+    insertBefore(node: Node, reference: Node | null) {
+      node.remove();
+      node.parent = this;
+      const index = reference ? this.children.indexOf(reference) : -1;
+      this.children.splice(index < 0 ? this.children.length : index, 0, node);
+      return node;
+    }
     querySelector(selector: string): Node | null {
       return this.querySelectorAll(selector)[0] || null;
     }
@@ -83,6 +105,15 @@ async function render(
           ? null
           : (nodes[id] ||= new Node()),
       createElement: (tag: string) => new Node(tag),
+      createTextNode: (data: string) => {
+        const node: any = new Node("#text");
+        Object.defineProperty(node, "data", {
+          get: () => node.textContent,
+          set: (value: string) => (node.textContent = value),
+        });
+        node.textContent = data;
+        return node;
+      },
       createElementNS: () => new Node(),
     },
     AbortController,

@@ -33,6 +33,19 @@ A single click/tap keeps its ordinary meaning: a member picture selects that mem
 - **Member picture:** fits only that member's currently shown located events: the selected date's loaded ledger, positions that are still shared (not missing, unavailable or privacy-withheld), and the timeline's selected category, if any. Other members never widen the fit. An event that another member recorded at exactly the same coordinate still stays in place on the map. The fit takes the shortest longitude arc across the dateline, keeps marker padding and zooms in no further than 18. A single location is centered at zoom 18.
 - **Map dot or timeline occurrence:** centers that event's exact recorded coordinate at zoom 18, in the world copy nearest the current view. Timeline occurrences also reach co-located events behind a location badge.
 - **Nothing to show:** a member or event without a shared location leaves the camera unchanged, and the map status says so.
+- **Member picture before the day loads:** member cards are clickable before the day's paged ledger has fully loaded. A double activation in that window does not claim the member has no location. The status says the map will zoom to that member once the day's events load, and the camera stays where it is until then. When the complete day publishes, the camera fits that member as above, but only if that member is still selected. The day's default fit is still recorded, so All later restores it. The pending focus is cancelled by:
+  - All, or another member's ordinary selection
+  - panning, wheel or zoom-control navigation
+  - a date change, reload or lock
+  - a failed load
+
+  If the member turns out to have no shared location, the status says so after the load.
+
+- **During a zoom animation:** a member or event focus made while a map zoom animation (for example a wheel zoom) is still running is applied once more when that animation ends. Leaflet would otherwise drop the fit or overwrite it. The target is re-derived at that moment from the current ledger, never from coordinates captured earlier. The focus is dropped (the camera stays and no zoom is claimed) if any of these happened since:
+  - navigation, All or a newer member or event selection
+  - a category change, or a reload of the day
+  - the member was denied, or the event no longer has a shared position
+- **Member cards updating mid-gesture:** member cards are keyed by member and updated in place. A roster arrival, an older feed page, a selection or another member's denial never replaces or moves a card it does not need to. A press already under way on a picture therefore still produces its click, and a double activation still focuses that member. A confirmed denial still removes that member's card, avatar and map locations at once, even during a press. Releasing over a removed card activates nothing.
 
 ### Timeline occurrence: single versus repeat activation
 
@@ -50,7 +63,22 @@ The opening day fit still stops at zoom 16. A focused camera counts as a deliber
 
 ## Qualification
 
-`timeline-redesign-browser.test.ts` exercises dense mixed-category clusters, non-overlapping targets, nearby-time zoom, previews without layout shifts, keyboard/touch selection, category/member filters, related activity reads and historical 404/denial behavior. `map-focus-browser.test.ts` drives real CDP mouse double-clicks and touch double taps on a phone viewport. It checks fit tightness, excluded members, category/date/privacy fences, dateline fractional longitudes, resize retention, keyboard focus and a stable page zoom. `timeline-exact-focus-browser.test.ts` serves the real Studio layout with a dense, synthetic day in which overlapping marks and a coincident pair make the mark under the pointer differ from the chronologically nearest event. While every exact detail reply is held, it drives a real CDP mouse double-click and a native CDP touch double tap on those rendered marks. It asserts the following:
+`timeline-redesign-browser.test.ts` exercises dense mixed-category clusters, non-overlapping targets, nearby-time zoom, previews without layout shifts, keyboard/touch selection, category/member filters, related activity reads and historical 404/denial behavior. `map-focus-browser.test.ts` drives real CDP mouse double-clicks and touch double taps on a phone viewport. It checks fit tightness, excluded members, category/date/privacy fences, dateline fractional longitudes, resize retention, keyboard focus and a stable page zoom. `map-focus-retention-browser.test.ts` holds the second page of a paged day while it drives a real CDP mouse double-click and a native touch double tap on a member picture. After the day publishes, it asserts:
+
+- that member's street-level fit, with the selection kept and the inspector empty
+- truthful pending and no-location statuses
+- resize retention, and an All reset back to the default fit
+- that All, another member, a map drag or a date change supersedes the request
+
+It also lands a double activation on a member and on a timeline occurrence during a wheel zoom animation, and checks that a mid-animation All still wins. With Leaflet's zoom-end held, it checks that a member or event focus still applies when nothing intervenes. It also checks that the focus is dropped at the animation's end after any of these before that end:
+
+- a 403 denial of the member
+- a newer event selection
+- a category filter
+
+It holds a real second mouse press on a member picture while one of these lands, then releases it: the member roster arriving, an older feed page arriving, or a 403 denial of another member. It checks that the update settled during the press, the native second click still reached the same connected card and the camera fits that member. A 403 denial of the pressed member itself removes that member's card, avatar URL and map locations before the release, and nothing activates afterwards.
+
+`timeline-exact-focus-browser.test.ts` serves the real Studio layout with a dense, synthetic day in which overlapping marks and a coincident pair make the mark under the pointer differ from the chronologically nearest event. While every exact detail reply is held, it drives a real CDP mouse double-click and a native CDP touch double tap on those rendered marks. It asserts the following:
 
 - both presses hit the same mark, and only that event ID is read
 - the camera stays still until the reply is released

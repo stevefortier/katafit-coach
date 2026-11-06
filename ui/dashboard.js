@@ -202,6 +202,9 @@ window.CoachDashboard = (() => {
   const suppressedMembers = new Set();
   let selectedMember = null;
   let closeMemberTooltip = () => {};
+  // Retained member rail and its keyed cards (see renderMemberCards).
+  let memberRail = null;
+  let memberCards = new Map();
   let mapMembers = new Map();
   let feedMembers = new Map();
   let filterFeed = () => {};
@@ -514,6 +517,8 @@ window.CoachDashboard = (() => {
     $("dashboardMap")?.replaceChildren();
     $("dashboardMapSelection")?.replaceChildren();
     $("dashboardMemberCards")?.replaceChildren();
+    memberRail = null;
+    memberCards = new Map();
     selectedMember = null;
     mapMembers = new Map();
     feedMembers = new Map();
@@ -549,10 +554,18 @@ window.CoachDashboard = (() => {
       heading.textContent = mapMembers.size
         ? "Dojo members"
         : "Members in loaded shared data";
-    const rosterScrollLeft =
-      target.querySelector(".dashboard-member-rail")?.scrollLeft || 0;
-    target.replaceChildren();
-    const rail = text("div", "", "dashboard-member-rail");
+    // Cards are keyed by member and updated in place. Chromium drops a click
+    // whose pressed node is removed or re-inserted before mouseup, so a roster
+    // or feed arrival, a selection or another member's denial must never
+    // replace or move a card it does not need to. The retained rail also keeps
+    // its scroll position; the browser clamps it if a denial shrinks the rail.
+    if (memberRail?.parentNode !== target) {
+      target.replaceChildren();
+      memberRail = text("div", "", "dashboard-member-rail");
+      memberCards = new Map();
+      target.append(memberRail);
+    }
+    const rail = memberRail;
     const members = new Map(
       [...feedMembers, ...mapMembers].filter(
         ([id]) => !suppressedMembers.has(id),
@@ -589,154 +602,114 @@ window.CoachDashboard = (() => {
         return `${value.value} ${value.unit}`;
       return "Unavailable";
     };
-    const makeCard = (id, user, all = false) => {
+    const setText = (node, value) => {
+      if (node.textContent !== value) node.textContent = value;
+      if (node.title !== value) node.title = value;
+    };
+    // Body-fat tooltip for one card; its listeners only read retained nodes.
+    const makeInfo = (id) => {
+      // A sibling native button keeps the member's selection button valid
+      // and prevents pointer/keyboard provenance reads from selecting it.
+      const info = text("button", "ⓘ", "dashboard-member-info");
+      info.type = "button";
+      const tooltip = text(
+        "div",
+        "Body fat is estimated from progress photos.",
+        "dashboard-member-tooltip",
+      );
+      tooltip.id = `dashboard-bodyfat-${id}`;
+      tooltip.setAttribute("role", "tooltip");
+      tooltip.setAttribute("popover", "auto");
+      info.setAttribute("aria-describedby", tooltip.id);
+      let pinned = false;
+      let hideTimer;
+      let floatingEvents;
+      let focusFrame;
+      const cancelHide = () => clearTimeout(hideTimer);
+      const hide = () => {
+        cancelHide();
+        cancelAnimationFrame(focusFrame);
+        pinned = false;
+        floatingEvents?.abort();
+        floatingEvents = null;
+        if (tooltip.matches(":popover-open")) tooltip.hidePopover();
+        if (closeMemberTooltip === hide) closeMemberTooltip = () => {};
+      };
+      const show = () => {
+        cancelHide();
+        if (!tooltip.matches(":popover-open")) {
+          closeMemberTooltip();
+          closeMemberTooltip = hide;
+          tooltip.showPopover();
+          floatingEvents = new AbortController();
+          const options = { signal: floatingEvents.signal, capture: true };
+          document.addEventListener("scroll", hide, options);
+          window.addEventListener("resize", hide, options);
+        }
+        const anchor = info.getBoundingClientRect();
+        const bounds = tooltip.getBoundingClientRect();
+        tooltip.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - bounds.width - 8))}px`;
+        tooltip.style.top = `${Math.max(8, Math.min(anchor.bottom + 6, innerHeight - bounds.height - 8))}px`;
+      };
+      info.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "mouse") show();
+      });
+      const leave = () => {
+        if (!pinned && document.activeElement !== info)
+          hideTimer = setTimeout(hide, 160);
+      };
+      info.addEventListener("pointerleave", leave);
+      tooltip.addEventListener("pointerenter", cancelHide);
+      tooltip.addEventListener("pointerleave", leave);
+      info.addEventListener("focus", () => {
+        if (!info.matches(":focus-visible")) return;
+        // Native Tab may scroll the horizontal rail after focus dispatch.
+        // Open after that scroll, rather than instantly dismissing a fresh
+        // keyboard preview via the floating tooltip's scroll listener.
+        focusFrame = requestAnimationFrame(() => {
+          focusFrame = requestAnimationFrame(() => {
+            if (
+              info.isConnected &&
+              document.activeElement === info &&
+              info.matches(":focus-visible")
+            )
+              show();
+          });
+        });
+      });
+      info.addEventListener("blur", hide);
+      info.addEventListener("click", () => {
+        if (pinned) hide();
+        else {
+          show();
+          pinned = true;
+        }
+      });
+      info.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          hide();
+        }
+      });
+      tooltip.addEventListener("toggle", () => {
+        // Explicit hide already cleaned up. Its delayed closing event must
+        // not cancel a newer keyboard focus's pending reveal.
+        if (!tooltip.matches(":popover-open") && floatingEvents) hide();
+      });
+      return { info, tooltip, hide };
+    };
+    // Built once per member; listeners read only the stable id and current state.
+    const makeCard = (id, all) => {
       const button = text(
         "button",
         "",
         all ? "dashboard-member-all" : "dashboard-member-card",
       );
       button.type = "button";
-      button.setAttribute("aria-pressed", String(selectedMember === id));
       const entry = all ? null : text("div", "", "dashboard-member-entry");
       entry?.append(button);
-      const name = all ? "Select\nAll" : user.display_name || "Member";
-      const nameNode = text("strong", name);
-      nameNode.title = name;
+      const nameNode = text("strong", "");
       button.append(nameNode);
-      if (!all) {
-        const portrait = text("span", "", "dashboard-member-portrait");
-        portrait.dataset.memberId = id;
-        portrait.textContent = (name.match(/[\p{L}\p{N}]+/gu) || ["M"])
-          .slice(-2)
-          .map((s) => s[0].toUpperCase())
-          .join("");
-        const avatar = avatarCache.get(id);
-        if (avatar) {
-          const image = text("img", "", "dashboard-roster-image");
-          image.alt = "";
-          image.src = avatar;
-          image.onerror = () => image.remove();
-          portrait.prepend(image);
-        }
-        button.prepend(portrait);
-        const stats = mapMembers.has(id) ? user.stats : undefined;
-        for (const [label, value] of [
-          ["Weight", stat(stats?.weight, "weight", 2000)],
-          ["Height", stat(stats?.height_cm, "cm", 300)],
-          [
-            "Body fat",
-            stat(
-              stats?.body_fat_estimate?.source === "ai" &&
-                stats?.body_fat_estimate?.estimated === true &&
-                stats?.body_fat_estimate?.value === stats?.body_fat_percent
-                ? stats.body_fat_percent
-                : null,
-              "%",
-              100,
-            ),
-          ],
-          ["Age", stat(stats?.age_years, "", 130)],
-        ]) {
-          const row = text("span", `${label}: ${value}`);
-          row.title = row.textContent;
-          button.append(row);
-          if (label !== "Body fat" || value === "Unavailable") continue;
-          row.className = "dashboard-member-bodyfat";
-          // A sibling native button keeps the member's selection button valid
-          // and prevents pointer/keyboard provenance reads from selecting it.
-          const info = text("button", "ⓘ", "dashboard-member-info");
-          info.type = "button";
-          info.setAttribute(
-            "aria-label",
-            `About body fat estimate for ${name}`,
-          );
-          const tooltip = text(
-            "div",
-            "Body fat is estimated from progress photos.",
-            "dashboard-member-tooltip",
-          );
-          tooltip.id = `dashboard-bodyfat-${id}`;
-          tooltip.setAttribute("role", "tooltip");
-          tooltip.setAttribute("popover", "auto");
-          info.setAttribute("aria-describedby", tooltip.id);
-          let pinned = false;
-          let hideTimer;
-          let floatingEvents;
-          let focusFrame;
-          const cancelHide = () => clearTimeout(hideTimer);
-          const hide = () => {
-            cancelHide();
-            cancelAnimationFrame(focusFrame);
-            pinned = false;
-            floatingEvents?.abort();
-            floatingEvents = null;
-            if (tooltip.matches(":popover-open")) tooltip.hidePopover();
-            if (closeMemberTooltip === hide) closeMemberTooltip = () => {};
-          };
-          const show = () => {
-            cancelHide();
-            if (!tooltip.matches(":popover-open")) {
-              closeMemberTooltip();
-              closeMemberTooltip = hide;
-              tooltip.showPopover();
-              floatingEvents = new AbortController();
-              const options = { signal: floatingEvents.signal, capture: true };
-              document.addEventListener("scroll", hide, options);
-              window.addEventListener("resize", hide, options);
-            }
-            const anchor = info.getBoundingClientRect();
-            const bounds = tooltip.getBoundingClientRect();
-            tooltip.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - bounds.width - 8))}px`;
-            tooltip.style.top = `${Math.max(8, Math.min(anchor.bottom + 6, innerHeight - bounds.height - 8))}px`;
-          };
-          info.addEventListener("pointerenter", (event) => {
-            if (event.pointerType === "mouse") show();
-          });
-          const leave = () => {
-            if (!pinned && document.activeElement !== info)
-              hideTimer = setTimeout(hide, 160);
-          };
-          info.addEventListener("pointerleave", leave);
-          tooltip.addEventListener("pointerenter", cancelHide);
-          tooltip.addEventListener("pointerleave", leave);
-          info.addEventListener("focus", () => {
-            if (!info.matches(":focus-visible")) return;
-            // Native Tab may scroll the horizontal rail after focus dispatch.
-            // Open after that scroll, rather than instantly dismissing a fresh
-            // keyboard preview via the floating tooltip's scroll listener.
-            focusFrame = requestAnimationFrame(() => {
-              focusFrame = requestAnimationFrame(() => {
-                if (
-                  info.isConnected &&
-                  document.activeElement === info &&
-                  info.matches(":focus-visible")
-                )
-                  show();
-              });
-            });
-          });
-          info.addEventListener("blur", hide);
-          info.addEventListener("click", () => {
-            if (pinned) hide();
-            else {
-              show();
-              pinned = true;
-            }
-          });
-          info.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              hide();
-            }
-          });
-          tooltip.addEventListener("toggle", () => {
-            // Explicit hide already cleaned up. Its delayed closing event must
-            // not cancel a newer keyboard focus's pending reveal.
-            if (!tooltip.matches(":popover-open") && floatingEvents) hide();
-          });
-          entry.append(info, tooltip);
-        }
-      }
       const select = () => {
         selectedMember = id;
         selectionEpoch++;
@@ -757,23 +730,108 @@ window.CoachDashboard = (() => {
         )
           focusMapMember(id);
       });
-      if (!all) {
-        button.setAttribute("aria-keyshortcuts", "Shift+Enter");
-        button.addEventListener("keydown", (event) => {
-          if (event.key !== "Enter" || !event.shiftKey) return;
-          event.preventDefault();
-          select();
-          focusMapMember(id);
-        });
-      }
-      rail.append(entry || button);
+      if (all)
+        return {
+          node: button,
+          update: () => {
+            button.setAttribute("aria-pressed", String(selectedMember === id));
+            setText(nameNode, "Select\nAll");
+          },
+        };
+      button.setAttribute("aria-keyshortcuts", "Shift+Enter");
+      button.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || !event.shiftKey) return;
+        event.preventDefault();
+        select();
+        focusMapMember(id);
+      });
+      const portrait = text("span", "", "dashboard-member-portrait");
+      portrait.dataset.memberId = id;
+      const initials = document.createTextNode("");
+      portrait.append(initials);
+      button.prepend(portrait);
+      const labels = ["Weight", "Height", "Body fat", "Age"];
+      const rows = labels.map(() => button.appendChild(text("span", "")));
+      let bodyFatInfo = null;
+      const update = (user) => {
+        button.setAttribute("aria-pressed", String(selectedMember === id));
+        const name = user.display_name || "Member";
+        setText(nameNode, name);
+        const letters = (name.match(/[\p{L}\p{N}]+/gu) || ["M"])
+          .slice(-2)
+          .map((s) => s[0].toUpperCase())
+          .join("");
+        if (initials.data !== letters) initials.data = letters;
+        // Keep the current authorized avatar only; a revoked or replaced URL
+        // is removed at once.
+        const avatar = avatarCache.get(id);
+        let image = null;
+        for (const node of portrait.querySelectorAll(":scope > img")) {
+          if (!image && avatar && node.getAttribute("src") === avatar)
+            image = node;
+          else node.remove();
+        }
+        if (avatar && !image) {
+          image = text("img", "", "dashboard-roster-image");
+          image.alt = "";
+          image.src = avatar;
+          image.onerror = () => image.remove();
+          portrait.prepend(image);
+        }
+        const stats = mapMembers.has(id) ? user.stats : undefined;
+        const values = [
+          stat(stats?.weight, "weight", 2000),
+          stat(stats?.height_cm, "cm", 300),
+          stat(
+            stats?.body_fat_estimate?.source === "ai" &&
+              stats?.body_fat_estimate?.estimated === true &&
+              stats?.body_fat_estimate?.value === stats?.body_fat_percent
+              ? stats.body_fat_percent
+              : null,
+            "%",
+            100,
+          ),
+          stat(stats?.age_years, "", 130),
+        ];
+        labels.forEach((label, index) =>
+          setText(rows[index], `${label}: ${values[index]}`),
+        );
+        const bodyFat = values[2] !== "Unavailable";
+        if (bodyFat) rows[2].className = "dashboard-member-bodyfat";
+        else rows[2].removeAttribute("class");
+        if (bodyFat) {
+          bodyFatInfo ||= makeInfo(id);
+          bodyFatInfo.info.setAttribute(
+            "aria-label",
+            `About body fat estimate for ${name}`,
+          );
+          if (bodyFatInfo.info.parentNode !== entry)
+            entry.append(bodyFatInfo.info, bodyFatInfo.tooltip);
+        } else if (bodyFatInfo) {
+          bodyFatInfo.hide();
+          bodyFatInfo.info.remove();
+          bodyFatInfo.tooltip.remove();
+          bodyFatInfo = null;
+        }
+      };
+      return { node: entry, update };
     };
-    makeCard(null, {}, true);
-    target.append(rail);
-    for (const [id, user] of members) makeCard(id, user);
-    // Keep the selected offscreen member in view across selection/cache renders;
-    // the browser clamps naturally if an authorization denial shrinks the rail.
-    rail.scrollLeft = rosterScrollLeft;
+    // Denied or departed members first, so no retained card is moved past them.
+    for (const [id, card] of memberCards)
+      if (id !== null && !members.has(id)) {
+        card.node.remove();
+        memberCards.delete(id);
+      }
+    let previous = null;
+    for (const [id, user] of [[null, {}], ...members]) {
+      let card = memberCards.get(id);
+      if (!card) memberCards.set(id, (card = makeCard(id, id === null)));
+      card.update(user);
+      // Insert only new or out-of-order cards; never re-append one in place.
+      const next = previous ? previous.nextSibling : rail.firstChild;
+      if (next !== card.node) rail.insertBefore(card.node, next);
+      previous = card.node;
+    }
     stats?.select();
   }
   function svg(tag, attributes) {
@@ -2378,7 +2436,11 @@ window.CoachDashboard = (() => {
       fitted = false,
       initialView,
       // Outcome of the last camera focus request, until the next filter.
-      focusNote = "";
+      focusNote = "",
+      // A member focus requested before this day's ledger was published.
+      pendingMember = null,
+      // Bumped by each deliberate camera change; stale focus re-applies stop.
+      cameraEpoch = 0;
     const initials = (memberId) =>
       (memberName(memberId).match(/[\p{L}\p{N}]+/gu) || ["M"])
         .slice(-2)
@@ -2588,6 +2650,14 @@ window.CoachDashboard = (() => {
           zoom: instance.getZoom(),
         };
       }
+      // Apply a pending member focus over the day fit (which All restores),
+      // fenced by the published ledger and the still-selected member.
+      if (pendingMember && (day || !timelinePending)) {
+        const memberId = pendingMember;
+        pendingMember = null;
+        focusNote = "";
+        if (selectedMember === memberId) focusMapMember(memberId);
+      }
       refreshMap();
       showStatus();
     };
@@ -2681,7 +2751,11 @@ window.CoachDashboard = (() => {
     };
     filterMap = (clearSelection = true) => {
       closeChooser(false);
-      focusNote = "";
+      if (clearSelection) {
+        pendingMember = null;
+        cameraEpoch++;
+      }
+      if (!pendingMember) focusNote = "";
       if (clearSelection) {
         selectionEpoch++;
         selection.replaceChildren();
@@ -2737,19 +2811,45 @@ window.CoachDashboard = (() => {
     };
     // A kept view is the operator's own choice: resizes preserve it like panning.
     let userViewChanged = Boolean(keptView);
-    instance.on("dragstart", () => {
-      userViewChanged = mapViewSettled = true;
-    });
+    instance.on("dragstart", () => markUserView());
+    // Deliberate navigation also supersedes a pending member focus.
     const markUserView = () => {
       userViewChanged = mapViewSettled = true;
+      cameraEpoch++;
+      if (!pendingMember) return;
+      pendingMember = null;
+      focusNote = "";
+      showStatus();
     };
-    // Focus is a deliberate view: resizes keep it like panning. Only the
-    // canonical ledger's currently shared fixes count; nothing found is a
-    // truthful no-op that leaves the camera alone.
-    focusMapMember = (memberId) => {
-      if (!live()) return;
-      const category = timelineCategory();
-      const pins = dots
+    // Leaflet drops a fit requested during a zoom animation (a wheel zoom
+    // still settling) and its end overwrites a view set meanwhile. Once that
+    // animation ends, the focus is re-derived from current state (`resolve`
+    // re-checks selection, filter, ledger and denial; captured coordinates
+    // are never reused) and applied once, unless something superseded it.
+    const focusCamera = (target, resolve, apply) => {
+      markUserView();
+      const epoch = cameraEpoch,
+        choice = selectionEpoch,
+        generation = ledgerGeneration;
+      const animating = instance
+        .getPane("mapPane")
+        .classList.contains("leaflet-zoom-anim");
+      apply(target);
+      if (!animating) return;
+      instance.once("zoomend", () => {
+        if (!live() || epoch !== cameraEpoch) return;
+        const current =
+          choice === selectionEpoch && generation === ledgerGeneration
+            ? resolve()
+            : null;
+        if (current) apply(current);
+        else focusNote = "";
+        showStatus();
+      });
+    };
+    // The canonical ledger's currently shared fixes of a member's shown events.
+    const memberPins = (memberId, category) =>
+      dots
         .filter(
           ({ item }) =>
             item.user_id === memberId &&
@@ -2760,11 +2860,46 @@ window.CoachDashboard = (() => {
           fix: eventPosition(scoped()?.items.get(item.id)),
         }))
         .filter(({ fix }) => fix);
+    // Focus is a deliberate view: resizes keep it like panning. Only the
+    // canonical ledger's currently shared fixes count; nothing found is a
+    // truthful no-op that leaves the camera alone.
+    focusMapMember = (memberId) => {
+      if (!live()) return;
+      if (!scoped()) {
+        const name =
+          mapMembers.get(memberId)?.display_name ||
+          feedMembers.get(memberId)?.display_name ||
+          "Member";
+        // Until the day's ledger publishes nothing is known about its
+        // locations: wait for it instead of leaving the default day fit.
+        if (timelinePending) {
+          pendingMember = memberId;
+          focusNote = `Map will zoom to ${name}'s shown event locations once this day's events load.`;
+        } else
+          focusNote = `${name}'s event locations for ${date} are not loaded; the map view was not changed.`;
+        showStatus();
+        return;
+      }
+      pendingMember = null;
+      const category = timelineCategory();
+      const pins = memberPins(memberId, category);
       const name = memberName(memberId);
+      const note = (shown) =>
+        `Map zoomed to ${name}'s ${shown.length} shown event location${shown.length === 1 ? "" : "s"}.`;
       if (pins.length) {
-        markUserView();
-        fitPins(pins, FOCUS_ZOOM);
-        focusNote = `Map zoomed to ${name}'s ${pins.length} shown event location${pins.length === 1 ? "" : "s"}.`;
+        focusCamera(
+          pins,
+          () => {
+            if (selectedMember !== memberId || timelineCategory() !== category)
+              return null;
+            const current = memberPins(memberId, category);
+            return current.length ? current : null;
+          },
+          (shown) => {
+            fitPins(shown, FOCUS_ZOOM);
+            focusNote = note(shown);
+          },
+        );
       } else
         focusNote = `${name} has no shared event location${category ? ` in ${category === "status_change" ? "Readiness" : eventLabel(category)}` : ""} on ${date}; the map view was not changed.`;
       showStatus();
@@ -2775,16 +2910,33 @@ window.CoachDashboard = (() => {
       const fix =
         item && !suppressedMembers.has(item.user_id) && eventPosition(item);
       if (fix) {
-        markUserView();
-        // The exact recorded point, in the world copy nearest the view.
-        const center = instance.getCenter().lng;
-        instance.setView(
-          [
-            fix.latitude,
-            fix.longitude + 360 * Math.round((center - fix.longitude) / 360),
-          ],
-          FOCUS_ZOOM,
-          { animate: false },
+        const category = timelineCategory();
+        focusCamera(
+          fix,
+          () => {
+            // Still the selected event of this ledger row, as it is now.
+            const now = scoped()?.items.get(item.id);
+            return (
+              selectedEventId === item.id &&
+              timelineCategory() === category &&
+              now &&
+              !suppressedMembers.has(now.user_id) &&
+              eventPosition(now)
+            );
+          },
+          // The exact recorded point, in the world copy nearest the view.
+          (point) => {
+            const center = instance.getCenter().lng;
+            instance.setView(
+              [
+                point.latitude,
+                point.longitude +
+                  360 * Math.round((center - point.longitude) / 360),
+              ],
+              FOCUS_ZOOM,
+              { animate: false },
+            );
+          },
         );
         focusNote = `Map zoomed to the recorded location of ${memberName(item.user_id)} · ${eventLabel(item.event_type)} · ${clock(item)}.`;
       } else
@@ -2826,18 +2978,10 @@ window.CoachDashboard = (() => {
       },
       { passive: true, signal },
     );
-    map.addEventListener(
-      "wheel",
-      () => {
-        userViewChanged = mapViewSettled = true;
-      },
-      { passive: true },
-    );
+    map.addEventListener("wheel", markUserView, { passive: true });
     map
       .querySelector(".leaflet-control-zoom")
-      ?.addEventListener("click", () => {
-        userViewChanged = mapViewSettled = true;
-      });
+      ?.addEventListener("click", markUserView);
     mapResizeObserver = new ResizeObserver(() => {
       if (!map.getClientRects().length) return;
       instance.invalidateSize();
