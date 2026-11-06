@@ -15,7 +15,10 @@ Updates.prototype.readyRelease=async function(request){
  const sha=(await r.json()).object.sha;
  if(!/^[a-f0-9]{40}$/.test(sha))throw Error('UNAVAILABLE');
  const hash=fixtureHash('sha256').update('katafit-native-contract-2\\0');
- for(const name of ['sandbox/package.json','sandbox/package-lock.json','sandbox/Dockerfile','sandbox/launch.mjs','sandbox/relay.mjs','sandbox/katafit.mjs']){
+ // Same inputs and order as scripts/build-metadata.mjs at that revision; the
+ // shared relay core is fingerprinted only where it exists.
+ const exists=(name)=>{try{cp.execFileSync('git',['cat-file','-e',sha+':'+name],{cwd:${JSON.stringify(source)},stdio:'ignore'});return true}catch{return false}};
+ for(const name of ['sandbox/package.json','sandbox/package-lock.json','sandbox/Dockerfile','sandbox/launch.mjs','sandbox/relay.mjs','sandbox/katafit.mjs','sandbox/relay-core.mjs'].filter((name)=>name!=='sandbox/relay-core.mjs'||exists(name))){
   const bytes=cp.execFileSync('git',['show',sha+':'+name],{cwd:${JSON.stringify(source)},maxBuffer:4*1024*1024});
   hash.update(name+'\\0'+bytes.length+'\\0').update(bytes);
  }

@@ -183,9 +183,9 @@ export type RpcCommand =
   | { type: "prompt"; message: string; id?: string }
   | { type: "abort"; id?: string }
   | { type: "get_last_assistant_text"; id?: string };
-const RPC_COMMAND_LIMIT = 1024 * 1024;
+export const RPC_COMMAND_LIMIT = 1024 * 1024;
 /** Only prompt, abort and final-text reads; never sessions, bash or models. */
-function validRpc(command: any): command is RpcCommand {
+export function validRpc(command: any): command is RpcCommand {
   if (!record(command)) return false;
   const keys = Object.keys(command);
   const id =

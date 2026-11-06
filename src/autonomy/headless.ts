@@ -18,6 +18,10 @@ import {
   type NativeProbeEngine,
   type NativeProfile,
 } from "../sandbox/runtime.js";
+import {
+  sweepWorkspaceSessions,
+  WorkspaceRuntime,
+} from "../sandbox/workspace.js";
 
 export const HEADLESS_ROLE_LABEL = "fit.kata.native.role";
 export const HEADLESS_ROLE = "autonomy";
@@ -119,12 +123,31 @@ export class HeadlessCycleRuntime {
   private readonly engine: Engine;
   private readonly cleanup?: CleanupRegistry;
   private readonly probe: NativeProbeEngine;
-  constructor(options: {
-    image: string | NativeBinding;
-    engine?: Engine;
-    cleanup?: CleanupRegistry;
-    onDiagnostic?: (event: LogInput) => void;
-  }) {
+  /** Workspace mode: Pi as a permission-limited process, no container. */
+  private readonly workspace?: { home: string };
+  constructor(
+    options:
+      | {
+          image: string | NativeBinding;
+          engine?: Engine;
+          cleanup?: CleanupRegistry;
+          onDiagnostic?: (event: LogInput) => void;
+        }
+      | {
+          workspace: { home: string };
+          onDiagnostic?: (event: LogInput) => void;
+        },
+  ) {
+    this.onDiagnostic = options.onDiagnostic;
+    if ("workspace" in options) {
+      this.workspace = options.workspace;
+      // Inert Docker identity: workspace cycles never use an engine.
+      this.binding = { image: "", engine: "legacy" };
+      this.image = "";
+      this.engine = {};
+      this.probe = undefined as unknown as NativeProbeEngine;
+      return;
+    }
     this.binding =
       typeof options.image === "string"
         ? { image: options.image, engine: "legacy" }
@@ -142,7 +165,6 @@ export class HeadlessCycleRuntime {
       socketPath: options.engine?.socketPath ?? socket,
     };
     this.cleanup = options.cleanup;
-    this.onDiagnostic = options.onDiagnostic;
     this.probe = dockerProbeEngine(
       this.engine.exec ??
         (promisify(execFile) as unknown as NonNullable<Engine["exec"]>),
@@ -170,7 +192,7 @@ export class HeadlessCycleRuntime {
     const invocation = ++this.invocation;
     let phase = 1;
     let firstObserved = false;
-    let runtime: NativeRuntime | undefined;
+    let runtime: NativeRuntime | WorkspaceRuntime | undefined;
     const limbs = (hex: string, prefix: string) =>
       Object.fromEntries(
         hex.match(/.{8}/g)!.map((limb, i) => [prefix + i, parseInt(limb, 16)]),
@@ -228,7 +250,7 @@ export class HeadlessCycleRuntime {
     };
     milestone(1);
     let ownership: NativeOwnership | undefined;
-    if (this.cleanup) {
+    if (this.cleanup && !this.workspace) {
       const cleanup = this.cleanup;
       try {
         if (
@@ -270,12 +292,15 @@ export class HeadlessCycleRuntime {
         run.signal?.aborted ? "HEADLESS_ABORTED" : "HEADLESS_TIMEOUT",
       );
     }
-    runtime = new NativeRuntime(this.binding, {
-      ...this.engine,
-      ...(ownership
-        ? { ownership, probeEngine: this.probe }
-        : { name, labels: { [HEADLESS_ROLE_LABEL]: HEADLESS_ROLE } }),
-    });
+    if (this.workspace) {
+      runtime = new WorkspaceRuntime({ home: this.workspace.home });
+    } else
+      runtime = new NativeRuntime(this.binding, {
+        ...this.engine,
+        ...(ownership
+          ? { ownership, probeEngine: this.probe }
+          : { name, labels: { [HEADLESS_ROLE_LABEL]: HEADLESS_ROLE } }),
+      });
     let fail!: (failure: HeadlessFailure) => void;
     const failed = new Promise<never>((_, reject) => {
       fail = (failure) => reject(failure);
@@ -447,7 +472,7 @@ export class HeadlessCycleRuntime {
   }
 
   private async abort(
-    runtime: NativeRuntime,
+    runtime: NativeRuntime | WorkspaceRuntime,
     response: (id: string) => Promise<any>,
   ) {
     const id = randomUUID();
@@ -477,6 +502,9 @@ export class HeadlessCycleRuntime {
    * containers, legacy role-only and unrelated containers are never touched.
    */
   async sweep(): Promise<number> {
+    // Workspace mode: this installation's session folders no live runtime
+    // in this process owns.
+    if (this.workspace) return sweepWorkspaceSessions(this.workspace.home);
     const cleanup = this.cleanup;
     if (!cleanup) throw new Error("HEADLESS_OWNER_REQUIRED");
     await cleanup.drain((engine) =>

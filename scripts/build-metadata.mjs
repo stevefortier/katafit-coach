@@ -32,6 +32,7 @@ const sandboxModules = [
   "sandbox/launch.mjs",
   "sandbox/relay.mjs",
   "sandbox/katafit.mjs",
+  "sandbox/relay-core.mjs",
 ];
 // The image copies sandbox/*.mjs, and receipts are reused by fingerprint, so
 // every copied module must be fingerprinted.
