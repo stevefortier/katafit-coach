@@ -26,6 +26,13 @@ import {
   manualOnlySourceUpdates,
 } from "./capability.js";
 import { ledgerObligations } from "../autonomy/ledger.js";
+import {
+  readBootRollback,
+  removeBootRollback,
+  sameBootRollback,
+  validBootRollback,
+  type RollbackMarker,
+} from "./rollback.js";
 
 import { UpdateJournal, atomicWrite } from "./journal.js";
 import {
@@ -353,6 +360,32 @@ export async function supervise(
             error instanceof Error ? error.message : "TARGET_REJECTED",
           );
         }
+        return;
+      }
+      if (message.method === "dismissBootRollback") {
+        // A failed activation restores its JSON snapshot, marker included.
+        if (operation || updates.applying)
+          return reply(updates.snapshot(), "UPDATE_IN_PROGRESS");
+        try {
+          if (
+            !rollbackMarker ||
+            !validBootRollback(message.sha) ||
+            !sameBootRollback(rollbackMarker.notice, message.sha)
+          )
+            throw new Error("ROLLBACK_NOTICE_STALE");
+          removeBootRollback(home, rollbackMarker);
+          rollbackMarker = undefined;
+          updates.bootRollback = null;
+        } catch (error) {
+          return reply(
+            updates.snapshot(),
+            error instanceof Error
+              ? error.message
+              : "ROLLBACK_NOTICE_DISMISS_FAILED",
+          );
+        }
+        reply(updates.snapshot());
+        send({ type: "state", data: updates.snapshot() });
         return;
       }
       if (message.method === "shutdown") onShutdown?.();
@@ -731,6 +764,9 @@ export async function supervise(
   updates.preparationJournalIssue = preparationJournal.issue;
   updates.lastOperation = await journal.recover(installed);
   updates.manualRestartSupported = supported;
+  // The bootstrap restored the previous version after a failed handover.
+  let rollbackMarker: RollbackMarker | undefined = await readBootRollback(home);
+  updates.bootRollback = rollbackMarker?.notice ?? null;
   try {
     const intent = JSON.parse(
       (await managedFile(join(home, "update-resume.json"), 256)).toString(
