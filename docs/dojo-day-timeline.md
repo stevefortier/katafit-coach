@@ -63,7 +63,7 @@ The opening day fit still stops at zoom 16. A focused camera counts as a deliber
 
 ## Latest known member positions
 
-Separately from the selected day's event dots, the map shows each member's **latest known recorded position** as a round profile-photo pin (initials when no authorized avatar decoded). It is the last recorded GPS fix, never live tracking or continuous capture.
+Separately from the selected day's event dots, the map shows each member's **latest known recorded position** as a round profile-photo pin (initials when no authorized avatar decoded). It is the last recorded GPS fix, never live tracking or continuous capture. The latest-pin overlay paints above Leaflet's opaque basemap tiles both at rest and while dragging; the historical event-dot overlay remains above the latest pins.
 
 - **Source.** `GET /api/dashboard/latest-positions` (BFF, no parameters) proxies `GET /api/friends/dojo/latest-positions`.
   - "Latest" is the maximum validated capture time (`captured_at`) the backend can prove, not ledger order.
