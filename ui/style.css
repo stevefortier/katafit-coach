@@ -2980,19 +2980,26 @@ html.compact-map,
 .studio-reload-notice {
   position: fixed;
   top: calc(var(--header-offset, 0px) + 8px);
-  left: 50%;
+  --reload-available-width: 100vw;
+  left: calc(var(--reload-available-width) / 2);
   transform: translateX(-50%);
   z-index: 20;
   display: flex;
   gap: 12px;
   align-items: center;
-  max-width: calc(100vw - 16px);
+  width: max-content;
+  max-width: calc(var(--reload-available-width) - 16px);
   padding: 8px 8px 8px 14px;
   border: 1px solid #3f8a5c;
   border-left-width: 4px;
   background: #13291c;
   color: #9ee3ae;
   box-shadow: 0 6px 18px rgb(0 0 0 / 45%);
+}
+@media (min-width: 900px) {
+  body.coach-docked .studio-reload-notice {
+    --reload-available-width: calc(100vw - var(--coach-pane-width, 520px));
+  }
 }
 .studio-reload-notice[hidden] {
   display: none;

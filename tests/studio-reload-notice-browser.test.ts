@@ -86,7 +86,7 @@ test("an installed upgrade offers a refresh that reloads the page", async () => 
       await route.fulfill({ json: body });
     });
     const origin = `http://127.0.0.1:${(server.address() as any).port}`;
-    await page.goto(origin + "/dashboard");
+    await page.goto(origin + "/settings");
     await page.locator("#adminKey").fill("synthetic-admin");
     await page.locator("#unlock").click();
     await page.waitForFunction(
@@ -110,6 +110,98 @@ test("an installed upgrade offers a refresh that reloads the page", async () => 
       before,
       "the notice floats without reflowing the page",
     );
+    // The refresh offer belongs to the visible layout, not the clipped/inert
+    // workspace behind Coach. All API/Pi state in this fixture is synthetic.
+    const assertReachable = async (docked = false) => {
+      const geometry = await page.evaluate(() => {
+        const notice = document.getElementById("studioReloadNotice")!;
+        const button = document.getElementById("studioReload")!;
+        const box = notice.getBoundingClientRect();
+        const control = button.getBoundingClientRect();
+        const pane = document
+          .getElementById("coachPane")!
+          .getBoundingClientRect();
+        return {
+          left: box.left,
+          right: box.right,
+          center: (box.left + box.right) / 2,
+          paneLeft: pane.left,
+          width: innerWidth,
+          hit:
+            document.elementFromPoint(
+              control.left + control.width / 2,
+              control.top + control.height / 2,
+            ) === button,
+          inert: !!button.closest("[inert]"),
+          textFits: notice.scrollWidth <= notice.clientWidth,
+        };
+      });
+      assert.ok(
+        geometry.left >= 0 && geometry.right <= geometry.width,
+        "notice fits viewport",
+      );
+      assert.equal(geometry.hit, true, "Refresh is not covered or clipped");
+      assert.equal(geometry.inert, false, "Refresh remains interactive");
+      assert.equal(geometry.textFits, true, "notice text and control fit");
+      if (docked) {
+        assert.ok(
+          geometry.right <= geometry.paneLeft,
+          "notice stays outside Coach",
+        );
+        assert.ok(
+          Math.abs(geometry.center - geometry.paneLeft / 2) < 2,
+          "notice centers in remaining workspace",
+        );
+      }
+    };
+    await page.locator("#coachLauncher").click();
+    await assertReachable(true);
+    const paneWidth = async () =>
+      (await page.locator("#coachPane").boundingBox())!.width;
+    const initialWidth = await paneWidth();
+    await page.locator("#coachDivider").focus();
+    await page.keyboard.press("ArrowLeft");
+    const keyboardWidth = await paneWidth();
+    assert.ok(keyboardWidth > initialWidth, "keyboard actually resizes Coach");
+    await assertReachable(true);
+    const divider = await page.locator("#coachDivider").boundingBox();
+    await page.mouse.move(divider!.x + divider!.width / 2, divider!.y + 100);
+    await page.mouse.down();
+    await page.mouse.move(divider!.x - 140, divider!.y + 100);
+    await page.mouse.up();
+    assert.ok(
+      (await paneWidth()) > keyboardWidth,
+      "pointer actually resizes Coach",
+    );
+    await assertReachable(true);
+    if (process.env.KATAFIT_UI_SCREENSHOT) {
+      await page.screenshot({
+        path: process.env.KATAFIT_UI_SCREENSHOT + "-docked.png",
+      });
+    }
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await assertReachable(true);
+    await page.locator("#coachPaneExpand").click();
+    await assertReachable();
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      await assertReachable();
+      if (process.env.KATAFIT_UI_SCREENSHOT) {
+        await page.screenshot({
+          path: process.env.KATAFIT_UI_SCREENSHOT + `-mobile-${width}.png`,
+        });
+      }
+      await page.locator("#studioReload").focus();
+      assert.equal(
+        await page
+          .locator("#studioReload")
+          .evaluate((node) => node === document.activeElement),
+        true,
+      );
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator("#coachPaneCollapse").click();
+    await assertReachable();
     await page.evaluate(() => ((window as any).beforeRefresh = true));
     await Promise.all([
       page.waitForEvent("load"),
