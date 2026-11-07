@@ -70,22 +70,34 @@ Separately from the selected day's event dots, the map shows each member's **lat
   - It is read once per map load (dashboard load, date change or reload) and on an explicit Retry, through the shared dashboard read admission. There is no polling. A `409` restarts the read once.
   - Avatars reuse the roster's revocable Blob URLs, so no extra or arbitrary image URL is fetched.
   - The existing `dashboard/members` `last_position` field is unchanged and not used for pins.
-- **Independence.** The layer does not depend on the selected day or category: changing either never turns a day's dot into "latest" or hides the age. Selecting a member (card or pin) applies the existing explicit member filter to pins; Select All restores every pin.
+- **Independence.** The layer does not depend on the selected day or category: changing either never turns a day's dot into "latest" or hides the age. Member selection never hides a latest pin either: every authorized, unsuppressed member's pin stays shown whichever member is selected (card, pin or chooser entry). Selection only changes appearance: the selected member is full color, every other member is grayed but still visible, and under Select All every pin is full color. Only privacy, missing positions and denials remove pins.
 - **Initial view.** The map frames the selected day's shown fixes together with the latest pins, including when the day has no events. It never overrides a kept view from another day, a camera the operator moved, or an explicit latest focus; All restores this view.
 - **Anchors and grouping.** Each pin is anchored at the exact recorded coordinate (pointer tip).
   - Pins whose anchors would overlap on screen at the current zoom become one neutral aggregate marker. It shows the count, never one member's portrait or age.
   - Its badge says truthfully whether some ("N older") or all ("all older") of the fixes are older than ten minutes; the dashed border marks a mix.
-  - Activating the marker opens a chooser. Each entry shows that member's own round photo or initials, own age, and own faded or full-opacity state.
+  - The aggregate is grayed only when none of its members is selected; it never takes one member's portrait or freshness.
+  - Activating the marker opens a chooser. Each entry shows that member's own round photo or initials, own age note, and own selected (full color) or unselected (gray) state.
   - The chooser is clamped inside the map and supports arrow keys and Escape (which returns focus to the marker). It closes on pan, zoom or resize, and grouping is recomputed at zoom end.
 - **Age.** Age uses the validated `captured_at` only.
-  - At or under ten minutes the pin is at full opacity. Strictly older, it is faded with a visible age note ("11 min ago", "3 days ago").
-  - A capture more than a minute ahead of the device clock is faded and labelled "capture time is ahead of this device", never fresh.
+  - Age never grays a pin; appearance follows selection only. Every single pin always carries its own small written age note beside the photo, fresh or old ("4 min ago", "3 days ago"). The note is smaller than the photo and out of flow, so the pin tip stays on the fix.
+  - Fixes older than ten minutes are counted in the aggregate badge ("N older", "all older"; a dashed border marks a mix) and in its accessible name.
+  - A capture more than a minute ahead of the device clock is labelled "capture time is ahead of this device", never fresh.
   - One shared 15-second ticker (no per-member timers, no requests) re-evaluates ages, and `visibilitychange`/`pageshow` re-evaluate on resume.
   - Each accessible name and title gives the member, relative age and exact local capture time.
 - **Selection and focus.** A single click or tap on a pin or chooser entry only selects that member (camera unchanged).
   - Double activation or Shift+Enter is an explicit focus through the shared map-focus protocol (`markUserView`/camera epoch). It centers that member's exact coordinate on the nearest world copy at zoom 18.
   - During a wheel animation the focus re-applies at zoom end only if it is still current.
   - The focus survives resize and a later day publication. Navigation, All, category, date or a denial supersedes it.
+  - Double-clicking a latest pin, chooser or event dot is not map navigation: it never counts as the operator moving the camera, so it never cancels a pending focus.
+- **Native motion.** Latest pins, event dots and connection lines follow Leaflet's native drag, wheel and control zoom, touch pan, pinch and inertia in the same frame as the tiles.
+  - Each overlay is moved by one shared transform per frame (translate, plus scale while pinching, with marks counter-scaled to keep their size). Leaflet's zoom animation is followed with the tiles' own transition. Per-frame work never writes every mark.
+  - Marks are positioned from the unrounded projection, including across `worldCopyJump` wraps, so they stay on their exact fix within a pixel and a half during gestures.
+  - Pins and dots are kept as stable nodes. They are laid out exactly once when the gesture settles (`moveend`); overlap grouping is recomputed at zoom end. Marks far off screen are hidden.
+  - **Changes during a zoom animation.** While Leaflet's zoom animation is painting, Leaflet already reports the target view. Any change landing in that window keeps the animation's start frame and its remaining progress:
+    - selection, an avatar, a latest response, a regroup, a day page or a denial.
+
+    Surviving marks keep their running transition. New, moved or regrouped marks, and the connections, join the running zoom with Leaflet's duration, easing and start time, so they stay on the painted tiles in every frame. Denied or withdrawn geometry is removed at once, never deferred to the zoom's end.
+
 - **Statuses and invalidation.**
   - **private, none.** These show no pin. Position is withheld for `private`; no recorded fix exists for `none`.
   - **incomplete.** No pin, plus a persistent warning naming the members and a Retry button.
@@ -94,7 +106,12 @@ Separately from the selected day's event dots, the map shows each member's **lat
   - **Whole-scope denial.** A roster, timeline or dojo `401`/`403` removes every pin, the chooser and associations, and discards earlier reads. A `401`/`403` from the latest-positions read itself also revokes the loaded day. It removes the day ledger, GPS dots, timeline, day chooser and selected detail, and discards any pending day read so a held positive cannot publish. The status reads "Event locations denied", never "complete day". Only a fresh date choice or dashboard reload reads the day again. A roster denial still clears the latest pins only.
   - **Member denial.** A confirmed per-member denial, including a Stats `401`/`403`, is the same full member denial as everywhere else. It removes that member's card, photo, roster entry, Stats entry, latest pin, chooser entry and day dots, and revokes their avatar Blob URL. A held avatar or later latest positive for that member never restores them.
 
-Qualification: `tests/latest-position-pins-browser.test.ts` (served UI with actual CSS, intercepted tiles, decoded synthetic PNG avatar; aggregate/chooser, both invalidation orders, scope denial, incomplete/malformed/409 Retry, framing and focus/resize; wide and narrow screenshots) and `tests/latest-position-pins-paired.test.ts` (real MongoMemoryReplSet + Express backend via `KATAFIT_MEMORY_BACKEND`, legacy Coach REST credential, BFF and served dashboard under the production admin CSP, decoded avatar bytes through the BFF, UTF-8 names, and Position revocation while the UI is open).
+Qualification: `tests/latest-position-pins-browser.test.ts` (served UI with actual CSS, intercepted tiles, decoded synthetic PNG avatar; aggregate/chooser, both invalidation orders, scope denial, incomplete/malformed/409 Retry, framing and focus/resize; wide and narrow screenshots) and `tests/latest-position-pins-paired.test.ts` (real MongoMemoryReplSet + Express backend via `KATAFIT_MEMORY_BACKEND`, legacy Coach REST credential, BFF and served dashboard under the production admin CSP, decoded avatar bytes through the BFF, UTF-8 names, and Position revocation while the UI is open). `tests/map-pin-motion-browser.test.ts` checks that every latest pin stays shown through Ada → Bob → All and through pin, chooser, category and date selection. It checks selection-only graying (a selected old fix is full color, an unselected fresh fix is gray), each pin's own age note, and chooser state. It drives native CDP mouse drag, wheel and zoom-control zoom, touch pan and two-finger pinch in and out. Every animation frame, it measures the drift of pins, dots and lines from their exact fix and counts overlay DOM writes. `tests/map-pin-motion-transitions-browser.test.ts` lands each of these changes mid-zoom:
+
+- member selection, a held avatar, a member denial, a Position denial with a held latest positive, a whole-dojo denial, a held day page, and a latest response that moves, removes, adds and regroups pins;
+- a date change and a lock.
+
+It also covers antimeridian drags and zooms. Every frame is checked against the painted tiles and native Leaflet markers (shared sampler `tests/helpers/map-motion-sampler.ts`). Marks must stay within 1.5px of the native markers. Mid zoom-out, Leaflet's own pixel-rounded markers can sit up to about 1.7px off the painted tiles. So the tile bound is 1.5px, or the native markers' own tile error plus 0.5px when that is larger.
 
 ## Qualification
 

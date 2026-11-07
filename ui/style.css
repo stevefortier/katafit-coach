@@ -1309,8 +1309,24 @@ header {
   pointer-events: none;
   z-index: 400;
 }
+/* Native pan, pinch and zoom move each overlay with one shared transform;
+   marks counter-scale (--dashboard-map-unscale) to keep their size. */
+.dashboard-map-overlay,
+.dashboard-latest-overlay {
+  transform-origin: 0 0;
+  will-change: transform;
+}
+/* Leaflet's zoom animation: marks travel on the tiles' own transition. */
+.leaflet-zoom-anim ~ .dashboard-latest-overlay .dashboard-latest-pin,
+.leaflet-zoom-anim ~ .dashboard-map-overlay .dashboard-map-marker {
+  transition: translate 0.25s cubic-bezier(0, 0, 0.25, 1);
+}
+.leaflet-zoom-anim ~ .dashboard-map-overlay .dashboard-map-connections {
+  transition: transform 0.25s cubic-bezier(0, 0, 0.25, 1);
+}
 /* Latest known recorded positions: round photo pins under the day's event
-   dots. Not live tracking; strictly older than ten minutes is faded. */
+   dots, every authorized member always shown. Not live tracking; a member
+   who is not selected is grayed, and each pin notes its fix's age. */
 .dashboard-latest-overlay {
   position: absolute;
   inset: 0;
@@ -1321,7 +1337,10 @@ header {
 }
 .dashboard-latest-pin {
   position: absolute;
-  transform: translate(-50%, -100%);
+  /* The pin's tip is its exact anchor. */
+  transform: translate(-50%, -100%) scale(var(--dashboard-map-unscale, 1));
+  transform-origin: 50% 100%;
+  margin: 0;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
@@ -1376,8 +1395,10 @@ header {
     sans-serif;
 }
 .dashboard-latest-age {
-  order: 2;
-  margin-top: 2px;
+  /* Beside the photo, out of flow, so the tip stays on the fix. */
+  position: absolute;
+  left: calc(100% + 3px);
+  top: 11px;
   padding: 0 4px;
   border-radius: 4px;
   background: rgb(255 255 255 / 0.92);
@@ -1390,14 +1411,15 @@ header {
 .dashboard-latest-age[hidden] {
   display: none;
 }
-.dashboard-latest-stale .dashboard-latest-photo {
-  opacity: 0.5;
+/* Gray means "not the selected member", never "old". */
+.dashboard-latest-unselected .dashboard-latest-photo {
+  opacity: 0.55;
   border-color: #80868b;
-  filter: grayscale(0.6);
+  filter: grayscale(1);
 }
-.dashboard-latest-stale::after {
+.dashboard-latest-unselected::after {
   border-top-color: #80868b;
-  opacity: 0.5;
+  opacity: 0.55;
 }
 .dashboard-latest-pin:focus-visible .dashboard-latest-photo {
   outline: 3px solid #fbbc04;
@@ -1405,7 +1427,6 @@ header {
 }
 .dashboard-latest-mixed .dashboard-latest-photo {
   border-style: dashed;
-  border-color: #80868b;
 }
 /* Overlap marker: a neutral aggregate count, never one member's portrait. */
 .dashboard-latest-aggregate {
@@ -1493,7 +1514,7 @@ header {
 /* Exact recorded coordinates: no margin or offset may move a dot off its point. */
 .dashboard-map-marker {
   position: absolute;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(var(--dashboard-map-unscale, 1));
   display: grid;
   place-items: center;
   margin: 0;
@@ -1541,6 +1562,7 @@ header {
 .dashboard-map-connections {
   position: absolute;
   inset: 0;
+  transform-origin: 0 0;
   width: 100%;
   height: 100%;
   overflow: visible;
@@ -1548,6 +1570,7 @@ header {
 }
 .dashboard-map-connection {
   fill: none;
+  vector-effect: non-scaling-stroke;
   stroke-width: 2.5;
   stroke-dasharray: 6 5;
 }
