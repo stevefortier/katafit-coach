@@ -1315,7 +1315,9 @@ header {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 399;
+  /* Leaflet's map pane is 400. Match it and use later DOM order to keep
+     pins above opaque tiles; the day overlay follows and stays above pins. */
+  z-index: 400;
 }
 .dashboard-latest-pin {
   position: absolute;
