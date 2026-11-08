@@ -215,6 +215,10 @@ jobs:
       - name: Bootstrap, handover and upgrade suites on Windows
         shell: bash
         run: npx tsx --test --test-concurrency=1 --test-force-exit tests/boot.test.ts tests/boot-handover.test.ts tests/handover-resume.test.ts tests/workspace-upgrades.test.ts tests/archive-stage.test.ts tests/release-provision.test.ts tests/update-command-tree.test.ts tests/update-command-windows-adapter.test.ts
+      - name: Actual automatic startup, Stop, CLI relaunch and probe controls on Windows
+        shell: bash
+        # No adapters or platform skips: actual Windows Node/CLI/IPC and Chrome.
+        run: npx tsx --test --test-concurrency=1 tests/worker-startup.test.ts
       - name: Install, reinstall and restart as a standard Windows user
         if: ${{ !cancelled() }}
         shell: powershell

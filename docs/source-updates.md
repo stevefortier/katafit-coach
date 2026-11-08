@@ -118,7 +118,7 @@ or replace a running global package. A container installation instead replaces
 the reviewed outer control-plane image using the existing volume/socket/GID and
 the [native bootstrap transaction](native-bootstrap.md); it does not run global
 npm installation on the host. Verify authenticated health, the expected launcher
-capabilities, and the intentionally stopped worker before Run. Subsequent
+capabilities, and the configured worker's automatic startup status. Subsequent
 compatible application source upgrades happen in Studio without overwriting the
 stable package/outer image or Git checkout.
 
@@ -184,7 +184,7 @@ the resident owner; see the required migration below.
 - **Check first/target rejected:** check again after the throttle period and confirm the currently shown target. Do not edit the request to force another SHA.
 - **GitHub unavailable/rate limit:** check access to `api.github.com`; honor sourceRetryAt, then press Check again. No provider credentials are involved.
 - **Upgrade failed:** the active pointer remains previous unless the candidate passed health. Check free disk, Git/npm availability and outbound access. Do not infer success from a closed browser or a returned 202.
-- **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime. Workers remain stopped unless a pending durable manual-update resume intent requires recovery; recovery never reapplies source or replays chat/actions. Keep the home and the bootstrap launcher.
+- **Service unavailable after host failure:** restart with `katafit-coach start` (or restart the container/service supervisor). It selects the persisted active runtime. Each new service-owner launch automatically starts a configured worker, regardless of a previous Stop; Stop applies only to that application lifetime. Candidate validation, probation and same-owner source replacement remain stopped until managed resume, preserving the update's captured Run/Stop intent. Startup failure is shown in Worker/Diagnostics without a worker restart loop. Recovery never reapplies source or replays chat/actions. Keep the home and the bootstrap launcher.
 - **Native probe cleanup pending at startup:** preserve the entire protected home, including `native-probe-cleanup.json`, and restore Docker/socket availability for the same reviewed launcher identity. Restart retries only the receipt's exact name and verifies its token labels, immutable image and recorded container ID before removal. A missing container clears the receipt; a mismatch or invalid receipt remains blocked. Never delete the receipt, remove a same-name container, or prune merely to force startup. Use reviewed offline recovery if exact ownership cannot be established.
 - **Corrupt active installation/manual recovery:** stop the owner first and preserve a private backup. Restore a known-good home/active pointer or remove `active.json` to return to the installed bootstrap application only if it is compatible with your unchanged data schema. Never delete a live lock inode.
 

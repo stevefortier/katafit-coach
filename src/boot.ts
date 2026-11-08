@@ -9,6 +9,7 @@
 // upgrades need not replace it. An older frozen installed bootstrap needs a
 // one-time controlled replacement; application updates cannot update that copy.
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -35,7 +36,12 @@ type Options = {
   /** How long a handed-over supervisor has to become healthy. */
   healthMs?: number;
   /** Test seam: start one supervisor under the given Node. */
-  start?: (root: string, home: string, node: string) => ChildProcess;
+  start?: (
+    root: string,
+    home: string,
+    node: string,
+    continuation: boolean,
+  ) => ChildProcess;
 };
 
 function readJson(path: string): any {
@@ -51,17 +57,65 @@ function writeAtomic(path: string, value: unknown) {
   renameSync(temporary, path);
 }
 const windows = process.platform === "win32";
-const startSupervisor = (root: string, home: string, node: string) =>
-  spawn(node, [join(root, "dist/cli.js"), "serve"], {
-    // On Windows a stop reaches it over this IPC channel (see ask()). Not
-    // elsewhere: an open channel would keep Linux's `serve` wrapper alive.
-    stdio: windows ? ["inherit", "inherit", "inherit", "ipc"] : "inherit",
-    env: {
-      ...process.env,
-      KATAFIT_COACH_HOME: home,
-      KATAFIT_BOOT_PROTOCOL: BOOT_PROTOCOL,
-    },
+/** Bootstrap-owned IPC, forwarded by the Linux flock wrapper, not ambient env. */
+export function bindBootLifecycle(child: ChildProcess, continuation: boolean) {
+  child.on("message", (message: any) => {
+    if (
+      message?.type !== "bootLifecycleRequest" ||
+      typeof message.nonce !== "string" ||
+      !/^[a-f0-9-]{36}$/.test(message.nonce)
+    )
+      return;
+    if (child.connected)
+      child.send(
+        { type: "bootLifecycle", nonce: message.nonce, continuation },
+        () => {},
+      );
   });
+  return child;
+}
+export async function bootContinuation(): Promise<boolean> {
+  if (!process.connected || !process.send) return false;
+  const nonce = randomUUID();
+  return new Promise<boolean>((done) => {
+    const finish = (value: boolean) => {
+      clearTimeout(timer);
+      process.off("message", receive);
+      process.off("disconnect", disconnected);
+      done(value);
+    };
+    const receive = (message: any) => {
+      if (message?.type === "bootLifecycle" && message.nonce === nonce)
+        finish(message.continuation === true);
+    };
+    const disconnected = () => finish(false);
+    const timer = setTimeout(() => finish(false), 1000);
+    process.on("message", receive);
+    process.once("disconnect", disconnected);
+    process.send!({ type: "bootLifecycleRequest", nonce }, (error) => {
+      if (error) finish(false);
+    });
+  });
+}
+const startSupervisor = (
+  root: string,
+  home: string,
+  node: string,
+  continuation: boolean,
+) =>
+  bindBootLifecycle(
+    spawn(node, [join(root, "dist/cli.js"), "serve"], {
+      // Both platforms receive lifecycle authority over the actual parent's IPC.
+      // The Linux wrapper disconnects after its owned supervisor exits.
+      stdio: ["inherit", "inherit", "inherit", "ipc"],
+      env: {
+        ...process.env,
+        KATAFIT_COACH_HOME: home,
+        KATAFIT_BOOT_PROTOCOL: BOOT_PROTOCOL,
+      },
+    }),
+    continuation,
+  );
 
 /** The active version and its package, or the seed while none is active. */
 function active(
@@ -123,12 +177,13 @@ function launch(
   start: NonNullable<Options["start"]>,
   home: string,
   version: { root: string; revision?: string },
+  continuation: boolean,
 ) {
   try {
     const node = version.revision
       ? (versionNode(home, version.revision) ?? process.execPath)
       : process.execPath;
-    const child = start(version.root, home, node);
+    const child = start(version.root, home, node, continuation);
     if (child.pid !== undefined) return child;
     // Its spawn failure is reported as an error event, without an exit.
     child.on("error", () => {});
@@ -195,6 +250,7 @@ export async function boot(options: Options): Promise<number> {
   const healthMs = options.healthMs ?? 60000;
   const start = options.start ?? startSupervisor;
   let current: ChildProcess | undefined;
+  let continuation = false;
   let stopping = false;
   const forward = (signal: NodeJS.Signals) => () => {
     stopping = true;
@@ -214,6 +270,7 @@ export async function boot(options: Options): Promise<number> {
         start,
         home,
         active(home, seed, pointer),
+        continuation,
       ));
       const code = child ? exited(child) : Promise.resolve(1);
       if (
@@ -243,7 +300,10 @@ export async function boot(options: Options): Promise<number> {
         }
       }
       const status = await code;
-      if (status === HANDOVER_EXIT && !stopping) continue;
+      if (status === HANDOVER_EXIT && !stopping) {
+        continuation = true;
+        continue;
+      }
       return status;
     }
   } finally {

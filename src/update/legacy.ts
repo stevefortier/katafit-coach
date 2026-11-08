@@ -34,14 +34,16 @@ export async function legacyServe(store: Store, port: number) {
     await unlink(lockPath).catch(() => {});
   };
   try {
-    app = await admin(store, port, undefined, () => void close());
+    app = await admin(store, port, undefined, () => void close(), undefined, {
+      workerStartup: "automatic",
+    });
     await store.atomic("service", { origin: app.origin, pid: process.pid });
     process.once("SIGTERM", () => void close());
     process.once("SIGINT", () => void close());
     console.log(
       "Kata.fit Coach Studio listening at " +
         app.origin +
-        " (source upgrades require managed Linux; worker stopped).",
+        " (configured worker starts automatically; source upgrades require a managed installation).",
     );
   } catch (e) {
     await close();

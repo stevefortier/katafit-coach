@@ -320,6 +320,25 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
     failureSnapshot.status = response.status;
     assert.equal(response.status, 202, await response.text());
   };
+  // Fresh configured service lifetimes run automatically. Preserve this
+  // chain's stopped-upgrade/probation contract by explicitly stopping before
+  // the first replacement, not by assuming the retired initial-off policy.
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const status = await (await api("status")).json();
+    if (status.workerStartup.state === "started" && !status.transition) break;
+    await sleep(50);
+  }
+  const initialWorker = await (await api("status")).json();
+  assert.equal(initialWorker.workerStartup.state, "started");
+  assert.equal(initialWorker.state, "idle");
+  assert.equal(initialWorker.presence, "reported");
+  assert.equal(presence.snapshot().running.length, 1);
+  assert.equal((await api("stop", {})).status, 200);
+  const initialStop = await (await api("status")).json();
+  assert.equal(initialStop.state, "stopped");
+  assert.equal(initialStop.stopConfirmed, true);
+  assert.equal(initialStop.safeToReplace, true);
+  assert.equal(presence.snapshot().running.length, 0);
   await apply(good, 0);
   await wait((s) => !s.applying && s.installed === good);
   phase("initial-good-installed", { good });
@@ -381,10 +400,15 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       }),
     );
   } else {
-    const waitWorker = async (expected) => {
+    const waitWorker = async (expected, origin = info.origin) => {
       for (let i = 0; i < 300; i++) {
-        const status = await (await api("status")).json();
-        const update = await (await api("update")).json();
+        const read = (path) =>
+          fetch(origin + "/api/" + path, {
+            headers: { Authorization: auth.Authorization },
+            signal: AbortSignal.timeout(5000),
+          });
+        const status = await (await read("status")).json();
+        const update = await (await read("update")).json();
         if (
           status.state === expected &&
           status.safeToReplace &&
@@ -621,6 +645,18 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
       })
     ).json();
     assert.equal(restartState.installed, changed);
+    await waitWorker("idle", restarted.origin);
+    assert.equal(
+      (
+        await fetch(restarted.origin + "/api/stop", {
+          method: "POST",
+          headers: { ...auth, Origin: restarted.origin },
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    await waitWorker("stopped", restarted.origin);
     phase("restart-installed", { changed });
     process.kill(restarted.pid, "SIGKILL");
     await sleep(700);
@@ -633,6 +669,20 @@ Date.now=()=>now()+JSON.parse(readFileSync(${JSON.stringify(selection)},'utf8'))
         headers: { Authorization: auth.Authorization },
       })
     ).json();
+    // A new explicit launch after the crash resets the previous lifetime's
+    // Stop. Then explicitly stop and retain every original closure assertion.
+    await waitWorker("idle", recovered.origin);
+    assert.equal(
+      (
+        await fetch(recovered.origin + "/api/stop", {
+          method: "POST",
+          headers: { ...auth, Origin: recovered.origin },
+          body: "{}",
+        })
+      ).status,
+      200,
+    );
+    await waitWorker("stopped", recovered.origin);
     const recoveredWorker = await (
       await fetch(recovered.origin + "/api/status", {
         headers: { Authorization: auth.Authorization },
