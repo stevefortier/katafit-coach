@@ -101,7 +101,7 @@ test("manual update stable owner resumes after replacement and rollback without 
     assert.fail("manual admission requires idle publication-safe worker");
   };
   try {
-    assert.equal((await post("run")).status, 200);
+    await waitIdle(); // configured owner startup replaces the former manual Run
     for (const target of [latest, bad, "d".repeat(40), "e".repeat(40)]) {
       latest = target;
       owner.updates.checkedAt = 0;

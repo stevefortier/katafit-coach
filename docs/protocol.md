@@ -8,6 +8,34 @@ Reference implementations: official `katafit-hermes/katafit/worker.py`, `katafit
 
 The connector internally uses stateless Streamable HTTP JSON-RPC at `/api/agents/coach/mcp`, Bearer credential, `MCP-Protocol-Version: 2025-03-26`, and Accept JSON or SSE. Redirects are rejected, HTTP calls bounded to 10 seconds, response bytes to 1 MiB. JSON-RPC version/ID and tool errors are checked; both structuredContent and JSON text content are accepted.
 
+## Application startup
+
+Every new standalone application/service launch starts a configured worker,
+regardless of Stop in a previous process lifetime. There is no saved autostart
+switch. Stop/pause remains effective within the current application lifetime;
+Run or a genuinely new launch starts again. With no saved connection/provider,
+Studio stays available for setup. A partial configuration or rejected credential
+has a bounded one-shot startup failure and an actionable Worker/Diagnostics hint,
+not repeated worker restarts. Provider validity is not inferred from connectivity:
+no paid model validation call is made at launch, and subsequent inference errors
+retain their existing fixed provider diagnostics.
+
+Server construction alone is not worker launch authority. Normal CLI serve
+initializes the protected Store/journals, sandbox/lifecycle and real owner, passes
+stopped authenticated HTTP readiness/probation and publishes service ownership,
+then privately activates the worker once. Candidate validation/probes and managed
+replacement/rollback stay stopped until the existing publication-safe managed
+resume. Bootstrap handover is a continuation of the same application lifetime,
+not a reboot; its process-local continuation marker preserves Stop. A new boot
+invocation resets that marker, never carrying Stop into a later launch. Ship the
+paired bootstrap/supervisor launcher for this behavior; source-upgrading only an
+application child does not upgrade an older stable launcher.
+
+Status reports `connecting` with unconfirmed presence during admission, then the
+real worker/presence state or a fixed startup error. Starting never authorizes
+replay of unknown journaled actions or tasks, and startup does not prove model
+inference or persisted publication.
+
 ## Optional explicit worker presence
 
 Before Run Coach returns success, the worker discovers `coach_report_worker_presence` through `tools/list` and, when advertised, awaits `coach_report_worker_presence {instance_id, state:"running"}` using its existing bearer MCP connection. The instance ID is a new random UUID for each worker start. While running it reports again every 10 seconds, independent of polling or model inference. Stop and service shutdown abort inference/polling and report `{instance_id, state:"stopped", generation}` with a bounded request using the backend-issued generation. If a running report fails on an advertised tool, Run fails without starting the poll loop. Replacement remains fenced until local Stop has settled and the backend has confirmed that exact instance stopped. A failed heartbeat or stop report is marked unconfirmed, not a claim that the backend saw it.

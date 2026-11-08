@@ -92,13 +92,13 @@ test("a handed-over upgrade leaves the worker resume to the successor supervisor
         headers: headersFor(origin),
         body: JSON.stringify(body),
       });
-    assert.equal((await post("run")).status, 200);
-    await post("update/check");
+    // Configured startup now starts without a manual Run request.
     for (let i = 0; i < 100; i++) {
       const s = await status(origin);
       if (s.state === "idle" && s.safeToReplace) break;
       await new Promise((r) => setTimeout(r, 20));
     }
+    await post("update/check");
     const accepted = await post("update/apply", { sha: target, confirm: true });
     assert.equal(accepted.status, 202, await accepted.clone().text());
     for (let i = 0; i < 200 && !reasons.includes("handover"); i++)

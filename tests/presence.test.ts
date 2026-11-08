@@ -1403,16 +1403,8 @@ test("manual preparation preserves source and presence safety on refused stop", 
   };
   const originalFetch = globalThis.fetch;
   try {
-    assert.equal(
-      (
-        await fetch(owner.origin + "/api/run", {
-          method: "POST",
-          headers,
-          body: "{}",
-        })
-      ).status,
-      200,
-    );
+    // A new owner starts configured Coach automatically; join its initial
+    // transition before exercising preparation and refused-stop recovery.
     let state;
     for (let i = 0; i < 100; i++) {
       state = await (

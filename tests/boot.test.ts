@@ -76,6 +76,33 @@ test("with no active version the seed runs, and its exit code is the bootstrap's
   }
 });
 
+test("only a new bootstrap lifetime authorizes configured startup, not a managed handover", async () => {
+  const { home, seed } = await setup();
+  try {
+    await write(home, "active.json", { revision: A });
+    const s = supervisors(home, {
+      A: ["handover"],
+      B: ["healthyExit0", "healthyExit0"],
+      seed: [],
+    });
+    const continuation: unknown[] = [];
+    const start = (...args: any[]) => {
+      continuation.push(args[3]);
+      return s.start(args[0]);
+    };
+    assert.equal(await boot({ home, seed, start, healthMs: 5000 }), 0);
+    assert.deepEqual(continuation, [false, true]);
+    assert.equal(await boot({ home, seed, start, healthMs: 5000 }), 0);
+    assert.deepEqual(
+      continuation,
+      [false, true, false],
+      "a genuinely new launch must forget prior Stop/handover suppression",
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("a handover starts the newly active version's own supervisor", async () => {
   const { home, seed } = await setup();
   try {

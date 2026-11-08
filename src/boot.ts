@@ -35,7 +35,12 @@ type Options = {
   /** How long a handed-over supervisor has to become healthy. */
   healthMs?: number;
   /** Test seam: start one supervisor under the given Node. */
-  start?: (root: string, home: string, node: string) => ChildProcess;
+  start?: (
+    root: string,
+    home: string,
+    node: string,
+    continuation: boolean,
+  ) => ChildProcess;
 };
 
 function readJson(path: string): any {
@@ -51,7 +56,12 @@ function writeAtomic(path: string, value: unknown) {
   renameSync(temporary, path);
 }
 const windows = process.platform === "win32";
-const startSupervisor = (root: string, home: string, node: string) =>
+const startSupervisor = (
+  root: string,
+  home: string,
+  node: string,
+  continuation: boolean,
+) =>
   spawn(node, [join(root, "dist/cli.js"), "serve"], {
     // On Windows a stop reaches it over this IPC channel (see ask()). Not
     // elsewhere: an open channel would keep Linux's `serve` wrapper alive.
@@ -60,6 +70,8 @@ const startSupervisor = (root: string, home: string, node: string) =>
       ...process.env,
       KATAFIT_COACH_HOME: home,
       KATAFIT_BOOT_PROTOCOL: BOOT_PROTOCOL,
+      // Process-local lifecycle authority, never a persisted worker preference.
+      KATAFIT_BOOT_CONTINUATION: continuation ? "1" : "0",
     },
   });
 
@@ -123,12 +135,13 @@ function launch(
   start: NonNullable<Options["start"]>,
   home: string,
   version: { root: string; revision?: string },
+  continuation: boolean,
 ) {
   try {
     const node = version.revision
       ? (versionNode(home, version.revision) ?? process.execPath)
       : process.execPath;
-    const child = start(version.root, home, node);
+    const child = start(version.root, home, node, continuation);
     if (child.pid !== undefined) return child;
     // Its spawn failure is reported as an error event, without an exit.
     child.on("error", () => {});
@@ -195,6 +208,7 @@ export async function boot(options: Options): Promise<number> {
   const healthMs = options.healthMs ?? 60000;
   const start = options.start ?? startSupervisor;
   let current: ChildProcess | undefined;
+  let continuation = false;
   let stopping = false;
   const forward = (signal: NodeJS.Signals) => () => {
     stopping = true;
@@ -214,6 +228,7 @@ export async function boot(options: Options): Promise<number> {
         start,
         home,
         active(home, seed, pointer),
+        continuation,
       ));
       const code = child ? exited(child) : Promise.resolve(1);
       if (
@@ -243,7 +258,10 @@ export async function boot(options: Options): Promise<number> {
         }
       }
       const status = await code;
-      if (status === HANDOVER_EXIT && !stopping) continue;
+      if (status === HANDOVER_EXIT && !stopping) {
+        continuation = true;
+        continue;
+      }
       return status;
     }
   } finally {

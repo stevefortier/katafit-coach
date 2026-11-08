@@ -58,8 +58,11 @@ candidates require a matching out-of-band provisioned immutable image receipt;
 missing artifacts fail before stopping the old child. The updater never pulls or
 builds images. Protocol-1 applications remain supported as rollback targets.
 
-The worker remains stopped after startup. Verify authenticated health, exact
-runtime revision and image binding before explicitly choosing Run. Startup and
+A configured worker starts automatically on each new application/container launch,
+even if it was stopped in the previous lifetime. Verify authenticated health,
+exact runtime revision, image binding and Worker startup status. Candidate probes
+and managed-update probation remain stopped until publication-safe activation and
+managed resume; they are not new application launches. Startup and
 synthetic Pi readiness do not establish a live model reply or customer access.
 Preserve old application/image pairs until probation completes; Docker image
 cleanup is deliberately outside source-updater housekeeping.

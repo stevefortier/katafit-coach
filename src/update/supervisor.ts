@@ -143,6 +143,7 @@ export async function supervise(
     if (!target || target.pid === undefined) return;
     await stopChild(target, 5000);
   }
+  let activationNonce: string | undefined;
   const send = (data: unknown) => {
     if (child?.connected) child.send(data as any, () => {});
   };
@@ -466,6 +467,7 @@ export async function supervise(
         pid: process.pid,
         runtimePid: target.pid,
       });
+      activationNonce = nonce;
       target.once("exit", () => {
         if (!closing && !operation && target === child) onShutdown?.();
       });
@@ -958,6 +960,13 @@ export async function supervise(
     recoveryTimer.unref();
   };
   if (ambiguousQuiesce) scheduleRecovery(1);
+  else if (process.env.KATAFIT_BOOT_CONTINUATION !== "1") {
+    // Only a NEW service-owner lifetime auto-starts. launch() is also used for
+    // candidate probation/rollback: those remain stopped until managed resume.
+    // The stopped HTTP health check and durable service publication above have
+    // completed before this private, incarnation-bound activation is sent.
+    send({ type: "activateWorkerOnLaunch", nonce: activationNonce });
+  }
   // Refresh state even for code-driven updates and across a replaced child.
   const timer = setInterval(
     () => send({ type: "state", data: updates.snapshot() }),

@@ -133,7 +133,7 @@ async function main() {
       console.log(
         "Kata.fit Coach studio listening at " +
           app.origin +
-          " (worker stopped; use run after preview).",
+          " (configured worker starts automatically; check status for connection or startup errors).",
       );
     } catch (e) {
       await close();

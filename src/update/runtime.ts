@@ -145,6 +145,10 @@ process.on("message", async (message: any) => {
       waiting?.reject(new Error(message.error));
     } else waiting?.resolve(message.data);
   }
+  if (message?.type === "activateWorkerOnLaunch" && message.nonce === nonce) {
+    if (!closing) void app?.activateWorkerOnLaunch?.();
+    return;
+  }
   if (message?.type !== "state") return;
   updates.receiveState(message.data);
   if (initialized) return;
@@ -174,6 +178,7 @@ process.on("message", async (message: any) => {
         void rpc("shutdown");
       },
       updates,
+      { workerStartup: "deferred" },
     );
     process.send?.({ type: "ready", origin: app.origin, nonce });
   } catch (error) {
