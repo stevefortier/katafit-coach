@@ -26,8 +26,10 @@ stopped authenticated HTTP readiness/probation and publishes service ownership,
 then privately activates the worker once. Candidate validation/probes and managed
 replacement/rollback stay stopped until the existing publication-safe managed
 resume. Bootstrap handover is a continuation of the same application lifetime,
-not a reboot; its process-local continuation marker preserves Stop. A new boot
-invocation resets that marker, never carrying Stop into a later launch. Ship the
+not a reboot; a nonce-correlated exchange over the bootstrap-owned IPC channel
+preserves Stop (forwarded through the Linux flock wrapper). Ambient environment
+markers do not suppress a fresh direct CLI launch. A new boot invocation resets
+that in-memory lifetime intent, never carrying Stop into a later launch. Ship the
 paired bootstrap/supervisor launcher for this behavior; source-upgrading only an
 application child does not upgrade an older stable launcher.
 

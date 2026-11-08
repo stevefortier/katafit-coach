@@ -61,6 +61,8 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 interface Boundary {
+  /** Received from the owned bootstrap IPC channel, never environment. */
+  bootContinuation?: boolean;
   readiness?: (
     target: import("../release/manifest.js").Manifest,
   ) => Promise<string | NativeBinding>;
@@ -960,7 +962,7 @@ export async function supervise(
     recoveryTimer.unref();
   };
   if (ambiguousQuiesce) scheduleRecovery(1);
-  else if (process.env.KATAFIT_BOOT_CONTINUATION !== "1") {
+  else if (!boundary.bootContinuation) {
     // Only a NEW service-owner lifetime auto-starts. launch() is also used for
     // candidate probation/rollback: those remain stopped until managed resume.
     // The stopped HTTP health check and durable service publication above have

@@ -266,7 +266,8 @@ export async function admin(
         warnings?: { code: string; hint: string }[];
       }
     | undefined;
-  const startWorker = async () => {
+  const startWorker = async (signal?: AbortSignal) => {
+    signal?.throwIfAborted();
     if (closing) throw new SafeError("CANCELLED");
     if (configurationUncertain)
       throw new SafeError("CONFIGURATION_STATE_UNCONFIRMED");
@@ -293,6 +294,7 @@ export async function admin(
       (!worker.stopConfirmed || !worker.safeToReplace)
     )
       throw new SafeError("WORKER_STOP_UNCONFIRMED");
+    signal?.throwIfAborted();
     if (!isolationHealthy()) throw new SafeError("WORKER_STOP_UNCONFIRMED");
     if (!store.secrets.token || !store.secrets.apiKey)
       throw new Error("CONNECTION_AND_PROVIDER_REQUIRED");
@@ -357,11 +359,14 @@ export async function admin(
   // stopped worker: Stop (and a failed start) must remain meaningful here.
   let startupConsumed = false;
   let startupWork: Promise<void> | undefined;
+  const startupController = new AbortController();
+  let startupStop: Promise<void> | undefined;
   let workerStartup: {
     state:
       | "waiting-owner"
       | "not-configured"
       | "starting"
+      | "stopping"
       | "started"
       | "failed"
       | "suppressed";
@@ -392,9 +397,15 @@ export async function admin(
     workerStartup = { state: "starting" };
     startupWork = (async () => {
       try {
-        await startWorker();
-        workerStartup = { state: "started" };
+        await startWorker(startupController.signal);
+        workerStartup = {
+          state: startupController.signal.aborted ? "suppressed" : "started",
+        };
       } catch (error) {
+        if (startupController.signal.aborted) {
+          workerStartup = { state: "suppressed" };
+          return;
+        }
         const failure = safeError(error);
         workerStartup = {
           state: "failed",
@@ -408,7 +419,7 @@ export async function admin(
           error: failure,
         });
       } finally {
-        busy = false;
+        if (!startupController.signal.aborted) busy = false;
       }
     })();
     return startupWork;
@@ -1818,6 +1829,35 @@ export async function admin(
           error: "UPDATE_RECOVERING",
           hint: "The launcher is restoring Coach. Check worker status; do not reapply the update.",
         });
+      // Stop may cancel only this lifetime's automatic admission, never an
+      // unrelated save/replacement. Keep busy owned until cancellation AND the
+      // startup continuation settle; the Worker's abort fences late admission.
+      if (
+        path === "/api/stop" &&
+        (workerStartup.state === "starting" || startupStop)
+      ) {
+        startupStop ??= (async () => {
+          startupConsumed = true;
+          resumeIntent = false;
+          workerStartup = { state: "stopping" };
+          startupController.abort();
+          try {
+            await worker?.stop();
+            await startupWork;
+          } finally {
+            busy = false;
+          }
+        })();
+        try {
+          await startupStop;
+          return send(200, {
+            ok: true,
+            presence: worker?.presence ?? "unconfirmed",
+          });
+        } finally {
+          startupStop = undefined;
+        }
+      }
       // Only an earlier save's background continuation holding `busy` lets a
       // valid settings save through; actual local writes stay serialized.
       const settingsAdmissible =

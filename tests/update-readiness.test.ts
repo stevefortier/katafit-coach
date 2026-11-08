@@ -343,6 +343,21 @@ test(
           headers,
           body: JSON.stringify(body),
         });
+      // A new owner now starts automatically. Join that admission before the
+      // independent Run control; HTTP health alone is deliberately responsive
+      // while startup is connecting and must not imply a settled transition.
+      let startup;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        startup = await (
+          await fetch(owner.origin + "/api/status", { headers })
+        ).json();
+        if (startup.workerStartup.state === "started" && !startup.transition)
+          break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      assert.equal(startup.workerStartup.state, "started");
+      assert.equal(startup.transition, false);
+      assert.equal(startup.state, "idle");
       const run = await fetch(owner.origin + "/api/run", {
         method: "POST",
         headers,

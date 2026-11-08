@@ -11,7 +11,7 @@ import { Store } from "./config/store.js";
 import { supervise } from "./update/supervisor.js";
 import { legacyServe } from "./update/legacy.js";
 import { assertSupportedNode } from "./runtime-version.js";
-import { HANDOVER_EXIT } from "./boot.js";
+import { HANDOVER_EXIT, bindBootLifecycle, bootContinuation } from "./boot.js";
 assertSupportedNode();
 const dir = process.env.KATAFIT_COACH_HOME ?? join(homedir(), ".katafit-coach");
 const store = new Store(dir);
@@ -51,6 +51,9 @@ async function singleInstance(home: string) {
   lock.unref();
 }
 async function main() {
+  const continuation = ["serve", "__serve"].includes(command)
+    ? await bootContinuation()
+    : false;
   if (command === "help") {
     console.log(
       "katafit-coach start | serve | open | status | run | pause | stop\nstart: background local studio; open: authenticated browser; run: start worker\npause: stop worker; stop: stop service. Node 26.10+ (major 26 only) required.",
@@ -82,6 +85,7 @@ async function main() {
       ],
       { stdio: ["inherit", "inherit", "inherit", "ipc"], env: process.env },
     );
+    bindBootLifecycle(owner, continuation);
     process.once("SIGTERM", () => owner.kill("SIGTERM"));
     process.once("SIGINT", () => owner.kill("SIGINT"));
     await new Promise<void>((resolve, reject) => {
@@ -91,6 +95,7 @@ async function main() {
         resolve();
       });
     });
+    if (process.connected) process.disconnect();
     return;
   }
   await store.init();
@@ -120,6 +125,7 @@ async function main() {
           if (reason === "handover") process.exitCode = HANDOVER_EXIT;
           void close();
         },
+        { bootContinuation: continuation },
       );
       if (closing) {
         if ((await app.close()) === false) closing = false;

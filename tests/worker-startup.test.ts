@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
@@ -342,6 +343,97 @@ test("startup stays HTTP-responsive and connecting while backend admission is pe
   }
 });
 
+test("authenticated Stop cancels pending automatic startup and fences late backend success", async () => {
+  const f = await fixture({ holdInitialize: true });
+  let app: Awaited<ReturnType<typeof admin>> | undefined;
+  try {
+    app = await admin(f.store, 0, async () => "unused", undefined, undefined, {
+      workerStartup: "automatic",
+    });
+    await until(() => f.calls.includes("initialize"));
+    const stopped = await request(app.origin, f.store, "/api/stop", true);
+    assert.equal(stopped.status, 200, await stopped.text());
+    const state = await (await request(app.origin, f.store)).json();
+    assert.equal(state.state, "stopped");
+    assert.equal(state.transition, false);
+    assert.equal(state.safeToReplace, true);
+    f.release();
+    await app.activateWorkerOnLaunch();
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(f.calls.includes("coach_claim_request"), false);
+    assert.equal(
+      (await (await request(app.origin, f.store)).json()).state,
+      "stopped",
+    );
+    // Cancel only the launch intent, not future explicit user authority. A
+    // later manual Run/Stop must still operate and must not reuse a settled
+    // startup-cancellation promise as a no-op Stop.
+    assert.equal(
+      (await request(app.origin, f.store, "/api/run", true)).status,
+      200,
+    );
+    await until(() => f.calls.includes("coach_claim_request"));
+    assert.equal(
+      (await request(app.origin, f.store, "/api/stop", true)).status,
+      200,
+    );
+    assert.equal(
+      (await (await request(app.origin, f.store)).json()).state,
+      "stopped",
+    );
+  } finally {
+    f.release();
+    await app?.close();
+    await f.close();
+  }
+});
+
+test("390px Worker panel can Stop pending startup with an ordinary native click", async () => {
+  const f = await fixture({ holdInitialize: true });
+  let app: Awaited<ReturnType<typeof admin>> | undefined;
+  const browser = await chromium.launch({
+    executablePath: chromePath(),
+    headless: true,
+    args: ["--no-sandbox"],
+  });
+  try {
+    app = await admin(f.store, 0, async () => "unused", undefined, undefined, {
+      workerStartup: "automatic",
+    });
+    await until(() => f.calls.includes("initialize"));
+    const page = await browser.newPage({
+      viewport: { width: 390, height: 844 },
+    });
+    await page.goto(
+      app.origin + "/settings?section=worker#" + f.store.secrets.admin,
+    );
+    await page.waitForFunction(() =>
+      document
+        .getElementById("workerStartupStatus")
+        ?.textContent?.includes("Starting configured Coach"),
+    );
+    assert.equal(await page.locator("#stop").isDisabled(), false);
+    const response = page.waitForResponse(
+      (r) => r.url().endsWith("/api/stop") && r.request().method() === "POST",
+    );
+    await page.locator("#stop").click();
+    assert.equal((await response).status(), 200);
+    f.release();
+    await app.activateWorkerOnLaunch();
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(f.calls.includes("coach_claim_request"), false);
+    assert.equal(
+      (await (await request(app.origin, f.store)).json()).state,
+      "stopped",
+    );
+  } finally {
+    f.release();
+    await browser.close();
+    await app?.close();
+    await f.close();
+  }
+});
+
 test("shutdown cancels held startup without claiming or restarting", async () => {
   const f = await fixture({ holdInitialize: true });
   let app: Awaited<ReturnType<typeof admin>> | undefined;
@@ -458,6 +550,8 @@ test("real CLI serve owner auto-starts after health; pause survives only this se
         ...process.env,
         KATAFIT_COACH_HOME: f.store.dir,
         KATAFIT_COACH_PORT: "0",
+        KATAFIT_BOOT_CONTINUATION: "1",
+        KATAFIT_BOOT_PROTOCOL: "1",
       },
       timeout: 15000,
     });
@@ -511,11 +605,12 @@ test("real CLI serve owner auto-starts after health; pause survives only this se
   }
 });
 
-test("real bootstrap resets Stop on new launch but a handover continuation stays stopped", async () => {
+test("fresh direct CLI ignores ambient continuation; real bootstrap resets Stop on new launch", async () => {
   const f = await fixture();
   let child: ReturnType<typeof spawn> | undefined;
   let exited: Promise<void> = Promise.resolve();
   const launch = async (entry: "cli" | "boot") => {
+    let stderr = "";
     child = spawn(
       process.execPath,
       [
@@ -529,16 +624,19 @@ test("real bootstrap resets Stop on new launch but a handover continuation stays
           KATAFIT_COACH_PORT: "0",
           KATAFIT_BOOT_CONTINUATION: "1",
         },
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", "pipe"],
       },
     );
+    child.stderr?.on("data", (data) => {
+      stderr += data;
+    });
     exited = new Promise<void>((r) => child!.once("exit", () => r()));
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       assert.equal(
         child.exitCode,
         null,
-        "owned launcher exited before readiness",
+        "owned launcher exited before readiness: " + stderr,
       );
       try {
         return JSON.parse(await readFile(f.store.dir + "/service.json", "utf8"))
@@ -549,16 +647,11 @@ test("real bootstrap resets Stop on new launch but a handover continuation stays
     assert.fail("real launcher did not publish readiness");
   };
   try {
-    let origin = await launch("cli"); // actual continuation caller, not a new outer boot
-    await new Promise((r) => setTimeout(r, 600));
-    assert.deepEqual(
-      f.calls,
-      [],
-      "a stopped managed continuation must not claim",
-    );
+    let origin = await launch("cli"); // ambient marker is NOT handover authority
+    await until(() => f.calls.includes("coach_claim_request"));
     assert.equal(
-      (await (await request(origin, f.store)).json()).state,
-      "stopped",
+      (await request(origin, f.store, "/api/stop", true)).status,
+      200,
     );
     assert.equal(
       (await request(origin, f.store, "/api/shutdown", true)).status,
@@ -566,8 +659,14 @@ test("real bootstrap resets Stop on new launch but a handover continuation stays
     );
     await exited;
     child = undefined;
+    const beforeBoot = f.calls.filter(
+      (c) => c === "coach_claim_request",
+    ).length;
     origin = await launch("boot"); // default real bootstrap must overwrite inherited continuation
-    await until(() => f.calls.includes("coach_claim_request"));
+    await until(
+      () =>
+        f.calls.filter((c) => c === "coach_claim_request").length > beforeBoot,
+    );
     assert.equal(
       (await request(origin, f.store, "/api/stop", true)).status,
       200,
@@ -582,6 +681,74 @@ test("real bootstrap resets Stop on new launch but a handover continuation stays
     origin = await launch("boot");
     await until(
       () => f.calls.filter((c) => c === "coach_claim_request").length > claims,
+    );
+    assert.equal(
+      (await request(origin, f.store, "/api/shutdown", true)).status,
+      200,
+    );
+    await exited;
+    child = undefined;
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      await exited;
+    }
+    await f.close();
+  }
+});
+
+test("actual bootstrap IPC preserves stopped continuation after a real handover exit", async () => {
+  const f = await fixture();
+  let child: ReturnType<typeof spawn> | undefined;
+  let exited: Promise<void> = Promise.resolve();
+  try {
+    const seed = f.store.dir + "/handover-seed";
+    await mkdir(seed + "/dist", { recursive: true });
+    await writeFile(seed + "/package.json", JSON.stringify({ type: "module" }));
+    // Only the pre-handover stub is synthetic. The bootstrap, IPC channel,
+    // flock wrapper/Windows owner and successor CLI are the actual artifact.
+    await writeFile(
+      seed + "/dist/cli.js",
+      `import {existsSync,writeFileSync} from 'node:fs';
+      const marker=${JSON.stringify(seed + "/handed-over")};
+      if(!existsSync(marker)){writeFileSync(marker,'1');process.exit(75);}
+      await import(${JSON.stringify(pathToFileURL(compiledRoot + "/dist/cli.js").href)});`,
+    );
+    const harness = f.store.dir + "/boot-harness.mjs";
+    await writeFile(
+      harness,
+      `import {boot} from ${JSON.stringify(pathToFileURL(compiledRoot + "/dist/boot.js").href)};
+      process.exitCode=await boot({home:${JSON.stringify(f.store.dir)},seed:${JSON.stringify(seed)}});`,
+    );
+    child = spawn(process.execPath, [harness], {
+      env: {
+        ...process.env,
+        KATAFIT_COACH_HOME: f.store.dir,
+        KATAFIT_COACH_PORT: "0",
+        KATAFIT_BOOT_CONTINUATION: "0",
+      },
+      stdio: "ignore",
+    });
+    exited = new Promise<void>((r) => child!.once("exit", () => r()));
+    let origin: string | undefined;
+    for (let attempt = 0; attempt < 400; attempt++) {
+      assert.equal(child.exitCode, null);
+      origin = await readFile(f.store.dir + "/service.json", "utf8")
+        .then((s) => JSON.parse(s).origin)
+        .catch(() => undefined);
+      if (origin) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.ok(origin);
+    await new Promise((r) => setTimeout(r, 600));
+    assert.deepEqual(
+      f.calls,
+      [],
+      "owned same-lifetime handover must not auto-start",
+    );
+    assert.equal(
+      (await (await request(origin, f.store)).json()).state,
+      "stopped",
     );
     assert.equal(
       (await request(origin, f.store, "/api/shutdown", true)).status,
@@ -683,7 +850,9 @@ test("actual managed runtime remains stopped throughout probation and quiesce; r
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(f.calls.filter((c) => c === "initialize").length, initializes);
   } finally {
-    child.kill("SIGTERM");
+    // IPC disconnect is a graceful shutdown on Windows too, unlike SIGTERM.
+    if (child.connected) child.disconnect();
+    else child.kill("SIGTERM");
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
