@@ -711,6 +711,58 @@ const dlEvents = [ada, bob].flatMap((user, m) =>
 const DL_FIXES = Object.fromEntries(
   dlEvents.map((e) => [e.id, [e.position.latitude, e.position.longitude]]),
 ) as Record<string, Fix>;
+// Selection and member-filter state a gesture must not change.
+const selection = (page: any) =>
+  page.evaluate(() => ({
+    unselected: document.querySelectorAll(".dashboard-latest-unselected")
+      .length,
+    filtered: document.querySelectorAll(
+      ".dashboard-map-marker.dashboard-filtered",
+    ).length,
+    pressed: document.querySelectorAll('#dashboardMap [aria-pressed="true"]')
+      .length,
+    choosers: [
+      ...document.querySelectorAll(
+        ".dashboard-latest-chooser, .dashboard-map-chooser",
+      ),
+    ].filter((c) => !(c as HTMLElement).hidden).length,
+  }));
+const UNSELECTED = { unselected: 0, filtered: 0, pressed: 0, choosers: 0 };
+// The nearest point to (x, y) where a press natively hits the map itself,
+// at least 8px clear of every mark's real box.
+const bareMap = async (page: any, x: number, y: number) => {
+  const at = await page.evaluate(
+    ([x, y]: [number, number]) => {
+      const map = document.querySelector("#dashboardMap")!;
+      const boxes = [...map.querySelectorAll("button, .leaflet-control")].map(
+        (b) => b.getBoundingClientRect(),
+      );
+      for (let r = 0; r <= 160; r += 8)
+        for (let a = 0; a < 16; a++) {
+          const px = x + r * Math.cos((a * Math.PI) / 8),
+            py = y + r * Math.sin((a * Math.PI) / 8);
+          const hit = document.elementFromPoint(px, py);
+          if (
+            hit &&
+            map.contains(hit) &&
+            !hit.closest("button, .leaflet-control") &&
+            boxes.every(
+              (b) =>
+                px < b.left - 8 ||
+                px > b.right + 8 ||
+                py < b.top - 8 ||
+                py > b.bottom + 8,
+            )
+          )
+            return { x: px, y: py };
+        }
+      return null;
+    },
+    [x, y],
+  );
+  assert.ok(at, "no bare map within 160px of the start");
+  return at as { x: number; y: number };
+};
 
 test("dateline: worldCopyJump drags and zooms keep latest pins, dots and crossing connections in the nearest world", async () => {
   const log: Log = { entries: [], failures: [] };
@@ -737,13 +789,25 @@ test("dateline: worldCopyJump drags and zooms keep latest pins, dots and crossin
       const cx = box.x + box.width / 2,
         cyy = box.y + box.height / 2;
       const drag = (dx: number) => async () => {
-        await page.mouse.move(cx, cyy);
+        // Grab bare map: a press on a mark belongs to that mark, and the
+        // marks under the box center depend on the previous gesture's inertia.
+        const from = await bareMap(page, cx, cyy);
+        const before = await page.evaluate(() =>
+          (window as any).fixtureMap.getCenter(),
+        );
+        await page.mouse.move(from.x, from.y);
         await page.mouse.down();
         for (let i = 1; i <= 12; i++) {
-          await page.mouse.move(cx + (i * dx) / 12, cyy + i * 2);
+          await page.mouse.move(from.x + (i * dx) / 12, from.y + i * 2);
           await page.waitForTimeout(16);
         }
         await page.mouse.up();
+        // A native map drag that left selection and member filter alone.
+        const after = await page.evaluate(() =>
+          (window as any).fixtureMap.getCenter(),
+        );
+        assert.notDeepEqual(after, before);
+        assert.deepEqual(await selection(page), UNSELECTED);
       };
       const lngs: number[] = [];
       const lng = () =>
@@ -794,6 +858,76 @@ test("dateline: worldCopyJump drags and zooms keep latest pins, dots and crossin
     { events: dlEvents as any },
   );
   await finish("dateline.json", log);
+});
+
+// Grabbing the map on a mark pans it like bare map: the click that ends the
+// drag lands on the mark that moved with the pointer and must not activate it.
+// A still click or keyboard activation on the same marks still does.
+test("drag from a mark: a map drag that starts on a latest pin, latest group, event dot or badge never activates it; a still click or key still does", async () => {
+  await run(async (page) => {
+    await dotsReady(page, events.length);
+    await pinsReady(page, 3);
+    const marks: [string, string][] = [
+      ["latest pin", pinned(ada)],
+      ["latest group", pinned(bob)],
+      ["event dot", `.dashboard-event-dot[data-event-id="${ev(10)}"]`],
+      ["co-location badge", ".dashboard-map-group"],
+    ];
+    const at = async (selector: string) => {
+      const box = (await page.locator(selector).boundingBox())!;
+      const x = box.x + box.width / 2,
+        y = box.y + box.height / 2;
+      // The press natively targets the mark itself.
+      assert.ok(
+        await page.evaluate(
+          ([s, x, y]: [string, number, number]) =>
+            document.elementFromPoint(x, y)?.closest("button") ===
+            document.querySelector(s),
+          [selector, x, y],
+        ),
+        selector,
+      );
+      return { x, y };
+    };
+    const center = () =>
+      page.evaluate(() => (window as any).fixtureMap.getCenter());
+    for (const [name, selector] of marks) {
+      await view(page);
+      assert.deepEqual(await selection(page), UNSELECTED, name);
+      const from = await at(selector),
+        before = await center();
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      for (let i = 1; i <= 12; i++) {
+        await page.mouse.move(from.x + i * 10, from.y + i * 4);
+        await page.waitForTimeout(16);
+      }
+      await page.mouse.up();
+      await page.waitForTimeout(400);
+      assert.notDeepEqual(await center(), before, `${name}: map dragged`);
+      assert.deepEqual(await selection(page), UNSELECTED, `${name} dragged`);
+    }
+    await view(page);
+    // Keyboard activation right after a drag (Leaflet still reports it moved).
+    assert.ok(
+      await page.evaluate(() => (window as any).fixtureMap.dragging.moved()),
+    );
+    await page.focus(marks[2][1]);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(
+      (s: string) =>
+        document.querySelector(s)?.getAttribute("aria-pressed") === "true",
+      marks[2][1],
+    );
+    const pin = await at(pinned(ada));
+    await page.mouse.click(pin.x, pin.y);
+    await page.waitForFunction(
+      (s: string) =>
+        !document.querySelector(s)!.matches(".dashboard-latest-unselected") &&
+        !!document.querySelector(".dashboard-latest-unselected"),
+      pinned(ada),
+    );
+  });
 });
 
 test("zoom clock: tile levels started a frame apart still paint one map, with every mark on it", async () => {

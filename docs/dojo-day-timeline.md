@@ -59,7 +59,7 @@ A single click/tap only selects: a member selection card selects that member, an
 
 Map dots and member selection cards keep their existing immediate focus (the dot path is unchanged).
 
-The opening day fit still stops at zoom 16. A focused camera counts as a deliberate view, so resizing keeps it, the same as panning. Dots are not Leaflet layers, so their double activations never trigger Leaflet's own double-click or double-tap zoom. Whole member selection buttons use `touch-action: manipulation`, so a double tap never zooms the page. Double-clicking or double-tapping empty map space still zooms in as before.
+The opening day fit still stops at zoom 16. A focused camera counts as a deliberate view, so resizing keeps it, the same as panning. Dots are not Leaflet layers, so their double activations never trigger Leaflet's own double-click or double-tap zoom. Like Leaflet's own layers, a latest pin, dot or co-location badge is never activated by the click that ends a map drag started on it: the mark moves with the pointer, but the press panned the map. A still click, tap or keyboard activation is unchanged. Whole member selection buttons use `touch-action: manipulation`, so a double tap never zooms the page. Double-clicking or double-tapping empty map space still zooms in as before.
 
 ## Latest known member positions
 
@@ -112,7 +112,7 @@ Qualification: `tests/latest-position-pins-browser.test.ts` (served UI with actu
 - member selection, a held avatar, a member denial, a Position denial with a held latest positive, a whole-dojo denial, a held day page, and a latest response that moves, removes, adds and regroups pins;
 - a date change and a lock.
 
-It also covers antimeridian drags and zooms. Every frame is checked against the visible basemap at each mark's own fix (shared sampler `tests/helpers/map-motion-sampler.ts`, controls in `tests/map-motion-oracle-browser.test.ts`).
+It also covers antimeridian drags and zooms; each drag grabs bare map (by DOM hit and every mark's real box) and must leave selection and member filter unchanged. A separate case drags the map from a latest pin, a latest group, an event dot and a co-location badge, and checks that none activates, while a keyboard activation right after the drag and a still click still do. Every frame is checked against the visible basemap at each mark's own fix (shared sampler `tests/helpers/map-motion-sampler.ts`, controls in `tests/map-motion-oracle-browser.test.ts`).
 
 - **Per-level position:** on each tile level, the loaded tile whose source `z/x/y` contains the projected fix gives that level's screen position for the fix.
 - **Visible contribution:** that position contributes with the tile's effective opacity (image and ancestors), times what the levels stacked above let through at that point. Contributions under 2% do not count, so faint, opacity-0 and occluded levels are not references. A sole level fading in still counts.

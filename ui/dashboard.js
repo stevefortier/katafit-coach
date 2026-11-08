@@ -2466,6 +2466,13 @@ window.CoachDashboard = (() => {
     // reach Leaflet's click handling or its double-click/double-tap zoom.
     for (const type of ["click", "dblclick"])
       overlay.addEventListener(type, (event) => event.stopPropagation());
+    // A press that panned the map was a drag: like Leaflet does for its own
+    // layers, its click never activates the mark that moved under the pointer.
+    // Keyboard clicks (detail 0) never come from a drag.
+    const dragClick = (event) => {
+      if (event.detail && instance.dragging?.moved()) event.stopPropagation();
+    };
+    overlay.addEventListener("click", dragClick, true);
     // Latest known positions: a stable layer under the day's event dots,
     // independent of the selected day/category and of the timeline.
     const latestLayer = text("div", "", "dashboard-latest-overlay");
@@ -2476,6 +2483,7 @@ window.CoachDashboard = (() => {
     );
     for (const type of ["click", "dblclick"])
       latestLayer.addEventListener(type, (event) => event.stopPropagation());
+    latestLayer.addEventListener("click", dragClick, true);
     map.append(latestLayer);
     map.append(overlay);
     // Native map motion. Each overlay lays its marks out at exact container
