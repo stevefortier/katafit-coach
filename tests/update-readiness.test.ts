@@ -522,9 +522,10 @@ test("missing immutable Docker image is delivery pending, Docker daemon outage i
 });
 
 // Exercise the stable owner's default observer against actual existing Docker
-// bytes. Only source discovery/installed identity and startup probe are fixtures.
+// bytes. Source discovery/installed identity, startup probe and failed external
+// delivery are fixtures; the default observer remains real and readonly.
 test(
-  "real Docker receipt drives default owner/admin readiness and delivery deferral",
+  "real Docker receipt drives default owner/admin readiness; failed delivery stages nothing",
   { skip: !process.env.NATIVE_TEST_IMAGE, timeout: 20000 },
   async () => {
     const selected = process.env.NATIVE_TEST_IMAGE!;
@@ -559,9 +560,15 @@ test(
         "published different image must not be required",
       );
       const remote = source(old, { ...manifest, fingerprint: fp });
+      let delivered = 0;
       owner = await supervise(store, 0, undefined, {
         request: remote.request,
         preflight: async () => undefined,
+        deliver: async (target) => {
+          delivered++;
+          assert.equal(target.revision, sha);
+          throw Error("synthetic external delivery unavailable");
+        },
         prepare: async () => {
           throw Error("must not stage");
         },
@@ -586,7 +593,8 @@ test(
       await rm(receipt);
       const deferred = await post("apply", { sha, confirm: true });
       assert.equal(deferred.status, 409);
-      assert.equal((await deferred.json()).error, "UPDATE_DELIVERY_PENDING");
+      assert.equal((await deferred.json()).error, "RELEASE_DELIVERY_FAILED");
+      assert.equal(delivered, 1);
       assert.equal(owner.updates.lastOperation, undefined);
       assert.equal(owner.updates.preparationAttempt, undefined);
       await writeFile(receipt, bytes, { mode: 0o600 });
