@@ -213,12 +213,21 @@ const record = (page: any, dotId?: string) =>
     w.__cameraRun = (w.__cameraRun || 0) + 1;
     const run = w.__cameraRun;
     w.__camera = { frames: [] as any[], inputs: [] as any[] };
-    const input = (event: Event) =>
+    const input = (event: Event) => {
+      const c = m.getCenter();
       w.__camera.inputs.push({
         type: event.type,
         t: event.timeStamp,
+        dispatchedAt: performance.now(),
+        trusted: event.isTrusted,
+        camera: { lat: c.lat, lng: c.lng, zoom: m.getZoom() },
+        member: (event.target as Element)
+          ?.closest(".dashboard-member-card")
+          ?.querySelector("[data-member-id]")
+          ?.getAttribute("data-member-id"),
         detail: (event as MouseEvent).detail,
       });
+    };
     w.__cameraInput?.();
     for (const type of ["click", "keydown", "wheel", "pointerdown"])
       document.addEventListener(type, input, true);
@@ -437,7 +446,33 @@ test("member card: one click never moves the camera; a double-click flies pan+zo
       still.frames.every((f: any) => same(f, before)),
       "a single click keeps the camera on every frame",
     );
+    // Keep the intercontinental camera contract separate from alignment:
+    // early Tokyo -> New York frames have no destination tile coverage.
+    const distant = await flight(page, () => mouseDouble(page, card(ada)));
+    await save("member-flight-distant.json", distant);
+    assertFlight(distant.p, asked(distant.camera), "distant member card");
+    assert.ok(same(distant.p.start, before));
+    assert.ok(Math.abs(distant.p.end.lng - before.lng) > 100);
+    assert.ok(distant.p.end.zoom > before.zoom + 6);
+    const distantTarget = await assertMemberTarget(page, A);
+    assert.ok(distantTarget.px < 1);
+    assert.equal(distantTarget.zoom[0], distantTarget.zoom[1]);
+
+    // Alignment uses a different center AND zoom with Ada's anchors already
+    // on source tiles. Those real tiles remain painted through the flight;
+    // no destination prefetch or settled-tail measurements are needed.
+    await startAt(page, [40.71, -73.94], 13);
+    const alignmentStart = await camera(page);
     // A double-click: the sampler judges every overlay anchor on the tiles.
+    // New tiles arrive after the early measurement window, not by luck of
+    // the local route/protocol speed. Already painted source tiles remain.
+    await page.route(
+      "https://tile.openstreetmap.org/**",
+      async (route: any) => {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        await route.fallback();
+      },
+    );
     await install(page, FIXES, spec(ada));
     await page.evaluate(() => (window as any).__motion.start());
     await record(page, events[0].id);
@@ -448,54 +483,64 @@ test("member card: one click never moves the camera; a double-click flies pan+zo
       const w = window as any;
       const onMove = (event: any) => {
         if (!event.flyTo) return;
-        w.fixtureMap.off("move", onMove);
-        w.__flightPrelude = w.__motion.stop();
-        w.__motion.start();
-        w.__flightSampleStart = performance.now();
+        if (w.__flightSampleStart === undefined) {
+          w.__flightPrelude = w.__motion.stop();
+          w.__motion.start();
+          w.__flightSampleStart = performance.now();
+        } else if (performance.now() - w.__flightSampleStart >= 220) {
+          // Close on the browser's moving camera, not after a host roundtrip.
+          w.fixtureMap.off("move", onMove);
+          w.__flightIntermediate = {
+            start: w.__flightSampleStart,
+            end: performance.now(),
+            zoom: w.fixtureMap.getZoom(),
+            sampler: w.__motion.stop(),
+            prelude: w.__flightPrelude,
+          };
+          w.__motion.start();
+        }
       };
       w.fixtureMap.on("move", onMove);
     });
     await mouseDouble(page, card(ada));
-    await page.waitForTimeout(220);
-    const intermediate = await page.evaluate(() => {
-      const w = window as any;
-      const result = {
-        start: w.__flightSampleStart,
-        end: performance.now(),
-        zoom: w.fixtureMap.getZoom(),
-        sampler: w.__motion.stop(),
-        prelude: w.__flightPrelude,
-      };
-      w.__motion.start();
-      return result;
-    });
+    await page.waitForFunction(() => (window as any).__flightIntermediate);
+    const intermediate = await page.evaluate(
+      () => (window as any).__flightIntermediate,
+    );
     await shot(page, "member-flight-mid.png");
     await landed(page);
     const s = await page.evaluate(() => (window as any).__motion.stop());
-    const flight = await recorded(page);
-    const p = path(flight.frames);
+    const c = await recorded(page);
+    const p = path(c.frames);
     await save("member-flight.json", {
-      camera: flight,
+      camera: c,
       sampler: s,
       intermediate,
       path: { ...p, between: p.between.length },
     });
     await shot(page, "member-flight-landed.png");
-    assertFlight(p, asked(flight), "member card");
+    assertFlight(p, asked(c), "member card");
     assert.ok(
-      intermediate.start >= asked(flight) &&
+      intermediate.start >= asked(c) &&
         intermediate.end < p.arriveAt &&
         intermediate.zoom % 1 !== 0,
       "anchor window is inside the moving flight, before landing",
     );
+    assert.deepEqual(verdict(intermediate.prelude, 0, {}), []);
     assert.deepEqual(verdict(intermediate.sampler, 0, {}), []);
-    // Unverified anchors remain disclosed in each segment's receipt: opaque
-    // image bytes do not eliminate Leaflet's tile-load/fade gaps. Do not
-    // count those as measurements or relax the sampler's visible-tile oracle.
-    assert.ok(same(p.start, before), "the flight starts at the painted view");
-    // Both pan and zoom: Tokyo z6 to New York at street level.
-    assert.ok(Math.abs(p.end.lng - before.lng) > 100);
-    assert.ok(p.end.zoom > before.zoom + 6);
+    assert.equal(
+      intermediate.sampler.unverified,
+      0,
+      "source tiles cover moving anchors",
+    );
+    // Any later tile-load/fade gaps remain disclosed in the tail receipt;
+    // never count those as measurements or relax the visible-tile oracle.
+    assert.ok(
+      same(p.start, alignmentStart),
+      "the flight starts at the painted view",
+    );
+    assert.ok(Math.abs(p.end.lng - alignmentStart.lng) > 0.01);
+    assert.ok(p.end.zoom > alignmentStart.zoom);
     const target = await assertMemberTarget(page, A);
     assert.equal(target.zoom[0], target.zoom[1], JSON.stringify(target));
     assert.ok(target.px < 1, JSON.stringify(target));
@@ -757,6 +802,8 @@ for (const [label, interrupt] of [
     "ordinary selection",
     async (page: any) => {
       const { x, y } = await centre(page, card(bob));
+      // Reproduce host/protocol latency without blocking the browser clock.
+      await page.waitForTimeout(120);
       await page.mouse.click(x, y);
     },
   ],
@@ -796,10 +843,34 @@ for (const [label, interrupt] of [
       assert.ok(still(c.frames, last - 400), `${label}: no resumed flight`);
       assert.doesNotMatch(await status(page), /Map zoomed to Synthetic Ada/);
       if (label === "ordinary selection") {
-        // Stopped exactly where painted: no further camera writes at all.
+        // Capture-phase native dispatch is the boundary, not the earlier
+        // host evaluate: the flight legitimately advances during input delay.
+        const click = c.inputs.find(
+          (i: any) => i.type === "click" && i.member === bob,
+        );
+        assert.ok(click?.trusted && click.detail === 1, "native Bob selection");
+        assert.ok(click.dispatchedAt - at >= 120, "controlled input delay");
+        assert.ok(click.camera.zoom % 1 !== 0, "click arrived mid-flight");
         assert.ok(
-          still(c.frames, at + 50),
+          c.frames.some(
+            (f: any) =>
+              f.t >= at && f.t < click.dispatchedAt && !same(f, click.camera),
+          ),
+          "camera advanced between host sample and native dispatch",
+        );
+        const after = c.frames.filter((f: any) => f.t >= click.dispatchedAt);
+        // No grace period: every post-dispatch frame equals the captured view.
+        assert.ok(
+          after.length > 3 && after.every((f: any) => same(f, click.camera)),
           "selection stops the camera where painted",
+        );
+        assert.equal(
+          await page.locator(card(bob)).getAttribute("aria-pressed"),
+          "true",
+        );
+        assert.equal(
+          await page.locator(card(ada)).getAttribute("aria-pressed"),
+          "false",
         );
         assert.ok(!same(c.frames[c.frames.length - 1], p.start));
       }
