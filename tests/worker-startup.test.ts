@@ -16,10 +16,23 @@ async function fixture(
     rejectCredential?: boolean;
     providerMissing?: boolean;
     holdInitialize?: boolean;
+    grantRequest?: boolean;
     unconfigured?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
+  const request = {
+    id: "123456789012345678901234",
+    requester_id: "abcdefabcdefabcdefabcdef",
+    scope: "personal",
+    message: "Synthetic startup question",
+    attachment_count: 0,
+    lease_generation: 1,
+    status: "queued",
+    lease_expires_at: new Date(Date.now() + 120000).toISOString(),
+    timeout_at: new Date(Date.now() + 180000).toISOString(),
+  };
+  let published: string | undefined;
   let release!: () => void;
   const gate = new Promise<void>((r) => {
     release = r;
@@ -41,7 +54,21 @@ async function fixture(
     let result: unknown = {};
     if (name === "initialize") result = { protocolVersion: "2025-03-26" };
     else if (name === "tools/list")
-      result = { tools: [{ name: "coach_report_worker_presence" }] };
+      result = {
+        tools: [
+          { name: "coach_report_worker_presence" },
+          ...(options.grantRequest
+            ? [
+                {
+                  name: "coach_list_requests",
+                  inputSchema: {
+                    properties: { request_id: { type: "string" } },
+                  },
+                },
+              ]
+            : []),
+        ],
+      };
     else if (name === "coach_report_worker_presence")
       result = {
         structuredContent: {
@@ -53,9 +80,28 @@ async function fixture(
         },
       };
     else if (name === "coach_list_requests")
-      result = { structuredContent: { requests: [{ status: "queued" }] } };
-    else if (name === "coach_claim_request")
-      result = { structuredContent: { request: null } };
+      result = {
+        structuredContent: {
+          requests: options.grantRequest ? [request] : [{ status: "queued" }],
+        },
+      };
+    else if (name === "coach_claim_request") {
+      const claimed = options.grantRequest && request.status === "queued";
+      if (claimed) request.status = "claimed";
+      result = { structuredContent: { request: claimed ? request : null } };
+    } else if (name === "coach_start_request") {
+      request.status = "working";
+      result = { structuredContent: { request } };
+    } else if (name === "coach_read_context") {
+      result = { structuredContent: { request, conversation: [] } };
+    } else if (name === "coach_respond") {
+      published = rpc.params.arguments.text;
+      request.status = "completed";
+      result = { structuredContent: { request } };
+    } else if (name === "coach_fail_request") {
+      request.status = "failed";
+      result = { structuredContent: { request } };
+    }
     res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -79,6 +125,10 @@ async function fixture(
     store,
     calls,
     release,
+    request,
+    get published() {
+      return published;
+    },
     async close() {
       release();
       server.closeAllConnections();
@@ -139,6 +189,58 @@ test("normal admin launch claims automatically; Stop lasts until a new app lifet
       inference,
       0,
       "null synthetic claims must never call a paid provider",
+    );
+  } finally {
+    await app?.close();
+    await f.close();
+  }
+});
+
+test("automatic startup processes and reads back a granted HTTP MCP request without Run", async () => {
+  const f = await fixture({ grantRequest: true });
+  let app: Awaited<ReturnType<typeof admin>> | undefined;
+  let modelCalls = 0;
+  try {
+    app = await admin(
+      f.store,
+      0,
+      async () => {
+        modelCalls++;
+        return "Synthetic startup model result";
+      },
+      undefined,
+      undefined,
+      { workerStartup: "automatic" },
+    );
+    await until(() => f.request.status === "completed");
+    let status: any;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      status = await (await request(app.origin, f.store)).json();
+      if (status.state === "reply-persisted" && status.safeToReplace) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(status.state, "reply-persisted");
+    assert.equal(status.safeToReplace, true);
+    assert.ok(
+      f.calls.lastIndexOf("coach_list_requests") >
+        f.calls.indexOf("coach_respond"),
+    );
+    assert.equal(
+      modelCalls,
+      1,
+      "only the scripted in-process inference boundary runs",
+    );
+    assert.equal(f.published, "Synthetic startup model result");
+    for (const name of [
+      "coach_claim_request",
+      "coach_start_request",
+      "coach_read_context",
+      "coach_respond",
+    ])
+      assert.ok(f.calls.includes(name));
+    assert.equal(
+      (await (await request(app.origin, f.store)).json()).workerStartup.state,
+      "started",
     );
   } finally {
     await app?.close();
