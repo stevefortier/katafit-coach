@@ -3950,6 +3950,46 @@ window.CoachDashboard = (() => {
           fix: eventPosition(scoped()?.items.get(item.id)),
         }))
         .filter(({ fix }) => fix);
+    // Keep the latest authorized fix fixed at center. Fit each axis about
+    // that point, not about the activity bounds' midpoint. Project through
+    // Leaflet's CRS (not degrees), unwrapping each anchor beside the latest.
+    const memberView = ({ pins, latest }) => {
+      if (!latest) return pinsView(pins, FOCUS_ZOOM);
+      const { center } = pointView(latest);
+      const origin = instance.project(center, 0);
+      let dx = 0,
+        dy = 0;
+      for (const { fix } of pins) {
+        const point = instance.project(
+          [
+            fix.latitude,
+            fix.longitude +
+              360 * Math.round((center.lng - fix.longitude) / 360),
+          ],
+          0,
+        );
+        dx = Math.max(dx, Math.abs(point.x - origin.x));
+        dy = Math.max(dy, Math.abs(point.y - origin.y));
+      }
+      const size = instance.getSize();
+      const halfX = size.x / 2 - Math.min(48, size.x / 4);
+      const halfY = size.y / 2 - Math.min(48, size.y / 4);
+      const scale = Math.min(
+        dx ? halfX / dx : Infinity,
+        dy ? halfY / dy : Infinity,
+      );
+      const cap = Math.min(FOCUS_ZOOM, instance.getMaxZoom());
+      let zoom = Math.min(cap, instance.getScaleZoom(scale, 0));
+      const snap = instance.options.zoomSnap;
+      if (snap) zoom = Math.floor(zoom / snap) * snap;
+      zoom = Math.max(instance.getMinZoom(), zoom);
+      const actualScale = instance.getZoomScale(zoom, 0);
+      return {
+        center,
+        zoom,
+        clipped: dx * actualScale > halfX || dy * actualScale > halfY,
+      };
+    };
     // Focus is a deliberate view: resizes keep it like panning. Only the
     // canonical ledger's currently shared fixes count; nothing found is a
     // truthful no-op that leaves the camera alone. `instant`: applied with
@@ -3973,19 +4013,29 @@ window.CoachDashboard = (() => {
       }
       pendingMember = null;
       const category = timelineCategory();
-      const pins = memberPins(memberId, category);
+      const current = () => {
+        if (
+          selectedMember !== memberId ||
+          timelineCategory() !== category ||
+          suppressedMembers.has(memberId)
+        )
+          return null;
+        const pins = memberPins(memberId, category);
+        // Only the validated, authority-fenced store, never raw read rows.
+        const latest = latestPositions.get(memberId) || null;
+        return pins.length || latest ? { pins, latest } : null;
+      };
       const name = memberName(memberId);
-      const note = (shown) =>
-        `Map zoomed to ${name}'s ${shown.length} shown event location${shown.length === 1 ? "" : "s"}.`;
-      if (pins.length) {
+      const note = (target) => {
+        const { pins, latest } = target;
+        if (!latest)
+          return `Map zoomed to ${name}'s ${pins.length} shown event location${pins.length === 1 ? "" : "s"}.`;
+        return `Map centered on ${name}'s latest known recorded position (not live), framing ${pins.length} shown event location${pins.length === 1 ? "" : "s"}.${memberView(target).clipped ? " Some event locations cannot fit within the map padding at the minimum zoom." : ""}`;
+      };
+      if (current()) {
         focusCamera({
-          resolve: () => {
-            if (selectedMember !== memberId || timelineCategory() !== category)
-              return null;
-            const current = memberPins(memberId, category);
-            return current.length ? current : null;
-          },
-          view: (shown) => pinsView(shown, FOCUS_ZOOM),
+          resolve: current,
+          view: memberView,
           note,
           ledger: true,
           instant,

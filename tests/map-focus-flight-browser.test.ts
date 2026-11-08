@@ -408,11 +408,11 @@ const assertFlight = (p: any, askedAt: number, label: string) => {
     `${label}: about half a second (${p.duration}ms) ${info}`,
   );
 };
-// Leaflet's own fitBounds target for the existing member focus (padding and
-// zoom cap), compared on the world copy nearest the final view.
+// Enumerate supported zooms against native projected padding independently
+// of production's scale calculation. Cy's dateline case has no latest fix.
 const assertMemberTarget = (page: any, fixes: [number, number][]) =>
   page.evaluate(
-    ([fixes, cap]: [[number, number][], number]) => {
+    ([fixes, cap, latest]: [[number, number][], number, number[] | null]) => {
       const m = (window as any).fixtureMap,
         L = (window as any).L;
       const size = m.getSize(),
@@ -433,13 +433,36 @@ const assertMemberTarget = (page: any, fixes: [number, number][]) =>
         const w = (lng + 360) % 360;
         return [lat, w < start ? w + 360 : w];
       });
-      const want =
+      let want =
         coords.length === 1
           ? { center: L.latLng(coords[0]), zoom: cap }
           : m._getBoundsCenterZoom(L.latLngBounds(coords), {
               padding: pad,
               maxZoom: cap,
             });
+      if (latest) {
+        const center = L.latLng(latest[0], latest[1]);
+        let zoom = cap;
+        for (; zoom > m.getMinZoom(); zoom -= m.options.zoomSnap || 1) {
+          const origin = m.project(center, zoom);
+          if (
+            fixes.every(([lat, lng]) => {
+              const p = m
+                .project(
+                  [lat, lng + 360 * Math.round((center.lng - lng) / 360)],
+                  zoom,
+                )
+                .subtract(origin);
+              return (
+                Math.abs(p.x) <= size.x / 2 - pad[0] &&
+                Math.abs(p.y) <= size.y / 2 - pad[1]
+              );
+            })
+          )
+            break;
+        }
+        want = { center, zoom };
+      }
       const c = m.getCenter(),
         lng =
           want.center.lng + 360 * Math.round((c.lng - want.center.lng) / 360);
@@ -451,7 +474,11 @@ const assertMemberTarget = (page: any, fixes: [number, number][]) =>
           .distanceTo(m.project([want.center.lat, lng], m.getZoom())),
       };
     },
-    [fixes, FOCUS_ZOOM],
+    [
+      fixes,
+      FOCUS_ZOOM,
+      fixes === A ? LATEST[ada] : fixes === B ? LATEST[bob] : null,
+    ],
   );
 async function centre(page: any, selector: string) {
   const node = page.locator(selector);
@@ -631,7 +658,7 @@ test("member card: one click never moves the camera; a double-click flies pan+zo
     assert.ok(target.px < 1, JSON.stringify(target));
     assert.match(
       await page.locator("#dashboardMapStatus").innerText(),
-      /zoomed to Synthetic Ada's 3 shown event locations/,
+      /centered on Synthetic Ada's latest known recorded position.*framing 3 shown event locations/,
     );
     // The reference dot is painted at intermediate positions at its fixed size.
     const dots = p.between.filter((f: any) => f.dot);
@@ -776,37 +803,54 @@ const still = (frames: any[], from: number) => {
 };
 
 test("same-zoom pan and the antimeridian fly the short way to the exact fit", async () =>
-  run(async (page) => {
-    // Already at Ada's fit zoom, centred a little away: a pan of the same zoom.
-    await startAt(page, A[0], 9);
-    const fit = await memberTarget(page, A);
-    await startAt(page, [fit.lat + 0.01, fit.lng - 0.02], fit.zoom);
-    let { camera: c, p } = await flight(page, () =>
-      mouseDouble(page, card(ada)),
-    );
-    await save("same-zoom.json", { camera: c });
-    assert.equal(p.start.zoom, p.end.zoom, "the same zoom");
-    assert.ok(
-      p.moved && p.centers >= 3 && p.between.length >= 5,
-      JSON.stringify({ ...p, between: p.between.length }),
-    );
-    assert.ok(p.duration >= 300 && p.duration <= 1100, `${p.duration}ms`);
-    let t = await assertMemberTarget(page, A);
-    assert.ok(t.px < 1 && t.zoom[0] === t.zoom[1], JSON.stringify(t));
-    // Cy's day spans Fiji (178E) and Samoa (172W); from the Samoa side the
-    // camera never travels the long way round.
-    await startAt(page, [-14, -168], 5);
-    ({ camera: c, p } = await flight(page, () => mouseDouble(page, card(cy))));
-    await save("antimeridian.json", { camera: c });
-    assertFlight(p, asked(c), "antimeridian");
-    const lngs = c.frames.map((f: any) => f.lng);
-    assert.ok(
-      Math.max(...lngs) - Math.min(...lngs) < 20,
-      `short way ${Math.min(...lngs)}..${Math.max(...lngs)}`,
-    );
-    t = await assertMemberTarget(page, C);
-    assert.ok(t.px < 1 && t.zoom[0] === t.zoom[1], JSON.stringify(t));
-  }));
+  run(
+    async (page) => {
+      // Already at Ada's fit zoom, centred a little away: a pan of the same zoom.
+      await startAt(page, A[0], 9);
+      const fit = await memberTarget(page, A);
+      await startAt(page, [fit.lat + 0.01, fit.lng - 0.02], fit.zoom);
+      let { camera: c, p } = await flight(page, () =>
+        mouseDouble(page, card(ada)),
+      );
+      await save("same-zoom.json", { camera: c });
+      assert.equal(p.start.zoom, p.end.zoom, "the same zoom");
+      assert.ok(
+        p.moved && p.centers >= 3 && p.between.length >= 5,
+        JSON.stringify({ ...p, between: p.between.length }),
+      );
+      assert.ok(p.duration >= 300 && p.duration <= 1100, `${p.duration}ms`);
+      let t = await assertMemberTarget(page, A);
+      assert.ok(t.px < 1 && t.zoom[0] === t.zoom[1], JSON.stringify(t));
+      // Cy's day spans Fiji (178E) and Samoa (172W); from the Samoa side the
+      // camera never travels the long way round.
+      await startAt(page, [-14, -168], 5);
+      ({ camera: c, p } = await flight(page, () =>
+        mouseDouble(page, card(cy)),
+      ));
+      await save("antimeridian.json", { camera: c });
+      assertFlight(p, asked(c), "antimeridian");
+      const lngs = c.frames.map((f: any) => f.lng);
+      assert.ok(
+        Math.max(...lngs) - Math.min(...lngs) < 20,
+        `short way ${Math.min(...lngs)}..${Math.max(...lngs)}`,
+      );
+      t = await assertMemberTarget(page, C);
+      assert.ok(t.px < 1 && t.zoom[0] === t.zoom[1], JSON.stringify(t));
+    },
+    {
+      override: (url: URL) =>
+        url.pathname === "/api/dashboard/latest-positions"
+          ? {
+              body: {
+                ...latestBody,
+                members: latestBody.members.map((m) =>
+                  m.user_id === cy ? { ...m, status: "none", latest: null } : m,
+                ),
+              },
+            }
+          : undefined,
+    },
+  ));
 
 test("a quick new focus supersedes the flight from the painted camera; the old target is never painted", async () =>
   run(async (page) => {
@@ -848,7 +892,7 @@ test("a quick new focus supersedes the flight from the painted camera; the old t
     assertFlight(bobPath, bob2, "replacement");
     assert.match(
       await status(page),
-      /zoomed to Synthetic Bob's 2 shown event locations/,
+      /centered on Synthetic Bob's latest known recorded position.*framing 2 shown event locations/,
     );
   }));
 
@@ -1272,7 +1316,7 @@ test("reduced motion jumps to the same target with no in-between view", async ()
     assert.ok(t.px < 1 && t.zoom[0] === t.zoom[1], JSON.stringify(t));
     assert.match(
       await status(page),
-      /zoomed to Synthetic Ada's 3 shown event locations/,
+      /centered on Synthetic Ada's latest known recorded position.*framing 3 shown event locations/,
     );
   }));
 
