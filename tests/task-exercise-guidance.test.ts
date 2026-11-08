@@ -70,6 +70,19 @@ function assertProgression(system: string) {
     system,
     /recent_sessions are recorded actuals; their prescriptions, target attainment, form and effort are unknown/,
   );
+  // Repeatable actuals are evidence; unknown attainment, form or effort
+  // alone never renews a next-session deferral.
+  for (const marker of [
+    "Recorded actuals are performance evidence even though their prescriptions are unknown",
+    "Unknown historical target attainment is not evidence of a miss and does not reset progression",
+    "never claim earlier prescriptions were hit",
+    "Unknown form or effort alone is not a reason to repeat the current prescription and defer progress again",
+    "a repeated deferral is not evidence against progress",
+    "Progression is a judgment, not an automatic rule",
+    "A conditional future number in prose is not a target",
+    "prefer an added rep when no load increment is known",
+  ])
+    assert.ok(system.includes(marker), marker);
 }
 
 // The completion boundary is scripted: these tests qualify the real Worker's
