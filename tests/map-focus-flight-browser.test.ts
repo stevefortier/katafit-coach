@@ -171,7 +171,26 @@ const run = (
         !clock.playwrightClock && clock.nativeRequestAnimationFrame,
         JSON.stringify(clock),
       );
-      await body(page);
+      try {
+        await body(page);
+      } catch (error) {
+        // Diagnostics are best-effort; never replace the original failure.
+        try {
+          const c = await recorded(page);
+          console.error("native-flight-failure", JSON.stringify(diagnostic(c)));
+          await save(`failure-${Date.now()}.json`, {
+            error: String(error),
+            camera: c,
+          });
+        } catch (diagnosticError) {
+          try {
+            console.error("native-flight-diagnostic-failure", diagnosticError);
+          } catch {
+            // Even a failing logger must preserve the original exception.
+          }
+        }
+        throw error;
+      }
     },
     {
       users,
@@ -212,7 +231,40 @@ const record = (page: any, dotId?: string) =>
       m = w.fixtureMap;
     w.__cameraRun = (w.__cameraRun || 0) + 1;
     const run = w.__cameraRun;
-    w.__camera = { frames: [] as any[], inputs: [] as any[] };
+    w.__camera = {
+      frames: [] as any[],
+      inputs: [] as any[],
+      flights: [] as any[],
+      moves: [] as any[],
+    };
+    w.__cameraRestore?.();
+    const flyTo = m.flyTo;
+    m.flyTo = function (center: any, zoom: number, options: any) {
+      const c = m.getCenter();
+      const target = w.L.latLng(center);
+      w.__camera.flights.push({
+        t: performance.now(),
+        duration: options?.duration,
+        from: { lat: c.lat, lng: c.lng, zoom: m.getZoom() },
+        target: { lat: target.lat, lng: target.lng, zoom },
+      });
+      return flyTo.call(this, center, zoom, options);
+    };
+    const move = (event: any) => {
+      if (!event.flyTo) return;
+      const c = m.getCenter();
+      w.__camera.moves.push({
+        t: performance.now(),
+        lat: c.lat,
+        lng: c.lng,
+        zoom: m.getZoom(),
+      });
+    };
+    m.on("move", move);
+    w.__cameraRestore = () => {
+      m.flyTo = flyTo;
+      m.off("move", move);
+    };
     const input = (event: Event) => {
       const c = m.getCenter();
       w.__camera.inputs.push({
@@ -267,12 +319,45 @@ const recorded = (page: any) =>
     const w = window as any;
     w.__cameraRun++;
     w.__cameraInput?.();
+    w.__cameraRestore?.();
     return w.__camera;
   });
 const same = (a: any, b: any) =>
   Math.abs(a.zoom - b.zoom) < 1e-9 &&
   Math.abs(a.lat - b.lat) < 1e-9 &&
   Math.abs(a.lng - b.lng) < 1e-9;
+// Small enough for hosted logs; the evidence file retains every raw frame.
+const diagnostic = (c: any) => {
+  if (!c) return null;
+  const frames = c.frames;
+  return {
+    flights: c.flights,
+    boundary: c.boundary,
+    inputs: c.inputs,
+    frames: frames.length,
+    maxFrameGap: Math.max(
+      0,
+      ...frames.slice(1).map((f: any, i: number) => f.t - frames[i].t),
+    ),
+    arrivals: c.flights.map((flight: any) => ({
+      call: flight.t,
+      firstMove: c.moves.find((m: any) => m.t >= flight.t)?.t,
+      firstArrival:
+        frames.find((f: any) => f.t >= flight.t && same(f, flight.target))?.t ??
+        null,
+    })),
+    selections: c.inputs
+      .filter((i: any) => i.type === "click" && i.member === bob)
+      .map((i: any) => ({
+        dispatchedAt: i.dispatchedAt,
+        postDispatchFrames: frames.filter((f: any) => f.t >= i.dispatchedAt)
+          .length,
+        postDispatchMovement: frames.some(
+          (f: any) => f.t >= i.dispatchedAt && !same(f, i.camera),
+        ),
+      })),
+  };
+};
 // The camera's path from its first frame: when it first left the start and
 // when it arrived at its final view, and every state in between.
 const path = (frames: any[]) => {
@@ -798,15 +883,6 @@ for (const [label, interrupt] of [
     },
   ],
   ["zoom control", (page: any) => page.click(".leaflet-control-zoom-out")],
-  [
-    "ordinary selection",
-    async (page: any) => {
-      const { x, y } = await centre(page, card(bob));
-      // Reproduce host/protocol latency without blocking the browser clock.
-      await page.waitForTimeout(120);
-      await page.mouse.click(x, y);
-    },
-  ],
 ] as const)
   test(`${label} mid-flight wins: the focus never resumes or lands`, async () =>
     run(async (page) => {
@@ -842,39 +918,151 @@ for (const [label, interrupt] of [
       const last = c.frames[c.frames.length - 1].t;
       assert.ok(still(c.frames, last - 400), `${label}: no resumed flight`);
       assert.doesNotMatch(await status(page), /Map zoomed to Synthetic Ada/);
-      if (label === "ordinary selection") {
-        // Capture-phase native dispatch is the boundary, not the earlier
-        // host evaluate: the flight legitimately advances during input delay.
-        const click = c.inputs.find(
-          (i: any) => i.type === "click" && i.member === bob,
+    }));
+
+test("ordinary selection mid-flight wins: the focus never resumes or lands", async () =>
+  run(async (page) => {
+    // Separate timely acceptance from the host-boundary diagnostic. Neither
+    // retries a gesture: each has one activation and one real native click.
+    for (const delay of [0, 120]) {
+      const label = delay ? "host-boundary" : "ordinary-selection";
+      await startAt(page, B[0], 6);
+      const target = await memberTarget(page, A);
+      const point = await centre(page, card(bob));
+      await page.locator(card(ada)).focus();
+      let finish!: () => void, fail!: (error: unknown) => void;
+      const dispatched = new Promise<void>((resolve, reject) => {
+        finish = resolve;
+        fail = reject;
+      });
+      // Install before activation: no polling, scrolling or geometry round
+      // trips consume the flight after the browser signals prior movement.
+      const binding = `selectionAfterMovement${delay}`;
+      await page.exposeBinding(binding, async () => {
+        try {
+          if (delay) {
+            // The old host-side boundary, deliberately distinct from input.
+            await page.evaluate(() => {
+              const w = window as any,
+                m = w.fixtureMap,
+                c = m.getCenter();
+              w.__camera.boundary = {
+                t: performance.now(),
+                camera: { lat: c.lat, lng: c.lng, zoom: m.getZoom() },
+              };
+            });
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+          await page.mouse.click(point.x, point.y);
+          finish();
+        } catch (error) {
+          fail(error);
+        }
+      });
+      await record(page);
+      await page.evaluate((binding: string) => {
+        const w = window as any,
+          m = w.fixtureMap;
+        let moving = 0;
+        const onMove = (event: any) => {
+          if (!event.flyTo || m.getZoom() % 1 === 0 || ++moving < 5) return;
+          m.off("move", onMove);
+          const c = m.getCenter();
+          w.__camera.boundary = {
+            t: performance.now(),
+            camera: { lat: c.lat, lng: c.lng, zoom: m.getZoom() },
+          };
+          void w[binding]();
+        };
+        m.on("move", onMove);
+      }, binding);
+      await page.waitForTimeout(100);
+      await page.keyboard.press("Shift+Enter");
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          dispatched,
+          new Promise((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("native selection not dispatched")),
+              3000,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(timeout);
+      }
+      await landed(page, 1600);
+      const c = await recorded(page);
+      await save(`interrupt-${label}.json`, {
+        camera: c,
+        delay,
+        diagnostic: diagnostic(c),
+      });
+      const clicks = c.inputs.filter(
+        (i: any) => i.type === "click" && i.member === bob,
+      );
+      assert.equal(clicks.length, 1, "one Bob selection, no gesture retries");
+      const click = clicks[0];
+      assert.ok(click.trusted && click.detail === 1, "native Bob selection");
+      assert.equal(c.flights.length, 1, "one native flight, no restart");
+      assert.equal(c.flights[0].duration, 0.5, "native 500ms duration");
+      assert.ok(click.camera.zoom % 1 !== 0, "click arrived mid-flight");
+      const before = c.frames.filter((f: any) => f.t < click.dispatchedAt);
+      const p = path(before);
+      assert.ok(
+        p.moved && p.between.length >= 3,
+        "flying before native selection",
+      );
+      assert.equal(
+        await reached(page, c.frames, target),
+        false,
+        "ordinary selection: never landed",
+      );
+      if (delay) {
+        assert.ok(
+          click.dispatchedAt - c.boundary.t >= delay,
+          "controlled input delay",
         );
-        assert.ok(click?.trusted && click.detail === 1, "native Bob selection");
-        assert.ok(click.dispatchedAt - at >= 120, "controlled input delay");
-        assert.ok(click.camera.zoom % 1 !== 0, "click arrived mid-flight");
         assert.ok(
           c.frames.some(
             (f: any) =>
-              f.t >= at && f.t < click.dispatchedAt && !same(f, click.camera),
+              f.t >= c.boundary.t &&
+              f.t < click.dispatchedAt &&
+              !same(f, click.camera),
           ),
-          "camera advanced between host sample and native dispatch",
+          "camera advanced before dispatch",
         );
-        const after = c.frames.filter((f: any) => f.t >= click.dispatchedAt);
-        // No grace period: every post-dispatch frame equals the captured view.
-        assert.ok(
-          after.length > 3 && after.every((f: any) => same(f, click.camera)),
-          "selection stops the camera where painted",
-        );
+        // The controlled diagnostic must expose the old boundary's error:
+        // legitimate pre-click motion is not a cancellation failure.
         assert.equal(
-          await page.locator(card(bob)).getAttribute("aria-pressed"),
-          "true",
+          still(c.frames, c.boundary.t + 50),
+          false,
+          "host+50 boundary includes legitimate pre-dispatch movement",
         );
-        assert.equal(
-          await page.locator(card(ada)).getAttribute("aria-pressed"),
-          "false",
-        );
-        assert.ok(!same(c.frames[c.frames.length - 1], p.start));
       }
-    }));
+      const after = c.frames.filter((f: any) => f.t >= click.dispatchedAt);
+      // Capture phase precedes the application handler; not a settled rebase.
+      assert.ok(
+        after.length > 3 && after.every((f: any) => same(f, click.camera)),
+        "selection stops the camera where painted",
+      );
+      assert.ok(
+        still(c.frames, c.frames[c.frames.length - 1].t - 400),
+        "no resumed flight",
+      );
+      assert.ok(!same(c.frames[c.frames.length - 1], p.start));
+      assert.doesNotMatch(await status(page), /Map zoomed to Synthetic Ada/);
+      assert.equal(
+        await page.locator(card(bob)).getAttribute("aria-pressed"),
+        "true",
+      );
+      assert.equal(
+        await page.locator(card(ada)).getAttribute("aria-pressed"),
+        "false",
+      );
+    }
+  }));
 
 // One member's exact event reads are held and then denied (403); the day,
 // the roster and everyone else stay readable.
