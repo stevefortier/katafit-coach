@@ -41,6 +41,9 @@ function assertGuidance(system: string) {
   );
   assert.match(system, /exact JSON identifier keys/);
   assert.match(system, /target_weight, target_reps, and target_working_sets/);
+  assert.ok(
+    system.includes("total working sets, including completed working sets"),
+  );
   assert.match(system, /approval.*mutation.*privacy/);
   assertProgression(system);
 }
