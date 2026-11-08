@@ -80,6 +80,18 @@ test("roster covers full-height slots with decoded larger avatars and cached sel
       args: ["--no-sandbox"],
     });
     const page = await browser.newPage();
+    // Independent HTTP streams need not reach the server in DOM order. Force
+    // the hosted [a,c,b] schedule while retaining exact per-member read counts.
+    let releaseBob!: () => void;
+    const cyDispatched = new Promise<void>((r) => {
+      releaseBob = r;
+    });
+    await page.route("**/api/dashboard/avatar?**", async (route) => {
+      const id = new URL(route.request().url()).searchParams.get("id");
+      if (id === "bbbbbbbbbbbbbbbbbbbbbbbb") await cyDispatched;
+      await route.continue();
+      if (id === "cccccccccccccccccccccccc") releaseBob();
+    });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${(server.address() as any).port}/`);
@@ -323,7 +335,7 @@ test("roster covers full-height slots with decoded larger avatars and cached sel
       }
     }
     assert.deepEqual(
-      avatarReads,
+      [...avatarReads].sort(),
       [
         "aaaaaaaaaaaaaaaaaaaaaaaa",
         "bbbbbbbbbbbbbbbbbbbbbbbb",

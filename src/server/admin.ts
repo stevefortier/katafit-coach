@@ -43,6 +43,8 @@ export async function admin(
     autonomy?: Pick<AutonomyHostOptions, "runtimes" | "scheduler">;
     /** Bound on supported upgrade teardown waits (test seam). */
     nativeForceStopMs?: number;
+    /** Only an unsupervised real service owner activates here; managed owners use IPC after probation. */
+    workerStartup?: "automatic" | "deferred";
   } = {},
 ) {
   const logs = new Diagnostics(store.dir);
@@ -264,7 +266,8 @@ export async function admin(
         warnings?: { code: string; hint: string }[];
       }
     | undefined;
-  const startWorker = async () => {
+  const startWorker = async (signal?: AbortSignal) => {
+    signal?.throwIfAborted();
     if (closing) throw new SafeError("CANCELLED");
     if (configurationUncertain)
       throw new SafeError("CONFIGURATION_STATE_UNCONFIRMED");
@@ -291,6 +294,7 @@ export async function admin(
       (!worker.stopConfirmed || !worker.safeToReplace)
     )
       throw new SafeError("WORKER_STOP_UNCONFIRMED");
+    signal?.throwIfAborted();
     if (!isolationHealthy()) throw new SafeError("WORKER_STOP_UNCONFIRMED");
     if (!store.secrets.token || !store.secrets.apiKey)
       throw new Error("CONNECTION_AND_PROVIDER_REQUIRED");
@@ -350,6 +354,75 @@ export async function admin(
         throw error;
       }
     }
+  };
+  // One launch intent per application lifetime. Never use a timer to restart a
+  // stopped worker: Stop (and a failed start) must remain meaningful here.
+  let startupConsumed = false;
+  let startupWork: Promise<void> | undefined;
+  const startupController = new AbortController();
+  let startupStop: Promise<void> | undefined;
+  let workerStartup: {
+    state:
+      | "waiting-owner"
+      | "not-configured"
+      | "starting"
+      | "stopping"
+      | "started"
+      | "failed"
+      | "suppressed";
+    error?: string;
+    hint?: string;
+  } = { state: "waiting-owner" };
+  const activateWorkerOnLaunch = () => {
+    if (startupConsumed) return startupWork ?? Promise.resolve();
+    startupConsumed = true;
+    if (
+      closing ||
+      busy ||
+      updateQuiesced ||
+      updates.applying ||
+      updates.recovering
+    ) {
+      workerStartup = { state: "suppressed" };
+      return Promise.resolve();
+    }
+    if (!store.secrets.token && !store.secrets.apiKey) {
+      workerStartup = {
+        state: "not-configured",
+        hint: "Configure the Kata.fit connection and provider in Settings. Configured Coach starts automatically on each application launch.",
+      };
+      return Promise.resolve();
+    }
+    busy = true;
+    workerStartup = { state: "starting" };
+    startupWork = (async () => {
+      try {
+        await startWorker(startupController.signal);
+        workerStartup = {
+          state: startupController.signal.aborted ? "suppressed" : "started",
+        };
+      } catch (error) {
+        if (startupController.signal.aborted) {
+          workerStartup = { state: "suppressed" };
+          return;
+        }
+        const failure = safeError(error);
+        workerStartup = {
+          state: "failed",
+          error: failure.code,
+          hint: failure.hint,
+        };
+        logs.record({
+          source: "worker",
+          stage: "operation-failed",
+          level: "error",
+          error: failure,
+        });
+      } finally {
+        if (!startupController.signal.aborted) busy = false;
+      }
+    })();
+    return startupWork;
   };
   // The continuous Coach runs only while this installation participates; it
   // is independent of the Worker, the native terminal and any browser.
@@ -1465,7 +1538,11 @@ export async function admin(
       }
       if (req.method === "GET" && path === "/api/status")
         return send(200, {
-          state: worker?.state ?? "stopped",
+          state:
+            workerStartup.state === "starting"
+              ? "connecting"
+              : (worker?.state ?? "stopped"),
+          workerStartup,
           presence: worker?.presence ?? "unconfirmed",
           presenceStopRecovery: worker?.presenceStopRecovery ?? "none",
           isolatedTaskRecovery: {
@@ -1752,6 +1829,35 @@ export async function admin(
           error: "UPDATE_RECOVERING",
           hint: "The launcher is restoring Coach. Check worker status; do not reapply the update.",
         });
+      // Stop may cancel only this lifetime's automatic admission, never an
+      // unrelated save/replacement. Keep busy owned until cancellation AND the
+      // startup continuation settle; the Worker's abort fences late admission.
+      if (
+        path === "/api/stop" &&
+        (workerStartup.state === "starting" || startupStop)
+      ) {
+        startupStop ??= (async () => {
+          startupConsumed = true;
+          resumeIntent = false;
+          workerStartup = { state: "stopping" };
+          startupController.abort();
+          try {
+            await worker?.stop();
+            await startupWork;
+          } finally {
+            busy = false;
+          }
+        })();
+        try {
+          await startupStop;
+          return send(200, {
+            ok: true,
+            presence: worker?.presence ?? "unconfirmed",
+          });
+        } finally {
+          startupStop = undefined;
+        }
+      }
       // Only an earlier save's background continuation holding `busy` lets a
       // valid settings save through; actual local writes stay serialized.
       const settingsAdmissible =
@@ -2506,6 +2612,7 @@ export async function admin(
           });
         }
         if (path === "/api/run" || path === "/api/update/resume") {
+          startupConsumed = true;
           const prior = worker;
           await startWorker();
           resumeIntent = false;
@@ -2523,6 +2630,7 @@ export async function admin(
           return send(200, { ok: true, presence: worker!.presence });
         }
         if (path === "/api/stop") {
+          startupConsumed = true;
           resumeIntent = false;
           await worker?.stop();
           return send(200, {
@@ -2602,10 +2710,16 @@ export async function admin(
   // A participating installation resumes autonomy on (re)start by itself.
   if (updates.applying || updates.recovering) resumeAfterInitialActivation();
   else void startAutonomy();
+  // Construction alone is not launch authority: candidate validators and
+  // managed probation also construct this server. Only the real caller starts.
+  if (options.workerStartup === "automatic") void activateWorkerOnLaunch();
   return {
     origin,
+    activateWorkerOnLaunch,
     async close() {
       closing = true;
+      if (workerStartup.state === "starting") await worker?.stop();
+      await startupWork;
       clearTimeout(activationResumeTimer);
       manualQueueController?.abort();
       await manualQueueDone;

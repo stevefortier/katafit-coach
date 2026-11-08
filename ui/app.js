@@ -169,6 +169,7 @@ syncStickyOffsets();
 let lifecycleBusy = false;
 let settingsIntent = 0;
 let serverTransition = false;
+let startupCancellable = false;
 let statusEpoch = 0;
 let updateRecoveryVisible = false;
 // Earlier unresolved work never blocks a save; the server reports it as
@@ -1533,6 +1534,7 @@ async function status() {
     const s = await api("status");
     if (generation !== authGeneration || epoch !== statusEpoch) return;
     serverTransition = s.transition === true;
+    startupCancellable = s.workerStartup?.state === "starting";
     workerState = s.state;
     if (s.lifecycle) showLifecycle(s.lifecycle);
     renderHeaderStatus();
@@ -1546,7 +1548,19 @@ async function status() {
         s.lastError.code +
         " — " +
         s.lastError.hint
-      : "No retained error.";
+      : (s.workerStartup?.hint ?? "No retained error.");
+    const startup = $("workerStartupStatus");
+    if (startup) {
+      startup.textContent =
+        s.workerStartup?.state === "starting"
+          ? "Starting configured Coach; connecting to Kata.fit. Presence is not confirmed yet."
+          : s.state === "stopped" && s.workerStartup?.hint
+            ? (s.workerStartup.error
+                ? "Automatic startup failed · " + s.workerStartup.error + " — "
+                : "") + s.workerStartup.hint
+            : "";
+      startup.hidden = !startup.textContent;
+    }
     const recovery = $("isolatedTaskRecovery");
     if (recovery) {
       recovery.textContent = s.isolatedTaskRecovery?.hint ?? "";
@@ -4127,7 +4141,17 @@ function renderUpdate() {
       "restoreSkill",
     ].includes(id)
       ? settingsLocked || (id === "restorePersona" && historyBusy)
-      : (locked && !(id === "cancel" && previewBusy)) ||
+      : (locked &&
+          !(id === "cancel" && previewBusy) &&
+          !(
+            id === "stop" &&
+            startupCancellable &&
+            !manualUpdateActive(data) &&
+            !updatePending &&
+            !data.applying &&
+            !data.recovering &&
+            !lifecycleBusy
+          )) ||
         (id === "previewButton" && (previewBusy || previewCancelling));
   editorsLocked = settingsLocked;
   $("restartRetry").disabled = lifecycleBusy || data.applying;

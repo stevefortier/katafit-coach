@@ -28,7 +28,12 @@ test("served status renders persistent no-resend warning separately from retaine
     authGeneration: 1,
     statusEpoch: 0,
     api: async () => s,
-    $: (id: string) => (id === "isolatedTaskRecovery" ? recovery : node),
+    $: (id: string) =>
+      id === "isolatedTaskRecovery"
+        ? recovery
+        : id === "lastError"
+          ? node
+          : null,
     renderHeaderStatus: () => {},
     renderUpdate: () => {},
     noteInstalledRevision: () => {},

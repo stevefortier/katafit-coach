@@ -12,7 +12,9 @@ try {
   const { admin } = await import(
     pathToFileURL(join(root, "dist/server/admin.js")).href
   );
-  app = await admin(store, 0);
+  app = await admin(store, 0, undefined, undefined, undefined, {
+    workerStartup: "deferred",
+  });
   const r = await fetch(app.origin + "/api/status", {
     headers: { Authorization: "Bearer " + store.secrets.admin },
     signal: AbortSignal.timeout(5000),
