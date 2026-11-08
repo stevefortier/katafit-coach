@@ -8,6 +8,8 @@ import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
+import { chromium } from "playwright-core";
+import { chromePath } from "./helpers/chrome.js";
 
 async function fixture(
   options: {
@@ -255,6 +257,80 @@ test("shutdown cancels held startup without claiming or restarting", async () =>
     f.release();
     await app?.close();
     await f.close();
+  }
+});
+
+test("actual Worker panel displays bounded startup failures and setup guidance", async () => {
+  const browser = await chromium.launch({
+    executablePath: chromePath(),
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+  });
+  try {
+    for (const options of [
+      { unconfigured: true },
+      { providerMissing: true },
+      { rejectCredential: true },
+    ]) {
+      const f = await fixture(options);
+      const context = await browser.newContext({
+        viewport: { width: 390, height: 844 },
+      });
+      let app: Awaited<ReturnType<typeof admin>> | undefined;
+      try {
+        app = await admin(
+          f.store,
+          0,
+          async () => {
+            assert.fail("startup must not call a provider");
+          },
+          undefined,
+          undefined,
+          { workerStartup: "automatic" },
+        );
+        await app.activateWorkerOnLaunch();
+        const page = await context.newPage();
+        await page.goto(
+          app.origin + "/settings?section=worker#" + f.store.secrets.admin,
+        );
+        const expected = options.unconfigured
+          ? "Configure the Kata.fit connection"
+          : options.providerMissing
+            ? "CONNECTION_AND_PROVIDER_REQUIRED"
+            : "CREDENTIAL_REJECTED";
+        await page.waitForFunction(
+          (expected) => {
+            const notice = document.getElementById("workerStartupStatus");
+            return (
+              notice &&
+              !notice.hidden &&
+              notice.getBoundingClientRect().height > 0 &&
+              notice.textContent?.includes(expected)
+            );
+          },
+          expected,
+          { timeout: 10000 },
+        );
+        assert.ok(
+          (await page.locator("#workerStartupStatus").innerText()).includes(
+            expected,
+          ),
+        );
+        assert.equal(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+          true,
+        );
+        assert.equal(f.calls.includes("coach_claim_request"), false);
+      } finally {
+        await context.close();
+        await app?.close();
+        await f.close();
+      }
+    }
+  } finally {
+    await browser.close();
   }
 });
 

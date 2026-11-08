@@ -1547,6 +1547,18 @@ async function status() {
         " — " +
         s.lastError.hint
       : (s.workerStartup?.hint ?? "No retained error.");
+    const startup = $("workerStartupStatus");
+    if (startup) {
+      startup.textContent =
+        s.workerStartup?.state === "starting"
+          ? "Starting configured Coach; connecting to Kata.fit. Presence is not confirmed yet."
+          : s.state === "stopped" && s.workerStartup?.hint
+            ? (s.workerStartup.error
+                ? "Automatic startup failed · " + s.workerStartup.error + " — "
+                : "") + s.workerStartup.hint
+            : "";
+      startup.hidden = !startup.textContent;
+    }
     const recovery = $("isolatedTaskRecovery");
     if (recovery) {
       recovery.textContent = s.isolatedTaskRecovery?.hint ?? "";
