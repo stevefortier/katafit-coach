@@ -333,6 +333,93 @@ test("real CLI serve owner auto-starts after health; pause survives only this se
   }
 });
 
+test("real bootstrap resets Stop on new launch but a handover continuation stays stopped", async () => {
+  const f = await fixture();
+  let child: ReturnType<typeof spawn> | undefined;
+  let exited: Promise<void> = Promise.resolve();
+  const launch = async (entry: "cli" | "boot") => {
+    child = spawn(
+      process.execPath,
+      [
+        compiledRoot + `/dist/${entry}.js`,
+        ...(entry === "cli" ? ["serve"] : []),
+      ],
+      {
+        env: {
+          ...process.env,
+          KATAFIT_COACH_HOME: f.store.dir,
+          KATAFIT_COACH_PORT: "0",
+          KATAFIT_BOOT_CONTINUATION: "1",
+        },
+        stdio: "ignore",
+      },
+    );
+    exited = new Promise<void>((r) => child!.once("exit", () => r()));
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      assert.equal(
+        child.exitCode,
+        null,
+        "owned launcher exited before readiness",
+      );
+      try {
+        return JSON.parse(await readFile(f.store.dir + "/service.json", "utf8"))
+          .origin as string;
+      } catch {}
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.fail("real launcher did not publish readiness");
+  };
+  try {
+    let origin = await launch("cli"); // actual continuation caller, not a new outer boot
+    await new Promise((r) => setTimeout(r, 600));
+    assert.deepEqual(
+      f.calls,
+      [],
+      "a stopped managed continuation must not claim",
+    );
+    assert.equal(
+      (await (await request(origin, f.store)).json()).state,
+      "stopped",
+    );
+    assert.equal(
+      (await request(origin, f.store, "/api/shutdown", true)).status,
+      200,
+    );
+    await exited;
+    child = undefined;
+    origin = await launch("boot"); // default real bootstrap must overwrite inherited continuation
+    await until(() => f.calls.includes("coach_claim_request"));
+    assert.equal(
+      (await request(origin, f.store, "/api/stop", true)).status,
+      200,
+    );
+    const claims = f.calls.filter((c) => c === "coach_claim_request").length;
+    assert.equal(
+      (await request(origin, f.store, "/api/shutdown", true)).status,
+      200,
+    );
+    await exited;
+    child = undefined;
+    origin = await launch("boot");
+    await until(
+      () => f.calls.filter((c) => c === "coach_claim_request").length > claims,
+    );
+    assert.equal(
+      (await request(origin, f.store, "/api/shutdown", true)).status,
+      200,
+    );
+    await exited;
+    child = undefined;
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      await exited;
+    }
+    await f.close();
+  }
+});
+
 test("actual managed runtime remains stopped throughout probation and quiesce; resume starts once", async () => {
   const f = await fixture();
   const nonce = "synthetic-owner-incarnation";
@@ -419,7 +506,17 @@ test("actual managed runtime remains stopped throughout probation and quiesce; r
     assert.equal(f.calls.filter((c) => c === "initialize").length, initializes);
   } finally {
     child.kill("SIGTERM");
-    await Promise.race([exited, new Promise((r) => setTimeout(r, 10000))]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        exited,
+        new Promise((r) => {
+          timer = setTimeout(r, 10000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
       await exited;
