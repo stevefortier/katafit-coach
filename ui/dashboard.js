@@ -256,6 +256,8 @@ window.CoachDashboard = (() => {
   const LATEST_FRESH_MS = 10 * 60 * 1000;
   // Camera focus never zooms past street level (OSM tiles stop at 19).
   const FOCUS_ZOOM = 18;
+  // A deliberate focus flies there (pan and zoom together) in about this long.
+  const FOCUS_FLIGHT_SECONDS = 0.5;
   // A repeated pointer activation of the same member card or event, keyed
   // to survive the re-render a first activation causes: the platform's click
   // count, or a quick nearby repeat for taps that do not count. Every repeat
@@ -2754,6 +2756,17 @@ window.CoachDashboard = (() => {
           }
           motion.cull(t);
         },
+        // A focus flight changes zoom continuously over many levels; one
+        // shared scale far from the layout frame would magnify the browser's
+        // layout rounding of each mark (1/64px) into visible drift, so each
+        // whole level travelled re-lays out exactly instead.
+        drifted() {
+          return (
+            !!state.frame &&
+            !state.anim &&
+            Math.abs(instance.getZoom() - state.frame.zoom) >= 1
+          );
+        },
         // Leaflet's zoomanim fires before the map moves to its target view.
         animate(event) {
           if (!state.frame) state.frame = capture();
@@ -2885,50 +2898,150 @@ window.CoachDashboard = (() => {
     let latestFocus = null;
     const latestFocusHeld = () =>
       !!latestFocus && latestFocus.epoch === cameraEpoch;
-    // Explicit focus follows the established camera protocol: a deliberate
-    // view (markUserView), FOCUS_ZOOM, the world copy nearest the view, and
-    // re-derivation from current authority after a settling zoom animation.
+    // The one deliberate focus still steering the camera (requested by a
+    // double activation or Shift+Enter), until the camera arrives. Its
+    // target is re-derived from current state (`resolve` re-checks
+    // selection, filter, ledger and denial; captured coordinates are never
+    // reused). Any other camera change, navigation, selection, date or
+    // authority change retires it at once: the camera stays where painted.
+    let focusing = null;
+    const focusCurrent = (intent) =>
+      live() &&
+      intent.epoch === cameraEpoch &&
+      intent.choice === selectionEpoch &&
+      (!intent.ledger || intent.generation === ledgerGeneration)
+        ? intent.resolve() || null
+        : null;
+    // `failed`: the target is gone (denied, deselected, unloaded), so its
+    // note and held latest focus go too; otherwise something deliberate
+    // superseded it, which owns the camera from here. `ended`: that camera
+    // write already stopped the flight and ended the movement.
+    const retireFocus = (failed = false, ended = false) => {
+      const intent = focusing;
+      if (!intent) return;
+      focusing = null;
+      if (intent.flying && !ended) {
+        // Stop where the camera is painted and end the movement like Leaflet
+        // ends its own (world-copy width, latest grouping, exact layout); a
+        // native zoom that interrupted it ends the movement itself.
+        instance._stop();
+        if (!zoomAnimating()) instance._moveEnd(true);
+      }
+      if (failed && latestFocus?.epoch === intent.epoch) latestFocus = null;
+      if (failed || intent.flying) {
+        focusNote = "";
+        showStatus();
+      }
+    };
+    // Reduced motion, or a camera already there, jumps; otherwise one native
+    // Leaflet flight (pan and zoom together) from the painted view.
+    const flyCamera = (center, zoom, instant) => {
+      const here = instance.getZoom();
+      const there =
+        Math.abs(here - zoom) < 1e-6 &&
+        instance
+          .project(instance.getCenter(), zoom)
+          .distanceTo(instance.project(center, zoom)) < 0.5;
+      if (
+        instant ||
+        there ||
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+      ) {
+        instance.setView(center, zoom, { animate: false });
+        return false;
+      }
+      instance.flyTo(center, zoom, { duration: FOCUS_FLIGHT_SECONDS });
+      return true;
+    };
+    // Start (or, when its current target changed mid-flight, restart from
+    // the painted view) the flight of this intent.
+    const steerFocus = (intent) => {
+      if (focusing !== intent) return;
+      const target = focusCurrent(intent);
+      if (!target) return retireFocus(true);
+      const key = JSON.stringify(target);
+      if (intent.flying && key === intent.key) return;
+      intent.key = key;
+      const { center, zoom } = intent.view(target);
+      intent.to = { center, zoom };
+      focusNote = intent.note(target);
+      intent.flying = flyCamera(center, zoom, intent.instant);
+      if (!intent.flying) focusing = null;
+      showStatus();
+    };
+    // Every rerender after a state change re-checks the flight.
+    const checkFocus = () => {
+      const intent = focusing;
+      if (!intent) return;
+      if (!focusCurrent(intent)) retireFocus(true);
+      else if (intent.flying) steerFocus(intent);
+    };
+    // Leaflet ends a flight with zoomend at its target. Any other zoomend
+    // during it is a camera write that stopped it (setView stops a flight),
+    // whichever handler runs first.
+    instance.on("zoomend", () => {
+      const intent = focusing;
+      if (!intent?.flying) return;
+      const { center, zoom } = intent.to;
+      if (
+        Math.abs(instance.getZoom() - zoom) < 1e-6 &&
+        instance
+          .project(instance.getCenter(), zoom)
+          .distanceTo(instance.project(center, zoom)) < 0.5
+      )
+        focusing = null;
+      else retireFocus(false, true);
+    });
+    const focusCamera = ({ resolve, view, note, latest, ledger, instant }) => {
+      markUserView();
+      const intent = {
+        epoch: cameraEpoch,
+        choice: selectionEpoch,
+        generation: ledgerGeneration,
+        ledger: !!ledger,
+        resolve,
+        view,
+        note,
+        instant: !!instant,
+        flying: false,
+        key: null,
+      };
+      focusing = intent;
+      if (latest) latestFocus = { memberId: latest, epoch: cameraEpoch };
+      // Leaflet drops a view change requested during a zoom animation (a
+      // wheel zoom still settling) and its end overwrites one set meanwhile:
+      // the focus starts once that animation ends.
+      if (zoomAnimating()) instance.once("zoomend", () => steerFocus(intent));
+      else steerFocus(intent);
+    };
+    // An exact recorded point at street level, in the world copy nearest
+    // the view.
+    const pointView = (point) => {
+      const near = instance.getCenter().lng;
+      return {
+        center: L.latLng(
+          point.latitude,
+          point.longitude + 360 * Math.round((near - point.longitude) / 360),
+        ),
+        zoom: FOCUS_ZOOM,
+      };
+    };
+    // Explicit focus follows the established camera protocol (focusCamera):
+    // a deliberate view, FOCUS_ZOOM, the world copy nearest the view, and
+    // re-derivation from current authority until the camera arrives.
     const focusLatest = (memberId) => {
       if (!live()) return;
       const current = () =>
         selectedMember === memberId &&
         !suppressedMembers.has(memberId) &&
         latestPositions.get(memberId);
-      const fix = current();
-      if (!fix) return;
-      markUserView();
-      const epoch = cameraEpoch,
-        choice = selectionEpoch;
-      const apply = (point) => {
-        const center = instance.getCenter().lng;
-        instance.setView(
-          [
-            point.latitude,
-            point.longitude +
-              360 * Math.round((center - point.longitude) / 360),
-          ],
-          FOCUS_ZOOM,
-          { animate: false },
-        );
-        latestFocus = { memberId, epoch: cameraEpoch };
-        focusNote = `Map centered on ${latestName(memberId)}'s latest known recorded position (not live).`;
-        showStatus();
-      };
-      const animating = instance
-        .getPane("mapPane")
-        .classList.contains("leaflet-zoom-anim");
-      apply(fix);
-      if (!animating) return;
-      instance.once("zoomend", () => {
-        if (!live() || epoch !== cameraEpoch || choice !== selectionEpoch)
-          return;
-        const now = current();
-        if (now) apply(now);
-        else {
-          latestFocus = null;
-          focusNote = "";
-          showStatus();
-        }
+      if (!current()) return;
+      focusCamera({
+        resolve: current,
+        view: pointView,
+        note: () =>
+          `Map centered on ${latestName(memberId)}'s latest known recorded position (not live).`,
+        latest: memberId,
       });
     };
     let latestPins = [];
@@ -3132,6 +3245,7 @@ window.CoachDashboard = (() => {
     };
     renderLatest = () => {
       if (!live()) return;
+      checkFocus();
       const reopen = chooserIds,
         focused = latestChooser.contains(document.activeElement)
           ? document.activeElement.dataset.memberId
@@ -3189,7 +3303,11 @@ window.CoachDashboard = (() => {
         if (pin) openLatestChooser(pin.group, pin.node, focused);
       }
     };
-    instance.on("move zoom resize", () => live() && latestMotion.follow());
+    instance.on("move zoom resize", (event) => {
+      if (!live()) return;
+      if (event.flyTo && latestMotion.drifted()) placeLatest();
+      else latestMotion.follow();
+    });
     instance.on("zoomanim", (event) => live() && latestMotion.animate(event));
     instance.on("movestart zoomstart resize", closeLatestChooser);
     // Regroup only when the scale changes; panning keeps anchors and groups.
@@ -3603,7 +3721,7 @@ window.CoachDashboard = (() => {
         const memberId = pendingMember;
         pendingMember = null;
         focusNote = "";
-        if (selectedMember === memberId) focusMapMember(memberId);
+        if (selectedMember === memberId) focusMapMember(memberId, true);
       }
       refreshMap();
       showStatus();
@@ -3675,6 +3793,7 @@ window.CoachDashboard = (() => {
     // everyone else; the explicit member filter keeps hiding other members.
     refreshMap = () => {
       if (!live()) return;
+      checkFocus();
       const focus = ledger?.items.get(selectedEventId)?.user_id;
       const dim = (memberId) => !!focus && memberId !== focus;
       for (const { item, marker } of dots) {
@@ -3705,6 +3824,7 @@ window.CoachDashboard = (() => {
       if (clearSelection) {
         pendingMember = null;
         cameraEpoch++;
+        retireFocus();
       }
       if (!pendingMember) focusNote = "";
       if (clearSelection) {
@@ -3721,13 +3841,14 @@ window.CoachDashboard = (() => {
       refreshMap();
       showStatus();
     };
-    instance.on("move zoom resize", () => {
-      if (live()) eventMotion.follow((dot) => dot.link && drawLink(dot.link));
+    instance.on("move zoom resize", (event) => {
+      if (!live()) return;
+      if (event.flyTo && eventMotion.drifted()) placePins();
+      else eventMotion.follow((dot) => dot.link && drawLink(dot.link));
     });
     instance.on("zoomanim", (event) => live() && eventMotion.animate(event));
     instance.on("moveend", placePins);
-    const fitPins = (pins, maxZoom = 16) => {
-      if (!pins.length) return;
+    const arcCoords = (pins) => {
       const longitudes = pins
         .map(({ fix }) => (fix.longitude + 360) % 360)
         .sort((a, b) => a - b);
@@ -3744,10 +3865,14 @@ window.CoachDashboard = (() => {
           }
         }
       }
-      const coords = pins.map(({ fix }) => {
+      return pins.map(({ fix }) => {
         const wrapped = (fix.longitude + 360) % 360;
         return [fix.latitude, wrapped < arcStart ? wrapped + 360 : wrapped];
       });
+    };
+    const fitPins = (pins, maxZoom = 16) => {
+      if (!pins.length) return;
+      const coords = arcCoords(pins);
       if (coords.length === 1)
         instance.setView(
           [pins[0].fix.latitude, pins[0].fix.longitude],
@@ -3771,36 +3896,46 @@ window.CoachDashboard = (() => {
     const markUserView = () => {
       userViewChanged = mapViewSettled = true;
       cameraEpoch++;
+      retireFocus();
       if (!pendingMember) return;
       pendingMember = null;
       focusNote = "";
       showStatus();
     };
-    // Leaflet drops a fit requested during a zoom animation (a wheel zoom
-    // still settling) and its end overwrites a view set meanwhile. Once that
-    // animation ends, the focus is re-derived from current state (`resolve`
-    // re-checks selection, filter, ledger and denial; captured coordinates
-    // are never reused) and applied once, unless something superseded it.
-    const focusCamera = (target, resolve, apply) => {
-      markUserView();
-      const epoch = cameraEpoch,
-        choice = selectionEpoch,
-        generation = ledgerGeneration;
-      const animating = instance
-        .getPane("mapPane")
-        .classList.contains("leaflet-zoom-anim");
-      apply(target);
-      if (!animating) return;
-      instance.once("zoomend", () => {
-        if (!live() || epoch !== cameraEpoch) return;
-        const current =
-          choice === selectionEpoch && generation === ledgerGeneration
-            ? resolve()
-            : null;
-        if (current) apply(current);
-        else focusNote = "";
-        showStatus();
-      });
+    // Where a fit of these fixes puts the camera: Leaflet's fitBounds target
+    // (the dashboard's padding, at most `maxZoom`) for the same antimeridian
+    // arc as fitPins, in the world copy nearest the view.
+    const pinsView = (pins, maxZoom) => {
+      const coords = arcCoords(pins);
+      let center = L.latLng(coords[0]),
+        zoom = maxZoom;
+      if (coords.length > 1) {
+        const bounds = L.latLngBounds(coords);
+        const padding = L.point(
+          Math.min(48, map.clientWidth / 4),
+          Math.min(48, map.clientHeight / 4),
+        );
+        zoom = Math.min(
+          maxZoom,
+          instance.getBoundsZoom(bounds, false, padding.multiplyBy(2)),
+        );
+        if (!Number.isFinite(zoom)) zoom = maxZoom;
+        center = instance.unproject(
+          instance
+            .project(bounds.getSouthWest(), zoom)
+            .add(instance.project(bounds.getNorthEast(), zoom))
+            .divideBy(2),
+          zoom,
+        );
+      }
+      const near = instance.getCenter().lng;
+      return {
+        center: L.latLng(
+          center.lat,
+          center.lng + 360 * Math.round((near - center.lng) / 360),
+        ),
+        zoom,
+      };
     };
     // The canonical ledger's currently shared fixes of a member's shown events.
     const memberPins = (memberId, category) =>
@@ -3817,8 +3952,9 @@ window.CoachDashboard = (() => {
         .filter(({ fix }) => fix);
     // Focus is a deliberate view: resizes keep it like panning. Only the
     // canonical ledger's currently shared fixes count; nothing found is a
-    // truthful no-op that leaves the camera alone.
-    focusMapMember = (memberId) => {
+    // truthful no-op that leaves the camera alone. `instant`: applied with
+    // the day's publication (a pending focus), never flown.
+    focusMapMember = (memberId, instant = false) => {
       if (!live()) return;
       if (!scoped()) {
         const name =
@@ -3842,19 +3978,18 @@ window.CoachDashboard = (() => {
       const note = (shown) =>
         `Map zoomed to ${name}'s ${shown.length} shown event location${shown.length === 1 ? "" : "s"}.`;
       if (pins.length) {
-        focusCamera(
-          pins,
-          () => {
+        focusCamera({
+          resolve: () => {
             if (selectedMember !== memberId || timelineCategory() !== category)
               return null;
             const current = memberPins(memberId, category);
             return current.length ? current : null;
           },
-          (shown) => {
-            fitPins(shown, FOCUS_ZOOM);
-            focusNote = note(shown);
-          },
-        );
+          view: (shown) => pinsView(shown, FOCUS_ZOOM),
+          note,
+          ledger: true,
+          instant,
+        });
       } else
         focusNote = `${name} has no shared event location${category ? ` in ${category === "status_change" ? "Readiness" : eventLabel(category)}` : ""} on ${date}; the map view was not changed.`;
       showStatus();
@@ -3866,9 +4001,8 @@ window.CoachDashboard = (() => {
         item && !suppressedMembers.has(item.user_id) && eventPosition(item);
       if (fix) {
         const category = timelineCategory();
-        focusCamera(
-          fix,
-          () => {
+        focusCamera({
+          resolve: () => {
             // Still the selected event of this ledger row, as it is now.
             const now = scoped()?.items.get(item.id);
             return (
@@ -3880,20 +4014,11 @@ window.CoachDashboard = (() => {
             );
           },
           // The exact recorded point, in the world copy nearest the view.
-          (point) => {
-            const center = instance.getCenter().lng;
-            instance.setView(
-              [
-                point.latitude,
-                point.longitude +
-                  360 * Math.round((center - point.longitude) / 360),
-              ],
-              FOCUS_ZOOM,
-              { animate: false },
-            );
-          },
-        );
-        focusNote = `Map zoomed to the recorded location of ${memberName(item.user_id)} · ${eventLabel(item.event_type)} · ${clock(item)}.`;
+          view: pointView,
+          note: () =>
+            `Map zoomed to the recorded location of ${memberName(item.user_id)} · ${eventLabel(item.event_type)} · ${clock(item)}.`,
+          ledger: true,
+        });
       } else
         focusNote =
           "This event has no shared location; the map view was not changed.";
@@ -3947,9 +4072,11 @@ window.CoachDashboard = (() => {
       { passive: true, signal },
     );
     map.addEventListener("wheel", markUserView, { passive: true });
+    // Leaflet stops control clicks at the anchor. Capture newer navigation
+    // before that, including a focus still waiting for native zoom to end.
     map
       .querySelector(".leaflet-control-zoom")
-      ?.addEventListener("click", markUserView);
+      ?.addEventListener("click", markUserView, { capture: true, signal });
     mapResizeObserver = new ResizeObserver(() => {
       if (!map.getClientRects().length) return;
       instance.invalidateSize();
@@ -3961,6 +4088,7 @@ window.CoachDashboard = (() => {
       // visible and always an explicit latest-position focus.
       if (
         !latestFocusHeld() &&
+        !focusing &&
         frame.length &&
         (!userViewChanged ||
           shown.every(({ fix }) =>

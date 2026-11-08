@@ -193,6 +193,11 @@ export async function fixture(
     // (`new Date()`, `Date()`, `Date.now()`) start at `now` and run in real
     // time.
     nativeClock?: boolean;
+    // prefers-reduced-motion. Defaults to "reduce" under the simulated clock:
+    // its frozen Date.now never advances an animated map focus (Leaflet's
+    // flyTo), so those tests judge the immediate (reduced-motion) focus;
+    // animated focus is judged on the native clock.
+    reducedMotion?: "reduce" | "no-preference";
   } = {},
 ) {
   const events = options.events || ledger();
@@ -318,6 +323,11 @@ export async function fixture(
       ...(options.touch ? { hasTouch: true, isMobile: true } : {}),
     });
     await page.addInitScript("window.__name = (value) => value");
+    await page.emulateMedia({
+      reducedMotion:
+        options.reducedMotion ??
+        (options.nativeClock ? "no-preference" : "reduce"),
+    });
     const now = new Date(options.now || "2026-12-01T12:00:00Z");
     if (options.nativeClock) await page.addInitScript(wallClock, +now);
     else await page.clock.setFixedTime(now);

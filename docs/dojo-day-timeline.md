@@ -30,6 +30,12 @@ Snapshots use safe text DOM and an explicit bounded scalar DTO-field union, not 
 
 A single click/tap only selects: a member selection card selects that member, and a map dot or timeline occurrence selects that event. Neither selection nor hover changes map center or zoom, regardless of earlier explicit focus or manual navigation. Double-clicking or double-tapping anywhere on the same member selection button—portrait, name, stats or blank card space—also moves the map camera. Nearby repeated activations across those subtargets share the same member gesture; the separate sibling body-fat information button only shows provenance and never selects or focuses a member. Select All still resets the day's fitted view. Shift+Enter on a focused member card, map dot or timeline occurrence does selection and focus at once. For a timeline occurrence, the camera moves only after that event's fresh read authorizes it (see below).
 
+**Camera flight.** Every explicit focus (member card, map dot, timeline occurrence, latest pin or chooser entry) moves the camera as one native Leaflet `flyTo` pan and zoom of about half a second. The flight starts from the painted camera and goes to the same exact target as before (the member fit, or the exact coordinate at zoom 18), always across the shortest longitude arc. A focus already at its target, a pending member focus applied when the day publishes, and `prefers-reduced-motion: reduce` jump directly with no in-between view.
+
+- **Re-derived while flying.** The target is re-derived from current authority when the ledger or the latest positions change. A moved target re-aims the flight from where it is painted.
+- **Interruptions win.** A drag, wheel, keyboard or zoom-control navigation, an ordinary selection, All, a category or date change, a reload, a lock, or a denial or withdrawn position stops the flight where it is painted, and it never resumes or lands. Stopping ends the movement like Leaflet's own zoom end, so overlap grouping and world-copy wrapping settle on the stopped view. A new deliberate focus starts its own flight from that painted camera. Dropping the focus for a denial or a withdrawn position also clears its note; a superseded focus leaves the status to whatever superseded it. A date change keeps the stopped view (Leaflet snaps it to a whole zoom).
+- **Overlays during the flight.** Dots, lines and latest pins follow the flight in the same frame as the tiles, like a native zoom. Once the flight has moved a whole zoom level since the last layout, the marks are laid out again at the painted view. One shared transform scaled over several levels drifts by Chrome's 1/64px layout unit (3–4px measured), and laying out again keeps every anchor within 1px of its fix. Latest-pin overlap grouping is recomputed when the flight lands, as at any zoom end.
+
 - **Member selection card:** fits only that member's currently shown located events: the selected date's loaded ledger, positions that are still shared (not missing, unavailable or privacy-withheld), and the timeline's selected category, if any. Other members never widen the fit. An event that another member recorded at exactly the same coordinate still stays in place on the map. The fit takes the shortest longitude arc across the dateline, keeps marker padding and zooms in no further than 18. A single location is centered at zoom 18.
 - **Map dot or timeline occurrence:** centers that event's exact recorded coordinate at zoom 18, in the world copy nearest the current view. Timeline occurrences also reach co-located events behind a location badge.
 - **Nothing to show:** a member or event without a shared location leaves the camera unchanged, and the map status says so.
@@ -41,7 +47,7 @@ A single click/tap only selects: a member selection card selects that member, an
 
   If the member turns out to have no shared location, the status says so after the load.
 
-- **During a zoom animation:** a member or event focus made while a map zoom animation (for example a wheel zoom) is still running is applied once more when that animation ends. Leaflet would otherwise drop the fit or overwrite it. The target is re-derived at that moment from the current ledger, never from coordinates captured earlier. The focus is dropped (the camera stays and no zoom is claimed) if any of these happened since:
+- **During a zoom animation:** a member or event focus made while a map zoom animation (for example a wheel zoom) is still running starts flying when that animation ends. Leaflet would otherwise drop the fit or overwrite it. The target is re-derived at that moment from the current ledger, never from coordinates captured earlier. The focus is dropped (the camera stays and no zoom is claimed) if any of these happened since:
   - navigation, All or a newer member or event selection
   - a category change, or a reload of the day
   - the member was denied, or the event no longer has a shared position
@@ -57,7 +63,7 @@ A single click/tap only selects: a member selection card selects that member, an
   - 401/403 (the member is purged), 404 (the event is removed), 409 (the day reloads) or a transient failure
   - a newer selection, a filter that hides the event, a date change, a reload or a lock before the reply arrives
 
-Map dots and member selection cards keep their existing immediate focus (the dot path is unchanged).
+Map dots and member selection cards focus as soon as they are activated (a flight; see Camera flight above).
 
 The opening day fit still stops at zoom 16. A focused camera counts as a deliberate view, so resizing keeps it, the same as panning. Dots are not Leaflet layers, so their double activations never trigger Leaflet's own double-click or double-tap zoom. Like Leaflet's own layers, a latest pin, dot or co-location badge is never activated by the click that ends a map drag started on it: the mark moves with the pointer, but the press panned the map. A still click, tap or keyboard activation is unchanged. Whole member selection buttons use `touch-action: manipulation`, so a double tap never zooms the page. Double-clicking or double-tapping empty map space still zooms in as before.
 
@@ -85,8 +91,9 @@ Separately from the selected day's event dots, the map shows each member's **lat
   - One shared 15-second ticker (no per-member timers, no requests) re-evaluates ages, and `visibilitychange`/`pageshow` re-evaluate on resume.
   - Each accessible name and title gives the member, relative age and exact local capture time.
 - **Selection and focus.** A single click or tap on a pin or chooser entry only selects that member (camera unchanged).
-  - Double activation or Shift+Enter is an explicit focus through the shared map-focus protocol (`markUserView`/camera epoch). It centers that member's exact coordinate on the nearest world copy at zoom 18.
-  - During a wheel animation the focus re-applies at zoom end only if it is still current.
+  - Double activation or Shift+Enter is an explicit focus through the shared map-focus protocol (`markUserView`/camera epoch). It flies to that member's exact coordinate on the nearest world copy at zoom 18 (see Camera flight).
+  - During a wheel animation the focus starts flying at zoom end only if it is still current.
+  - A mouse double-click cannot focus from the chooser: the first click selects and closes it, so the second lands on the map, and Leaflet zooms in there. That is unchanged. Use Shift+Enter on a choice, or activate the member's pin again.
   - The focus survives resize and a later day publication. Navigation, All, category, date or a denial supersedes it.
   - Double-clicking a latest pin, chooser or event dot is not map navigation: it never counts as the operator moving the camera, so it never cancels a pending focus.
 - **Native motion.** Latest pins, event dots and connection lines follow Leaflet's native drag, wheel and control zoom, touch pan, pinch and inertia in the same frame as the tiles.
@@ -134,7 +141,21 @@ The whole-card cases in `map-focus-browser.test.ts` qualify portrait, name, stat
 - resize retention, and an All reset back to the default fit
 - that All, another member, a map drag or a date change supersedes the request
 
-It also lands a double activation on a member and on a timeline occurrence during a wheel zoom animation, and checks that a mid-animation All still wins. With Leaflet's zoom-end held, it checks that a member or event focus still applies when nothing intervenes. It also checks that the focus is dropped at the animation's end after any of these before that end:
+`map-focus-flight-browser.test.ts` runs on Chrome's own rendering clock with opaque synthetic tiles. It records the camera in every rendered frame and checks the following:
+
+- One single click or tap never moves the camera.
+- A real CDP mouse double-click, a touch double tap, and Shift+Enter on each route fly within 250ms of the input, in about half a second, through at least five in-between frames with fractional zooms. Each lands exactly on the established target (the member fit compared with Leaflet's own bounds fit, or the exact coordinate at zoom 18).
+- A same-zoom pan and an antimeridian focus fly the short way.
+- The overlay sampler holds dots, lines and latest pins on the painted tiles in every flight frame.
+- A quick second focus re-flies from the painted camera, and the first target is never painted.
+- A drag, wheel, keyboard zoom, zoom control, ordinary selection, or a member or latest-pin denial mid-flight stops it with no resumption or landing.
+- A focus made during a held native zoom flies only after that zoom ends.
+- Reduced motion jumps with no in-between frame.
+- A date change keeps the stopped view, and a lock never moves the removed map.
+
+The fake-clock suites freeze `Date.now` (which `flyTo` paces itself by), so `exact-map-fixture` emulates reduced motion for them unless a test opts in. They therefore verify the jump path and every target and fence, while the flight itself is verified on the native clock.
+
+`map-focus-retention-browser.test.ts` also lands a double activation on a member and on a timeline occurrence during a wheel zoom animation, and checks that a mid-animation All still wins. With Leaflet's zoom-end held, it checks that a member or event focus still applies when nothing intervenes. It also checks that the focus is dropped at the animation's end after any of these before that end:
 
 - a 403 denial of the member
 - a newer event selection
