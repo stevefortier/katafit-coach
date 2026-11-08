@@ -346,12 +346,18 @@ test(
       // A new owner now starts automatically. Join that admission before the
       // independent Run control; HTTP health alone is deliberately responsive
       // while startup is connecting and must not imply a settled transition.
+      // Admission reports started once the worker connects; its first poll
+      // then moves it from connecting to idle.
       let startup;
       for (let attempt = 0; attempt < 100; attempt++) {
         startup = await (
           await fetch(owner.origin + "/api/status", { headers })
         ).json();
-        if (startup.workerStartup.state === "started" && !startup.transition)
+        if (
+          startup.workerStartup.state === "started" &&
+          !startup.transition &&
+          startup.state === "idle"
+        )
           break;
         await new Promise((r) => setTimeout(r, 20));
       }

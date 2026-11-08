@@ -215,11 +215,6 @@ const dotsReady = (page: any, n: number) =>
   );
 const pinned = (member: string) =>
   `.dashboard-latest-pin[data-member-ids~="${member}"]`;
-const inPage = (page: any, fn: string, arg?: any) =>
-  page.evaluate(({ fn, arg }: any) => new Function("arg", fn)(arg), {
-    fn,
-    arg,
-  });
 
 type Mutation = {
   // Observed effect: the watch fires on the first frame where the selector
@@ -227,7 +222,20 @@ type Mutation = {
   watch: string;
   gone?: boolean;
   next: Spec;
-  act: () => Promise<unknown>;
+  // A page action runs synchronously in the browser; a test action (an HTTP
+  // release) runs in the test process, invoked from the browser.
+  act: { inPage: string; arg?: unknown } | (() => unknown);
+};
+// One binding per page; each mid-zoom mutation installs its own test action.
+const actions = new WeakMap<any, { act?: () => unknown }>();
+const binding = async (page: any) => {
+  let slot = actions.get(page);
+  if (!slot) {
+    const own: { act?: () => unknown } = {};
+    actions.set(page, (slot = own));
+    await page.exposeFunction("__motionAct", () => own.act?.());
+  }
+  return slot;
 };
 // Native zoom-control zoom; the mutation lands while Leaflet's CSS zoom
 // transition is painting. Every frame through settle is checked.
@@ -248,23 +256,68 @@ const midZoom = async (
     );
   const total = await marks(page);
   const ended = settled(page);
+  if (mutation) {
+    const { act } = mutation;
+    if (typeof act === "function") (await binding(page)).act = act;
+    // Armed in the browser: on the native zoom's first animation frame (its
+    // transitions exist and run on the zoomanim clock) the mutation starts
+    // and its action runs, with no test-process polling or sleeping between
+    // the control click and the effect.
+    await page.evaluate(
+      ({ watch, next, gone, action }: any) => {
+        const w = window as any;
+        w.__motionArmed = new Promise((resolve, reject) =>
+          w.fixtureMap.once("zoomanim", () =>
+            requestAnimationFrame(() => {
+              try {
+                const running = w.fixtureMap
+                  .getContainer()
+                  .getAnimations({ subtree: true })
+                  .filter(
+                    (a: any) =>
+                      ["transform", "translate"].includes(
+                        a.transitionProperty,
+                      ) && a.startTime !== null,
+                  );
+                const receipt = {
+                  transitions: running.length,
+                  elapsed: running.length
+                    ? document.timeline.currentTime -
+                      Math.min(...running.map((a: any) => a.startTime))
+                    : null,
+                };
+                w.__motion.mutate(watch, next, gone);
+                if (!action)
+                  return w.__motionAct().then(() => resolve(receipt), reject);
+                new Function("arg", action.inPage)(action.arg);
+                resolve(receipt);
+              } catch (error) {
+                reject(error);
+              }
+            }),
+          ),
+        );
+      },
+      {
+        watch: mutation.watch,
+        next: mutation.next,
+        gone: !!mutation.gone,
+        action: typeof act === "function" ? null : act,
+      },
+    );
+  }
   await page.evaluate(() => (window as any).__motion.start());
   await page.click(control);
-  await page.waitForFunction(() => (window as any).fixtureMap._animatingZoom);
-  await page.waitForTimeout(40);
-  if (mutation) {
-    await page.evaluate(
-      ({ watch, next, gone }: any) =>
-        (window as any).__motion.mutate(watch, next, gone),
-      { watch: mutation.watch, next: mutation.next, gone: !!mutation.gone },
-    );
-    await mutation.act();
-  }
+  const armed = mutation
+    ? await page.evaluate(() => (window as any).__motionArmed)
+    : null;
   await ended;
   const s = await page.evaluate(() => (window as any).__motion.stop());
-  log.entries.push({ name, marks: total, ...s });
+  log.entries.push({ name, marks: total, armed, ...s });
   const problems = verdict(s, total, { zoom: true, ...o });
   if (mutation) {
+    if (!armed?.transitions)
+      problems.push("mutation armed before the native zoom transition ran");
     // The effect really landed mid-animation, with frames left to paint.
     if (!s.mutation?.anim) problems.push("mutation started outside the zoom");
     if (!s.watch) problems.push(`effect never observed (${s.pendingWatch})`);
@@ -321,12 +374,10 @@ test("mid-zoom: uninterrupted, member selection and held avatar keep every mark 
       await midZoom(page, log, "member selection", ALL, {
         watch: ".dashboard-latest-pin.dashboard-latest-unselected",
         next: { latest: LATEST, ...day([ada]) },
-        act: () =>
-          inPage(
-            page,
-            `document.querySelector('.dashboard-member-card:has(.dashboard-member-portrait[data-member-id="' + arg + '"])').click()`,
-            ada,
-          ),
+        act: {
+          inPage: `document.querySelector('.dashboard-member-card:has(.dashboard-member-portrait[data-member-id="' + arg + '"])').click()`,
+          arg: ada,
+        },
       });
       await page.click(".dashboard-member-all");
       await view(page);
@@ -361,12 +412,10 @@ test("mid-zoom: a full member denial removes that member at once and survivors s
           ...day([bob]),
           absent: [ada],
         },
-        act: () =>
-          inPage(
-            page,
-            `document.querySelector('.dashboard-event-dot[data-event-id="' + arg + '"]').click()`,
-            of(ada)[3].id,
-          ),
+        act: {
+          inPage: `document.querySelector('.dashboard-event-dot[data-event-id="' + arg + '"]').click()`,
+          arg: of(ada)[3].id,
+        },
       });
     },
     {
@@ -403,12 +452,10 @@ test("mid-zoom: Position denial and whole-dojo denial remove geometry at once; a
         watch: pinned(ada),
         gone: true,
         next: { latest: pick(LATEST, [bob, cy]), ...day([bob]), absent: [ada] },
-        act: () =>
-          inPage(
-            page,
-            `document.querySelector('.dashboard-event-dot[data-event-id="' + arg + '"]').click()`,
-            of(ada)[3].id,
-          ),
+        act: {
+          inPage: `document.querySelector('.dashboard-event-dot[data-event-id="' + arg + '"]').click()`,
+          arg: of(ada)[3].id,
+        },
       });
       // The held positive (Ada located, Cy incomplete) lands afterwards.
       second.release();
