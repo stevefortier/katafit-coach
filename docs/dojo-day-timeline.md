@@ -91,6 +91,7 @@ Separately from the selected day's event dots, the map shows each member's **lat
   - Double-clicking a latest pin, chooser or event dot is not map navigation: it never counts as the operator moving the camera, so it never cancels a pending focus.
 - **Native motion.** Latest pins, event dots and connection lines follow Leaflet's native drag, wheel and control zoom, touch pan, pinch and inertia in the same frame as the tiles.
   - Each overlay is moved by one shared transform per frame (translate, plus scale while pinching, with marks counter-scaled to keep their size). Leaflet's zoom animation is followed with the tiles' own transition. Per-frame work never writes every mark.
+  - **One zoom clock.** Every tile level, Leaflet marker and overlay mark runs its own CSS zoom transition, and the browser resolves each start independently, so one level can start a frame after another and paint the same place elsewhere. Once every `zoomanim` handler has written its target, the map starts all of its transform/translate transitions at the `zoomanim` frame's document-timeline instant. Marks joining mid-zoom use the same instant. Opacity fades are untouched. A map retired mid-zoom (date change, lock) first clears Leaflet's pending zoom end, whose uncancelled fallback timer would otherwise run against the removed panes.
   - Marks are positioned from the unrounded projection, including across `worldCopyJump` wraps, so they stay on their exact fix within a pixel and a half during gestures.
   - Pins and dots are kept as stable nodes. They are laid out exactly once when the gesture settles (`moveend`); overlap grouping is recomputed at zoom end. Marks far off screen are hidden.
   - **Changes during a zoom animation.** While Leaflet's zoom animation is painting, Leaflet already reports the target view. Any change landing in that window keeps the animation's start frame and its remaining progress:
@@ -111,7 +112,16 @@ Qualification: `tests/latest-position-pins-browser.test.ts` (served UI with actu
 - member selection, a held avatar, a member denial, a Position denial with a held latest positive, a whole-dojo denial, a held day page, and a latest response that moves, removes, adds and regroups pins;
 - a date change and a lock.
 
-It also covers antimeridian drags and zooms. Every frame is checked against the painted tiles and native Leaflet markers (shared sampler `tests/helpers/map-motion-sampler.ts`). Marks must stay within 1.5px of the native markers. Mid zoom-out, Leaflet's own pixel-rounded markers can sit up to about 1.7px off the painted tiles. So the tile bound is 1.5px, or the native markers' own tile error plus 0.5px when that is larger.
+It also covers antimeridian drags and zooms. Every frame is checked against the visible basemap at each mark's own fix (shared sampler `tests/helpers/map-motion-sampler.ts`, controls in `tests/map-motion-oracle-browser.test.ts`).
+
+- **Per-level position:** on each tile level, the loaded tile whose source `z/x/y` contains the projected fix gives that level's screen position for the fix.
+- **Visible contribution:** that position contributes with the tile's effective opacity (image and ancestors), times what the levels stacked above let through at that point. Contributions under 2% do not count, so faint, opacity-0 and occluded levels are not references. A sole level fading in still counts.
+- **Bound:** every pin tip, dot, badge and connection end must be within 1.5px of the dominant visible contribution.
+- **Blank fixes:** where nothing is visible at the fix, a mark painted over visible tiles is held to where those tiles' own grid places its fix. A mark over blank map is counted as `unverified` and never as measured.
+- **Splits:** when the visible levels used in a frame place the same fix more than 1.5px apart, the verdict reports `basemap ambiguous/inconclusive (Leaflet/browser split)`, never success.
+- **Native markers:** native Leaflet markers at the same fixes are a separate native-conformance check (`native conformance: latest pin vs native marker`), never an alternate basemap.
+
+The motion suites run on Chrome's own rendering clock (`nativeClock` fixture option: Playwright's clock is never installed, only wall time starts at the fixture instant) and assert it. A deterministic case starts the top tile level's zoom transition one frame late, as observed natively. It requires every zoom transition to share one start and every mark to stay within 1.5px of an unsplit visible basemap; before the zoom clock it reported a 44px level split. The sampler runs one sampling chain per `start()`. The zoom clock covers only transitions that exist when the `zoomanim` task ends. Under 12× CDP CPU throttling the 250ms zoom finished between two rendered frames, so the sampler failed those gestures for having no zoom frames rather than passing them. This is a lab throttle, not a measured device frame rate.
 
 ## Qualification
 

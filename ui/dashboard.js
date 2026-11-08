@@ -567,6 +567,9 @@ window.CoachDashboard = (() => {
   function disposeMap() {
     mapResizeObserver?.disconnect();
     mapResizeObserver = undefined;
+    // Leaflet ends a zoom animation from a timer it never cancels; a map
+    // removed mid-zoom must not run it on its removed panes.
+    if (leafletMap) leafletMap._animatingZoom = false;
     leafletMap?.remove();
     leafletMap = undefined;
   }
@@ -2504,6 +2507,22 @@ window.CoachDashboard = (() => {
       ZOOM_EASE = "cubic-bezier(0, 0, 0.25, 1)";
     const zoomAnimating = () =>
       !!instance.getPane("mapPane")?.classList.contains("leaflet-zoom-anim");
+    // One clock for this map's zoom animation. Every tile level, Leaflet
+    // marker and overlay mark runs its own CSS transform transition, and the
+    // browser resolves each start independently, so one level can start a
+    // frame after another and paint the same place elsewhere. Once every
+    // zoomanim handler has written its target (the transitions then exist,
+    // still pending), all of them start at the zoomanim frame; marks joining
+    // mid-zoom use the same instant.
+    let zoomStart = null;
+    instance.on("zoomanim", () => {
+      zoomStart = document.timeline.currentTime;
+      queueMicrotask(() => {
+        for (const running of map.getAnimations({ subtree: true }))
+          if (["transform", "translate"].includes(running.transitionProperty))
+            running.startTime = zoomStart;
+      });
+    });
     const motionLayer = (
       layer,
       margin,
@@ -2587,21 +2606,9 @@ window.CoachDashboard = (() => {
         const { t, target } = state.anim;
         return `translate(${(target.x - t.x) / t.s}px, ${(target.y - t.y) / t.s}px) scale(${target.s / t.s})`;
       };
-      // The running zoom transition's start: Leaflet's own (tiles, markers),
-      // else this layer's, else the zoomanim clock.
-      const started = () => {
-        if (state.anim.start != null) return state.anim.start;
-        for (const root of [instance.getPane("mapPane"), layer])
-          for (const running of root.getAnimations({ subtree: true }))
-            if (
-              running.startTime !== null &&
-              ["transform", "translate"].includes(running.transitionProperty)
-            )
-              return (state.anim.start = running.startTime);
-        return state.anim.time;
-      };
-      // Join the running zoom: identical easing, duration and start, so the
-      // node is where a mark laid out at the animation's start would be.
+      // Join the running zoom: identical easing, duration and start (the
+      // map's zoom clock), so the node is where a mark laid out at the
+      // animation's start would be.
       const join = (node, property, value) => {
         moved.add(node);
         // No CSS transition: the replaced one stops at this style change.
@@ -2614,8 +2621,7 @@ window.CoachDashboard = (() => {
           [{ [property]: from }, { [property]: value }],
           { duration: ZOOM_MS, easing: ZOOM_EASE },
         );
-        const start = started();
-        if (start !== null) running.startTime = start;
+        running.startTime = zoomStart;
         joined.set(node, running);
         traveling.set(node, value);
       };
@@ -2758,12 +2764,7 @@ window.CoachDashboard = (() => {
             event.center.lng,
           );
           apply(t);
-          state.anim = {
-            t,
-            target,
-            lng: event.center.lng,
-            time: document.timeline.currentTime,
-          };
+          state.anim = { t, target, lng: event.center.lng };
           // Marks entering the view get a painted start before they move.
           let shown = false;
           for (const mark of marks)

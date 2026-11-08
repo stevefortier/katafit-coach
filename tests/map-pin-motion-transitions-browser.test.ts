@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
 import sharp from "sharp";
-import { fixture, ada, bob, ev, id, gps } from "./helpers/exact-map-fixture.js";
+import {
+  fixture,
+  clockProbe,
+  ada,
+  bob,
+  ev,
+  id,
+  gps,
+} from "./helpers/exact-map-fixture.js";
 import {
   gesture,
   install,
@@ -144,7 +152,13 @@ const run = (
 ) =>
   fixture(
     async (page) => {
-      await page.clock.setSystemTime(new Date(NOW));
+      // Motion is judged on Chrome's own rendering clock (frames, timers and
+      // CSS transitions alike); wall time started at NOW, so age notes hold.
+      const clock: any = await clockProbe(page);
+      assert.ok(
+        !clock.playwrightClock && clock.nativeRequestAnimationFrame,
+        JSON.stringify(clock),
+      );
       await body(page);
     },
     {
@@ -152,6 +166,7 @@ const run = (
       events: events as any,
       now: iso(NOW),
       marks: null,
+      nativeClock: true,
       beforeLoad: async (page: any) => {
         const avatar = await opaque(220, 60, 40, 64),
           tile = await opaque(214, 222, 205);
@@ -779,4 +794,118 @@ test("dateline: worldCopyJump drags and zooms keep latest pins, dots and crossin
     { events: dlEvents as any },
   );
   await finish("dateline.json", log);
+});
+
+test("zoom clock: tile levels started a frame apart still paint one map, with every mark on it", async () => {
+  const log: Log = { entries: [], failures: [] };
+  await run(async (page) => {
+    await dotsReady(page, events.length);
+    await pinsReady(page, 3);
+    // The target level's tiles are already decoded, so both levels paint
+    // during the zoom.
+    await view(page, 14);
+    await view(page);
+    // The browser resolves each CSS transition's start on its own; force the
+    // case seen natively: the new top level's transform starts one frame
+    // after the level below it.
+    await page.evaluate(() => {
+      const m = (window as any).fixtureMap,
+        w = window as any;
+      w.__clock = { perturbed: null, starts: null };
+      m.once("zoomanim", () => {
+        const levels = [
+          ...m.getContainer().querySelectorAll(".leaflet-tile-container"),
+        ].sort((a: any, b: any) => +b.style.zIndex - +a.style.zIndex);
+        const late = levels[0]
+          .getAnimations()
+          .find((a: any) => a.transitionProperty === "transform");
+        if (!late) return;
+        late.startTime = (document.timeline.currentTime as number) + 1000 / 60;
+        w.__clock.perturbed = { zIndex: levels[0].style.zIndex };
+        let n = 0;
+        const after = () => {
+          if (++n < 3) return requestAnimationFrame(after);
+          w.__clock.starts = m
+            .getContainer()
+            .getAnimations({ subtree: true })
+            .filter((a: any) =>
+              ["transform", "translate"].includes(a.transitionProperty),
+            )
+            .map((a: any) => ({
+              node: String(
+                a.effect.target.className?.baseVal ?? a.effect.target.className,
+              ).split(" ")[0],
+              start: a.startTime,
+            }));
+        };
+        requestAnimationFrame(after);
+      });
+    });
+    const s = await midZoom(page, log, "one-frame level offset", ALL, null);
+    const clock = await page.evaluate(() => (window as any).__clock);
+    log.entries.push({ clock });
+    if (!clock.perturbed) log.failures.push("no top-level transition to delay");
+    // Both levels were visible and compared at the same fixes.
+    if (s.maxLevels < 2)
+      log.failures.push(`only ${s.maxLevels} visible level(s) compared`);
+    const levels = (clock.starts || []).filter(
+      (a: any) => a.node === "leaflet-tile-container",
+    );
+    if (levels.length < 2)
+      log.failures.push(`${levels.length} tile level transitions`);
+    const starts = new Set((clock.starts || []).map((a: any) => a.start));
+    if (starts.size !== 1)
+      log.failures.push(
+        `zoom transitions on ${starts.size} clocks: ${JSON.stringify(clock.starts)}`,
+      );
+  });
+  await finish("zoom-clock.json", log);
+});
+
+test("sampler: each restart owns the only sampling chain, one sample per frame", async () => {
+  const log: Log = { entries: [], failures: [] };
+  await run(async (page) => {
+    await dotsReady(page, events.length);
+    await pinsReady(page, 3);
+    await view(page);
+    await install(page, FIXES, ALL);
+    // Restart while the previous chain still has a frame pending, and count
+    // the frames that pass with an independent chain.
+    const runs = await page.evaluate(async () => {
+      const motion = (window as any).__motion;
+      const frames = (n: number) =>
+        new Promise<number>((resolve) => {
+          let seen = 0;
+          const tick = () =>
+            ++seen < n ? requestAnimationFrame(tick) : resolve(seen);
+          requestAnimationFrame(tick);
+        });
+      const out: any[] = [];
+      motion.start();
+      let ticks = await frames(12);
+      for (let i = 0; i < 4; i++) {
+        const s = motion.stop();
+        motion.start();
+        out.push({ ticks, frames: s.frames, stamps: s.stamps });
+        ticks = await frames(12);
+      }
+      const s = motion.stop();
+      out.push({ ticks, frames: s.frames, stamps: s.stamps });
+      return out;
+    });
+    log.entries.push(...runs);
+    for (const [i, r] of runs.entries()) {
+      const stamps: number[] = r.stamps ?? [];
+      // stop() itself takes one last sample outside any frame.
+      if (r.frames > r.ticks + 2)
+        log.failures.push(`run ${i}: ${r.frames} samples in ${r.ticks} frames`);
+      if (stamps.length !== r.frames - 1)
+        log.failures.push(
+          `run ${i}: ${stamps.length} frame samples of ${r.frames}`,
+        );
+      if (new Set(stamps).size !== stamps.length)
+        log.failures.push(`run ${i}: a frame sampled twice ${stamps}`);
+    }
+  });
+  await finish("sampler-lifecycle.json", log);
 });

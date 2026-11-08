@@ -123,6 +123,48 @@ export async function settleCompactMap(page: any) {
   );
 }
 
+// Init script for `nativeClock`: offsets only the wall-clock reads so the
+// document starts at `start`; parsing, explicit dates, rAF, performance and
+// timers stay Chrome's own.
+function wallClock(start: number) {
+  const NativeDate = Date;
+  const offset = start - NativeDate.now();
+  const now = () => NativeDate.now() + offset;
+  (window as any).Date = new Proxy(NativeDate, {
+    construct: (target, args, newTarget) =>
+      Reflect.construct(target, args.length ? args : [now()], newTarget),
+    apply: () => new NativeDate(now()).toString(),
+    get: (target, key) =>
+      key === "now" ? now : Reflect.get(target, key, target),
+  });
+}
+
+// Which clock drives the page: Chrome's rendering clock or Playwright's.
+export async function clockProbe(page: any) {
+  return page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const native = (fn: unknown) =>
+          /\{\s*\[native code\]\s*\}/.test(
+            Function.prototype.toString.call(fn),
+          );
+        requestAnimationFrame((stamp) =>
+          resolve({
+            playwrightClock: "__pwClock" in window,
+            nativeRequestAnimationFrame: native(window.requestAnimationFrame),
+            nativePerformanceNow: native(performance.now),
+            nativeSetTimeout: native(window.setTimeout),
+            dateNow: Date.now(),
+            newDate: new Date().toISOString(),
+            rafStamp: stamp,
+            timeline: document.timeline.currentTime,
+            performanceNow: performance.now(),
+          }),
+        );
+      }),
+  );
+}
+
 export async function fixture(
   run: (
     page: any,
@@ -146,6 +188,11 @@ export async function fixture(
     marks?: number | null;
     // Install deterministic browser instrumentation before application startup.
     beforeLoad?: (page: any) => Promise<void>;
+    // Keep Chrome's own rendering clock (rAF, performance, timers): never
+    // install Playwright's simulated clock; only the wall-clock reads
+    // (`new Date()`, `Date()`, `Date.now()`) start at `now` and run in real
+    // time.
+    nativeClock?: boolean;
   } = {},
 ) {
   const events = options.events || ledger();
@@ -271,9 +318,9 @@ export async function fixture(
       ...(options.touch ? { hasTouch: true, isMobile: true } : {}),
     });
     await page.addInitScript("window.__name = (value) => value");
-    await page.clock.setFixedTime(
-      new Date(options.now || "2026-12-01T12:00:00Z"),
-    );
+    const now = new Date(options.now || "2026-12-01T12:00:00Z");
+    if (options.nativeClock) await page.addInitScript(wallClock, +now);
+    else await page.clock.setFixedTime(now);
     const errors: string[] = [];
     page.on("pageerror", (error: Error) => errors.push(error.message));
     await page.route("https://tile.openstreetmap.org/**", (r: any) =>

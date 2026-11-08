@@ -3,7 +3,15 @@ import { test } from "node:test";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
-import { fixture, ada, bob, ev, id, gps } from "./helpers/exact-map-fixture.js";
+import {
+  fixture,
+  clockProbe,
+  ada,
+  bob,
+  ev,
+  id,
+  gps,
+} from "./helpers/exact-map-fixture.js";
 import {
   gesture,
   install,
@@ -127,9 +135,13 @@ const run = (
           document.querySelectorAll(".dashboard-event-dot").length === n,
         events.length,
       );
-      // Let real time flow from the fixed instant: Leaflet tile fade and drag
-      // inertia need a moving clock, and the age notes stay deterministic.
-      await page.clock.setSystemTime(new Date(NOW));
+      // Motion is judged on Chrome's own rendering clock (frames, timers and
+      // CSS transitions alike); wall time started at NOW, so age notes hold.
+      const clock: any = await clockProbe(page);
+      assert.ok(
+        !clock.playwrightClock && clock.nativeRequestAnimationFrame,
+        JSON.stringify(clock),
+      );
       await body(page);
     },
     {
@@ -137,6 +149,7 @@ const run = (
       events: events as any,
       now: iso(NOW),
       marks: null,
+      nativeClock: true,
       beforeLoad,
       override: (url: URL) =>
         url.pathname === "/api/dashboard/latest-positions"
