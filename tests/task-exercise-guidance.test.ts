@@ -42,6 +42,34 @@ function assertGuidance(system: string) {
   assert.match(system, /exact JSON identifier keys/);
   assert.match(system, /target_weight, target_reps, and target_working_sets/);
   assert.match(system, /approval.*mutation.*privacy/);
+  assertProgression(system);
+}
+
+// Next-eligible-set progression: readiness is decided for the next pending
+// working set now, never renewed as a next-session deferral.
+function assertProgression(system: string) {
+  assert.match(system, /next eligible pending working set/);
+  assert.match(system, /propose the modest increase for the pending sets now/);
+  assert.match(
+    system,
+    /do not defer it by asking to repeat every set first and increase next session/,
+  );
+  assert.match(system, /prior conditional advice is not proof/i);
+  assert.match(system, /Form and effort are unknown unless/);
+  assert.match(system, /concise conditional/);
+  assert.match(
+    system,
+    /pain, fatigue, a current miss, recovery or a program constraint/,
+  );
+  assert.match(
+    system,
+    /every set is complete, the target is for next session; never change completed sets/,
+  );
+  assert.match(system, /no mandatory \+1/);
+  assert.match(
+    system,
+    /recent_sessions are recorded actuals; their prescriptions, target attainment, form and effort are unknown/,
+  );
 }
 
 // The completion boundary is scripted: these tests qualify the real Worker's
@@ -354,3 +382,188 @@ test("conciseness is generation policy, not prose rejection or truncation", () =
     expected,
   );
 });
+
+// Scenario matrix for next-eligible-set progression. Evidence mirrors the
+// app's Exercise observations (per-set actuals in recent_sessions, set phase).
+// Completions are scripted: these qualify delivered policy, evidence and
+// canonical persistence for both exercise kinds, not live-model adherence.
+const actual = (weight: number, ...reps: number[]) =>
+  reps.map((repetitions) => ({ weight, repetitions }));
+const session = (day: string, weight: number, ...reps: number[]) => ({
+  day,
+  working_sets: reps.length,
+  top_set: { weight, reps: Math.max(...reps) },
+  sets: actual(weight, ...reps),
+});
+const pending = (weight: number, reps: number, done: number, total = 3) =>
+  Array.from({ length: total }, (_, index) => ({
+    complete: index < done,
+    weight,
+    repetitions: reps,
+  }));
+const deferral = {
+  role: "coach",
+  text: "Repeat 15 on all three sets today, then increase next session.",
+  created_at: "2026-10-27T11:58:00.000Z",
+};
+const progressionScenarios = [
+  {
+    name: "readiness after repeated all-target sessions progresses the next pending set",
+    phase:
+      "Set phase: 1 of 3 working sets done; 2 remain. Next-set target first.",
+    sets: pending(100, 15, 1),
+    recent: [
+      session("2026-10-24", 100, 15, 15, 15),
+      session("2026-10-20", 100, 15, 15, 15),
+    ],
+    conversation: [deferral],
+    targets: {
+      summary:
+        "You hit 15 on every set in your last two sessions, so take 105 lb for 12 on the next set.",
+      target_weight: 105,
+      target_reps: 12,
+    },
+  },
+  {
+    name: "top-only history holds the current prescription",
+    phase:
+      "Set phase: 1 of 3 working sets done; 2 remain. Next-set target first.",
+    sets: pending(100, 15, 1),
+    recent: [session("2026-10-24", 100, 15, 10, 8)],
+    conversation: [deferral],
+    targets: {
+      summary:
+        "Last time reps fell to 10 and 8, so hold 100 lb and aim for 15 on the next set.",
+      target_weight: 100,
+      target_reps: 15,
+    },
+  },
+  {
+    name: "pain or fatigue justifies a hold or backoff",
+    phase:
+      "Set phase: 1 of 3 working sets done; 2 remain. Next-set target first.",
+    sets: pending(100, 15, 1),
+    recent: [session("2026-10-24", 100, 15, 15, 15)],
+    conversation: [
+      {
+        role: "user",
+        text: "My knee is sore and I'm wiped out today.",
+        created_at: "2026-10-27T12:00:00.000Z",
+      },
+    ],
+    targets: {
+      summary:
+        "With knee soreness, drop to 90 lb for 12 easy reps on the next set.",
+      target_weight: 90,
+      target_reps: 12,
+    },
+  },
+  {
+    name: "unknown form or effort uses conditional wording without an unconditional numeric increase",
+    phase:
+      "Set phase: 1 of 3 working sets done; 2 remain. Next-set target first.",
+    sets: pending(100, 15, 1),
+    recent: [session("2026-10-24", 100, 15, 15, 15)],
+    conversation: [],
+    targets: {
+      summary:
+        "If that set moved cleanly with reps to spare, try 105 lb next; otherwise stay at 100 lb for 15.",
+      target_weight: null,
+      target_reps: 15,
+    },
+  },
+  {
+    name: "no history gives a conditional first-set target",
+    phase: "Set phase: no working sets done yet; 3 remain.",
+    sets: pending(50, 12, 0),
+    recent: null,
+    conversation: [],
+    targets: {
+      summary:
+        "Start with 12 at 50 lb; if it feels easy with good form, add a little load next set.",
+      target_weight: 50,
+      target_reps: 12,
+    },
+  },
+  {
+    name: "completed exercise scopes the target to next session",
+    phase: "Set phase: all 3 working sets done; none remain.",
+    sets: pending(100, 15, 3),
+    recent: [session("2026-10-24", 100, 15, 15, 15)],
+    conversation: [],
+    targets: {
+      summary:
+        "All three sets hit 15 again; next session start at 105 lb for 12.",
+      target_weight: 105,
+      target_reps: 12,
+    },
+  },
+];
+
+for (const kind of ["workout_suggestions", "exercise_suggestions"] as const) {
+  for (const scenario of progressionScenarios) {
+    test(`${kind}: ${scenario.name}`, async () => {
+      const exercise = {
+        workout_exercise_id: exerciseId,
+        name: "Leg press",
+        superset_group: null,
+        tracked_fields: ["weight", "repetitions"],
+        sets: scenario.sets,
+        ...(scenario.recent ? { recent_sessions: scenario.recent } : {}),
+      };
+      const expected =
+        kind === "workout_suggestions"
+          ? { recommendations: { [exerciseId]: scenario.targets } }
+          : { ...scenario.targets, reply_worthwhile: true, reactions: [] };
+      const fixture = await taskFixture({
+        evidence: {
+          timezone: "UTC",
+          observations: [
+            { label: "Workout recommendations", text: scenario.phase },
+            { label: "Exercise", text: JSON.stringify(exercise) },
+          ],
+          conversation: scenario.conversation,
+        },
+      });
+      const captures: { input: string; system: string }[] = [];
+      const worker = new Worker({
+        origin: fixture.origin,
+        token: "synthetic-worker-credential",
+        system: "Coach",
+        complete: async (input, _signal, system) => {
+          captures.push({ input, system });
+          return JSON.stringify(expected);
+        },
+      });
+      try {
+        fixture.enqueue(kind);
+        await worker.pollOnce();
+        assert.equal(captures.length, 1);
+        assertGuidance(captures[0].system);
+        assert.ok(captures[0].input.includes(scenario.phase));
+        if (scenario.recent)
+          assert.ok(
+            // Observation text is itself JSON-encoded inside the model input.
+            captures[0].input.includes(
+              JSON.stringify(JSON.stringify(scenario.recent[0].sets)).slice(
+                1,
+                -1,
+              ),
+            ),
+            "per-set historical actuals reach the model",
+          );
+        assert.deepEqual(
+          fixture.saved.map((c) => c.result),
+          [expected],
+        );
+        assert.equal(fixture.restCalls.length, 0);
+      } finally {
+        try {
+          await worker.stop();
+        } finally {
+          await fixture.close();
+        }
+      }
+    });
+  }
+}
