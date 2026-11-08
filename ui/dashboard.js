@@ -567,6 +567,9 @@ window.CoachDashboard = (() => {
   function disposeMap() {
     mapResizeObserver?.disconnect();
     mapResizeObserver = undefined;
+    // Leaflet ends a zoom animation from a timer it never cancels; a map
+    // removed mid-zoom must not run it on its removed panes.
+    if (leafletMap) leafletMap._animatingZoom = false;
     leafletMap?.remove();
     leafletMap = undefined;
   }
@@ -2463,6 +2466,13 @@ window.CoachDashboard = (() => {
     // reach Leaflet's click handling or its double-click/double-tap zoom.
     for (const type of ["click", "dblclick"])
       overlay.addEventListener(type, (event) => event.stopPropagation());
+    // A press that panned the map was a drag: like Leaflet does for its own
+    // layers, its click never activates the mark that moved under the pointer.
+    // Keyboard clicks (detail 0) never come from a drag.
+    const dragClick = (event) => {
+      if (event.detail && instance.dragging?.moved()) event.stopPropagation();
+    };
+    overlay.addEventListener("click", dragClick, true);
     // Latest known positions: a stable layer under the day's event dots,
     // independent of the selected day/category and of the timeline.
     const latestLayer = text("div", "", "dashboard-latest-overlay");
@@ -2473,8 +2483,330 @@ window.CoachDashboard = (() => {
     );
     for (const type of ["click", "dblclick"])
       latestLayer.addEventListener(type, (event) => event.stopPropagation());
+    latestLayer.addEventListener("click", dragClick, true);
     map.append(latestLayer);
     map.append(overlay);
+    // Native map motion. Each overlay lays its marks out at exact container
+    // pixels for one view (its frame). Leaflet's pan, pinch and resize then
+    // move the whole overlay with one shared transform relative to that
+    // frame (marks counter-scale to keep their CSS size), so a gesture frame
+    // writes O(1) styles plus marks crossing the viewport edge or another
+    // world copy. A zoom animation moves each mark once, like Leaflet's own
+    // markers, on the tiles' CSS transition. Settling re-lays out exactly.
+    const viewOrigin = () =>
+      instance
+        .getPixelOrigin()
+        .add(instance.containerPointToLayerPoint([0, 0]));
+    const copyShift = (lng, near) => 360 * Math.round((near - lng) / 360);
+    // worldCopyJump may move the whole view by whole worlds (shift); the
+    // transform absorbs that so marks stay in their frame's world copy.
+    const frameTransform = (frame, zoom, origin, lng) => {
+      const s = instance.getZoomScale(zoom, frame.zoom),
+        shift = copyShift(frame.lng, lng);
+      return {
+        s,
+        shift,
+        x: s * (frame.origin.x + (shift / 360) * frame.world) - origin.x,
+        y: s * frame.origin.y - origin.y,
+      };
+    };
+    // Leaflet's zoom transition (leaflet.css .leaflet-zoom-anim).
+    const ZOOM_MS = 250,
+      ZOOM_EASE = "cubic-bezier(0, 0, 0.25, 1)";
+    const zoomAnimating = () =>
+      !!instance.getPane("mapPane")?.classList.contains("leaflet-zoom-anim");
+    // One clock for this map's zoom animation. Every tile level, Leaflet
+    // marker and overlay mark runs its own CSS transform transition, and the
+    // browser resolves each start independently, so one level can start a
+    // frame after another and paint the same place elsewhere. Once every
+    // zoomanim handler has written its target (the transitions then exist,
+    // still pending), all of them start at the zoomanim frame; marks joining
+    // mid-zoom use the same instant.
+    let zoomStart = null;
+    instance.on("zoomanim", () => {
+      zoomStart = document.timeline.currentTime;
+      queueMicrotask(() => {
+        for (const running of map.getAnimations({ subtree: true }))
+          if (["transform", "translate"].includes(running.transitionProperty))
+            running.startTime = zoomStart;
+      });
+    });
+    const motionLayer = (
+      layer,
+      margin,
+      extra = () => false,
+      svg = () => null,
+    ) => {
+      // One animation state per layer: the frame marks are laid out in, and
+      // while Leaflet's zoom animation paints, its start transform, target
+      // transform and clock. Any layout during that animation keeps all of
+      // them: marks are placed in the start frame and join the running
+      // animation, so a data or authority change never jumps to the target.
+      const state = { frame: null, anim: null, transform: "", scale: 1 };
+      let marks = [];
+      // Nodes carrying an animation translate (or svg transform) to clear on
+      // settle, whichever mark object owns them by then; their travel and
+      // the animation that joined them to Leaflet's zoom.
+      const moved = new Set(),
+        traveling = new WeakMap(),
+        joined = new WeakMap();
+      const outside = (t, mark, size) => {
+        const x = t.s * mark.x + t.x,
+          y = t.s * mark.y + t.y;
+        return (
+          x < -margin ||
+          x > size.x + margin ||
+          y < -margin ||
+          y > size.y + margin
+        );
+      };
+      const apply = (t) => {
+        const transform =
+          t.s === 1 && !t.x && !t.y
+            ? ""
+            : `translate(${t.x}px, ${t.y}px) scale(${t.s})`;
+        if (transform !== state.transform) {
+          state.transform = transform;
+          layer.style.transform = transform;
+        }
+        if (t.s !== state.scale) {
+          state.scale = t.s;
+          if (t.s === 1) layer.style.removeProperty("--dashboard-map-unscale");
+          else layer.style.setProperty("--dashboard-map-unscale", `${1 / t.s}`);
+        }
+      };
+      const position = (mark) => {
+        if (mark.left !== mark.x) {
+          mark.left = mark.x;
+          mark.node.style.left = `${mark.x}px`;
+        }
+        if (mark.top !== mark.y) {
+          mark.top = mark.y;
+          mark.node.style.top = `${mark.y}px`;
+        }
+      };
+      const capture = () => {
+        const zoom = instance.getZoom();
+        return {
+          zoom,
+          lng: instance.getCenter().lng,
+          origin: viewOrigin(),
+          world:
+            instance.project([0, 180], zoom).x -
+            instance.project([0, -180], zoom).x,
+        };
+      };
+      const now = () =>
+        state.frame &&
+        frameTransform(
+          state.frame,
+          instance.getZoom(),
+          viewOrigin(),
+          instance.getCenter().lng,
+        );
+      // A mark's travel (in the layer's start-scaled pixels) from its start
+      // to its target position during the animation.
+      const travel = (mark) => {
+        const { t, target } = state.anim;
+        return `${(target.s * mark.x + target.x - (t.s * mark.x + t.x)) / t.s}px ${(target.s * mark.y + target.y - (t.s * mark.y + t.y)) / t.s}px`;
+      };
+      const sweep = () => {
+        const { t, target } = state.anim;
+        return `translate(${(target.x - t.x) / t.s}px, ${(target.y - t.y) / t.s}px) scale(${target.s / t.s})`;
+      };
+      // Join the running zoom: identical easing, duration and start (the
+      // map's zoom clock), so the node is where a mark laid out at the
+      // animation's start would be.
+      const join = (node, property, value) => {
+        moved.add(node);
+        // No CSS transition: the replaced one stops at this style change.
+        node.style.transition = "none";
+        node.style[property] = value;
+        joined.get(node)?.cancel();
+        const from =
+          property === "translate" ? "0px 0px" : "translate(0px, 0px) scale(1)";
+        const running = node.animate(
+          [{ [property]: from }, { [property]: value }],
+          { duration: ZOOM_MS, easing: ZOOM_EASE },
+        );
+        running.startTime = zoomStart;
+        joined.set(node, running);
+        traveling.set(node, value);
+      };
+      const settle = () => {
+        for (const node of moved) {
+          joined.get(node)?.cancel();
+          joined.delete(node);
+          traveling.delete(node);
+          node.style.transition = "";
+          node.style.translate = "";
+          if (node instanceof SVGElement) node.style.transform = "";
+        }
+        moved.clear();
+      };
+      const motion = {
+        marks: () => marks,
+        // Change visibility only where it changed: hidden by the owner's
+        // rule, or outside the map at both the current and target view.
+        // During a zoom animation that is its start and target transforms,
+        // and a revealed mark joins the animation in flight.
+        cull(t = state.anim?.t || now(), target = state.anim?.target || null) {
+          if (!t) return;
+          const size = instance.getSize(),
+            revealed = [];
+          for (const mark of marks) {
+            const hidden =
+              extra(mark) ||
+              (outside(t, mark, size) &&
+                (!target || outside(target, mark, size)));
+            if (mark.node.hidden === hidden) continue;
+            mark.node.hidden = hidden;
+            if (!hidden && state.anim) revealed.push(mark);
+          }
+          if (!state.anim || !zoomAnimating()) return;
+          const idle = revealed.filter(
+            (mark) => !mark.node.getAnimations().length,
+          );
+          for (const mark of idle) join(mark.node, "translate", travel(mark));
+        },
+        // Unrounded container pixels in the current frame, at the world copy
+        // nearest `near` (latLngToContainerPoint rounds, which scaling
+        // during a pinch would magnify).
+        at(fix, near) {
+          return instance
+            .project(
+              [fix.latitude, fix.longitude + copyShift(fix.longitude, near)],
+              state.frame.zoom,
+            )
+            .subtract(state.frame.origin);
+        },
+        // Exact container pixels at the current view (nearest world copy).
+        // While Leaflet's zoom animation paints, Leaflet already reports its
+        // target view, but the screen still shows the animation: marks are
+        // laid out in the animation's start frame instead and join it.
+        layout(next = marks, after = () => {}) {
+          marks = next;
+          if (state.anim && zoomAnimating()) return motion.relayout(after);
+          state.frame = capture();
+          const center = state.frame.lng;
+          state.anim = null;
+          settle();
+          apply({ s: 1, x: 0, y: 0 });
+          for (const mark of marks) {
+            mark.k = copyShift(mark.fix.longitude, center);
+            const point = motion.at(mark.fix, center);
+            mark.x = point.x;
+            mark.y = point.y;
+            position(mark);
+          }
+          after(center);
+          motion.cull();
+        },
+        relayout(after) {
+          const { target, lng } = state.anim;
+          // Marks wrap to the world copy nearest the animation's target.
+          for (const mark of marks) {
+            mark.k = copyShift(mark.fix.longitude, lng) - target.shift;
+            const point = instance
+              .project(
+                [mark.fix.latitude, mark.fix.longitude + mark.k],
+                state.frame.zoom,
+              )
+              .subtract(state.frame.origin);
+            mark.x = point.x;
+            mark.y = point.y;
+            mark.travel = travel(mark);
+          }
+          // Read every running animation before any write (one style flush).
+          const idle = marks.map(
+            (mark) =>
+              traveling.get(mark.node) !== mark.travel ||
+              !mark.node.getAnimations().length,
+          );
+          const paths = svg(),
+            sweeping = paths && sweep(),
+            redraw =
+              paths &&
+              (traveling.get(paths) !== sweeping ||
+                !paths.getAnimations().length);
+          marks.forEach((mark, i) => {
+            position(mark);
+            if (idle[i]) join(mark.node, "translate", mark.travel);
+          });
+          after(lng);
+          if (redraw) join(paths, "transform", sweeping);
+          motion.cull();
+        },
+        // One shared transform per native move; marks are rewritten only to
+        // wrap to the world copy nearest the view.
+        follow(shifted = () => {}) {
+          if (!state.frame || state.anim) return;
+          const t = now();
+          apply(t);
+          const center = instance.getCenter().lng;
+          for (const mark of marks) {
+            const k = copyShift(mark.fix.longitude, center) - t.shift;
+            if (k === mark.k) continue;
+            mark.x += ((k - mark.k) / 360) * state.frame.world;
+            mark.k = k;
+            position(mark);
+            shifted(mark);
+          }
+          motion.cull(t);
+        },
+        // Leaflet's zoomanim fires before the map moves to its target view.
+        animate(event) {
+          if (!state.frame) state.frame = capture();
+          const t = state.anim?.t || now();
+          const size = instance.getSize(),
+            layerZero = instance.containerPointToLayerPoint([0, 0]);
+          const target = frameTransform(
+            state.frame,
+            event.zoom,
+            instance
+              .project(event.center, event.zoom)
+              .subtract(size.divideBy(2))
+              .subtract(layerZero)
+              .round()
+              .add(layerZero),
+            event.center.lng,
+          );
+          apply(t);
+          state.anim = { t, target, lng: event.center.lng };
+          // Marks entering the view get a painted start before they move.
+          let shown = false;
+          for (const mark of marks)
+            if (
+              mark.node.hidden &&
+              !extra(mark) &&
+              !(outside(t, mark, size) && outside(target, mark, size))
+            ) {
+              mark.node.hidden = false;
+              shown = true;
+            }
+          if (shown) void layer.offsetWidth;
+          for (const mark of marks) {
+            moved.add(mark.node);
+            mark.travel = travel(mark);
+            traveling.set(mark.node, mark.travel);
+            mark.node.style.translate = mark.travel;
+          }
+          const paths = svg();
+          if (paths) {
+            moved.add(paths);
+            traveling.set(paths, sweep());
+            paths.style.transform = traveling.get(paths);
+          }
+          motion.cull(t, target);
+        },
+        // The current on-screen container point of a laid-out mark.
+        point(mark) {
+          const t = now() || { s: 1, x: 0, y: 0 };
+          return { x: t.s * mark.x + t.x, y: t.s * mark.y + t.y };
+        },
+      };
+      return motion;
+    };
     const latestCaption = text("p", "", "dashboard-latest-caption");
     latestCaption.setAttribute("aria-live", "polite");
     // Keep warnings and Retry outside the geographic hit area: an error must
@@ -2605,11 +2937,7 @@ window.CoachDashboard = (() => {
         fix.latitude,
         fix.longitude + 360 * Math.round((near - fix.longitude) / 360),
       ]);
-    const latestOffscreen = (point) =>
-      point.x < -24 ||
-      point.x > map.clientWidth + 24 ||
-      point.y < -24 ||
-      point.y > map.clientHeight + 24;
+    const latestMotion = motionLayer(latestLayer, 24);
     let chooserIds = null;
     const closeLatestChooser = () => {
       chooserIds = null;
@@ -2623,8 +2951,8 @@ window.CoachDashboard = (() => {
       )?.node;
     // Kept inside the map: a narrow map or an edge anchor never clips a choice.
     const placeLatestChooser = (owner) => {
-      const x = parseFloat(owner.style.left) || 0,
-        y = parseFloat(owner.style.top) || 0;
+      const pin = latestPins.find((p) => p.node === owner);
+      const { x, y } = pin ? latestMotion.point(pin) : { x: 0, y: 0 };
       const w = latestChooser.offsetWidth,
         h = latestChooser.offsetHeight;
       const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -2641,6 +2969,10 @@ window.CoachDashboard = (() => {
         choice.type = "button";
         choice.dataset.memberId = memberId;
         choice.classList.toggle("dashboard-latest-stale", !fresh);
+        choice.classList.toggle(
+          "dashboard-latest-unselected",
+          !latestSelected(memberId),
+        );
         choice.setAttribute("aria-label", latestLabel(memberId, fix));
         choice.setAttribute("aria-keyshortcuts", "Shift+Enter");
         choice.title = latestLabel(memberId, fix);
@@ -2697,20 +3029,21 @@ window.CoachDashboard = (() => {
     };
     // Exact coordinates are the anchor; pins whose anchors would overlap on
     // screen share one neutral aggregate marker and a chooser listing every
-    // identity with its own photo, age and opacity.
+    // identity with its own photo, age and selection state.
     const placeLatest = () => {
-      if (!live()) return;
-      const center = instance.getCenter().lng;
-      for (const pin of latestPins) {
-        const point = latestProject(pin.anchor, center);
-        pin.node.hidden = latestOffscreen(point);
-        pin.node.style.left = `${point.x}px`;
-        pin.node.style.top = `${point.y}px`;
-      }
+      if (live()) latestMotion.layout(latestPins);
     };
+    // Every member is selected under All; otherwise only the chosen member.
+    const latestSelected = (memberId) =>
+      !selectedMember || selectedMember === memberId;
+    // Appearance follows selection only; age is the written note.
     const ageLatest = () => {
       if (!live()) return;
       for (const pin of latestPins) {
+        pin.node.classList.toggle(
+          "dashboard-latest-unselected",
+          !pin.group.some(({ memberId }) => latestSelected(memberId)),
+        );
         const ages = pin.group.map(({ fix }) => latestAge(fix));
         const stale = ages.filter((a) => !a.fresh).length;
         const labels = pin.group.map(({ memberId, fix }) =>
@@ -2726,9 +3059,7 @@ window.CoachDashboard = (() => {
         );
         pin.age.textContent =
           pin.group.length === 1
-            ? ages[0].fresh
-              ? ""
-              : ages[0].note
+            ? ages[0].note
             : stale === pin.group.length
               ? "all older"
               : stale
@@ -2748,20 +3079,57 @@ window.CoachDashboard = (() => {
         if (!fix) continue;
         const { fresh, note } = latestAge(fix);
         choice.classList.toggle("dashboard-latest-stale", !fresh);
+        choice.classList.toggle(
+          "dashboard-latest-unselected",
+          !latestSelected(choice.dataset.memberId),
+        );
         choice.querySelector(".dashboard-latest-choice-age").textContent = note;
       }
     };
-    // Pins currently eligible for display (scope, denial and member filter).
+    // Pins eligible for display (scope and denial); every authorized member
+    // stays shown whichever member is selected.
     const latestShown = () =>
       [...latestPositions]
-        .filter(
-          ([memberId]) =>
-            !suppressedMembers.has(memberId) &&
-            (!selectedMember || selectedMember === memberId),
-        )
+        .filter(([memberId]) => !suppressedMembers.has(memberId))
         .map(([memberId, fix]) => ({ memberId, fix }));
     const latestCaptionText = text("span", "");
     latestCaption.append(latestCaptionText);
+    // One pin node; handlers read the pin's current group.
+    const latestPin = (single, group) => {
+      const node = text("button", "", "dashboard-latest-pin");
+      node.type = "button";
+      node.dataset.memberIds = group.map((g) => g.memberId).join(" ");
+      if (single) {
+        node.setAttribute("aria-keyshortcuts", "Shift+Enter");
+        node.append(latestPhoto(single));
+      } else {
+        node.classList.add("dashboard-latest-group");
+        node.setAttribute("aria-haspopup", "true");
+        node.append(
+          text(
+            "span",
+            `${group.length}`,
+            "dashboard-latest-photo dashboard-latest-aggregate",
+          ),
+        );
+      }
+      const age = text("span", "", "dashboard-latest-age");
+      node.append(age);
+      const pin = { node, age, group };
+      node.addEventListener("click", (event) => {
+        if (!single) return openLatestChooser(pin.group, node);
+        selectFromPin(single);
+        if (doubleActivation(`latest:${single}`, event)) focusLatest(single);
+      });
+      node.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || !event.shiftKey) return;
+        event.preventDefault();
+        if (!single) return openLatestChooser(pin.group, node);
+        selectFromPin(single);
+        focusLatest(single);
+      });
+      return pin;
+    };
     renderLatest = () => {
       if (!live()) return;
       const reopen = chooserIds,
@@ -2769,8 +3137,6 @@ window.CoachDashboard = (() => {
           ? document.activeElement.dataset.memberId
           : undefined;
       closeLatestChooser();
-      latestLayer.replaceChildren();
-      latestPins = [];
       latestCaptionText.textContent = latestNote;
       latestCaption.querySelector("button")?.remove();
       if (latestRetry) {
@@ -2790,42 +3156,27 @@ window.CoachDashboard = (() => {
         if (near) near.group.push(item);
         else groups.push({ point, group: [item], anchor: item.fix });
       }
-      for (const { group, anchor } of groups) {
-        const node = text("button", "", "dashboard-latest-pin");
-        node.type = "button";
-        node.dataset.memberIds = group.map((g) => g.memberId).join(" ");
+      // Unchanged pins keep their nodes: selection, regrouping and avatar
+      // arrival never replace a pressed or focused pin.
+      const previous = new Map(latestPins.map((pin) => [pin.key, pin]));
+      latestPins = groups.map(({ group, anchor }) => {
         const single = group.length === 1 ? group[0].memberId : null;
-        if (single) {
-          node.setAttribute("aria-keyshortcuts", "Shift+Enter");
-          node.append(latestPhoto(single));
-        } else {
-          node.classList.add("dashboard-latest-group");
-          node.setAttribute("aria-haspopup", "true");
-          node.append(
-            text(
-              "span",
-              `${group.length}`,
-              "dashboard-latest-photo dashboard-latest-aggregate",
-            ),
-          );
-        }
-        const age = text("span", "", "dashboard-latest-age");
-        node.append(age);
-        node.addEventListener("click", (event) => {
-          if (!single) return openLatestChooser(group, node);
-          selectFromPin(single);
-          if (doubleActivation(`latest:${single}`, event)) focusLatest(single);
-        });
-        node.addEventListener("keydown", (event) => {
-          if (event.key !== "Enter" || !event.shiftKey) return;
-          event.preventDefault();
-          if (!single) return openLatestChooser(group, node);
-          selectFromPin(single);
-          focusLatest(single);
-        });
-        latestLayer.append(node);
-        latestPins.push({ node, group, anchor, age });
-      }
+        const key = single
+          ? `${single}\n${avatarCache.get(single) || ""}\n${latestName(single)}`
+          : group.map((g) => g.memberId).join(" ");
+        const kept = previous.get(key);
+        previous.delete(key);
+        const pin = kept || latestPin(single, group);
+        pin.key = key;
+        pin.group = group;
+        pin.fix = anchor;
+        return pin;
+      });
+      for (const pin of previous.values()) pin.node.remove();
+      latestPins.forEach(({ node }, i) => {
+        const at = latestLayer.children[i];
+        if (at !== node) latestLayer.insertBefore(node, at || null);
+      });
       placeLatest();
       ageLatest();
       // Async avatar arrival or a denial keeps an open chooser truthful.
@@ -2838,10 +3189,12 @@ window.CoachDashboard = (() => {
         if (pin) openLatestChooser(pin.group, pin.node, focused);
       }
     };
-    instance.on("move zoom resize", placeLatest);
+    instance.on("move zoom resize", () => live() && latestMotion.follow());
+    instance.on("zoomanim", (event) => live() && latestMotion.animate(event));
     instance.on("movestart zoomstart resize", closeLatestChooser);
     // Regroup only when the scale changes; panning keeps anchors and groups.
     instance.on("zoomend", () => renderLatest());
+    instance.on("moveend", placeLatest);
     // One shared clock for all pins (no per-member timers or polling); a
     // hidden tab re-evaluates as soon as it is visible again.
     const latestTimer = setInterval(ageLatest, 15000);
@@ -3012,6 +3365,9 @@ window.CoachDashboard = (() => {
     let dots = [],
       links = [],
       groups = [],
+      paths = null,
+      // Marks laid out by the motion layer; null until the next layout.
+      eventMarks = null,
       fitted = false,
       initialView,
       // Outcome of the last camera focus request, until the next filter.
@@ -3128,7 +3484,7 @@ window.CoachDashboard = (() => {
                 a.id.localeCompare(b.id),
             )
         : [];
-      const paths = svg("svg", { class: "dashboard-map-connections" });
+      paths = svg("svg", { class: "dashboard-map-connections" });
       paths.setAttribute("aria-hidden", "true");
       overlay.append(paths);
       dots = [];
@@ -3170,7 +3526,7 @@ window.CoachDashboard = (() => {
           choose(item, generation);
           focusMapEvent(item);
         };
-        const dot = { item, fix, marker };
+        const dot = { item, fix, marker, node: marker };
         dots.push(dot);
         const key = `${fix.latitude},${fix.longitude}`;
         if (!anchors.has(key)) anchors.set(key, []);
@@ -3194,7 +3550,8 @@ window.CoachDashboard = (() => {
         line.dataset.from = before.item.id;
         line.dataset.to = item.id;
         paths.append(line);
-        links.push({ from: before, to: dot, line });
+        before.link = { from: before, to: dot, line };
+        links.push(before.link);
       }
       groups = [];
       for (const pins of anchors.values()) {
@@ -3205,7 +3562,13 @@ window.CoachDashboard = (() => {
           "dashboard-map-marker dashboard-map-group",
         );
         marker.type = "button";
-        const group = { fix: pins[0].fix, pins, marker, generation };
+        const group = {
+          fix: pins[0].fix,
+          pins,
+          marker,
+          node: marker,
+          generation,
+        };
         marker.onclick = () => openChooser(group);
         groups.push(group);
       }
@@ -3213,6 +3576,7 @@ window.CoachDashboard = (() => {
         ...dots.map(({ marker }) => marker),
         ...groups.map(({ marker }) => marker),
       );
+      eventMarks = null;
       if (!fitted && dots.length) {
         fitted = true;
         // The initial view frames the day's fixes with the latest member
@@ -3254,42 +3618,58 @@ window.CoachDashboard = (() => {
       point.x > map.clientWidth ||
       point.y < 0 ||
       point.y > map.clientHeight;
-    const placePins = () => {
-      if (!live()) return;
-      const center = instance.getCenter().lng;
-      for (const { fix, marker } of dots) {
-        const point = project(fix, center);
-        marker.hidden = offscreen(point);
-        marker.style.left = `${point.x}px`;
-        marker.style.top = `${point.y}px`;
-      }
-      for (const { from, to, line } of links) {
-        // Unwrap the destination beside its origin: the shortest arc in one world copy.
-        const a = project(from.fix, center),
-          b = project(to.fix, instance.containerPointToLatLng(a).lng);
-        line.setAttribute("x1", a.x);
-        line.setAttribute("y1", a.y);
-        line.setAttribute("x2", b.x);
-        line.setAttribute("y2", b.y);
-      }
+    // Co-location badges and the dots they cover (selection, preview).
+    const markPins = () => {
+      for (const dot of dots) dot.covered = false;
       for (const group of groups) {
         const active = group.pins.filter(visible);
-        const point = project(group.fix, center);
-        group.marker.hidden = active.length < 2 || offscreen(point);
-        group.marker.style.left = `${point.x}px`;
-        group.marker.style.top = `${point.y}px`;
-        group.marker.textContent = String(active.length);
-        group.marker.dataset.count = String(active.length);
-        group.marker.setAttribute(
-          "aria-label",
-          `${active.length} events at this recorded location; choose an event`,
-        );
+        group.covered = active.length < 2;
+        const count = String(active.length);
+        if (group.marker.dataset.count !== count) {
+          group.marker.textContent = count;
+          group.marker.dataset.count = count;
+          group.marker.setAttribute(
+            "aria-label",
+            `${active.length} events at this recorded location; choose an event`,
+          );
+        }
         // Selected and previewed events keep their exact dots above the location badge.
         if (active.length > 1)
-          for (const { item, marker } of active)
-            if (item.id !== selectedEventId && item.id !== previewEventId)
-              marker.hidden = true;
+          for (const dot of active)
+            if (
+              dot.item.id !== selectedEventId &&
+              dot.item.id !== previewEventId
+            )
+              dot.covered = true;
       }
+    };
+    const eventMotion = motionLayer(
+      overlay,
+      0,
+      (mark) => mark.covered,
+      () => paths,
+    );
+    const drawLink = ({ from, line, dx, dy }) => {
+      line.setAttribute("x1", from.x);
+      line.setAttribute("y1", from.y);
+      line.setAttribute("x2", from.x + dx);
+      line.setAttribute("y2", from.y + dy);
+    };
+    // Exact layout at the current view; native motion then follows it.
+    const placePins = () => {
+      if (!live()) return;
+      markPins();
+      eventMarks = [...dots, ...groups];
+      eventMotion.layout(eventMarks, () => {
+        // Unwrap the destination beside its origin: the shortest arc in one world copy.
+        for (const link of links) {
+          const { from, to } = link,
+            b = eventMotion.at(to.fix, from.fix.longitude + from.k);
+          link.dx = b.x - from.x;
+          link.dy = b.y - from.y;
+          drawLink(link);
+        }
+      });
     };
     // A selected event emphasizes its member's sequence and dims, never hides,
     // everyone else; the explicit member filter keeps hiding other members.
@@ -3316,7 +3696,9 @@ window.CoachDashboard = (() => {
           "dashboard-map-dim",
           !!focus && pins.every(({ item }) => dim(item.user_id)),
         );
-      placePins();
+      if (!eventMarks) return placePins();
+      markPins();
+      eventMotion.cull();
     };
     filterMap = (clearSelection = true, resetCamera = false) => {
       closeChooser(false);
@@ -3339,7 +3721,11 @@ window.CoachDashboard = (() => {
       refreshMap();
       showStatus();
     };
-    instance.on("move zoom resize", placePins);
+    instance.on("move zoom resize", () => {
+      if (live()) eventMotion.follow((dot) => dot.link && drawLink(dot.link));
+    });
+    instance.on("zoomanim", (event) => live() && eventMotion.animate(event));
+    instance.on("moveend", placePins);
     const fitPins = (pins, maxZoom = 16) => {
       if (!pins.length) return;
       const longitudes = pins
@@ -3532,7 +3918,20 @@ window.CoachDashboard = (() => {
       },
       { capture: true, signal },
     );
-    map.addEventListener("dblclick", markUserView, { capture: true, signal });
+    // Overlay marks stop their double activations before Leaflet's
+    // double-click zoom; only a double click that can zoom is navigation.
+    map.addEventListener(
+      "dblclick",
+      (event) => {
+        if (
+          !event.target.closest?.(
+            ".dashboard-map-overlay, .dashboard-latest-overlay, .dashboard-latest-chooser",
+          )
+        )
+          markUserView();
+      },
+      { capture: true, signal },
+    );
     map.addEventListener(
       "touchstart",
       (event) => {

@@ -305,12 +305,13 @@ test(
             peerPin.label!,
             /Synthetic Peer Zoë, latest known position recorded 2 days ago/,
           );
-          // Separate round pins: the peer's own decoded photo, faded as
-          // older; the chief's fresh pin at full opacity.
+          // Separate round pins: the peer's own decoded photo, older but
+          // full color (only an unselected member is grayed, never age);
+          // the chief's fresh pin at full opacity.
           const selfPin = labels.find((l) => l.ids === String(viewer))!;
           assert.deepEqual(
             [peerPin.ids, peerPin.photo, peerPin.stale, peerPin.opacity],
-            [String(peer), 64, true, "0.5"],
+            [String(peer), 64, true, "1"],
           );
           assert.deepEqual(
             [selfPin.stale, selfPin.opacity, selfPin.radius, peerPin.radius],

@@ -208,7 +208,8 @@ test("latest pins: exact anchors, decoded photo, aggregate overlap marker with p
     assert.equal(byIds[ada].image, 64);
     assert.equal(byIds[ada].stale, false);
     assert.equal(byIds[ada].opacity, "1");
-    assert.equal(byIds[ada].age, "");
+    // Every individual pin notes its own age, fresh fixes included.
+    assert.equal(byIds[ada].age, "5 min ago");
     for (const p of view) assert.equal(p.radius, "50%");
     // The overlap marker is a neutral count: no member's portrait or age.
     const group = byIds[`${bob} ${cy}`];
@@ -227,25 +228,29 @@ test("latest pins: exact anchors, decoded photo, aggregate overlap marker with p
       group.label,
       /Synthetic Cy, latest known position recorded 2 min ago/,
     );
+    // Age never grays a pin: with no member selected everyone is full color.
     assert.equal(byIds[eve].stale, true);
-    assert.equal(byIds[eve].opacity, "0.5");
+    assert.equal(byIds[eve].opacity, "1");
     assert.equal(byIds[eve].age, "capture time is ahead of this device");
     assert.ok(!view.some((p: any) => p.ids.includes(dee)));
-    // Anchored at the exact recorded coordinate.
-    const expected = await page.evaluate(
-      ([lat, lng]: [number, number]) =>
-        (window as any).fixtureMap.latLngToContainerPoint([lat, lng]),
-      ADA,
-    );
+    // Anchored at the exact (unrounded) recorded coordinate.
+    const expected = await page.evaluate(([lat, lng]: [number, number]) => {
+      const m = (window as any).fixtureMap;
+      return m
+        .project([lat, lng], m.getZoom())
+        .subtract(m.getPixelOrigin())
+        .subtract(m.containerPointToLayerPoint([0, 0]));
+    }, ADA);
     assert.ok(Math.abs(byIds[ada].left - expected.x) < 0.01);
     assert.ok(Math.abs(byIds[ada].top - expected.y) < 0.01);
-    // Each chooser entry carries its own photo/initials, age and opacity.
+    // Each chooser entry carries its own photo/initials, age and selection
+    // appearance (nobody selected: all full color, whatever the age).
     await page.click(`.dashboard-latest-pin[data-member-ids="${bob} ${cy}"]`);
     const listed = await choices(page);
     assert.deepEqual(
       listed.map((c: any) => [c.name, c.age, c.stale, c.opacity, c.radius]),
       [
-        ["Synthetic Bob", "3 days ago", true, "0.5", "50%"],
+        ["Synthetic Bob", "3 days ago", true, "1", "50%"],
         ["Synthetic Cy", "2 min ago", false, "1", "50%"],
       ],
     );
@@ -388,10 +393,14 @@ test("latest pins: fresh-first and all-stale overlaps, keyboard chooser, exact p
       await page.click(`.dashboard-latest-choice[data-member-id="${eve}"]`);
       await page.waitForTimeout(400);
       assert.deepEqual(await camera(page), still);
-      assert.deepEqual(
-        (await pins(page)).map((p: any) => p.ids),
-        [eve],
+      // Every latest pin stays; only the members not selected are grayed.
+      const kept = Object.fromEntries(
+        (await pins(page)).map((p: any) => [p.ids, p.opacity]),
       );
+      assert.deepEqual(kept, {
+        [`${ada} ${bob}`]: "0.55",
+        [`${cy} ${eve}`]: "1",
+      });
       if (evidence)
         await page.screenshot({
           path: join(evidence, "latest-pins-narrow-chooser.png"),
@@ -426,10 +435,12 @@ test("latest pins: single click only selects; double-click and Shift+Enter focus
     );
     assert.equal(pressed.length, 1);
     assert.match(pressed[0], /Synthetic Ada/);
-    // Explicit member filter shows only the selected member's latest pin.
+    // Selection never hides latest pins; the others are grayed.
     assert.deepEqual(
-      (await pins(page)).map((p: any) => p.ids),
-      [ada],
+      Object.fromEntries(
+        (await pins(page)).map((p: any) => [p.ids, p.opacity]),
+      ),
+      { [ada]: "1", [`${bob} ${cy}`]: "0.55", [eve]: "0.55" },
     );
     await page.dblclick(`.dashboard-latest-pin[data-member-ids="${ada}"]`);
     const focused = await camera(page);
