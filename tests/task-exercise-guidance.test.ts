@@ -44,6 +44,8 @@ function assertGuidance(system: string) {
   assert.ok(
     system.includes("total working sets, including completed working sets"),
   );
+  assert.ok(system.includes("top set alone"));
+  assert.ok(system.includes("completed-set target with its integer set_index"));
   assert.match(system, /approval.*mutation.*privacy/);
   assertProgression(system);
 }
