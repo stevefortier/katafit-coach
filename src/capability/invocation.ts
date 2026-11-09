@@ -402,6 +402,45 @@ export class InvocationCapability {
       return { ok: false, error: "REST_READ_UNAVAILABLE" };
     }
   }
+  /**
+   * Host-initiated GET of authorized image bytes through the same acquisition
+   * path and cache as acquire(). Only validated model images are returned;
+   * a JSON or non-image answer is reported as NOT_IMAGE, never as pixels.
+   */
+  async acquireImage(
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<
+    | { ok: true; image: { type: "image"; data: string; mimeType: string } }
+    | { ok: false; error: string; status?: number }
+  > {
+    if (!this.o.vision) return { ok: false, error: "IMAGE_UNSUPPORTED" };
+    const raw = { method: "GET", path };
+    let canonical: string;
+    try {
+      canonical = restRequestArgs(raw).path;
+    } catch {
+      return { ok: false, error: "ARGUMENTS_REJECTED" };
+    }
+    if (this.integrationRoute(canonical))
+      return { ok: false, error: "HOST_ONLY_ROUTE" };
+    await this.read(raw, canonical, signal);
+    const entry = this.acquired.get(canonical);
+    if (!entry || entry.failed)
+      return {
+        ok: false,
+        ...(entry?.failed ?? { error: "REST_READ_UNAVAILABLE" }),
+      };
+    const image = entry.result.content.find((p: any) => p.type === "image");
+    return image &&
+      typeof image.data === "string" &&
+      typeof image.mimeType === "string"
+      ? {
+          ok: true,
+          image: { type: "image", data: image.data, mimeType: image.mimeType },
+        }
+      : { ok: false, error: "NOT_IMAGE" };
+  }
   private async execute(raw: any, signal?: AbortSignal) {
     let args: ReturnType<typeof restRequestArgs>;
     try {

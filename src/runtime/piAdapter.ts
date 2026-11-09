@@ -11,6 +11,7 @@ import {
   type ProviderShape,
 } from "../diagnostics/log.js";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { assertNoSecrets } from "../config/store.js";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import {
@@ -242,6 +243,11 @@ export interface InferenceBudget {
   /** Worker poll sequence-timing origin/clock (diagnostics/trace.ts). */
   trace?: InferenceTrace;
   readBudget?: () => { used: number; limit: number };
+  /**
+   * Host-acquired, already validated model images attached to the initial
+   * user message beside the context. Only for a vision-enabled provider.
+   */
+  images?: ImageContent[];
 }
 
 // The core has no resource loader/discovery. Only this explicit state exists.
@@ -267,6 +273,8 @@ export async function complete(
         t.name === "studio_operator_read_dojo_checkin_image",
     )
   )
+    throw new Error("VISION_UNSUPPORTED");
+  if (budget.images?.length && provider.vision !== true)
     throw new Error("VISION_UNSUPPORTED");
   const secrets = [provider.apiKey, ...(provider.secrets ?? [])];
   let inputFailure: Error | undefined;
@@ -676,7 +684,8 @@ export async function complete(
   signal.addEventListener("abort", abort, { once: true });
   try {
     signal.throwIfAborted();
-    await agent.prompt(context);
+    if (budget.images?.length) await agent.prompt(context, budget.images);
+    else await agent.prompt(context);
     {
       if (signal.aborted) throw cancellation();
       if (inputFailure) throw safeError(inputFailure);

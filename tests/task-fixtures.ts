@@ -174,6 +174,11 @@ export async function taskFixture(options: any = {}) {
         return;
       }
       out ??= { status: 404, body: { error: "Not found" } };
+      if (Buffer.isBuffer(out.bytes)) {
+        res.writeHead(out.status, { "Content-Type": out.contentType });
+        res.end(out.bytes);
+        return;
+      }
       res.writeHead(out.status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(out.body ?? {}));
       return;

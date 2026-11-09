@@ -50,6 +50,7 @@ import { NativeSelections } from "./selections.js";
 import { InvocationCapability } from "../capability/invocation.js";
 import type { ActionType } from "../autonomy/types.js";
 import {
+  PROVIDER_IMAGE_TOKENS,
   PROVIDER_TEXT_LIMIT,
   canonicalImages,
   compactImages,
@@ -88,7 +89,9 @@ import {
  * 4. only then are older validated photos compacted to the newest 5 / 16 MiB
  *    (a dropped part, data and metadata, becomes a fixed notice);
  * 5. the final envelope is measured again (notices are text) and capped at
- *    the 24 MiB provider wire. Returns the exact bytes to send upstream.
+ *    the 24 MiB provider wire. Returns the exact bytes to send upstream and
+ *    the fallback token estimate for them: sent non-image bytes / 4 plus a
+ *    fixed charge per validated image actually sent (never base64 length).
  */
 
 // A failed read names its cause so Pi can narrow it instead of guessing.
@@ -114,6 +117,7 @@ function restReadFailure(error: unknown) {
 export function nativeProviderAdmission(body: unknown): {
   original: unknown;
   wire: string;
+  estimate: number;
 } {
   const raw = JSON.stringify(body) ?? "";
   const rawBytes = Buffer.byteLength(raw);
@@ -137,7 +141,10 @@ export function nativeProviderAdmission(body: unknown): {
     throw new NativeFailure("NATIVE_TEXT_TOO_LARGE");
   if (wireBytes > NATIVE_PROVIDER_WIRE_LIMIT)
     throw new NativeFailure("NATIVE_WIRE_TOO_LARGE");
-  return { original: body, wire };
+  const estimate =
+    Math.ceil((wireBytes - exempt(compacted.kept)) / 4) +
+    compacted.kept.length * PROVIDER_IMAGE_TOKENS;
+  return { original: body, wire, estimate };
 }
 
 export function nativeProviderEnvelope(body: unknown): string {
@@ -1202,7 +1209,7 @@ const DEFAULT_BUDGETS: ProfileBudgets = {
   provider_tokens: 200000,
   images_per_cycle: 0,
 };
-const providerTokens = (body: string, type: string, wire: string) => {
+const providerTokens = (body: string, type: string, estimate: number) => {
   let total: number | undefined;
   let reported: any;
   const observe = (usage: any) => {
@@ -1224,7 +1231,7 @@ const providerTokens = (body: string, type: string, wire: string) => {
       observe(JSON.parse(body)?.usage);
     }
   } catch {}
-  // Without reported usage, charge a conservative wire estimate.
+  // Without reported usage, charge the conservative admission estimate.
   const metadata: Record<string, number> = {};
   for (const [key, value] of [
     ["inputTokens", reported?.prompt_tokens ?? reported?.input_tokens],
@@ -1238,7 +1245,7 @@ const providerTokens = (body: string, type: string, wire: string) => {
     if (Number.isSafeInteger(value) && value >= 0) metadata[key] = value;
   // Detail fields describe supplied usage, not an inferred billing breakdown.
   return {
-    tokens: total ?? Math.ceil(Buffer.byteLength(wire) / 4),
+    tokens: total ?? estimate,
     chargeSource: total === undefined ? 2 : 1,
     metadata,
   };
@@ -1494,8 +1501,9 @@ export async function openProfileGateway(
   };
   const charge = (
     wire: string,
+    estimate: number,
     usage = {
-      tokens: Math.ceil(Buffer.byteLength(wire) / 4),
+      tokens: estimate,
       chargeSource: 2,
       metadata: {} as Record<string, number>,
     },
@@ -1763,7 +1771,7 @@ export async function openProfileGateway(
       });
       exhaust("provider_tokens");
     }
-    const { original, wire } = nativeProviderAdmission(request.body);
+    const { original, wire, estimate } = nativeProviderAdmission(request.body);
     const history = toolHistory(original);
     used.provider_requests++;
     marks.requestOrdinal = used.provider_requests;
@@ -1788,7 +1796,7 @@ export async function openProfileGateway(
       marks.statusCode = response.status;
     } catch {
       // Charged as sent: the provider may have processed it.
-      charge(wire, undefined, history);
+      charge(wire, estimate, undefined, history);
       throw new NativeFailure(
         timeout.aborted
           ? "NATIVE_PROVIDER_TIMEOUT"
@@ -1797,7 +1805,7 @@ export async function openProfileGateway(
       );
     }
     if (!response.ok) {
-      charge(wire, undefined, history);
+      charge(wire, estimate, undefined, history);
       const failure = providerFailure(
         response.status,
         await upstreamErrorCode(response),
@@ -1823,7 +1831,7 @@ export async function openProfileGateway(
           chunks.push(c);
         }
     } catch (error) {
-      charge(wire, undefined, history);
+      charge(wire, estimate, undefined, history);
       throw error instanceof NativeFailure
         ? error
         : new NativeFailure(
@@ -1838,7 +1846,7 @@ export async function openProfileGateway(
       ?.includes("text/event-stream")
       ? "text/event-stream"
       : "application/json";
-    charge(wire, providerTokens(body, type, wire), history);
+    charge(wire, estimate, providerTokens(body, type, estimate), history);
     try {
       assertNoSecrets(body, secretValues);
     } catch (error) {

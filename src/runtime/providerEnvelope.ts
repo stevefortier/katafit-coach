@@ -8,6 +8,11 @@ export const PROVIDER_TEXT_LIMIT = 1024 * 1024;
 export const PROVIDER_IMAGE_BYTES = 8 * 1024 * 1024;
 export const PROVIDER_IMAGE_BASE64 = 11184812; // 4 * ceil(8 MiB / 3)
 export const PROVIDER_IMAGE_COUNT = 5;
+// Fallback token charge per image actually sent, used only when the provider
+// reports no usage. Above the high-detail cost of current vision models for a
+// photo within the 8 MiB part limit (about 765-2,500); base64 length is not a
+// token count.
+export const PROVIDER_IMAGE_TOKENS = 4096;
 export const PROVIDER_IMAGE_AGGREGATE = 16 * 1024 * 1024;
 export const OMITTED_IMAGE_TEXT =
   "[Earlier image omitted from this provider turn; read it again if needed.]";

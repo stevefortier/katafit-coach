@@ -15,6 +15,7 @@ import {
   validRpc,
   type NativeProfile,
   type RpcCommand,
+  rpcCommandLimit,
 } from "./runtime.js";
 
 /** The installed application: Pi, just-bash and the workspace launcher. */
@@ -246,7 +247,7 @@ export class WorkspaceRuntime {
     if (
       !stdin ||
       stdin.destroyed ||
-      Buffer.byteLength(line) > RPC_COMMAND_LIMIT ||
+      Buffer.byteLength(line) > rpcCommandLimit(command) ||
       stdin.writableLength > RPC_COMMAND_LIMIT
     )
       throw new Error("RPC_BACKPRESSURE");

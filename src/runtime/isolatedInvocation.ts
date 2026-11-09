@@ -66,6 +66,8 @@ export function isolatedWorkerCompletion(
 ): WorkerOptions["complete"] {
   return async (message, signal, prompt, tools, ref, budget) => {
     signal.throwIfAborted();
+    if (budget?.images?.length && store.publicConfig().provider.vision !== true)
+      throw new Error("VISION_UNSUPPORTED");
     const owner = await context();
     const timed = nativeSpans(owner.onDiagnostic, ref, budget, signal);
     const runtime = await timed(SPAN_CODES.nativeSetup, async () => {
@@ -112,6 +114,7 @@ export function isolatedWorkerCompletion(
           profile: "worker",
           gateway,
           message,
+          ...(budget?.images?.length ? { images: budget.images } : {}),
           signal,
           cycleMs,
         }),
