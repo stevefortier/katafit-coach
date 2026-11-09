@@ -115,7 +115,22 @@ export const hints = {
   BACKEND_INSTRUCTIONS_UNAVAILABLE:
     "Exact preview unavailable: backend instructions could not be fetched or validated. No inference ran. Check the saved Kata.fit origin.",
   INVALID_CONFIG: "Check the saved configuration fields.",
-  INVALID_PERSONA: "Check persona fields and their length limits.",
+  INVALID_PERSONA:
+    "Check the persona name (1 to 100 characters, no control characters), a nonempty Coach name, and field length limits.",
+  INVALID_PERSONA_ID: "Select a saved persona by its listed ID.",
+  INVALID_PERSONA_CONFIG:
+    "Saved persona configs failed validation. Nothing was replaced. Check protected local storage or restore a trusted backup.",
+  PERSONA_NOT_FOUND:
+    "That saved persona does not exist. Refresh Coach Settings → Persona.",
+  PERSONA_IMMUTABLE:
+    "Built-in Kata.fit personas are read-only. Duplicate one to customize it.",
+  PERSONA_ACTIVE:
+    "The active persona cannot be deleted. Use another persona first.",
+  PERSONA_NAME_TAKEN:
+    "Another saved or built-in persona already has this name. Choose a different name.",
+  PERSONA_LIMIT: "Save at most 16 custom personas. Delete one first.",
+  PERSONA_READ_ONLY:
+    "Persona configs change only through Coach Settings → Persona actions; Save leaves them unchanged.",
   INVALID_URL:
     "Use a supported endpoint URL without embedded credentials, query or fragment.",
   INVALID_SECRET: "Check the credential format and length.",
@@ -134,12 +149,9 @@ export const hints = {
     "Save both the Kata.fit credential and provider API key first.",
   STOP_WORKER_BEFORE_PREVIEW: "Stop the worker before previewing.",
   PROVIDER_KEY_REQUIRED: "Save a provider API key first.",
-  INVALID_REVISION: "Select a valid positive whole-number persona revision.",
-  REVISION_NOT_FOUND:
-    "That persona revision does not exist. Refresh the revision list.",
-  INVALID_PAGE: "Request a valid history page with a limit from 1 to 50.",
+  INVALID_REVISION: "Saved configuration revision failed validation.",
   INVALID_HISTORY:
-    "Saved persona history failed validation. No history was replaced. Check protected local storage or restore a trusted backup.",
+    "Retained legacy persona history failed validation. Nothing was replaced. Check protected local storage or restore a trusted backup.",
   INVALID_SKILL:
     "Check the enabled setting and nonempty purpose, triggers, and instructions within their size limits.",
   INVALID_SKILL_REVISION:

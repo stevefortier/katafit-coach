@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { draftNewPersona } from "./helpers/persona.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -89,8 +90,7 @@ test("real Diagnostics route, migration, drafts, immediate logs and lifecycle", 
       );
     }
     await page.goto(app.origin + "/settings?section=persona#logsView");
-    await page.locator("#name").waitFor({ state: "visible" });
-    await page.locator("#name").fill("Unsaved diagnostic detour");
+    await draftNewPersona(page, "Unsaved diagnostic detour");
     await page.locator("#settingsTab").click();
     await page.locator("#settings-log-tab").click();
     await page.goBack();

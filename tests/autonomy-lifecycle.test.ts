@@ -53,10 +53,11 @@ test("C5: a config apply mid-cycle aborts the cycle without local release and au
     const config = env.store.publicConfig();
     const applied = await env.call("POST", "/api/config", {
       ...config,
-      persona: { ...config.persona, name: "Coach Revised" },
       expectedRevision: config.revision,
     });
     assert.equal(applied.status, 200, JSON.stringify(applied.body));
+    const savedRevision = env.store.publicConfig().revision;
+    assert.equal(savedRevision, config.revision + 1);
     assert.equal(env.store.publicConfig().revision, config.revision + 1);
     // Aborted locally: no completion, no release; the backend lease stands.
     assert.ok(
@@ -77,7 +78,9 @@ test("C5: a config apply mid-cycle aborts the cycle without local release and au
     );
     assert.equal(env.fake.state.work.get(id).status, "completed");
     assert.ok(
-      resumed.runs[0].catalog.prompt.includes("Coach Revised"),
+      resumed.runs[0].catalog.prompt.includes(
+        `Persona revision: ${savedRevision}\n`,
+      ),
       "the resumed planner runs the saved revision",
     );
   } finally {

@@ -359,7 +359,7 @@ test("accepted config operations are idempotent and fence competing lifecycle ad
       "stop",
       "config",
       "rollback",
-      "persona-restore",
+      "personas/supportive_mentor/select",
       "terminal/ticket",
       "update/apply",
     ])
@@ -422,8 +422,7 @@ test("validation and disk save failure restore prior running configuration; stop
     assert.deepEqual(disk.publicConfig(), before);
     assert.equal(disk.secrets.apiKey, keyA);
     h.store.atomic = atomic;
-    const restore = await h.call("persona-restore", {
-      revision: 1,
+    const restore = await h.call("personas/supportive_mentor/select", {
       confirmRestart: true,
     });
     assert.equal(restore.status, 200);
@@ -432,7 +431,7 @@ test("validation and disk save failure restore prior running configuration; stop
     assert.equal(rollback.status, 200);
     assert.equal((await settled(h, rollback)).resumed, true);
     await h.call("stop", {});
-    const stopped = await h.call("persona-restore", { revision: 1 });
+    const stopped = await h.call("personas/kata_default/select", {});
     assert.equal(stopped.status, 200);
     assert.equal((await settled(h, stopped)).resumed, false);
     assert.equal((await (await h.call("status")).json()).state, "stopped");

@@ -358,13 +358,7 @@ test("slow preparation cannot queue under a changed configuration scope", async 
     fetch,
     undefined,
     async () => {
-      await store.save({
-        ...store.publicConfig(),
-        persona: {
-          ...store.publicConfig().persona,
-          name: "Changed during preparation",
-        },
-      });
+      await store.selectPersona("science_educator");
     },
     async () => {
       cancellations++;
@@ -388,10 +382,7 @@ test("slow preparation cannot queue under a changed configuration scope", async 
     assert.equal((await response.json()).error, "OPERATION_IN_PROGRESS");
     assert.equal(applications, 0);
     assert.equal(cancellations, 1);
-    assert.equal(
-      store.publicConfig().persona.name,
-      "Changed during preparation",
-    );
+    assert.equal(store.personaView().active.id, "science_educator");
   } finally {
     await app.close();
     await rm(home, { recursive: true, force: true });

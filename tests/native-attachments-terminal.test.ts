@@ -140,10 +140,7 @@ test("configuration authority change destroys runtime; changed source leaves acq
     ).attachment_id;
     const url = `/api/terminal/attachments/${session}/${id}`;
     assert.equal((await h.get(url)).status, 200);
-    await h.f.store.save({
-      ...h.f.store.publicConfig(),
-      persona: { ...h.f.store.publicConfig().persona, name: "Changed" },
-    });
+    await h.f.store.save(h.f.store.publicConfig());
     assert.equal((await h.get(url)).status, 410);
     await c.until(() => c.closed() === 1008, "torn down after config change");
     assert.ok(h.runtimes[0].stopped > 0);

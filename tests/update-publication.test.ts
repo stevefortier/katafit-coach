@@ -183,11 +183,10 @@ for (const scenario of [
       if (stopped) {
         const beforeRestore = store.publicConfig().revision;
         const beforeReads = reads();
-        const restored = await fetch(app.origin + "/api/persona-restore", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ revision: 1 }),
-        });
+        const restored = await fetch(
+          app.origin + "/api/personas/supportive_mentor/select",
+          { method: "POST", headers, body: "{}" },
+        );
         assert.equal(restored.status, 200);
         const result = await restored.json();
         assert.deepEqual(

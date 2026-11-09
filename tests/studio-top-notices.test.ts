@@ -1,4 +1,5 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import { draftNewPersona, personaViewFixture } from "./helpers/persona.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -278,8 +279,14 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
                   ? { actions: [] }
                   : path === "/api/members"
                     ? { members: [], has_more: false }
-                    : path === "/api/persona-defaults"
-                      ? { persona }
+                    : path === "/api/personas"
+                      ? personaViewFixture(1, [
+                          {
+                            id: "custom-synthetic",
+                            label: "Synthetic custom",
+                            persona,
+                          },
+                        ])
                       : path === "/api/connect"
                         ? { ok: true, message: connectSuccess }
                         : path === "/api/logs"
@@ -479,11 +486,14 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       await page.locator("#studio").waitFor({ state: "visible" });
       assertCleared(await noticeState(page));
 
-      // Information: stock persona restored into the editor only.
+      // Information: a cancelled persona delete changes nothing.
       await settingsTab(page, "Persona");
-      await page.locator("#resetPersona").click();
-      const restored =
-        "Restored stock persona in the editor. Save a new revision to apply it.";
+      await page
+        .locator('#personaList [data-persona-id="custom-synthetic"]')
+        .click();
+      page.once("dialog", (dialog) => dialog.dismiss());
+      await page.locator("#deletePersona").click();
+      const restored = "Delete cancelled. No settings changed.";
       await waitText(restored);
       assertShown(await noticeState(page), "info", "Info", restored);
       await shot("info");
@@ -524,7 +534,7 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
         });
         return true;
       };
-      await page.locator("#name").fill("Synthetic retained draft");
+      await draftNewPersona(page, "Synthetic retained draft");
       await page.evaluate(() =>
         window.scrollTo(0, document.documentElement.scrollHeight),
       );
@@ -559,7 +569,8 @@ test("Studio shared notices sit above the primary tabs with explicit semantic se
       assertAboveNav(state);
       await shot("warning");
       await settingsTab(page, "Persona");
-      await page.locator("#name").fill(persona.name);
+      await page.locator("#personaLabel").fill("");
+      await page.locator("#name").fill("");
       await settingsTab(page, "Preview");
       let releasePreview!: () => void;
       const previewHeld = new Promise<void>((r) => (releasePreview = r));

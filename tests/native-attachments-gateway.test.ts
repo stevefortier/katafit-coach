@@ -272,10 +272,8 @@ test("configuration change and close revoke every attachment immediately", async
     await g.tool(SEND, { workspace_path: "a.txt" });
     const item = g.published[0];
     await g.gateway.readAttachment(item.id);
-    await g.f.store.save({
-      ...g.f.store.publicConfig(),
-      persona: { ...g.f.store.publicConfig().persona, name: "Changed Coach" },
-    });
+    // A persona action is a new revision too.
+    await g.f.store.selectPersona("supportive_mentor");
     await assert.rejects(g.gateway.readAttachment(item.id), /REVOKED/);
     await assert.rejects(g.tool(SEND, { workspace_path: "a.txt" }));
   } finally {

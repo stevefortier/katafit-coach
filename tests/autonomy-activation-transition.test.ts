@@ -46,7 +46,6 @@ for (const mode of ["config", "rebind", "uncertain"] as const) {
       updates.applying = false;
       request = env.call("POST", "/api/config", {
         ...config,
-        persona: { ...config.persona, name: "Committed New Coach" },
         expectedRevision: config.revision,
         ...(proxy ? { origin: proxy.origin, token } : {}),
       });
@@ -74,7 +73,6 @@ for (const mode of ["config", "rebind", "uncertain"] as const) {
         assert.equal(response.status, 200, JSON.stringify(response.body));
         const disk = new Store(env.store.dir);
         await disk.init();
-        assert.equal(disk.publicConfig().persona.name, "Committed New Coach");
         assert.equal(disk.publicConfig().revision, config.revision + 1);
         await until(
           () => acquisitions(env.fake.calls.slice(before)).length > 0,
@@ -146,10 +144,9 @@ test("a save during held autonomy startup is durable first; the continuation joi
     // Settings policy: the save never waits for the held startup.
     const saved = await env.call("POST", "/api/config", {
       ...config,
-      persona: { ...config.persona, name: "Joined New Coach" },
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.equal(env.store.publicConfig().persona.name, "Joined New Coach");
+    assert.equal(env.store.publicConfig().revision, config.revision + 1);
     assert.equal(starts, 1, "no second startup while the first is held");
     await until(
       async () =>

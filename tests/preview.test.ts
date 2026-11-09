@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store } from "../src/config/store.js";
 import { admin } from "../src/server/admin.js";
+import { useCustomPersona } from "./helpers/persona.js";
 
 test("authenticated export, rollback and preview fail closed for legacy credential collisions", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-api-secrets-");
@@ -24,10 +25,11 @@ test("authenticated export, rollback and preview fail closed for legacy credenti
     for (const key of ["token", "apiKey"] as const) {
       const clean = store.publicConfig();
       const secret = "synthetic-api-collision";
-      await store.save({
-        ...clean,
-        persona: { ...clean.persona, markdown: secret },
-      });
+      const id = await useCustomPersona(
+        store,
+        { markdown: secret },
+        "Collision " + key,
+      );
       store.secrets[key] = secret; // simulate an unsafe pre-fix loaded state
       for (const path of ["/api/config", "/api/preview"]) {
         const response = await fetch(app.origin + path, {
@@ -40,7 +42,8 @@ test("authenticated export, rollback and preview fail closed for legacy credenti
         assert.equal((await response.text()).includes(secret), false);
       }
       store.secrets[key] = "";
-      await store.save(clean);
+      await store.selectPersona("kata_default");
+      await store.deletePersona(id);
       store.secrets[key] = secret;
       const rollback = await fetch(app.origin + "/api/rollback", {
         method: "POST",

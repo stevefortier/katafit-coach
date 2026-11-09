@@ -1,4 +1,5 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import { draftNewPersona } from "./helpers/persona.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -195,8 +196,7 @@ test(
           document.querySelector("#nativeTerminal");
       });
       await page.locator("#coachPaneExpand").click();
-      await settingsTab(page, "Persona");
-      await page.locator("#name").fill("Unsaved delivery-history draft");
+      await draftNewPersona(page, "Unsaved delivery-history draft");
       await page.locator("#coachPaneCollapse").click();
       await page.locator("#settingsTab").click();
       await page.locator("#settings-log-tab").click();

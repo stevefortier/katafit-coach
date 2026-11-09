@@ -25,7 +25,7 @@ const selectedTab = (page: Page) =>
     .innerText();
 
 async function savedBadgeOn(page: Page, provider: string, model: string) {
-  assert.equal(await page.locator(".saved-badge").count(), 1);
+  assert.equal(await page.locator("#model .saved-badge").count(), 1);
   const badge = choice(page, provider, model).locator(".saved-badge");
   assert.equal(await badge.innerText(), "Saved active");
   assert.deepEqual(

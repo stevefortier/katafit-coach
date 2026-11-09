@@ -1,4 +1,5 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import { draftNewPersona, personaViewFixture } from "./helpers/persona.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -92,7 +93,9 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
                     }
                   : path === "/api/skills"
                     ? { revision: 1, skills: [] }
-                    : {};
+                    : path === "/api/personas"
+                      ? personaViewFixture()
+                      : {};
       await route.fulfill({ json: body });
     });
     await page.goto(
@@ -139,7 +142,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
         name,
       );
       assert.equal(
-        await page.locator("#personaHistory").isVisible(),
+        await page.locator("#personaList").isVisible(),
         name === "Persona",
       );
     }
@@ -192,7 +195,7 @@ test("Settings sections are exclusive accessible tabs and preserve drafts", asyn
     await settingsTab(page, "Persona");
     assert.equal(new URL(page.url()).search, "?section=persona");
     assert.equal(await tabs.count(), 7);
-    await page.locator("#name").fill("Draft coach");
+    await draftNewPersona(page, "Draft coach");
     await page.getByRole("tab", { name: "Persona", exact: true }).press("End");
     assert.equal(
       await page

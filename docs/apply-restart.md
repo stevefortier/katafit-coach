@@ -1,12 +1,12 @@
 # Coach settings save, then stop / restart
 
-Settings Save, persona-history Restore and legacy `POST /api/rollback` share one server-owned transition. The browser never races separate Stop, Save and Run calls. Saved-revision Preview is not a transition: see [non-disruptive preview](#non-disruptive-preview).
+Settings Save, persona config actions (`/api/personas…` create/update/duplicate/select/delete) and legacy `POST /api/rollback` share one server-owned transition. The browser never races separate Stop, Save and Run calls. Saved-revision Preview is not a transition: see [non-disruptive preview](#non-disruptive-preview).
 
 - No consent precondition: a running Coach or active native Pi never blocks a valid save (a legacy `confirmRestart` is accepted and ignored). Studio sends the mutation directly, with no status preflight or confirmation dialog. An explicitly chosen Restore still confirms only which drafts it replaces.
 - The durable local write happens first and the HTTP answer returns right after it. Stop (native teardown, background Coach, Worker presence) and the restart then continue in the background as one serialized continuation reported through `GET /api/status`; the answer never waits for a stop, cleanup, presence report or reconciliation. A new Worker captures the resulting endpoint, model, vision flag and credential together.
 - Running intent is captured after the write (an intentionally stopped Coach stays stopped) and inherited by a newer save that supersedes the continuation, including one applied during a held stop or start. Intent survives a pending or failed restart, so the next save retries it; only a successful start, Run or Stop settles it. The latest save owns the eventual run or an explicit `restartPending`/`COACH_RESTART_FAILED`.
 - While a continuation runs, Run, Stop, preview, manual upgrade, confirmed maintenance quiesce and native-ticket admission get `OPERATION_IN_PROGRESS`; a valid settings save does not. Only one local settings write runs at a time (a save arriving during another's write gets `OPERATION_IN_PROGRESS`). Studio locks settings editors only while its own settings request is outstanding or an update replaces the process, never for a continuation or a preview. No user chat, action, or terminal input is replayed.
-- Persona restore copies only persona fields into a new revision. Legacy rollback retains Store's configuration/credential binding rules; it is an API compatibility path, not an extra Studio editor.
+- Persona actions change only saved persona configs and the active reference in a new revision. Legacy rollback retains Store's configuration/credential binding rules; it is an API compatibility path, not an extra Studio editor.
 
 ## Non-disruptive preview
 
@@ -24,7 +24,7 @@ Validation/write failures preserve the editor draft. The previous running config
 
 ### Unresolved earlier work never blocks a valid save
 
-A valid settings save, persona restore, skill save/restore or rollback is applied even when earlier work is unresolved or a cleanup/safety check fails. The save performs no reconciliation RPC and never waits for an exact proof. The outcome is `lifecycle.warnings` (`{code, hint}`), retained in `GET /api/status`; Studio renders every warning in the operation status on each status refresh; warnings known at acknowledgement (journal and delivery state) also appear in the save notice:
+A valid settings save, persona action, skill save/restore or rollback is applied even when earlier work is unresolved or a cleanup/safety check fails. The save performs no reconciliation RPC and never waits for an exact proof. The outcome is `lifecycle.warnings` (`{code, hint}`), retained in `GET /api/status`; Studio renders every warning in the operation status on each status refresh; warnings known at acknowledgement (journal and delivery state) also appear in the save notice:
 
 | Code                           | Meaning (what stays protected)                                                                                                                                                                                       |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -218,7 +218,6 @@ test("a settings save cancels a running preview; the stale answer is never publi
     // Settings policy: the valid save is not refused for the preview.
     const save = await h.post("config", {
       ...saved,
-      persona: { ...saved.persona, name: "Changed during preview" },
       apiKey: "synthetic-preview-provider-key-2",
     });
     assert.equal(save.status, 200, await save.clone().text());
@@ -232,7 +231,7 @@ test("a settings save cancels a running preview; the stale answer is never publi
     assert.equal(seen[0].apiKey, "synthetic-preview-provider-key");
     assert.equal(seen[0].model, "synthetic-model");
     const current = h.store.publicConfig();
-    const restore = await h.post("persona-restore", { revision: 1 });
+    const restore = await h.post("personas/supportive_mentor/select", {});
     assert.equal(restore.status, 200, await restore.clone().text());
     assert.equal(h.store.publicConfig().revision, current.revision + 1);
   } finally {
@@ -372,7 +371,6 @@ test("a provider that ignores abort cannot hold the preview slot after cancel", 
     const saved = h.store.publicConfig();
     const save = await h.post("config", {
       ...saved,
-      persona: { ...saved.persona, name: "Saved after stuck preview" },
     });
     assert.equal(save.status, 200, await save.clone().text());
     const retry = h.post("preview", { text: PREVIEW });

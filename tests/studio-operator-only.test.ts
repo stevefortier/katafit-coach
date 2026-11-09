@@ -1,4 +1,5 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import { draftNewPersona } from "./helpers/persona.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
@@ -120,14 +121,20 @@ test(
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.locator("#coachPaneExpand").click();
       await page.locator("#settingsTab").click();
-      await settingsTab(page, "Persona");
-      await page.locator("#name").fill("Warden");
+      await draftNewPersona(page, "Warden");
       assert.notEqual(
         await page.locator("#coachLauncherName").innerText(),
         "Warden",
         "unsaved draft must not rename navigation",
       );
-      await page.locator("#save").click();
+      await page.locator("#savePersona").click();
+      await page.locator("#selectPersona").waitFor({ state: "visible" });
+      assert.notEqual(
+        await page.locator("#coachLauncherName").innerText(),
+        "Warden",
+        "a saved but unselected persona must not rename navigation",
+      );
+      await page.locator("#selectPersona").click();
       await page.waitForFunction(
         () =>
           document.querySelector("#coachLauncherName")?.textContent?.trim() ===
@@ -166,7 +173,7 @@ test(
         await page.locator("#coachLauncherName").innerText(),
         "Warden",
       );
-      await page.locator("#save").click();
+      await page.locator("#savePersona").click();
       await page.waitForFunction(
         (name) =>
           document.querySelector("#coachLauncherName")?.textContent === name,
@@ -191,21 +198,23 @@ test(
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.locator("#settingsTab").click();
       await settingsTab(page, "Persona");
-      await page.locator("#name").fill("Unsaved restoration draft");
+      await page.locator("#name").fill("Unsaved persona draft");
       assert.equal(
         await page.locator("#coachLauncherName").innerText(),
         longName,
       );
-      await page.locator("#personaHistory summary").click();
-      await page.getByRole("button", { name: /Revision 2 ·/ }).click();
+      // Duplicating copies the saved Warden config, not the unsaved draft.
       page.once("dialog", (dialog) => dialog.accept());
-      await page.locator("#restorePersona").click();
-      await page.waitForFunction(
-        () =>
-          document.querySelector("#coachLauncherName")?.textContent ===
-          "Warden",
+      await page.locator("#duplicatePersona").click();
+      await page.locator("#deletePersona:not([disabled])").waitFor();
+      assert.equal(await page.locator("#name").inputValue(), longName);
+      await page.locator("#selectPersona").click();
+      await page.locator("#selectPersona:disabled").waitFor();
+      assert.equal(
+        await page.locator("#coachLauncherName").innerText(),
+        longName,
       );
-      assert.equal(await page.locator("#name").inputValue(), "Warden");
+      assert.equal(store.personaView().custom.length, 2);
       await page.locator("#lockStudio").click();
       assert.equal(
         await page.locator("#coachLauncherName").textContent(),

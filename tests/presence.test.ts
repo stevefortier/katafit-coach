@@ -841,7 +841,6 @@ test("running save is acknowledged while a slow, refused backend stop is held; r
     const started = Date.now();
     const saved = await post("/api/config", {
       ...config,
-      persona: { ...config.persona, name: "Saved after refused stop" },
       confirmRestart: true,
     });
     const result = await saved.json();
@@ -927,16 +926,12 @@ test("a rejected worker stop after save is a warning; the original worker is nev
       headers,
       body: JSON.stringify({
         ...config,
-        persona: { ...config.persona, name: "Saved despite stop failure" },
         confirmRestart: true,
       }),
     });
     const result = await saved.json();
     assert.equal(saved.status, 200, JSON.stringify(result));
-    assert.equal(
-      store.publicConfig().persona.name,
-      "Saved despite stop failure",
-    );
+    assert.equal(store.publicConfig().revision, config.revision + 1);
     const lifecycle = await settledLifecycle(
       app.origin,
       headers,
@@ -993,14 +988,10 @@ async function runningStudio(options: Parameters<typeof backend>[0] = {}) {
   };
   const status = async () =>
     (await fetch(app.origin + "/api/status", { headers })).json();
-  const rename = (name: string) => {
+  const resave = () => {
     const config = store.publicConfig();
     // Legacy clients still send consent; it is accepted and ignored.
-    return post("/api/config", {
-      ...config,
-      persona: { ...config.persona, name },
-      confirmRestart: true,
-    });
+    return post("/api/config", { ...config, confirmRestart: true });
   };
   assert.equal((await post("/api/run")).status, 200);
   return {
@@ -1010,7 +1001,7 @@ async function runningStudio(options: Parameters<typeof backend>[0] = {}) {
     headers,
     post,
     status,
-    rename,
+    resave,
     async close() {
       await app.close();
       await f.close();
@@ -1019,18 +1010,17 @@ async function runningStudio(options: Parameters<typeof backend>[0] = {}) {
   };
 }
 
-test("running Coach: config, persona and skill saves need no restart consent", async () => {
+test("running Coach: config, persona action and skill saves need no restart consent", async () => {
   const t = await runningStudio();
   try {
     const revision = t.store.publicConfig().revision;
     const config = t.store.publicConfig();
     const saved = await t.post("/api/config", {
       ...config,
-      persona: { ...config.persona, name: "Saved without consent" },
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     assert.equal(t.store.publicConfig().revision, revision + 1);
-    const restored = await t.post("/api/persona-restore", { revision: 1 });
+    const restored = await t.post("/api/personas/supportive_mentor/select", {});
     assert.equal(restored.status, 200, JSON.stringify(restored.body));
     const skill: any = (t.store.skills.view() as any).skills[0];
     const skillSaved = await t.post("/api/skills/" + skill.id, {
@@ -1056,11 +1046,11 @@ test("running Coach: config, persona and skill saves need no restart consent", a
 test("B3: a save during a held restart inherits running intent; the latest revision runs", async () => {
   const t = await runningStudio({ holdRunning: true });
   try {
-    const first = await t.rename("First during running");
+    const first = await t.resave();
     assert.equal(first.status, 200, JSON.stringify(first.body));
     // The continuation stopped the worker; its replacement start is held.
     await t.f.entered;
-    const second = await t.rename("Second during held start");
+    const second = await t.resave();
     assert.equal(second.status, 200, JSON.stringify(second.body));
     assert.equal(second.body.lifecycle.wasRunning, true, "inherited intent");
     t.f.release();
@@ -1074,10 +1064,6 @@ test("B3: a save during a held restart inherits running intent; the latest revis
     const s = await t.status();
     assert.notEqual(s.state, "stopped", "latest revision is running");
     assert.equal(s.revision, t.store.publicConfig().revision);
-    assert.equal(
-      t.store.publicConfig().persona.name,
-      "Second during held start",
-    );
     // Run, the first restart, then the latest save's own restart.
     assert.equal(
       new Set(
@@ -1099,7 +1085,7 @@ test("B3: an older stop released while a newer local write is held never strands
   const gate = new Promise<void>((r) => (release = r));
   try {
     t.f.delays.presence = 600;
-    const first = await t.rename("First, slow stop");
+    const first = await t.resave();
     assert.equal(first.status, 200);
     let writing = false;
     t.store.save = async (input: any) => {
@@ -1107,7 +1093,7 @@ test("B3: an older stop released while a newer local write is held never strands
       await gate;
       return save(input);
     };
-    const second = t.rename("Second, held write");
+    const second = t.resave();
     await waitFor(() => writing);
     // The first continuation's stop settles while the second write is held.
     await new Promise((r) => setTimeout(r, 1500));
@@ -1480,13 +1466,7 @@ for (const refuseStopped of [false, true])
     try {
       assert.equal((await post("run")).status, 200);
       const revision = store.publicConfig().revision;
-      const payload = {
-        ...store.publicConfig(),
-        persona: {
-          ...store.publicConfig().persona,
-          name: "Synthetic replacement",
-        },
-      };
+      const payload = { ...store.publicConfig() };
       // Settings policy: no restart consent precondition.
       const result = await post("config", payload);
       if (refuseStopped) {

@@ -83,8 +83,8 @@ test("configured credentials cannot be saved into the active persona", async () 
   try {
     const config = f.store.publicConfig();
     await assert.rejects(
-      f.store.save({
-        ...config,
+      f.store.createPersona({
+        label: "Leak",
         persona: { ...config.persona, name: "synthetic-backend-credential" },
       }),
       /SECRET_IN_CONFIG/,

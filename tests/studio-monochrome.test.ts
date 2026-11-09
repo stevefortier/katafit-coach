@@ -1,4 +1,5 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import { draftNewPersona, personaViewFixture } from "./helpers/persona.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -65,7 +66,7 @@ async function neutralSurfaces(page: Page) {
       // Deliberate status/warning/error colors are not decorative accents.
       if (
         el.matches(
-          '#modelDraftStatus, #registryModelNote, #model .saved-badge, [data-tone="error"], #nativeStatus[data-state="error"], #nativeStatus[data-state="unavailable"], #nativeStatus[data-state="overflow"], #coachPaneStatus[data-state], .log-error, .log-warn',
+          '#modelDraftStatus, #registryModelNote, #model .saved-badge, #personaList .saved-badge, [data-tone="error"], #nativeStatus[data-state="error"], #nativeStatus[data-state="unavailable"], #nativeStatus[data-state="overflow"], #coachPaneStatus[data-state], .log-error, .log-warn',
         )
       )
         continue;
@@ -318,7 +319,7 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
           "/api/status": { state, lastError: null },
           "/api/update": { supported: false, applying: false },
           "/api/terminal/receipts": { actions: [] },
-          "/api/persona/history": { revisions: [] },
+          "/api/personas": personaViewFixture(config.revision),
           "/api/logs": { entries: [] },
           "/api/mcp/registrations": { registrations: [] },
           "/api/dashboard": { users: [], activities: [], hasMore: false },
@@ -548,11 +549,11 @@ test("Studio monochrome surfaces retain semantic status and readable actions", a
       await primaryContrast(page, "#settings-models-tab");
       await capture("settings-models");
       await settingsTab(page, "Model");
-      await page.locator(".saved-badge").waitFor();
+      await page.locator("#model .saved-badge").waitFor();
       await capture("settings-model");
       await settingsTab(page, "Persona");
       await capture("settings-persona");
-      await page.locator("#name").fill("Unsaved synthetic draft");
+      await draftNewPersona(page, "Unsaved synthetic draft");
       await settingsTab(page, "Kata.fit");
       await page.locator("#token").fill("unsaved-synthetic-secret");
       for (const [key, name] of [

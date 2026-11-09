@@ -136,15 +136,17 @@ test("model save with an unresolved autonomous journal saves, reads back and war
   }
 });
 
-test("persona restore and skill save are unrelated callers that also save with the warning", async () => {
+test("persona action and skill save are unrelated callers that also save with the warning", async () => {
   const t = await unresolvedJournal();
   const { env } = t;
   try {
     const before = await t.journal();
     const config = env.store.publicConfig();
-    const restored = await env.call("POST", "/api/persona-restore", {
-      revision: 1,
-    });
+    const restored = await env.call(
+      "POST",
+      "/api/personas/supportive_mentor/select",
+      {},
+    );
     assert.equal(restored.status, 200, JSON.stringify(restored.body));
     assert.equal(restored.body.lifecycle.applied, true);
     assert.deepEqual(codes(restored.body.lifecycle), [
@@ -188,7 +190,6 @@ test("a held native stop never delays the save; a later save is accepted and sup
     const started = Date.now();
     const saved = await env.call("POST", "/api/config", {
       ...config,
-      persona: { ...config.persona, name: "Saved while stop is held" },
       expectedRevision: config.revision,
     });
     const elapsed = Date.now() - started;
@@ -199,7 +200,6 @@ test("a held native stop never delays the save; a later save is accepted and sup
     assert.equal(saved.body.lifecycle.resumed, false, "no restart claimed");
     const read = (await env.call("GET", "/api/config")).body;
     assert.equal(read.revision, config.revision + 1);
-    assert.equal(read.persona.name, "Saved while stop is held");
     const current = env.store.publicConfig();
     await until(() => stops === 1, "stop entered");
     const status = (await env.call("GET", "/api/status")).body;
@@ -213,7 +213,6 @@ test("a held native stop never delays the save; a later save is accepted and sup
     assert.equal(run.body.error, "OPERATION_IN_PROGRESS");
     const next = await env.call("POST", "/api/config", {
       ...current,
-      persona: { ...current.persona, name: "Second save while held" },
       expectedRevision: current.revision,
     });
     assert.equal(next.status, 200, JSON.stringify(next.body));
@@ -237,10 +236,7 @@ test("a held native stop never delays the save; a later save is accepted and sup
     const after = (await env.call("GET", "/api/status")).body;
     assert.equal(after.transition, false);
     assert.equal(after.lifecycle.id, next.body.lifecycle.id, "never stale");
-    assert.equal(
-      env.store.publicConfig().persona.name,
-      "Second save while held",
-    );
+    assert.equal(env.store.publicConfig().revision, config.revision + 2);
     await until(
       async () => (await env.status()).local.state !== "stopped",
       "participating autonomy started after the continuation",
@@ -295,15 +291,11 @@ test("failed native cleanup does not block a save; ownership is retained and the
     const config = env.store.publicConfig();
     const saved = await env.call("POST", "/api/config", {
       ...config,
-      persona: { ...config.persona, name: "Saved despite cleanup" },
       expectedRevision: config.revision,
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     assert.equal(saved.body.lifecycle.applied, true);
-    assert.equal(
-      env.store.publicConfig().persona.name,
-      "Saved despite cleanup",
-    );
+    assert.equal(env.store.publicConfig().revision, config.revision + 1);
     const done = await settled(env, saved.body.lifecycle.id);
     assert.deepEqual(codes(done), ["NATIVE_CLEANUP_UNCONFIRMED"]);
     assert.equal(done.resumed, false);
@@ -327,7 +319,6 @@ test("an unreadable autonomy journal is reported, not used to refuse the save", 
     const config = env.store.publicConfig();
     const saved = await env.call("POST", "/api/config", {
       ...config,
-      persona: { ...config.persona, name: "Saved with journal warning" },
       expectedRevision: config.revision,
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -347,7 +338,7 @@ test("validation, auth, storage failure remain failures and local writes stay se
     const config = env.store.publicConfig();
     const invalid = await env.call("POST", "/api/config", {
       ...config,
-      persona: { ...config.persona, name: " " },
+      provider: { ...config.provider, vision: "yes" },
       expectedRevision: config.revision,
     });
     assert.equal(invalid.status, 400);
@@ -366,7 +357,6 @@ test("validation, auth, storage failure remain failures and local writes stay se
     try {
       stored = await env.call("POST", "/api/config", {
         ...config,
-        persona: { ...config.persona, name: "Never stored" },
         expectedRevision: config.revision,
       });
     } finally {
@@ -375,13 +365,9 @@ test("validation, auth, storage failure remain failures and local writes stay se
     assert.equal(stored.status, 400, JSON.stringify(stored.body));
     assert.equal(stored.body.lifecycle.applied, false);
     assert.equal(env.store.publicConfig().revision, config.revision);
-    assert.notEqual(env.store.publicConfig().persona.name, "Never stored");
     // One local write at a time: a save arriving during another's durable
     // write is refused, never interleaved.
-    const body = (name: string) => ({
-      ...config,
-      persona: { ...config.persona, name },
-    });
+    const body = () => ({ ...config });
     const save = env.store.save.bind(env.store);
     const gate = deferred();
     let writing = false;
@@ -391,13 +377,9 @@ test("validation, auth, storage failure remain failures and local writes stay se
       return save(input);
     };
     try {
-      const first = env.call("POST", "/api/config", body("First concurrent"));
+      const first = env.call("POST", "/api/config", body());
       await until(() => writing, "first write entered");
-      const second = await env.call(
-        "POST",
-        "/api/config",
-        body("Second concurrent"),
-      );
+      const second = await env.call("POST", "/api/config", body());
       assert.equal(second.status, 409);
       assert.equal(second.body.error, "OPERATION_IN_PROGRESS");
       gate.resolve();
@@ -407,7 +389,6 @@ test("validation, auth, storage failure remain failures and local writes stay se
       env.store.save = save;
     }
     assert.equal(env.store.publicConfig().revision, config.revision + 1);
-    assert.equal(env.store.publicConfig().persona.name, "First concurrent");
   } finally {
     await t.close();
   }
