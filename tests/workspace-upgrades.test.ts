@@ -133,87 +133,112 @@ test("runtime home cleanup refuses failed shutdown and a still-live PID", async 
   }
 });
 
-for (const transient of [true, false])
-  test(
-    `Windows runtime home cleanup ${transient ? "recovers after" : "rejects persistent"} no-delete-sharing lock`,
-    { skip: !windows },
-    async () => {
-      const home = await mkdtemp(join(tmpdir(), "coach-cleanup-lock-"));
-      const file = join(home, "locked.bin");
-      await writeFile(file, "owned fixture");
-      const holder = spawn(
-        join(
-          process.env.SystemRoot || "C:\\Windows",
-          "System32/WindowsPowerShell/v1.0/powershell.exe",
-        ),
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          "$ErrorActionPreference='Stop'; $f=[IO.File]::Open($env:COACH_TEST_LOCK_FILE, 'Open', 'Read', 'Read'); try { [Console]::WriteLine('LOCKED'); $null=[Console]::ReadLine() } finally { $f.Dispose() }",
-        ],
-        {
-          env: { ...process.env, COACH_TEST_LOCK_FILE: file },
-          stdio: ["pipe", "pipe", "inherit"],
-        },
-      );
-      const ended = once(holder, "exit");
-      // A failed fixture handshake must not leave a paid runner holding a file.
-      const watchdog = setTimeout(() => holder.kill(), 20000);
-      const lines = createInterface({ input: holder.stdout });
-      let attempts = 0;
-      try {
-        assert.deepEqual(
-          await Promise.race([
-            once(lines, "line", { signal: AbortSignal.timeout(10000) }),
-            ended.then(() => {
-              throw new Error("LOCK_HOLDER_EXITED_BEFORE_READY");
-            }),
-          ]),
-          ["LOCKED"],
+for (const mapping of [false, true])
+  for (const transient of [true, false])
+    test(
+      `Windows runtime home cleanup ${transient ? "recovers after" : "rejects persistent"} ${mapping ? "executable mapping" : "no-delete-sharing lock"}`,
+      { skip: !windows },
+      async () => {
+        const home = await mkdtemp(join(tmpdir(), "coach-cleanup-lock-"));
+        const file = mapping
+          ? runtimeExecutable(home)
+          : join(home, "locked.bin");
+        const expectedCode = mapping ? "EPERM" : "EBUSY";
+        if (mapping) await realRuntime(home);
+        else await writeFile(file, "owned fixture");
+        // Separate task-owned holder, not the supervisor runtime whose exit the
+        // cleanup helper requires. Exercise both Windows denial mechanisms.
+        const holder = spawn(
+          mapping
+            ? file
+            : join(
+                process.env.SystemRoot || "C:\\Windows",
+                "System32/WindowsPowerShell/v1.0/powershell.exe",
+              ),
+          mapping
+            ? [
+                "-e",
+                "process.stdin.once('data', () => process.exit(0)); process.stdout.write('LOCKED\\n');",
+              ]
+            : [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference='Stop'; $f=[IO.File]::Open($env:COACH_TEST_LOCK_FILE, 'Open', 'Read', 'Read'); try { [Console]::WriteLine('LOCKED'); $null=[Console]::ReadLine() } finally { $f.Dispose() }",
+              ],
+          {
+            env: { ...process.env, COACH_TEST_LOCK_FILE: file },
+            stdio: ["pipe", "pipe", "inherit"],
+          },
         );
-        const removal = removeStoppedRuntimeHome(home, undefined, async () => {
-          attempts++;
-          try {
-            await rm(home, { recursive: true, force: true });
-          } catch (error) {
-            assert.equal((error as NodeJS.ErrnoException).code, "EPERM");
-            // Release only after the real removal has failed with the lock held.
-            // This prevents a timing-only false positive without exercising retry.
-            if (transient && attempts === 1) {
-              holder.stdin.end("\n");
-              assert.deepEqual(await ended, [0, null]);
-            }
-            throw error;
-          }
-        });
-        if (transient) {
-          await removal;
-          assert.equal(attempts, 2);
-          await assert.rejects(readFile(file), { code: "ENOENT" });
-        } else {
-          await assert.rejects(removal, { code: "EPERM" });
-          assert.equal(attempts, 6);
-          assert.equal(await readFile(file, "utf8"), "owned fixture");
-        }
-      } finally {
-        lines.close();
+        const ended = once(holder, "exit");
+        // A failed fixture handshake must not leave a paid runner holding a file.
+        const watchdog = setTimeout(() => holder.kill(), 20000);
+        const lines = createInterface({ input: holder.stdout });
+        let attempts = 0;
         try {
-          if (
-            holder.pid !== undefined &&
-            holder.exitCode === null &&
-            holder.signalCode === null
-          ) {
-            holder.stdin.end("\n");
-            await ended;
+          assert.deepEqual(
+            await Promise.race([
+              once(lines, "line", { signal: AbortSignal.timeout(10000) }),
+              ended.then(() => {
+                throw new Error("LOCK_HOLDER_EXITED_BEFORE_READY");
+              }),
+            ]),
+            ["LOCKED"],
+          );
+          const removal = removeStoppedRuntimeHome(
+            home,
+            undefined,
+            async () => {
+              attempts++;
+              try {
+                await rm(home, { recursive: true, force: true });
+              } catch (error) {
+                assert.equal(
+                  (error as NodeJS.ErrnoException).code,
+                  expectedCode,
+                );
+                // Release only after the real removal has failed with the lock held.
+                // This prevents a timing-only false positive without exercising retry.
+                if (transient && attempts === 1) {
+                  holder.stdin.end("\n");
+                  assert.deepEqual(await ended, [0, null]);
+                }
+                throw error;
+              }
+            },
+          );
+          if (transient) {
+            await removal;
+            assert.equal(attempts, 2);
+            await assert.rejects(readFile(file), { code: "ENOENT" });
+          } else {
+            await assert.rejects(removal, { code: expectedCode });
+            assert.equal(attempts, 6);
+            if (mapping)
+              assert.ok(
+                (await readFile(file)).equals(await readFile(process.execPath)),
+              );
+            else assert.equal(await readFile(file, "utf8"), "owned fixture");
           }
         } finally {
-          clearTimeout(watchdog);
+          lines.close();
+          try {
+            if (
+              holder.pid !== undefined &&
+              holder.exitCode === null &&
+              holder.signalCode === null
+            ) {
+              holder.stdin.end("\n");
+              await ended;
+            }
+          } finally {
+            clearTimeout(watchdog);
+          }
+          await rm(home, { recursive: true, force: true, maxRetries: 5 });
         }
-        await rm(home, { recursive: true, force: true, maxRetries: 5 });
-      }
-    },
-  );
+      },
+    );
 
 async function workspaceHome(rootCapable: boolean) {
   const home = await mkdtemp(join(tmpdir(), "coach-workspace-upgrade-"));
