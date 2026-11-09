@@ -580,8 +580,33 @@
                 <p id="personaKind" class="hint"></p>
                 <div id="personaBuiltin" hidden>
                   <p id="personaDescription"></p>
-                  <h4>Instructions</h4>
-                  <p id="personaInstructions" class="persona-text"></p>
+                  <p class="hint">
+                    Built-in style is described in the additional instructions
+                    below. Separate fields marked “Not separately specified”
+                    have no standalone value.
+                  </p>
+                  <dl class="persona-fields">
+                    <dt>Coach name</dt>
+                    <dd data-persona-field="name"></dd>
+                    <dt>Voice</dt>
+                    <dd data-persona-field="voice"></dd>
+                    <dt>Verbosity</dt>
+                    <dd data-persona-field="verbosity"></dd>
+                    <dt>Initiative</dt>
+                    <dd data-persona-field="initiative"></dd>
+                    <dt>Coaching principles</dt>
+                    <dd data-persona-field="principles"></dd>
+                    <dt>Example guidance</dt>
+                    <dd data-persona-field="examples"></dd>
+                    <dt>Boundaries</dt>
+                    <dd data-persona-field="boundaries"></dd>
+                    <dt>Additional instructions (Markdown)</dt>
+                    <dd
+                      id="personaInstructions"
+                      data-persona-field="markdown"
+                      class="persona-text"
+                    ></dd>
+                  </dl>
                 </div>
                 <div id="personaEditor" hidden>
                   <label

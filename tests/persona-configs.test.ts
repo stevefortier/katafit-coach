@@ -321,6 +321,24 @@ test("fresh install references the Kata.fit default builtin and creates no histo
       canonical.presets.map((p) => p.id),
     );
     assert.ok(view.builtins.every((b: any) => b.readOnly === true));
+    for (const preset of canonical.presets) {
+      const entry = view.builtins.find((b) => b.id === preset.id)!;
+      assert.deepEqual(entry.persona, {
+        name: "Coach",
+        voice: "",
+        verbosity: "",
+        initiative: "",
+        principles: "",
+        examples: "",
+        boundaries: "",
+        markdown: preset.instructions,
+      });
+      entry.persona.name = "Changed returned DTO only";
+      assert.equal(
+        s.personaView().builtins.find((b) => b.id === preset.id)!.persona.name,
+        "Coach",
+      );
+    }
     assert.deepEqual(view.custom, []);
     const disk = JSON.parse(await readFile(dir + "/config.json", "utf8"));
     assert.deepEqual(disk.current.personas, {
