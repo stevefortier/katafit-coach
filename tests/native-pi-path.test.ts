@@ -107,8 +107,8 @@ test(
       provider.closeAllConnections();
       await new Promise<void>((r) => provider.close(() => r()));
     });
-    await f.store.save({
-      ...f.store.publicConfig(),
+    const personaId = await f.store.createPersona({
+      label: "Synthetic Iron Warden",
       persona: {
         name: "Iron Warden",
         voice: "Stern, clipped, unyielding. Address trainees as recruit.",
@@ -120,6 +120,10 @@ test(
         verbosity: "Short operational orders.",
         markdown: "I am Iron Warden, never a generic coding assistant.",
       },
+    });
+    await f.store.selectPersona(personaId);
+    await f.store.save({
+      ...f.store.publicConfig(),
       // Explicitly authorize the synthetic key for this new fixture endpoint.
       apiKey: f.store.secrets.apiKey,
       provider: {
@@ -216,13 +220,16 @@ test(
       // transcript into a newly authorized runtime.
       const priorRequests = requests.length;
       const next = f.store.publicConfig();
-      next.persona = Object.fromEntries(
-        Object.entries(next.persona).map(([key, value]) => [
-          key,
-          value.replaceAll("Iron Warden", "Captain Quartz"),
-        ]),
-      ) as typeof next.persona;
-      await f.store.save(next);
+      await f.store.updatePersona(personaId, {
+        label: "Synthetic Captain Quartz",
+        persona: Object.fromEntries(
+          Object.entries(next.persona).map(([key, value]) => [
+            key,
+            value.replaceAll("Iron Warden", "Captain Quartz"),
+          ]),
+        ) as typeof next.persona,
+      });
+      assert.equal(f.store.publicConfig().personas.active, personaId);
       await assert.rejects(
         gateway.handle({ kind: "catalog" }),
         /NATIVE_SESSION_REVOKED/,
