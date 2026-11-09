@@ -5,7 +5,9 @@
 import "./fixtures/legacy-source-check.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, fork } from "node:child_process";
+import { execFileSync, fork, spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
 import { once } from "node:events";
 import { unlinkSync } from "node:fs";
 import { stopChild } from "../src/runtime/platform.js";
@@ -62,7 +64,7 @@ test("stopped copied runtime releases its executable before cleanup", async () =
       execArgv: [],
       stdio: ["ignore", "ignore", "ignore", "ipc"],
     });
-    await once(child, "message");
+    await once(child, "message", { signal: AbortSignal.timeout(10000) });
     await stopChild(child, 5000);
     // Do not let asynchronous filesystem work accidentally yield past the
     // process-handle release: shutdown must permit immediate replacement.
@@ -72,6 +74,146 @@ test("stopped copied runtime releases its executable before cleanup", async () =
     await rm(home, { recursive: true, force: true, maxRetries: 5 });
   }
 });
+
+/** Fixture cleanup only: shutdown refusal is not permission to remove a home.
+ * Windows can retain a no-delete-sharing file handle after our runtime exits.
+ * Retry only that bounded filesystem failure, never shutdown or test bodies. */
+async function removeStoppedRuntimeHome(
+  home: string,
+  owner: { pid?: number; close(): Promise<boolean> } | undefined,
+  remove = () => rm(home, { recursive: true, force: true }),
+) {
+  if (owner) {
+    const pid = owner.pid;
+    assert.equal(await owner.close(), true, "owner refused shutdown");
+    if (pid !== undefined)
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await remove();
+      return;
+    } catch (error) {
+      if (
+        !windows ||
+        attempt === 5 ||
+        !["EPERM", "EBUSY"].includes(
+          (error as NodeJS.ErrnoException).code ?? "",
+        )
+      )
+        throw error;
+      await sleep(100 * (attempt + 1));
+    }
+  }
+}
+
+test("runtime home cleanup refuses failed shutdown and a still-live PID", async () => {
+  const home = await mkdtemp(join(tmpdir(), "coach-cleanup-refusal-"));
+  let removals = 0;
+  const remove = async () => {
+    removals++;
+    await rm(home, { recursive: true, force: true });
+  };
+  try {
+    await writeFile(join(home, "sentinel"), "intact");
+    for (const owner of [
+      { close: async () => false },
+      { pid: process.pid, close: async () => true },
+      {
+        close: async (): Promise<boolean> => {
+          throw new Error("CLOSE_FAILED");
+        },
+      },
+    ])
+      await assert.rejects(removeStoppedRuntimeHome(home, owner, remove));
+    assert.equal(removals, 0);
+    assert.equal(await readFile(join(home, "sentinel"), "utf8"), "intact");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+for (const transient of [true, false])
+  test(
+    `Windows runtime home cleanup ${transient ? "recovers after" : "rejects persistent"} no-delete-sharing lock`,
+    { skip: !windows },
+    async () => {
+      const home = await mkdtemp(join(tmpdir(), "coach-cleanup-lock-"));
+      const file = join(home, "locked.bin");
+      await writeFile(file, "owned fixture");
+      const holder = spawn(
+        join(
+          process.env.SystemRoot || "C:\\Windows",
+          "System32/WindowsPowerShell/v1.0/powershell.exe",
+        ),
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "$ErrorActionPreference='Stop'; $f=[IO.File]::Open($env:COACH_TEST_LOCK_FILE, 'Open', 'Read', 'Read'); try { [Console]::WriteLine('LOCKED'); $null=[Console]::ReadLine() } finally { $f.Dispose() }",
+        ],
+        {
+          env: { ...process.env, COACH_TEST_LOCK_FILE: file },
+          stdio: ["pipe", "pipe", "inherit"],
+        },
+      );
+      const ended = once(holder, "exit");
+      // A failed fixture handshake must not leave a paid runner holding a file.
+      const watchdog = setTimeout(() => holder.kill(), 20000);
+      const lines = createInterface({ input: holder.stdout });
+      let attempts = 0;
+      try {
+        assert.deepEqual(
+          await Promise.race([
+            once(lines, "line", { signal: AbortSignal.timeout(10000) }),
+            ended.then(() => {
+              throw new Error("LOCK_HOLDER_EXITED_BEFORE_READY");
+            }),
+          ]),
+          ["LOCKED"],
+        );
+        const removal = removeStoppedRuntimeHome(home, undefined, async () => {
+          attempts++;
+          try {
+            await rm(home, { recursive: true, force: true });
+          } catch (error) {
+            assert.equal((error as NodeJS.ErrnoException).code, "EPERM");
+            // Release only after the real removal has failed with the lock held.
+            // This prevents a timing-only false positive without exercising retry.
+            if (transient && attempts === 1) {
+              holder.stdin.end("\n");
+              assert.deepEqual(await ended, [0, null]);
+            }
+            throw error;
+          }
+        });
+        if (transient) {
+          await removal;
+          assert.equal(attempts, 2);
+          await assert.rejects(readFile(file), { code: "ENOENT" });
+        } else {
+          await assert.rejects(removal, { code: "EPERM" });
+          assert.equal(attempts, 6);
+          assert.equal(await readFile(file, "utf8"), "owned fixture");
+        }
+      } finally {
+        lines.close();
+        try {
+          if (
+            holder.pid !== undefined &&
+            holder.exitCode === null &&
+            holder.signalCode === null
+          ) {
+            holder.stdin.end("\n");
+            await ended;
+          }
+        } finally {
+          clearTimeout(watchdog);
+        }
+        await rm(home, { recursive: true, force: true, maxRetries: 5 });
+      }
+    },
+  );
 
 async function workspaceHome(rootCapable: boolean) {
   const home = await mkdtemp(join(tmpdir(), "coach-workspace-upgrade-"));
@@ -306,34 +448,7 @@ for (const retained of [false, true])
       console.error("runtime transition body failed", error);
       throw error;
     } finally {
-      const pid = owner?.pid;
-      const closed = await owner?.close();
-      let alive = false;
-      if (pid !== undefined) {
-        try {
-          process.kill(pid, 0);
-          alive = true;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        }
-      }
-      console.error("runtime transition shutdown", {
-        retained,
-        pid,
-        closed,
-        alive,
-      });
-      assert.notEqual(
-        closed,
-        false,
-        "owner refused shutdown; home must stay intact",
-      );
-      assert.equal(
-        alive,
-        false,
-        "runtime must exit before removing its executable",
-      );
-      await rm(home, { recursive: true, force: true });
+      await removeStoppedRuntimeHome(home, owner);
     }
   });
 
