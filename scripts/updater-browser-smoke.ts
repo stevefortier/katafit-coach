@@ -1,5 +1,6 @@
 import { readyBrowserFixture } from "../tests/fixtures/legacy-source-check.js";
 import { settingsTab } from "../tests/helpers/settings-navigation.js";
+import { draftNewPersona } from "../tests/helpers/persona.js";
 import { chromium } from "playwright-core";
 import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -135,14 +136,14 @@ try {
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.locator("#updateCancel").click();
   assert.equal(applies, 0, "dismissed confirmation never installs");
-  await settingsTab(page, "Persona");
-  await page.locator("#name").fill("Unsaved changes");
+  await draftNewPersona(page, "Unsaved changes");
   await settingsTab(page, "Updates");
   await page.locator("#updateApply").click();
   assert.match(await page.locator("#notice").innerText(), /Unsaved edits/);
   assert.equal(await page.locator("#updateConfirm").isVisible(), false);
   await settingsTab(page, "Persona");
-  await page.locator("#name").fill(store.publicConfig().persona.name);
+  await page.locator("#personaLabel").fill("");
+  await page.locator("#name").fill("");
   // Models drafts, including an unsaved private key, also block upgrade.
   await settingsTab(page, "Models");
   const registryKey = page.locator('[data-field="apiKey"]').first();

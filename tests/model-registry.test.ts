@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { Store } from "../src/config/store.js";
+import { useCustomPersona } from "./helpers/persona.js";
 
 const A = "https://a.synthetic.invalid/v1";
 const B = "http://127.0.0.1:9/v1";
@@ -69,7 +70,8 @@ async function files(dir: string) {
   for (const name of await readdir(dir))
     if (name.endsWith(".json"))
       out[name] = await readFile(dir + "/" + name, "utf8");
-  for (const name of await readdir(dir + "/persona-history"))
+  // Retired history archives are preserved only where they already exist.
+  for (const name of await readdir(dir + "/persona-history").catch(() => []))
     out["persona-history/" + name] = await readFile(
       dir + "/persona-history/" + name,
       "utf8",
@@ -80,7 +82,7 @@ function exported(s: Store, dir: string, all: Record<string, string>) {
   return [
     JSON.stringify(s.publicConfig()),
     JSON.stringify(s.modelRegistry()),
-    JSON.stringify(s.personaHistory()),
+    JSON.stringify(s.personaView()),
     ...Object.entries(all)
       .filter(([n]) => n !== "secrets.json")
       .map(([, v]) => v),
@@ -94,11 +96,15 @@ test("legacy provider/model/key loads as the active registered entry without rew
       ...c,
       provider: { baseUrl: A, model: "legacy-model", vision: true },
       apiKey: keyA,
-      persona: { ...c.persona, name: "Legacy two" },
     });
-    // Reproduce a pre-registry installation: no `models`, flat three-key secrets.
+    // Reproduce a pre-registry installation: no `models` or `personas`, a
+    // customized legacy persona and flat three-key secrets.
     const legacy = JSON.parse(await readFile(dir + "/config.json", "utf8"));
-    for (const k of ["current", "previous"]) delete legacy[k].models;
+    for (const k of ["current", "previous"]) {
+      delete legacy[k].models;
+      delete legacy[k].personas;
+    }
+    legacy.current.persona.name = "Legacy two";
     await writeFile(dir + "/config.json", JSON.stringify(legacy));
     await writeFile(
       dir + "/secrets.json",
@@ -123,7 +129,7 @@ test("legacy provider/model/key loads as the active registered entry without rew
       },
     ]);
     assert.equal(t.secrets.apiKey, keyA);
-    // First save materializes the registry and keeps all persona history.
+    // First save materializes the registry and the migrated persona.
     const d = draft(t);
     d.providers[0].name = "Renamed";
     await t.save(body(t, d));
@@ -136,9 +142,8 @@ test("legacy provider/model/key loads as the active registered entry without rew
       model: "legacy-model",
       vision: true,
     });
-    assert.equal(u.personaHistory().total, 3);
-    assert.equal(u.personaRevision(2).persona.name, "Legacy two");
-    assert.equal(u.personaRevision(1).persona.name, "Coach");
+    assert.equal(u.personaView().active.label, "Legacy two");
+    assert.equal(u.publicConfig().persona.name, "Legacy two");
   });
 });
 
@@ -458,18 +463,16 @@ test("registry ids, bounds and mode conflicts are validated with fixed codes", a
       }),
     );
     assert.equal(s.publicConfig().revision, 2);
-    assert.equal(s.personaHistory().total, 2);
   });
 });
 
-test("inactive and incoming keys are checked against config, previous and history", async () => {
+test("inactive and incoming keys are checked against config and previous", async () => {
   await withStore(async (s, dir) => {
-    const c = s.publicConfig();
-    await s.save({
-      ...c,
-      persona: { ...c.persona, markdown: "old text synthetic-history-secret" },
+    const id = await useCustomPersona(s, {
+      markdown: "old text synthetic-history-secret",
     });
-    await s.save({ ...c });
+    await s.selectPersona("kata_default");
+    await s.deletePersona(id);
     const d = twoProviders();
     d.providers[1].apiKey = "synthetic-history-secret";
     await assert.rejects(s.save(body(s, d)), /SECRET_IN_CONFIG/);
@@ -481,8 +484,8 @@ test("inactive and incoming keys are checked against config, previous and histor
     f.providers[1].models[0].name = "leak " + keyB;
     await assert.rejects(s.save(body(s, f)), /SECRET_IN_CONFIG/);
     await assert.rejects(
-      s.save({
-        ...body(s, draft(s)),
+      s.createPersona({
+        label: "Leak",
         persona: { ...s.publicConfig().persona, markdown: keyB },
       }),
       /SECRET_IN_CONFIG/,
@@ -495,26 +498,25 @@ test("inactive and incoming keys are checked against config, previous and histor
   });
 });
 
-test("persona restore never rewinds registry or credentials; every save adds a revision", async () => {
+test("persona actions never rewind registry or credentials; every save adds a revision", async () => {
   await withStore(async (s, dir) => {
-    const c = s.publicConfig();
-    await s.save({ ...c, persona: { ...c.persona, name: "Persona two" } });
+    await useCustomPersona(s, { name: "Persona two" });
     await s.save(body(s, twoProviders()));
     const d = draft(s);
     d.active = { provider: "bravo", model: "b1" };
     await s.save(body(s, d));
     const registry = s.modelRegistry();
     const secrets = await readFile(dir + "/secrets.json", "utf8");
-    await s.restorePersona(1);
+    await s.selectPersona("kata_default");
     assert.equal(s.publicConfig().persona.name, "Coach");
     assert.deepEqual(s.modelRegistry(), registry);
     assert.equal(await readFile(dir + "/secrets.json", "utf8"), secrets);
     assert.equal(s.secrets.apiKey, keyB);
-    // Unchanged saves still add persona revisions.
-    const total = s.personaHistory().total;
+    // Unchanged saves still add revisions.
+    const revision = s.publicConfig().revision;
     await s.save(body(s, draft(s)));
     await s.save({ ...s.publicConfig() });
-    assert.equal(s.personaHistory().total, total + 2);
+    assert.equal(s.publicConfig().revision, revision + 2);
     const t = await reopen(dir);
     assert.deepEqual(t.modelRegistry(), registry);
     assert.equal(t.secrets.apiKey, keyB);
@@ -630,7 +632,7 @@ test("concurrent registry saves serialize without losing or mixing credentials",
     await Promise.all([
       s.save(body(s, toB)),
       s.save(body(s, rekeyA)),
-      s.restorePersona(1),
+      s.selectPersona("supportive_mentor"),
     ]);
     assert.equal(s.publicConfig().revision, 5);
     // The last save wins wholesale: A active again with its rotated key.
@@ -661,8 +663,11 @@ test("serialized configuration and secrets stay below storage caps", async () =>
     const persona = Object.fromEntries(
       Object.keys(c.persona).map((k) => [k, "\u0001".repeat(8000)]),
     );
-    await s.save({
-      ...body(s, { active: { provider: "p0", model: "m0" }, providers }),
+    await s.save(
+      body(s, { active: { provider: "p0", model: "m0" }, providers }),
+    );
+    await s.createPersona({
+      label: "Big",
       persona: { ...persona, name: "Big" },
     });
     await s.save(body(s, draft(s)));
@@ -727,7 +732,7 @@ test("the previous release's Store reads, saves and rolls back registry files sa
       assert.equal(back.secrets.apiKey, keyB);
       assert.equal(back.modelRegistry().providers.length, 1);
       assert.equal(back.modelRegistry().providers[0].baseUrl, B);
-      assert.equal(back.personaHistory().total, 3);
+      assert.equal(back.personaView().active.label, "Old owner");
       // Old owner's rollback republishes the registry revision intact.
       const again = new LegacyStore(dir);
       await again.init();
@@ -736,7 +741,7 @@ test("the previous release's Store reads, saves and rolls back registry files sa
       assert.equal(restored.modelRegistry().providers.length, 2);
       assert.equal(restored.secrets.apiKey, keyB);
       assert.equal(restored.modelRegistry().providers[0].hasCredential, true);
-      assert.equal(restored.personaHistory().total, 4);
+      assert.equal(restored.personaView().active.id, "kata_default");
     });
   } finally {
     await rm(legacyDir, { recursive: true, force: true });

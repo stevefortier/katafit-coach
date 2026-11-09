@@ -1,4 +1,9 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import {
+  draftSharedName,
+  savedSharedName,
+  sharedNameField,
+} from "./helpers/persona.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
@@ -62,8 +67,7 @@ test("real Studio saves without consent, restarts, and resume failure retries wi
         .querySelector("#notice")
         ?.textContent?.includes("Worker started"),
     );
-    await settingsTab(page, "Persona");
-    await page.locator("#name").fill("Synthetic retained draft");
+    await draftSharedName(page, "Synthetic retained draft");
     const revision = store.publicConfig().revision;
     // Settings policy: Save asks no restart consent, even with Coach running.
     let dialogs = 0;
@@ -76,7 +80,7 @@ test("real Studio saves without consent, restarts, and resume failure retries wi
       () =>
         document.querySelector("#revision")?.textContent === "Saved revision 3",
     );
-    assert.equal(store.publicConfig().persona.name, "Synthetic retained draft");
+    assert.equal(savedSharedName(store), "Synthetic retained draft");
     assert.equal(dialogs, 0);
     // Wait for the restart continuation before making the backend fail.
     await page.waitForFunction(() =>
@@ -84,7 +88,7 @@ test("real Studio saves without consent, restarts, and resume failure retries wi
         .querySelector("#restartStatus")
         ?.textContent?.includes("Coach restarted with the saved configuration"),
     );
-    await page.locator("#name").fill("Synthetic applied but stopped");
+    await sharedNameField(page).fill("Synthetic applied but stopped");
     fail = true;
     await page.locator("#save").click();
     await page.locator("#restartRetry").waitFor({ state: "visible" });
@@ -110,14 +114,14 @@ test("real Studio saves without consent, restarts, and resume failure retries wi
       await route.fetch();
       await route.abort();
     });
-    await page.locator("#name").fill("Synthetic lost response");
+    await sharedNameField(page).fill("Synthetic lost response");
     await page.locator("#save").click();
     await page.waitForFunction(() =>
       document.querySelector("#notice")?.textContent?.includes("readback"),
     );
     assert.match(await page.locator("#notice").innerText(), /is saved/);
     assert.equal(
-      await page.locator("#name").inputValue(),
+      await sharedNameField(page).inputValue(),
       "Synthetic lost response",
     );
     assert.equal(await page.locator("#save").isDisabled(), false);
@@ -136,7 +140,7 @@ test("real Studio saves without consent, restarts, and resume failure retries wi
       await gate;
       await route.fulfill({ response });
     });
-    await page.locator("#name").fill("Synthetic late save");
+    await sharedNameField(page).fill("Synthetic late save");
     await page.locator("#save").click();
     await started;
     await page.locator("#lockStudio").click();

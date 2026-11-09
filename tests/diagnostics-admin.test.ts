@@ -56,10 +56,10 @@ test("authenticated no-store logs preserve safe admin failure across restart wit
         body: '{"persona":{"name":"PRIVATE payload https://private.test"}}',
       })
     ).json();
-    assert.equal(failure.error, "INVALID_PERSONA");
+    assert.equal(failure.error, "PERSONA_READ_ONLY");
     assert.ok(failure.hint);
     const before = await logs();
-    assert.equal(before.entries.at(-1).code, "INVALID_PERSONA");
+    assert.equal(before.entries.at(-1).code, "PERSONA_READ_ONLY");
     assert.equal(before.entries.at(-1).level, "error");
     assert.ok(!JSON.stringify(before).includes("PRIVATE"));
     assert.ok(!JSON.stringify(before).includes(store.secrets.admin));
@@ -67,20 +67,20 @@ test("authenticated no-store logs preserve safe admin failure across restart wit
       await fetch(app.origin + "/api/config", {
         method: "POST",
         headers: headers(),
-        body: "{}",
+        body: '{"persona":{}}',
       });
     assert.ok((await logs()).entries.length > 5000);
     await app.close();
     app = await admin(store, 0);
     const after = await logs();
-    assert.ok(after.entries.some((e: any) => e.code === "INVALID_PERSONA"));
+    assert.ok(after.entries.some((e: any) => e.code === "PERSONA_READ_ONLY"));
     assert.equal(
       (
         await (
           await fetch(app.origin + "/api/status", { headers: headers() })
         ).json()
       ).lastError.code,
-      "INVALID_PERSONA",
+      "PERSONA_READ_ONLY",
     );
     for (const file of (await readdir(dir)).filter((f) =>
       f.startsWith("diagnostics"),
@@ -143,7 +143,7 @@ for (const mode of ["backend", "provider"]) {
         body: JSON.stringify(body),
       });
     try {
-      await post("/api/config", {});
+      await post("/api/config", { persona: {} });
       const pending = post("/api/preview", { text: "Synthetic question" });
       await ready;
       await post("/api/cancel", {});
@@ -161,7 +161,7 @@ for (const mode of ["backend", "provider"]) {
       const status = await (
         await fetch(app.origin + "/api/status", { headers })
       ).json();
-      assert.equal(status.lastError.code, "INVALID_PERSONA");
+      assert.equal(status.lastError.code, "PERSONA_READ_ONLY");
     } finally {
       await app.close();
       backend.closeAllConnections();

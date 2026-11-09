@@ -1,4 +1,5 @@
 import { settingsTab } from "../tests/helpers/settings-navigation.js";
+import { draftNewPersona } from "../tests/helpers/persona.js";
 import { chromium } from "playwright-core";
 import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -190,8 +191,7 @@ try {
   assert.equal(await page.locator("#operatorText").count(), 0);
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator("#settingsTab").click();
-  await settingsTab(page, "Persona");
-  await page.locator("#name").fill("Unsaved operator draft");
+  await draftNewPersona(page, "Unsaved operator draft");
   await openCoach();
   assert.equal(await page.locator("#operatorSnapshot").count(), 0);
   assert.equal(await page.locator(".chat-assistant button").count(), 0);
@@ -214,18 +214,21 @@ try {
     "chat never writes config",
   );
   await page.locator("#settingsTab").click();
-  await settingsTab(page, "Worker");
+  await settingsTab(page, "Persona");
   const saveDialogs: string[] = [];
   const rejectSaveDialog = (dialog: import("playwright").Dialog) => {
     saveDialogs.push(dialog.message());
     void dialog.dismiss();
   };
   page.on("dialog", rejectSaveDialog);
-  await page.locator("#save").click();
+  // Explicit persona actions: save the draft as a config, then use it.
+  await page.locator("#savePersona").click();
+  await page.locator("#selectPersona").waitFor({ state: "visible" });
+  await page.locator("#selectPersona").click();
   await page.waitForFunction(() =>
-    document.querySelector("#notice")?.textContent?.startsWith("Saved."),
+    document.querySelector("#notice")?.textContent?.includes("Coach now uses"),
   );
-  assert.equal(store.publicConfig().revision, revisionBeforeDraft + 1);
+  assert.equal(store.publicConfig().revision, revisionBeforeDraft + 2);
   assert.match(store.publicConfig().persona.markdown, /Explicit Settings rule/);
   assert.equal(await page.locator("#save").isEnabled(), true);
   await page.waitForFunction(() =>
@@ -235,6 +238,7 @@ try {
   );
   assert.deepEqual(saveDialogs, [], "saving never asks for restart consent");
   page.off("dialog", rejectSaveDialog);
+  await settingsTab(page, "Worker");
   await page.locator("#stop").click();
   await page.waitForFunction(
     () => document.querySelector("#state")?.textContent === "STOPPED",
@@ -274,13 +278,14 @@ try {
   assert.equal(await page.locator("#nativeAttachments").isVisible(), true);
   await page.locator("#coachPaneExpand").click();
   await page.locator("#settingsTab").click();
-  await settingsTab(page, "Persona");
-  await page.locator("#name").fill("Synthetic authority reload");
+  await draftNewPersona(page, "Synthetic authority reload");
   assert.notEqual(
     await page.locator("#coachLauncherName").innerText(),
     "Synthetic authority reload",
   );
-  await page.locator("#save").click();
+  await page.locator("#savePersona").click();
+  await page.locator("#selectPersona").waitFor({ state: "visible" });
+  await page.locator("#selectPersona").click();
   await page.waitForFunction(
     () =>
       document.querySelector("#coachLauncherName")?.textContent ==

@@ -24,10 +24,7 @@ test("configuration authority change revokes a live panel attachment", async () 
     g.files.set("evidence.txt", Buffer.from("acquired evidence"));
     await g.tool("send_to_operator", { workspace_path: "evidence.txt" });
     const item = g.published[0];
-    await g.f.store.save({
-      ...g.f.store.publicConfig(),
-      persona: { ...g.f.store.publicConfig().persona, name: "Reconfigured" },
-    });
+    await g.f.store.save(g.f.store.publicConfig());
     await assert.rejects(g.gateway.readAttachment(item.id), /REVOKED/);
   } finally {
     await g.close();

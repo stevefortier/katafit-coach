@@ -3,26 +3,23 @@ import assert from "node:assert/strict";
 import { mkdtemp, stat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Store, compile } from "../src/config/store.js";
+import { useCustomPersona } from "./helpers/persona.js";
 test("save canonical persona revisions without exporting secrets, rollback and private modes", async () => {
   const dir = await mkdtemp(tmpdir() + "/coach-");
   try {
     const s = new Store(dir);
     await s.init();
     const c = s.publicConfig();
-    await s.save({
-      ...c,
-      persona: { ...c.persona, name: "Ada" },
-      token: "private-token",
-      apiKey: "private-key",
-    });
-    assert.equal(s.publicConfig().revision, 2);
+    await s.save({ ...c, token: "private-token", apiKey: "private-key" });
+    await useCustomPersona(s, { name: "Ada" });
+    assert.equal(s.publicConfig().revision, 4);
     assert.ok(!JSON.stringify(s.publicConfig()).includes("private-"));
     assert.ok(compile(s.publicConfig()).includes("Ada"));
     assert.ok(compile(s.publicConfig()).includes("owner"));
     assert.equal((await stat(dir + "/secrets.json")).mode & 0o777, 0o600);
     await s.rollback();
     assert.equal(s.publicConfig().persona.name, "Coach");
-    assert.equal(s.publicConfig().revision, 3);
+    assert.equal(s.publicConfig().revision, 5);
     assert.equal(s.secrets.token, "private-token");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -36,8 +33,7 @@ test("opening status storage never overwrites newer saved configuration", async 
     await first.init();
     const second = new Store(dir);
     await second.init();
-    const c = first.publicConfig();
-    await first.save({ ...c, persona: { ...c.persona, name: "New revision" } });
+    await useCustomPersona(first, { name: "New revision" });
     await second.init();
     assert.equal(second.publicConfig().persona.name, "New revision");
   } finally {
@@ -52,12 +48,13 @@ test("rejects copying known secrets into exportable persona configuration", asyn
     await s.save({ ...s.publicConfig(), apiKey: "hidden-provider-secret" });
     const c = s.publicConfig();
     await assert.rejects(
-      s.save({
-        ...c,
+      s.createPersona({
+        label: "Leaky",
         persona: { ...c.persona, markdown: "hidden-provider-secret" },
       }),
       /SECRET_IN_CONFIG/,
     );
+    assert.deepEqual(s.publicConfig(), c);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -69,26 +66,22 @@ for (const key of ["apiKey", "token"] as const) {
     try {
       const s = new Store(dir);
       await s.init();
-      const c = s.publicConfig();
-      await s.save({
-        ...c,
-        [key]: "synthetic-old-credential",
-        persona: { ...c.persona, markdown: "synthetic-future-credential" },
-      });
+      await s.save({ ...s.publicConfig(), [key]: "synthetic-old-credential" });
+      const id = await useCustomPersona(
+        s,
+        { markdown: "synthetic-future-credential" },
+        "Retained",
+      );
       const before = s.publicConfig();
       await assert.rejects(
-        s.save({
-          ...before,
-          [key]: "synthetic-future-credential",
-          persona: { ...before.persona, markdown: "clean" },
-        }),
+        s.save({ ...before, [key]: "synthetic-future-credential" }),
         /SECRET_IN_CONFIG/,
       );
       assert.deepEqual(s.publicConfig(), before);
       assert.equal(s.secrets[key], "synthetic-old-credential");
       // Even the older retained revision is checked before credential replacement.
-      await s.save({
-        ...before,
+      await s.updatePersona(id, {
+        label: "Retained",
         persona: { ...before.persona, markdown: "clean" },
       });
       await assert.rejects(
@@ -108,9 +101,8 @@ for (const key of ["apiKey", "token"] as const) {
       const s = new Store(dir);
       await s.init();
       const c = s.publicConfig();
-      await s.save({
-        ...c,
-        persona: { ...c.persona, markdown: "synthetic-lifecycle-secret" },
+      const id = await useCustomPersona(s, {
+        markdown: "synthetic-lifecycle-secret",
       });
       s.secrets[key] = "synthetic-lifecycle-secret";
       assert.throws(() => s.publicConfig(), /SECRET_IN_CONFIG/);
@@ -123,7 +115,8 @@ for (const key of ["apiKey", "token"] as const) {
         /SECRET_IN_CONFIG/,
       );
       s.secrets[key] = "";
-      await s.save(c);
+      await s.selectPersona("kata_default");
+      await s.deletePersona(id);
       s.secrets[key] = "synthetic-lifecycle-secret";
       const before = s.publicConfig();
       await assert.rejects(s.rollback(), /SECRET_IN_CONFIG/);
@@ -144,10 +137,10 @@ test("escaped credential characters cannot bypass export and prompt checks", asy
     await s.init();
     const c = s.publicConfig();
     const secret = 'synthetic-"quoted"-credential';
+    await s.save({ ...c, apiKey: secret });
     await assert.rejects(
-      s.save({
-        ...c,
-        apiKey: secret,
+      s.createPersona({
+        label: "Escaped",
         persona: { ...c.persona, markdown: secret },
       }),
       /SECRET_IN_CONFIG/,

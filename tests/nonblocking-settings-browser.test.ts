@@ -1,4 +1,9 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import {
+  draftSharedName,
+  savedSharedName,
+  sharedNameField,
+} from "./helpers/persona.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -74,10 +79,10 @@ async function studio(
       throw new Error("unexpected dialog: " + dialog.message());
     });
     await page.goto(
-      app.origin + "/settings?section=persona#" + store.secrets.admin,
+      app.origin + "/settings?section=models#" + store.secrets.admin,
     );
     await page.locator("#studio").waitFor({ state: "visible" });
-    await settingsTab(page, "Persona");
+    await settingsTab(page, "Models");
     await run!(page, store, app.origin);
   } finally {
     beforeClose?.();
@@ -91,7 +96,7 @@ async function studio(
 
 const noticeText = (page: Page) => page.locator("#notice").innerText();
 const saveName = async (page: Page, name: string) => {
-  await page.locator("#name").fill(name);
+  await draftSharedName(page, name);
   const posted = page.waitForResponse(
     (r) => r.url().endsWith("/api/config") && r.request().method() === "POST",
   );
@@ -127,11 +132,11 @@ test(
             { timeout: 10000 },
           );
           assert.equal(await page.locator("#save").isDisabled(), false);
-          assert.equal(await page.locator("#name").isDisabled(), false);
+          assert.equal(await sharedNameField(page).isDisabled(), false);
           const second = await saveName(page, "Second while held");
           assert.equal(second.status(), 200, await second.text());
           assert.equal(store.publicConfig().revision, revision + 2);
-          assert.equal(store.publicConfig().persona.name, "Second while held");
+          assert.equal(savedSharedName(store), "Second while held");
           await page.waitForFunction(() =>
             document
               .querySelector("#restartStatus")
@@ -186,7 +191,7 @@ test(
         );
         await page.locator("#previewButton").click();
         await entered.promise;
-        await settingsTab(page, "Persona");
+        await settingsTab(page, "Models");
         assert.equal(await page.locator("#save").isDisabled(), false);
         const saved = await saveName(page, "Saved during preview");
         assert.equal(saved.status(), 200, await saved.text());
@@ -235,7 +240,7 @@ test(
         await route.fetch();
         await route.abort();
       });
-      await page.locator("#name").fill("Committed, reply lost");
+      await sharedNameField(page).fill("Committed, reply lost");
       await page.locator("#save").click();
       await page.waitForFunction(() =>
         document.querySelector("#notice")?.textContent?.includes("readback"),
@@ -273,13 +278,15 @@ test(
             }
             return route.continue();
           });
-          await page.locator("#name").fill("Lost reply, held readback");
+          await sharedNameField(page).fill("Lost reply, held readback");
           await page.locator("#save").click();
           await readEntered.promise;
           await page.waitForFunction(
             () => {
               const save = document.querySelector("#save") as HTMLButtonElement;
-              const name = document.querySelector("#name") as HTMLInputElement;
+              const name = document.querySelector(
+                '#models [data-provider] input[data-field="name"]',
+              ) as HTMLInputElement;
               return !save.disabled && !name.disabled;
             },
             undefined,
@@ -287,10 +294,7 @@ test(
           );
           assert.match(await noticeText(page), /unknown|unconfirmed/i);
           assert.equal(posts, 1, "no automatic replay while readback is held");
-          assert.equal(
-            store.publicConfig().persona.name,
-            "Lost reply, held readback",
-          );
+          assert.equal(savedSharedName(store), "Lost reply, held readback");
           readHeld.resolve();
         },
         readHeld.resolve,
@@ -325,7 +329,7 @@ test(
             await writeEntered.promise;
             await route.abort();
           });
-          await page.locator("#name").fill("Original save still pending");
+          await sharedNameField(page).fill("Original save still pending");
           await page.locator("#save").click();
           await page.waitForFunction(
             () =>
@@ -342,10 +346,7 @@ test(
           writeHeld.resolve();
           await pending;
           assert.equal(store.publicConfig().revision, revision + 1);
-          assert.equal(
-            store.publicConfig().persona.name,
-            "Original save still pending",
-          );
+          assert.equal(savedSharedName(store), "Original save still pending");
         },
         writeHeld.resolve,
       );
@@ -435,7 +436,7 @@ test(
         });
       failReads = false;
       // A genuinely rejected POST stays an error and is never "Saved".
-      await page.locator("#name").fill(" ");
+      await sharedNameField(page).fill(" ");
       const rejected = page.waitForResponse(
         (r) =>
           r.url().endsWith("/api/config") && r.request().method() === "POST",

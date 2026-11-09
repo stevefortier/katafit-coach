@@ -125,16 +125,14 @@ try {
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const owners = [new ObjectId(), new ObjectId()];
-  await db
-    .collection("users")
-    .insertMany(
-      owners.map((_id) => ({
-        _id,
-        display_name: "Synthetic live acceptance",
-        timezone: "UTC",
-        external_coach_agent: { enabled: true },
-      })),
-    );
+  await db.collection("users").insertMany(
+    owners.map((_id) => ({
+      _id,
+      display_name: "Synthetic live acceptance",
+      timezone: "UTC",
+      external_coach_agent: { enabled: true },
+    })),
+  );
   await service.ensureExternalCoachIndexes(db);
   const credentials = [];
   for (const owner of owners) {
@@ -227,9 +225,14 @@ try {
       ...store.publicConfig(),
       origin,
       provider: { baseUrl, model },
-      persona: { ...store.publicConfig().persona, ...personas[index] },
     };
     await http("/api/config", config);
+    // Persona configs save and select through their own routes.
+    const created = await http("/api/personas", {
+      label: `Live acceptance ${index + 1} r${store.publicConfig().revision}`,
+      persona: { ...store.publicConfig().persona, ...personas[index] },
+    });
+    await http(`/api/personas/${created.id}/select`, {});
     const disk = new Store(dir);
     await disk.init();
     assert.deepEqual(disk.publicConfig(), store.publicConfig());

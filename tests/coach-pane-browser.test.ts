@@ -1,4 +1,5 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import { draftNewPersona } from "./helpers/persona.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -155,7 +156,7 @@ test(
     try {
       const { page } = h;
       await h.unlock("/settings?section=persona");
-      await page.locator("#name").fill("Synthetic retained draft");
+      await draftNewPersona(page, "Synthetic retained draft");
       // Tall synthetic content exercises ownership, not production records.
       await page.locator("#settingsPanel").evaluate((panel) => {
         const fixture = document.createElement("div");
@@ -930,8 +931,7 @@ test(
       await page.waitForTimeout(2600);
       assert.ok(h.counts.logs > logs, "docked pane keeps page polling");
       await page.locator("#settingsTab").click();
-      await settingsTab(page, "Persona");
-      await page.locator("#name").fill("Unsaved pane draft");
+      await draftNewPersona(page, "Unsaved pane draft");
       await page
         .locator("#workspaceScroll")
         .evaluate((owner) => owner.scrollTo(0, 400));
@@ -1065,8 +1065,7 @@ test(
           "Open Dojo to load shared data.",
       );
       await page.locator("#settingsTab").click();
-      await settingsTab(page, "Persona");
-      await page.locator("#name").fill("History draft");
+      await draftNewPersona(page, "History draft");
       await page.locator("#settingsTab").click();
       await page.locator("#settings-log-tab").click();
       await page.goBack();

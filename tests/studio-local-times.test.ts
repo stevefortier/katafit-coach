@@ -76,12 +76,6 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
         state: "succeeded",
         at: Date.parse(instants[2]),
       };
-      const history = [instants[0], null, "invalid"].map((savedAt, i) => ({
-        revision: 3 - i,
-        savedAt,
-        current: i === 0,
-        persona: {},
-      }));
       const entries = instants.map((time, i) => ({
         time,
         level: "error",
@@ -118,21 +112,17 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
                 }
               : path === "/api/logs"
                 ? { entries, capacity: 5000 }
-                : path === "/api/persona-history"
-                  ? { items: history, total: history.length }
-                  : path === "/api/persona-history/3"
-                    ? history[0]
-                    : ["/api/update", "/api/update/check"].includes(path)
-                      ? {
-                          supported: true,
-                          installed: operation.sha,
-                          latest: operation.sha,
-                          checkedAt: operation.at,
-                          lastOperation: operation,
-                        }
-                      : path === "/api/terminal/receipts"
-                        ? { actions: [] }
-                        : {};
+                : ["/api/update", "/api/update/check"].includes(path)
+                  ? {
+                      supported: true,
+                      installed: operation.sha,
+                      latest: operation.sha,
+                      checkedAt: operation.at,
+                      lastOperation: operation,
+                    }
+                  : path === "/api/terminal/receipts"
+                    ? { actions: [] }
+                    : {};
         await route.fulfill({ json: body });
       });
       await page.goto(
@@ -230,23 +220,6 @@ for (const timezoneId of ["America/New_York", "Asia/Kathmandu"]) {
       await page.setViewportSize({ width: 1280, height: 1000 });
       assert.deepEqual(JSON.parse(copied).update.lastOperation, operation);
       await page.locator("#settingsTab").click();
-      await settingsTab(page, "Persona");
-      await page.locator("#personaHistory > summary").click();
-      await page.locator('#historyList button[data-revision="3"]').waitFor();
-      assert.deepEqual(
-        await page.locator("#historyList button").allTextContents(),
-        [
-          `Revision 3 · Current · ${expected[0]}`,
-          "Revision 2 · Save time unavailable",
-          "Revision 1 · Save time unavailable",
-        ],
-      );
-      await page.locator('#historyList button[data-revision="3"]').click();
-      await page.locator("#historyDetail").waitFor({ state: "visible" });
-      assert.equal(
-        await page.locator("#historyTitle").textContent(),
-        `Revision 3 · Current · ${expected[0]} — read-only`,
-      );
       await settingsTab(page, "Updates");
       assert.equal(
         await page.locator("#updateChecked").textContent(),

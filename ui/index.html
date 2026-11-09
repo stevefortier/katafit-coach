@@ -546,84 +546,104 @@
               hidden
             >
               <h2>Persona</h2>
-              <label>Coach name<input id="name" /></label
-              ><label>Voice<input id="voice" /></label>
-              <div class="split">
-                <label
-                  >Verbosity<select id="verbosity">
-                    <option>Concise</option>
-                    <option>Balanced</option>
-                    <option>Detailed</option>
-                  </select></label
-                ><label>Initiative<input id="initiative" /></label>
-              </div>
-              <label
-                >Coaching principles<textarea
-                  id="principles"
-                  rows="2"
-                ></textarea></label
-              ><label
-                >Example guidance<textarea
-                  id="examples"
-                  rows="2"
-                ></textarea></label
-              ><label
-                >Boundaries<textarea id="boundaries" rows="2"></textarea>
-              </label>
-              <details>
-                <summary>Advanced Markdown</summary>
-                <textarea
-                  id="markdown"
-                  rows="5"
-                  placeholder="Additional persona instructions"
-                ></textarea>
-              </details>
-              <button id="resetPersona" type="button" class="secondary">
-                Reset to stock defaults
-              </button>
+              <p id="personaActive" class="active-badge" role="status"></p>
               <p class="hint">
-                Reset changes only the persona editor. Save a new revision to
-                apply.
+                The Coach uses one saved persona. Built-in Kata.fit personas are
+                read-only; duplicate one to customize it. Persona actions save a
+                new revision at once and leave unsaved Kata.fit, Models and
+                Model drafts unsaved.
               </p>
-              <details id="personaHistory">
-                <summary>Persona revision history</summary>
-                <p class="hint">
-                  Every save retains a snapshot, including Kata.fit- or
-                  Models-only saves. Restoring creates a new revision; history
-                  is never removed.
+              <div id="personaList" class="persona-list">
+                <h3 class="persona-group">Built-in Kata.fit personas</h3>
+                <div id="personaBuiltins" class="persona-choices"></div>
+                <h3 class="persona-group">Custom personas</h3>
+                <div id="personaCustom" class="persona-choices"></div>
+                <p id="personaCustomEmpty" class="hint" hidden>
+                  No custom personas yet.
                 </p>
-                <p id="historyStatus" role="status"></p>
-                <div id="historyList" class="history-list"></div>
+              </div>
+              <div class="actions">
+                <button id="retryPersonas" type="button" hidden>
+                  Retry loading personas
+                </button>
+                <button id="newPersona" type="button" class="secondary">
+                  New custom persona
+                </button>
+              </div>
+              <section
+                id="personaDetail"
+                class="persona-detail"
+                aria-labelledby="personaDetailTitle"
+                hidden
+              >
+                <h3 id="personaDetailTitle"></h3>
+                <p id="personaKind" class="hint"></p>
+                <div id="personaBuiltin" hidden>
+                  <p id="personaDescription"></p>
+                  <h4>Instructions</h4>
+                  <p id="personaInstructions" class="persona-text"></p>
+                </div>
+                <div id="personaEditor" hidden>
+                  <label
+                    >Persona name<input id="personaLabel" maxlength="100"
+                  /></label>
+                  <label>Coach name<input id="name" /></label
+                  ><label>Voice<input id="voice" /></label>
+                  <div class="split">
+                    <label
+                      >Verbosity<select id="verbosity">
+                        <option value="">Not set</option>
+                        <option>Concise</option>
+                        <option>Balanced</option>
+                        <option>Detailed</option>
+                      </select></label
+                    ><label>Initiative<input id="initiative" /></label>
+                  </div>
+                  <label
+                    >Coaching principles<textarea
+                      id="principles"
+                      rows="2"
+                    ></textarea></label
+                  ><label
+                    >Example guidance<textarea
+                      id="examples"
+                      rows="2"
+                    ></textarea></label
+                  ><label
+                    >Boundaries<textarea id="boundaries" rows="2"></textarea>
+                  </label>
+                  <details>
+                    <summary>Advanced Markdown</summary>
+                    <textarea
+                      id="markdown"
+                      rows="5"
+                      placeholder="Additional persona instructions"
+                    ></textarea>
+                  </details>
+                </div>
                 <div class="actions">
-                  <button id="historyLatest" type="button" class="secondary">
-                    Latest revisions
+                  <button id="selectPersona" type="button">
+                    Use this persona
+                  </button>
+                  <button id="savePersona" type="button">
+                    Save persona changes
+                  </button>
+                  <button id="duplicatePersona" type="button" class="secondary">
+                    Duplicate
+                  </button>
+                  <button id="deletePersona" type="button" class="secondary">
+                    Delete
                   </button>
                   <button
-                    id="historyOlder"
+                    id="discardPersonaDraft"
                     type="button"
                     class="secondary"
                     hidden
                   >
-                    Older revisions
+                    Discard draft
                   </button>
                 </div>
-                <section
-                  id="historyDetail"
-                  hidden
-                  aria-label="Read-only persona snapshot"
-                >
-                  <h3 id="historyTitle"></h3>
-                  <dl id="historySnapshot"></dl>
-                  <button id="restorePersona" type="button">
-                    Restore as new revision
-                  </button>
-                  <p class="hint">
-                    Only saved persona fields are restored. Saved Kata.fit and
-                    Models settings and credentials stay unchanged. Unsaved
-                    Kata.fit and Models drafts remain in the editor.
-                  </p>
-                </section>
-              </details>
+              </section>
             </section>
             <section
               class="card"
@@ -1341,8 +1361,9 @@ I trained hard yesterday and feel sore today. How should I approach my next sess
               ><span id="revision"></span>
             </div>
             <p class="hint" id="settingsSaveHint">
-              Save applies Kata.fit, Models, Model and Persona drafts across
-              tabs. Preview and worker use saved settings.
+              Save applies Kata.fit, Models and Model drafts across tabs.
+              Persona actions save on their own. Preview and worker use saved
+              settings.
             </p>
             <section
               class="card diagnostics"

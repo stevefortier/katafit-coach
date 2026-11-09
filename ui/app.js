@@ -405,7 +405,6 @@ async function load(preserveDrafts = false) {
     resetMemories();
   config = data;
   renderCoachName();
-  for (const f of fields) $(f).value = config.persona[f];
   if (!preserveDrafts || !modelsDraft) {
     $("origin").value = config.origin;
     $("token").value = "";
@@ -414,8 +413,11 @@ async function load(preserveDrafts = false) {
   }
   renderModelStatus();
   $("revision").textContent = "Saved revision " + config.revision;
-  clearPersonaHistory();
-  if (historyVisible()) void loadPersonaHistory();
+  // A failed persona list never blocks the rest of the Studio.
+  await loadPersonas().catch((error) => {
+    if (error.stale) throw error;
+    personaUnavailable(error);
+  });
   $("prompt").textContent =
     "Preview the saved revision with freshly fetched backend instructions. Unsaved edits are not previewed.";
   $("answer").textContent = "Your preview will appear here.";
@@ -449,7 +451,6 @@ action("unlock", async () => {
   if (!updatesEntryActive) await refreshUpdate();
 });
 action("save", async () => {
-  const persona = Object.fromEntries(fields.map((f) => [f, $(f).value]));
   const draft = modelsDraft;
   if (!draftActive(draft)) {
     notice(
@@ -469,7 +470,6 @@ action("save", async () => {
   const result = await lifecycleApi(
     "config",
     {
-      persona,
       origin: $("origin").value,
       token: $("token").value,
       models: {
@@ -942,11 +942,21 @@ function renderProviders(focus) {
       ?.focus({ preventScroll: true });
 }
 let editorsLocked = false;
+let personasData,
+  personaSelected,
+  // The ID ("new" or custom) whose values the editor holds, and those values as
+  // last filled from saved data. Independent of selection and list responses.
+  personaEditorOwner,
+  personaEditorBase,
+  // A draft (with its owner) kept while no persona list is shown.
+  personaHeld,
+  personaEpoch = 0;
 function applyEditorLock() {
   for (const input of document.querySelectorAll(
     "#katafit input, #models input, #models select, #models button, #model input, #persona input, #persona textarea, #persona select, #skills input, #skills textarea, #skills button",
   ))
     input.disabled = editorsLocked || input.dataset.fixed === "disabled";
+  if (personasData) renderPersonaActions();
 }
 action("addProvider", async () => {
   if (!modelsDraft || modelsDraft.providers.length >= 16) return;
@@ -973,14 +983,6 @@ action("addProvider", async () => {
   $("providerList")
     .querySelector(`[data-provider="${provider.id}"] input[data-field="name"]`)
     ?.focus();
-});
-action("resetPersona", async () => {
-  const { persona } = await api("persona-defaults");
-  for (const f of fields) $(f).value = persona[f];
-  notice(
-    "Restored stock persona in the editor. Save a new revision to apply it.",
-    "info",
-  );
 });
 let skillsData,
   skillDrafts = new Map(),
@@ -1160,6 +1162,8 @@ action("restoreSkill", async () => {
     () => loadSkills(true),
   );
 });
+const historyLabel = (e) =>
+  `Revision ${e.revision} · ${e.current ? "Current · " : ""}${formatTimestamp(e.savedAt, "Save time unavailable")}`;
 function skillHistoryVisible() {
   return (
     key &&
@@ -1228,147 +1232,365 @@ $("skillHistory").addEventListener("toggle", () => {
     $("skillHistoryDetail").hidden = true;
   }
 });
-let historyEpoch = 0,
-  historyBefore = null,
-  historySelected = null,
-  historyBusy = false;
-function historyVisible() {
-  return (
-    key &&
-    !$("studio").hidden &&
-    !$("settingsPanel").hidden &&
-    !$("persona").hidden &&
-    $("personaHistory").open
-  );
+// Saved persona configs. Every action saves at once by canonical ID and never
+// sends the shared Kata.fit/Models drafts; the editor draft is local only.
+const personaById = (id) =>
+  personasData &&
+  [...personasData.builtins, ...personasData.custom].find((p) => p.id === id);
+function readPersonaEditor() {
+  return {
+    label: $("personaLabel").value,
+    persona: Object.fromEntries(fields.map((f) => [f, $(f).value])),
+  };
 }
-function clearPersonaHistory() {
-  historyEpoch++;
-  historyBefore = historySelected = null;
-  $("historyList").replaceChildren();
-  $("historySnapshot").replaceChildren();
-  $("historyDetail").hidden = true;
-  $("historyOlder").hidden = true;
-  $("historyStatus").textContent = "";
+function personaDraft() {
+  const { label, persona } = readPersonaEditor();
+  return { label: label.trim(), persona };
 }
-const historyLabel = (e) =>
-  `Revision ${e.revision} · ${e.current ? "Current · " : ""}${formatTimestamp(e.savedAt, "Save time unavailable")}`;
-async function loadPersonaHistory(before) {
-  if (!historyVisible()) return;
-  const epoch = ++historyEpoch;
-  historySelected = null;
-  $("historyDetail").hidden = true;
-  $("historyList").replaceChildren();
-  $("historyStatus").textContent = "Loading revisions…";
+// A custom ID that owns an editor draft but is missing from the saved list
+// was deleted elsewhere; its draft stays until explicitly saved or discarded.
+const personaOrphaned = (id) =>
+  !!personasData && !!id && id !== "new" && !personaById(id);
+// The editor's unsaved draft, bound to the ID that owned the editor when it
+// was filled, never to a later selection or list response.
+function editorPersonaDraft() {
+  const owner = personaEditorOwner;
+  if (!owner || $("personaEditor").hidden) return undefined;
+  const draft = { owner, ...readPersonaEditor() };
+  if (owner === "new")
+    return draft.label.trim() || fields.some((f) => draft.persona[f].trim())
+      ? draft
+      : undefined;
+  if (personaOrphaned(owner)) return draft;
+  const base = personaEditorBase;
+  return draft.label.trim() !== base.label.trim() ||
+    fields.some((f) => draft.persona[f] !== base.persona[f])
+    ? draft
+    : undefined;
+}
+function personaDirty() {
+  return !!personaHeld || !!editorPersonaDraft();
+}
+async function loadPersonas() {
+  const generation = authGeneration,
+    epoch = ++personaEpoch;
+  let data;
   try {
-    const data = await api(
-      "persona-history" + (before ? "?before=" + before : ""),
-    );
-    if (epoch !== historyEpoch) return;
-    historyBefore = data.nextBefore;
-    $("historyOlder").hidden = !historyBefore;
-    $("historyStatus").textContent =
-      `${data.total} saved revisions. Select one to read all eight fields.`;
-    for (const entry of data.items) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "secondary";
-      button.textContent = historyLabel(entry);
-      button.dataset.revision = String(entry.revision);
-      button.setAttribute("aria-pressed", "false");
-      button.onclick = () => selectPersonaRevision(entry.revision);
-      $("historyList").append(button);
-    }
-  } catch (e) {
-    if (!e.stale && epoch === historyEpoch)
-      $("historyStatus").textContent =
-        "Could not load history: " +
-        e.message +
-        ". Use Latest revisions to retry.";
+    data = await api("personas");
+  } catch (error) {
+    // Late replies of a locked session or a superseded load never touch drafts.
+    if (generation !== authGeneration) throw staleAuthentication();
+    if (epoch !== personaEpoch) return;
+    throw error;
   }
-}
-async function selectPersonaRevision(revision) {
-  if (historyBusy) return;
-  const epoch = ++historyEpoch;
-  historySelected = null;
-  $("historyDetail").hidden = true;
-  try {
-    const entry = await api("persona-history/" + revision);
-    if (epoch !== historyEpoch) return;
-    historySelected = revision;
-    for (const button of $("historyList").querySelectorAll("button"))
-      button.setAttribute(
-        "aria-pressed",
-        String(button.dataset.revision === String(revision)),
-      );
-    $("historyTitle").textContent = historyLabel(entry) + " — read-only";
-    $("historySnapshot").replaceChildren();
-    for (const field of fields) {
-      const label = document.createElement("dt"),
-        value = document.createElement("dd");
-      label.textContent = field;
-      value.textContent = entry.persona[field] || "(empty)";
-      $("historySnapshot").append(label, value);
-    }
-    $("historyDetail").hidden = false;
-    $("historyTitle").scrollIntoView({ block: "start" });
-  } catch (e) {
-    if (!e.stale && epoch === historyEpoch)
-      $("historyStatus").textContent = "Could not read revision: " + e.message;
-  }
-}
-$("personaHistory").addEventListener("toggle", () => {
-  if (historyVisible()) void loadPersonaHistory();
-  else clearPersonaHistory();
-});
-action("historyLatest", () => loadPersonaHistory());
-action("historyOlder", () => loadPersonaHistory(historyBefore));
-action("restorePersona", async () => {
-  if (historyBusy || !historySelected || updatePending) return;
-  const revision = historySelected,
-    generation = authGeneration;
-  const unsaved = fields.some((f) => $(f).value !== config.persona[f]);
+  if (generation !== authGeneration) throw staleAuthentication();
+  if (epoch !== personaEpoch) return;
   if (
-    !confirm(
-      `Restore revision ${revision} as a new latest revision? ${unsaved ? "Your unsaved persona edits will be replaced. " : ""}Saved Kata.fit and Models settings and credentials will not change. Unsaved Kata.fit and Models drafts will remain unsaved. History is kept.`,
-    )
-  ) {
-    notice("Restore cancelled. No settings changed.", "info");
+    !data?.active ||
+    !Array.isArray(data.builtins) ||
+    !Array.isArray(data.custom)
+  )
+    throw new Error("Unexpected persona list.");
+  // The shared Save never sends the persona draft, so reloads keep it with
+  // its owner (even if that owner was deleted elsewhere).
+  const held = personaHeld ?? editorPersonaDraft();
+  personaHeld = undefined;
+  personasData = data;
+  $("retryPersonas").hidden = true;
+  let id = held?.owner ?? personaSelected;
+  if (!held && id !== "new" && !personaById(id)) id = data.active.id;
+  renderPersonas();
+  showPersona(id, held);
+}
+// Saved free-form values (e.g. verbosity set through the API) stay selectable.
+function setPersonaField(field, value) {
+  const input = $(field);
+  if (input.tagName === "SELECT") {
+    for (const option of input.querySelectorAll("option[data-saved]"))
+      option.remove();
+    if (![...input.options].some((option) => option.value === value)) {
+      const option = new Option(value, value);
+      option.dataset.saved = "";
+      input.add(option);
+    }
+  }
+  input.value = value;
+}
+// A failed list load is recoverable: the draft stays with its owner and
+// counts as unsaved until a retry shows it again. Only locking clears it.
+function personaUnavailable(error) {
+  personaHeld ??= editorPersonaDraft();
+  personasData = undefined;
+  clearPersonaEditor();
+  $("personaBuiltins").replaceChildren();
+  $("personaCustom").replaceChildren();
+  $("personaCustomEmpty").hidden = true;
+  $("personaDetail").hidden = true;
+  $("personaActive").textContent =
+    "Could not load saved personas: " +
+    error.message +
+    (personaHeld
+      ? ". Your unsaved persona draft is kept; retry to continue editing it."
+      : "");
+  $("retryPersonas").hidden = false;
+  renderPersonaActions();
+}
+function clearPersonaEditor() {
+  personaEditorOwner = personaEditorBase = undefined;
+  $("personaLabel").value = "";
+  for (const f of fields) setPersonaField(f, "");
+}
+function resetPersonas() {
+  ++personaEpoch;
+  personaHeld = undefined;
+  personasData = undefined;
+  personaSelected = undefined;
+  clearPersonaEditor();
+  $("personaActive").textContent = "";
+  $("personaBuiltins").replaceChildren();
+  $("personaCustom").replaceChildren();
+  $("personaDetail").hidden = true;
+  $("retryPersonas").hidden = true;
+}
+function personaItem(persona) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "persona-choice";
+  button.dataset.personaId = persona.id;
+  button.setAttribute("aria-pressed", String(persona.id === personaSelected));
+  const head = document.createElement("span");
+  head.className = "persona-choice-head";
+  const title = document.createElement("span");
+  title.className = "persona-choice-title";
+  title.textContent = persona.label;
+  head.append(title);
+  if (persona.id === personasData.active.id) {
+    const badge = document.createElement("span");
+    badge.className = "saved-badge";
+    badge.textContent = "Saved active";
+    head.append(badge);
+  }
+  const meta = document.createElement("span");
+  meta.className = "persona-choice-meta";
+  meta.textContent =
+    persona.kind === "builtin"
+      ? "Built-in · " + persona.description
+      : "Custom · Coach name " + persona.persona.name;
+  button.append(head, meta);
+  button.onclick = () => {
+    // Re-activating the shown row keeps its draft; nothing reloads.
+    if (persona.id === personaSelected) return;
+    if (personaDirty() && !confirm("Discard unsaved changes to this persona?"))
+      return;
+    showPersona(persona.id);
+  };
+  return button;
+}
+function renderPersonas() {
+  if (!personasData) return;
+  $("personaActive").textContent =
+    "Active persona: " + personasData.active.label;
+  $("personaBuiltins").replaceChildren(
+    ...personasData.builtins.map(personaItem),
+  );
+  $("personaCustom").replaceChildren(...personasData.custom.map(personaItem));
+  $("personaCustomEmpty").hidden = personasData.custom.length > 0;
+}
+function showPersona(id, held) {
+  personaSelected = id;
+  const persona = id === "new" ? undefined : personaById(id);
+  const orphan = !persona && id !== "new" && held?.owner === id;
+  const builtin = persona?.kind === "builtin";
+  const editable = id === "new" || orphan || persona?.kind === "custom";
+  for (const item of document.querySelectorAll(
+    "#personaList [data-persona-id]",
+  ))
+    item.setAttribute("aria-pressed", String(item.dataset.personaId === id));
+  $("personaDetail").hidden = !builtin && !editable;
+  $("personaBuiltin").hidden = !builtin;
+  $("personaEditor").hidden = !editable;
+  $("personaDetailTitle").textContent = orphan
+    ? "Deleted elsewhere: " + (held.label.trim() || "unsaved persona")
+    : persona
+      ? persona.label
+      : "New custom persona";
+  $("personaKind").textContent = builtin
+    ? "Built-in Kata.fit persona (read-only). Duplicate it to customize."
+    : orphan
+      ? "This persona was deleted elsewhere. Your unsaved draft is kept: save it as a new persona or discard it."
+      : persona
+        ? "Custom persona. Save persona changes stores a new revision at once."
+        : "Not saved yet. Save to add it to your custom personas.";
+  if (builtin) {
+    $("personaDescription").textContent = persona.description;
+    $("personaInstructions").textContent = persona.instructions;
+    clearPersonaEditor();
+  } else if (editable) {
+    $("personaLabel").value = persona?.label ?? "";
+    for (const f of fields) setPersonaField(f, persona?.persona[f] ?? "");
+    personaEditorOwner = id;
+    personaEditorBase = readPersonaEditor();
+    if (held?.owner === id) {
+      $("personaLabel").value = held.label;
+      for (const f of fields) setPersonaField(f, held.persona[f]);
+    }
+  } else clearPersonaEditor();
+  renderPersonaActions();
+}
+function renderPersonaActions() {
+  const persona = personaById(personaSelected);
+  const isNew = personaSelected === "new";
+  const orphan = personaOrphaned(personaEditorOwner);
+  const unsaved = isNew || orphan;
+  const active = persona && persona.id === personasData?.active.id;
+  $("savePersona").hidden = !unsaved && persona?.kind !== "custom";
+  $("savePersona").textContent = isNew
+    ? "Save new persona"
+    : orphan
+      ? "Save as new persona"
+      : "Save persona changes";
+  $("selectPersona").hidden = unsaved;
+  $("selectPersona").disabled = editorsLocked || !persona || active;
+  $("selectPersona").textContent = active ? "In use" : "Use this persona";
+  $("duplicatePersona").hidden = unsaved;
+  $("duplicatePersona").disabled =
+    editorsLocked || !persona || personasData.custom.length >= 16;
+  $("deletePersona").hidden = unsaved;
+  $("deletePersona").disabled =
+    editorsLocked || persona?.kind !== "custom" || active;
+  $("discardPersonaDraft").hidden = !orphan;
+  $("discardPersonaDraft").disabled = editorsLocked;
+  $("savePersona").disabled = editorsLocked;
+  $("newPersona").disabled =
+    editorsLocked || !personasData || personasData.custom.length >= 16;
+}
+async function personaAction(
+  path,
+  body,
+  message,
+  nextSelection,
+  discardDraft = false,
+) {
+  const result = await lifecycleApi(
+    path,
+    body,
+    config.revision,
+    savedRevision,
+    adoptRevision,
+  );
+  if (!result) return;
+  await acknowledgeSaved(result, message, async () => {
+    personaSelected = nextSelection(result);
+    // A saved, duplicated or deleted editor's draft ends with the action and
+    // never carries over to the next selection.
+    if (discardDraft) {
+      clearPersonaEditor();
+      $("personaDetail").hidden = true;
+    }
+    await load(true);
+    const label = personaById(result.id)?.label;
+    if (label && path.endsWith("/duplicate"))
+      lifecycleNotice(
+        result,
+        `Saved “${label}” as a new custom persona. Other drafts stay unsaved.`,
+      );
+  });
+}
+action("newPersona", () => {
+  if (personaDirty() && !confirm("Discard unsaved changes to this persona?"))
+    return;
+  showPersona("new");
+  $("personaLabel").focus();
+});
+action("savePersona", async () => {
+  // Save targets the editor's owner, never the current selection.
+  const owner = personaEditorOwner;
+  if (!owner) return;
+  const draft = personaDraft();
+  if (!draft.label || !draft.persona.name.trim()) {
+    notice("Enter a persona name and a Coach name before saving.", "warning");
     return;
   }
-  historyBusy = true;
-  $("restorePersona").disabled = true;
-  try {
-    const result = await lifecycleApi(
-      "persona-restore",
-      { revision },
-      config.revision,
-      savedRevision,
-      adoptRevision,
-    );
-    if (!result) return;
-    await acknowledgeSaved(
-      result,
-      "Persona restored as a new revision. Kata.fit and Models drafts remain unsaved; saved settings and credentials are unchanged.",
-      async () => {
-        await load(true);
-        $("personaHistory")
-          .querySelector("summary")
-          .focus({ preventScroll: true });
-      },
-    );
-  } finally {
-    if (generation === authGeneration) {
-      historyBusy = false;
-      renderUpdate();
-    }
+  const orphan = personaOrphaned(owner);
+  await personaAction(
+    owner === "new" || orphan
+      ? "personas"
+      : "personas/" + encodeURIComponent(owner),
+    draft,
+    orphan
+      ? `Saved “${draft.label}” as a new custom persona. Other drafts stay unsaved.`
+      : `Saved persona “${draft.label}”. Other drafts stay unsaved.`,
+    (result) => result.id ?? owner,
+    true,
+  );
+});
+action("duplicatePersona", async () => {
+  if (
+    personaDirty() &&
+    !confirm(
+      "Duplicate copies the saved persona. Discard unsaved changes to this persona?",
+    )
+  )
+    return;
+  const id = personaSelected;
+  await personaAction(
+    "personas/" + encodeURIComponent(id) + "/duplicate",
+    {},
+    "Saved a copy as a new custom persona. Other drafts stay unsaved.",
+    (result) => result.id,
+    true,
+  );
+});
+action("selectPersona", async () => {
+  const persona = personaById(personaSelected);
+  if (!persona) return;
+  await personaAction(
+    "personas/" + encodeURIComponent(persona.id) + "/select",
+    {},
+    `Coach now uses “${persona.label}”. Other drafts stay unsaved.`,
+    () => persona.id,
+  );
+});
+action("deletePersona", async () => {
+  const persona = personaById(personaSelected);
+  if (persona?.kind !== "custom") return;
+  if (
+    !confirm(
+      `Delete the custom persona “${persona.label}”? This cannot be undone. Other drafts stay unsaved.`,
+    )
+  ) {
+    notice("Delete cancelled. No settings changed.", "info");
+    return;
   }
+  await personaAction(
+    "personas/" + encodeURIComponent(persona.id) + "/delete",
+    {},
+    `Deleted persona “${persona.label}”.`,
+    () => personasData.active.id,
+    true,
+  );
+});
+action("discardPersonaDraft", () => {
+  if (!personaOrphaned(personaEditorOwner)) return;
+  if (
+    !confirm(
+      "Discard the unsaved draft of this persona deleted elsewhere? This cannot be undone.",
+    )
+  )
+    return;
+  clearPersonaEditor();
+  showPersona(personasData.active.id);
+});
+// Read-only refresh of the saved revision and persona list; drafts stay.
+action("retryPersonas", async () => {
+  await load(true);
 });
 action("connect", async () =>
   notice((await api("connect", {})).message, "success"),
 );
 function hasUnsavedEdits() {
   return (
-    fields.some((f) => $(f).value !== config.persona[f]) ||
+    personaDirty() ||
     $("origin").value !== config.origin ||
     !!$("token").value ||
     modelsDirty() ||
@@ -1661,7 +1883,6 @@ function selectSettingsSection(
     });
   if (settingsSection === "memories" && key) void loadMemories();
   if (settingsSection === "autonomy" && key) void loadAutonomy(true);
-  if (historyVisible()) void loadPersonaHistory();
   if (skillHistoryVisible()) void loadSkillHistory();
   if (refreshVisibility) logVisibility();
   updateRouteEntry();
@@ -3200,7 +3421,6 @@ function selectStudioTab(
   studioTab = tab;
   $("dashboardPanel").hidden = !dashboard;
   $("settingsPanel").hidden = tab !== "settings" && tab !== "coachSettings";
-  if (historyVisible()) void loadPersonaHistory();
   for (const [id, active] of [
     ["dashboardTab", dashboard],
     ["settingsTab", tab === "settings"],
@@ -3906,8 +4126,6 @@ function canUpgrade(data = updateData) {
 function renderUpdate() {
   renderHeaderStatus();
   const data = updateData;
-  $("restorePersona").disabled =
-    historyBusy || updatePending || data?.applying === true;
   if (!data) return;
 
   const queue = manualUpdateQueue(data);
@@ -4127,20 +4345,14 @@ function renderUpdate() {
     "run",
     "stop",
     "save",
-    "restorePersona",
     "previewButton",
     "connect",
     "cancel",
     "saveSkill",
     "restoreSkill",
   ])
-    $(id).disabled = [
-      "save",
-      "restorePersona",
-      "saveSkill",
-      "restoreSkill",
-    ].includes(id)
-      ? settingsLocked || (id === "restorePersona" && historyBusy)
+    $(id).disabled = ["save", "saveSkill", "restoreSkill"].includes(id)
+      ? settingsLocked
       : (locked &&
           !(id === "cancel" && previewBusy) &&
           !(
@@ -4507,8 +4719,7 @@ function lockSession(message, severity) {
   modelsDraft = undefined;
   renderProviders();
   renderModelStatus();
-  historyBusy = false;
-  clearPersonaHistory();
+  resetPersonas();
   skillsData = undefined;
   skillDrafts = new Map();
   selectedSkill = undefined;

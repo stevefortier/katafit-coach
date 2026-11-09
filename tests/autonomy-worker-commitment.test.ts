@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Worker } from "../src/worker/runner.js";
-import { compile, stockPersona } from "../src/config/store.js";
+import { compile } from "../src/config/store.js";
+import { legacyStockPersona } from "../src/config/personas.js";
 import { taskFixture } from "./task-fixtures.js";
 
 // C8 (work-packages §2.7): the request worker offers coach_record_commitment
@@ -190,7 +191,7 @@ test("a lost response is settled by one identical retry; never a different paylo
 });
 
 test("compile() authorizes only explicit quoted commitments and keeps the no-mutations rule", () => {
-  const prompt = compile({ revision: 1, persona: stockPersona() } as any);
+  const prompt = compile({ revision: 1, persona: legacyStockPersona } as any);
   assert.match(prompt, /No mutations/);
   assert.match(prompt, /coach_record_commitment/);
   assert.match(prompt, /verbatim/);

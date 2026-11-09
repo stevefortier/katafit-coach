@@ -14,12 +14,7 @@ import { SafeError, safeError } from "../runtime/errors.js";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { timingSafeEqual, randomUUID, createHash } from "node:crypto";
-import {
-  Store,
-  compile,
-  stockPersona,
-  assertNoSecrets,
-} from "../config/store.js";
+import { Store, compile, assertNoSecrets } from "../config/store.js";
 import { complete } from "../runtime/piAdapter.js";
 import { isolatedWorkerCompletion } from "../runtime/isolatedInvocation.js";
 import { Worker } from "../worker/runner.js";
@@ -1421,40 +1416,8 @@ export async function admin(
           await memoryCall("studio_memory_get", { memory_id: id }),
         );
       }
-      if (
-        req.method === "GET" &&
-        (path === "/api/persona-history" ||
-          path.startsWith("/api/persona-history?"))
-      ) {
-        const params = new URL(path, origin).searchParams;
-        const number = (v: string | null) => {
-          if (v === null) return undefined;
-          if (!/^[1-9][0-9]*$/.test(v) || !Number.isSafeInteger(Number(v)))
-            throw new Error("INVALID_REVISION");
-          return Number(v);
-        };
-        if (
-          [...params.keys()].some(
-            (k) =>
-              !["before", "limit"].includes(k) || params.getAll(k).length !== 1,
-          )
-        )
-          throw new Error("INVALID_PAGE");
-        return send(
-          200,
-          store.personaHistory(
-            number(params.get("before")),
-            number(params.get("limit")),
-          ),
-        );
-      }
-      if (req.method === "GET" && path.startsWith("/api/persona-history/")) {
-        const id = path.slice("/api/persona-history/".length);
-        if (!/^[1-9][0-9]*$/.test(id)) throw new Error("INVALID_REVISION");
-        return send(200, store.personaRevision(Number(id)));
-      }
-      if (req.method === "GET" && path === "/api/persona-defaults")
-        return send(200, { persona: stockPersona() });
+      if (req.method === "GET" && path === "/api/personas")
+        return send(200, store.personaView());
       if (req.method === "GET" && path === "/api/logs")
         return send(200, logs.snapshot());
       if (req.method === "GET" && path === "/api/autonomy/status")
@@ -1603,10 +1566,17 @@ export async function admin(
         /^\/api\/skills\/([a-z][a-z0-9-]{0,63})(\/restore-default)?$/.exec(
           path,
         );
-      const configuration =
-        ["/api/config", "/api/rollback", "/api/persona-restore"].includes(
+      // Saved persona configs: create, update, duplicate, select, delete.
+      const personaMutation =
+        /^\/api\/personas(?:\/([^/?]+)(?:\/(duplicate|select|delete))?)?$/.exec(
           path,
-        ) || !!skillMutation;
+        );
+      if (!personaMutation && path.startsWith("/api/personas/"))
+        return send(404, { error: "NOT_FOUND" });
+      const configuration =
+        ["/api/config", "/api/rollback"].includes(path) ||
+        !!skillMutation ||
+        !!personaMutation;
       if (
         (operationId !== undefined || expectedRevision !== undefined) &&
         !configuration
@@ -2527,11 +2497,11 @@ export async function admin(
       if (configuration && operationId) acceptedId = operationId;
       try {
         if (
-          ["/api/config", "/api/rollback", "/api/persona-restore"].includes(
-            path,
-          ) ||
-          skillMutation
+          ["/api/config", "/api/rollback"].includes(path) ||
+          skillMutation ||
+          personaMutation
         ) {
+          let personaId: string | undefined;
           await transition(
             path,
             { confirmRestart, operationId },
@@ -2573,14 +2543,29 @@ export async function admin(
                 ];
                 new Actions(store, onBackendDiagnostic).assertSecrets(secrets);
                 await store.save(body);
-              } else if (path === "/api/persona-restore") {
-                if (
-                  !body ||
-                  Array.isArray(body) ||
-                  Object.keys(body).join() !== "revision"
-                )
-                  throw new Error("INVALID_REVISION");
-                await store.restorePersona(body.revision);
+              } else if (personaMutation) {
+                let id: string | undefined;
+                try {
+                  id =
+                    personaMutation[1] === undefined
+                      ? undefined
+                      : decodeURIComponent(personaMutation[1]);
+                } catch {
+                  throw new Error("INVALID_PERSONA_ID");
+                }
+                const action = personaMutation[2];
+                if (action && Object.keys(body ?? {}).length)
+                  throw new Error("ARGUMENTS_REJECTED");
+                personaId =
+                  id === undefined
+                    ? await store.createPersona(body)
+                    : action === "duplicate"
+                      ? await store.duplicatePersona(id)
+                      : action === "select"
+                        ? await store.selectPersona(id)
+                        : action === "delete"
+                          ? await store.deletePersona(id)
+                          : await store.updatePersona(id, body);
               } else await store.rollback();
             },
             (op) => (operationLifecycle = op),
@@ -2592,7 +2577,11 @@ export async function admin(
                   ...store.skills.view(skillMutation[1]),
                   lifecycle: operationLifecycle,
                 }
-              : { ok: true, lifecycle: operationLifecycle },
+              : {
+                  ok: true,
+                  lifecycle: operationLifecycle,
+                  ...(personaId ? { id: personaId } : {}),
+                },
           );
         }
         if (path === "/api/connect") {
@@ -2674,7 +2663,16 @@ export async function admin(
             : failure.code === "CONNECTIVITY_ERROR"
               ? 503
               : 400
-          : 400;
+          : failure.code === "PERSONA_NOT_FOUND"
+            ? 404
+            : [
+                  "PERSONA_IMMUTABLE",
+                  "PERSONA_ACTIVE",
+                  "PERSONA_NAME_TAKEN",
+                  "PERSONA_LIMIT",
+                ].includes(failure.code)
+              ? 409
+              : 400;
       send(status, {
         error: failure.code,
         hint: failure.hint,

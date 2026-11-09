@@ -54,7 +54,6 @@ test(
       const config = env.store.publicConfig();
       const changed = await env.call("POST", "/api/config", {
         ...config,
-        persona: { ...config.persona, name: "Revised during proof" },
         expectedRevision: config.revision,
       });
       assert.equal(changed.status, 200, JSON.stringify(changed.body));

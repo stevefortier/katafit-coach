@@ -6,9 +6,9 @@ Studio exposes Coach, Dashboard, Activity and Settings. Settings retains connect
 
 The global Coach pane (and legacy `/chat/operator` links, which open it expanded) is exclusively the isolated native Pi terminal. Opening it connects to the running Pi or starts a fresh runtime. There are no conversation-history controls, persistence, or restoration. An application restart, update, settings/credential change, revocation, or runtime failure loses the live transcript; Studio navigation and collapsing the pane do not. See [Native Operator conversation lifetime](operator-session-history.md). Docker isolation is required; there is no host or legacy-chat fallback. Settings preview remains the separate worker-style preview, not Operator inference.
 
-The primary system prompt contains all eight saved persona fields and their revision. The Coach keeps its name, voice, principles and expertise. The operator is its manager and boss, **not a trainee**; that relationship takes precedence over trainee-facing discipline, refusal rules and examples. It never grants additional backend permissions. The configured model provider receives authorized request/tool context; browsing member tabs does not add their content to Pi.
+The primary system prompt contains the active saved persona config and the configuration revision. The Coach keeps its name, voice, principles and expertise. The operator is its manager and boss, **not a trainee**; that relationship takes precedence over trainee-facing discipline, refusal rules and examples. It never grants additional backend permissions. The configured model provider receives authorized request/tool context; browsing member tabs does not add their content to Pi.
 
-The backend owns read permissions, target and mutation authority. Native Pi chooses and calls the advertised tools; the host relays to the configured backend without a second transcript verifier. A configuration save/restore/rollback closes the live runtime; a new one receives the new revision rather than retaining the previous persona or transcript.
+The backend owns read permissions, target and mutation authority. Native Pi chooses and calls the advertised tools; the host relays to the configured backend without a second transcript verifier. A configuration save, persona action or rollback closes the live runtime; a new one receives the new revision rather than retaining the previous persona or transcript.
 
 ### Attachments from Pi
 
@@ -18,9 +18,9 @@ Pi can use `send_to_operator` to send a check-in photo it read in this session (
 
 Legacy backend-send receipts remain separate from Pi transcripts and may be read by the Dashboard. Ordinary REST calls from Pi no longer create a Coach action journal. Ending a runtime cannot retract a committed write. Neither reconnect nor config changes automatically replay input or uncertain actions. A lost response must be resolved against canonical backend state before a person or model deliberately retries; without a host-side replay fence, doing otherwise can duplicate a write.
 
-The old Operator service, composer/history renderer, image-card endpoint and `/api/operator/chat`, `/api/operator/cancel`, `/api/operator/clear` APIs are removed. Saved `operator-chat.json`, configuration/persona revisions and action journals remain on disk; this release does not delete or migrate customer history. Archived chat is not served or sent to Pi. Credential saves still screen current/retained configuration and action receipts for secrets; retired archives are never loaded and cannot block recovery. Keep protected-home backups private.
+The old Operator service, composer/history renderer, image-card endpoint and `/api/operator/chat`, `/api/operator/cancel`, `/api/operator/clear` APIs are removed. Saved `operator-chat.json`, configuration revisions, retired persona history and action journals remain on disk; this release does not delete or migrate customer history. Archived chat is not served or sent to Pi. Credential saves still screen current/retained configuration and action receipts for secrets; retired archives are never loaded and cannot block recovery. Keep protected-home backups private.
 
-Permanent persona changes require explicit Settings edits and Save. The request worker and read-only member threads retain their separate lifecycles and authority.
+Permanent persona changes require explicit saved persona config actions in Coach Settings → Persona. The request worker and read-only member threads retain their separate lifecycles and authority.
 
 ## Read-only member threads
 

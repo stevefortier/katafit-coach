@@ -1,4 +1,9 @@
 import { settingsTab } from "./helpers/settings-navigation.js";
+import {
+  draftSharedName,
+  savedSharedName,
+  sharedNameField,
+} from "./helpers/persona.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -60,8 +65,7 @@ test("native teardown failure still saves at once; restart stays pending with a 
         .querySelector("#notice")
         ?.textContent?.includes("Worker started"),
     );
-    await settingsTab(page, "Persona");
-    await page.locator("#name").fill("Synthetic draft after unsafe stop");
+    await draftSharedName(page, "Synthetic draft after unsafe stop");
     const revision = store.publicConfig().revision;
     NativeTerminal.prototype.stop = () =>
       Promise.reject(new Error("synthetic native cleanup failure"));
@@ -84,10 +88,7 @@ test("native teardown failure still saves at once; restart stays pending with a 
     assert.equal(result.lifecycle.applied, true);
     assert.equal(result.lifecycle.resumed, false, "no restart claimed");
     assert.equal(store.publicConfig().revision, revision + 1);
-    assert.equal(
-      store.publicConfig().persona.name,
-      "Synthetic draft after unsafe stop",
-    );
+    assert.equal(savedSharedName(store), "Synthetic draft after unsafe stop");
     // Settings policy: Save asks no consent at all, even with Coach running.
     assert.deepEqual(dialogs, []);
     await page.waitForFunction(() =>
@@ -133,7 +134,7 @@ test("native teardown failure still saves at once; restart stays pending with a 
       ["NATIVE_CLEANUP_UNCONFIRMED"],
     );
     assert.equal(
-      await page.locator("#name").inputValue(),
+      await sharedNameField(page).inputValue(),
       "Synthetic draft after unsafe stop",
     );
     // Retry is the explicit user action that starts the saved revision.

@@ -205,50 +205,56 @@ try {
   );
   await entry("model").fill("synthetic-qa");
   await entry("apiKey").fill("synthetic-qa-key");
-  await settingsTab(page, "Persona");
-  await page.locator("#name").fill("Sage");
+  // The shared Save applies Models; persona configs save on their own.
   await page.locator("#save").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
-  const savedBeforeReset = store.publicConfig();
   await page.waitForFunction(() =>
     document
       .querySelector("#restartStatus")
       ?.textContent?.includes("remains stopped"),
   );
   assert.equal(await page.locator("#save").isEnabled(), true);
+  await settingsTab(page, "Persona");
+  await page.locator("#newPersona").click();
+  await page.locator("#personaLabel").fill("Sage");
+  await page.locator("#name").fill("Sage");
+  await page.locator("#savePersona").click();
+  await page.locator("#selectPersona").waitFor({ state: "visible" });
+  await page.locator("#selectPersona").click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#personaActive")?.textContent?.trim() ===
+      "Active persona: Sage",
+  );
+  const sageId = store.personaView().active.id;
+  const savedBeforeReset = store.publicConfig();
   assert.equal(savedBeforeReset.persona.name, "Sage");
+  const auth = { Authorization: "Bearer " + store.secrets.admin };
+  for (const route of ["persona-defaults", "persona-history"])
+    assert.equal(
+      (await fetch(app.origin + "/api/" + route, { headers: auth })).status,
+      404,
+      route + " is retired",
+    );
+  assert.equal(
+    (await fetch(app.origin + "/api/personas")).status,
+    401,
+    "persona list must require Studio auth",
+  );
+  // Discarding an unsaved draft to view a read-only built-in never saves.
   await page.locator("#name").fill("Unsaved name");
   await page.getByText("Advanced Markdown", { exact: true }).click();
   await page.locator("#markdown").fill("Unsaved custom instruction");
-  await page.locator("#resetPersona").click();
-  await page.waitForFunction(() =>
-    document.querySelector("#notice")?.textContent?.includes("stock persona"),
-  );
-  const defaultResponse = await fetch(app.origin + "/api/persona-defaults", {
-    headers: { Authorization: "Bearer " + store.secrets.admin },
-  });
-  assert.equal(defaultResponse.status, 200);
-  assert.equal(
-    (await fetch(app.origin + "/api/persona-defaults")).status,
-    401,
-    "stock persona route must require Studio auth",
-  );
-  const stock = (await defaultResponse.json()).persona as Record<
-    string,
-    string
-  >;
-  assert.equal(
-    Object.keys(stock).length,
-    Object.keys(savedBeforeReset.persona).length,
-  );
-  for (const [field, value] of Object.entries(stock))
-    assert.equal(await page.locator("#" + field).inputValue(), value);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator('#personaList [data-persona-id="kata_default"]').click();
+  await page.locator("#personaBuiltin").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#personaEditor").isHidden(), true);
   assert.deepEqual(
     store.publicConfig(),
     savedBeforeReset,
-    "reset must not save",
+    "discarding must not save",
   );
   assert.equal(
     await entry("baseUrl").inputValue(),
@@ -265,13 +271,7 @@ try {
     savedBeforeReset.origin,
   );
   assert.equal(await entry("vision").isChecked(), true);
-  await settingsTab(page, "Preview");
-  await page.locator("#previewButton").click();
-  await page.waitForFunction(() =>
-    document.querySelector("#notice")?.textContent?.includes("Unsaved edits"),
-  );
-  assert.equal(providerCalls, 0);
-  await settingsTab(page, "Persona");
+  await page.locator(`#personaList [data-persona-id="${sageId}"]`).click();
   await page.locator("#name").fill("Unsaved name");
   assert.equal(store.publicConfig().provider.vision, true);
   await settingsTab(page, "Preview");
@@ -378,14 +378,14 @@ try {
         Authorization: "Bearer " + key,
         "Content-Type": "application/json",
       },
-      body: '{"private":"DO_NOT_LOG"}',
+      body: '{"private":"DO_NOT_LOG","persona":{"name":"DO_NOT_LOG"}}',
     });
   }, store.secrets.admin);
   await page.locator("#logRefresh").click();
   await page.waitForFunction(() =>
     document
       .querySelector("#logRows")
-      ?.textContent?.includes("INVALID_PERSONA"),
+      ?.textContent?.includes("PERSONA_READ_ONLY"),
   );
   await page.locator("#logLevel").selectOption("error");
   assert.ok(
@@ -432,7 +432,7 @@ try {
   await page.locator("#logCopy").click();
   assert.ok(
     (await page.evaluate(() => navigator.clipboard.readText())).includes(
-      "INVALID_PERSONA",
+      "PERSONA_READ_ONLY",
     ),
   );
   await page.locator("#logPause").click();
@@ -487,37 +487,39 @@ try {
     .click();
   await settingsTab(page, "Persona");
   const savedVision = store.publicConfig().provider.vision;
-  await page.locator("#personaHistory summary").click();
-  await page.locator("#historyList button").last().click();
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.locator("#restorePersona").click();
+  await page.locator('#personaList [data-persona-id="kata_default"]').click();
+  await page.locator("#selectPersona").click();
   await page.waitForFunction(() =>
-    document.querySelector("#notice")?.textContent?.includes("restored"),
+    document.querySelector("#notice")?.textContent?.includes("Coach now uses"),
   );
+  assert.equal(store.personaView().active.id, "kata_default");
   assert.equal(await entry("vision").isChecked(), savedVision);
   await settingsTab(page, "Models");
   assert.ok((await entry("vision").boundingBox())!.width <= 24);
   assert.equal(store.publicConfig().provider.vision, savedVision);
   const beforeSaveReset = store.publicConfig();
   await settingsTab(page, "Persona");
+  await page.locator(`#personaList [data-persona-id="${sageId}"]`).click();
   await page.locator("#name").fill("Another custom name");
-  await page.locator("#resetPersona").click();
-  await page.waitForFunction(() =>
-    document.querySelector("#notice")?.textContent?.includes("stock persona"),
-  );
   assert.deepEqual(store.publicConfig(), beforeSaveReset);
   await page.locator("#persona").scrollIntoViewIfNeeded();
   await page.evaluate(() => scrollBy(0, 220));
-  await page.screenshot({ path: evidence + "/persona-reset-mobile.png" });
+  await page.screenshot({ path: evidence + "/persona-configs-mobile.png" });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator("#persona").scrollIntoViewIfNeeded();
   await page.evaluate(() => scrollBy(0, 220));
-  await page.screenshot({ path: evidence + "/persona-reset-desktop.png" });
+  await page.screenshot({ path: evidence + "/persona-configs-desktop.png" });
+  // The shared Save neither sends nor discards the persona draft.
   await page.locator("#save").click();
   await page.waitForFunction(() =>
     document.querySelector("#notice")?.textContent?.startsWith("Saved."),
   );
-  assert.deepEqual(store.publicConfig().persona, stock);
+  assert.equal(store.personaView().active.id, "kata_default");
+  assert.equal(
+    store.personaView().custom.find((p) => p.id === sageId)?.persona.name,
+    "Sage",
+  );
+  assert.equal(await page.locator("#name").inputValue(), "Another custom name");
   assert.equal(store.publicConfig().revision, beforeSaveReset.revision + 1);
   assert.deepEqual(store.publicConfig().provider, beforeSaveReset.provider);
   assert.equal(store.publicConfig().origin, beforeSaveReset.origin);

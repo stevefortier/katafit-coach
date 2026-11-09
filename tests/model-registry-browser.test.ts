@@ -229,7 +229,7 @@ async function choose(page: Page, id: string) {
 }
 
 async function assertSavedBadge(page: Page, providerId: string) {
-  assert.equal(await page.locator(".saved-badge").count(), 1);
+  assert.equal(await page.locator("#model .saved-badge").count(), 1);
   const badge = page
     .locator(`#model .model-choice[data-choice-provider="${providerId}"]`)
     .locator(".saved-badge");
@@ -507,18 +507,17 @@ test("Models tab edits the registry with explicit Save and real Store readback",
     );
     assert.equal(store.modelRegistry().providers.length, 2);
     assert.equal(store.secrets.apiKey, keyA);
-    // Persona restore keeps unsaved Models and Kata.fit drafts.
+    // Selecting a saved persona keeps unsaved Models and Kata.fit drafts.
     await settingsTab(page, "Models");
     await field(page, "bravo", "name").fill("Bravo draft");
     await settingsTab(page, "Kata.fit");
     await page.locator("#token").fill("restore-token-draft");
     await settingsTab(page, "Persona");
-    await page.locator("#personaHistory summary").click();
-    await page.getByRole("button", { name: /Revision 1 ·/ }).click();
-    await page.locator("#historyDetail").waitFor({ state: "visible" });
+    await page
+      .locator('#personaList [data-persona-id="supportive_mentor"]')
+      .click();
     const restoredRevision = store.publicConfig().revision + 1;
-    page.once("dialog", (d) => d.accept());
-    await page.locator("#restorePersona").click();
+    await page.locator("#selectPersona").click();
     await page.waitForFunction(
       (r) =>
         document.querySelector("#revision")?.textContent ===
@@ -535,6 +534,8 @@ test("Models tab edits the registry with explicit Save and real Store readback",
       "restore-token-draft",
     );
     assert.equal(store.modelRegistry().providers[1].name, "Bravo");
+    assert.equal(store.personaView().active.id, "supportive_mentor");
+    assert.notEqual(store.secrets.token, "restore-token-draft");
     assert.equal(store.secrets.apiKey, keyA);
     // No key ever reaches the DOM, export or network responses.
     const exported = await page.evaluate(async (admin) => {

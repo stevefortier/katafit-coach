@@ -163,13 +163,7 @@ test("authenticated member views proxy real MCP reads without claiming worker re
           Origin: app.origin,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          ...store.publicConfig(),
-          persona: {
-            ...store.publicConfig().persona,
-            voice: "Changed saved configuration",
-          },
-        }),
+        body: JSON.stringify(store.publicConfig()),
       });
       assert.equal(saved.status, 200);
     } finally {
