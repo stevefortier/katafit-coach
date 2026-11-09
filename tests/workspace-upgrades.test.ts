@@ -273,8 +273,37 @@ for (const retained of [false, true])
       ]);
       assert.ok(!(await readdir(join(home, "versions"))).includes(`${C}.node`));
       assert.equal(await new CandidateOwnership(home).read(), undefined);
+    } catch (error) {
+      console.error("runtime transition body failed", error);
+      throw error;
     } finally {
-      await owner?.close();
+      const pid = owner?.pid;
+      const closed = await owner?.close();
+      let alive = false;
+      if (pid !== undefined) {
+        try {
+          process.kill(pid, 0);
+          alive = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+      console.error("runtime transition shutdown", {
+        retained,
+        pid,
+        closed,
+        alive,
+      });
+      assert.notEqual(
+        closed,
+        false,
+        "owner refused shutdown; home must stay intact",
+      );
+      assert.equal(
+        alive,
+        false,
+        "runtime must exit before removing its executable",
+      );
       await rm(home, { recursive: true, force: true });
     }
   });
