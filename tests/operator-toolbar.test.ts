@@ -119,15 +119,19 @@ test(
         calls.filter((path) => path === "/api/terminal/ticket").length,
         ticketCount,
       );
+      // Saved session credentials unlock automatically. Sampling visibility
+      // then filling races that startup: the form can disappear in between.
+      // Require automatic restoration instead of a second manual unlock.
       await page.reload();
-      if (await page.locator("#adminKey").isVisible()) {
-        await page.locator("#adminKey").fill(store.secrets.admin);
-        await page.locator("#unlock").click();
-      }
       await page.waitForFunction(() =>
         document
           .querySelector("#nativeStatus")
           ?.textContent?.startsWith("Connected"),
+      );
+      assert.equal(
+        await page.locator("#adminKey").isVisible(),
+        false,
+        "reload restores saved authentication without a manual unlock",
       );
       const beforeRestore = calls.filter(
         (path) => path === "/api/terminal/ticket",
