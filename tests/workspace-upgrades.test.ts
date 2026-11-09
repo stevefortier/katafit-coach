@@ -5,7 +5,10 @@
 import "./fixtures/legacy-source-check.js";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, fork } from "node:child_process";
+import { once } from "node:events";
+import { unlinkSync } from "node:fs";
+import { stopChild } from "../src/runtime/platform.js";
 import { randomUUID } from "node:crypto";
 import {
   copyFile,
@@ -43,6 +46,32 @@ async function realRuntime(root: string) {
   });
   await copyFile(process.execPath, runtimeExecutable(root));
 }
+
+test("stopped copied runtime releases its executable before cleanup", async () => {
+  const home = await mkdtemp(join(tmpdir(), "coach-runtime-handle-"));
+  let child: ReturnType<typeof fork> | undefined;
+  try {
+    await realRuntime(home);
+    const script = join(home, "child.cjs");
+    await writeFile(
+      script,
+      "process.on('disconnect', () => process.exit(0)); process.send('ready');",
+    );
+    child = fork(script, [], {
+      execPath: runtimeExecutable(home),
+      execArgv: [],
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    await once(child, "message");
+    await stopChild(child, 5000);
+    // Do not let asynchronous filesystem work accidentally yield past the
+    // process-handle release: shutdown must permit immediate replacement.
+    unlinkSync(runtimeExecutable(home));
+  } finally {
+    if (child) await stopChild(child, 5000);
+    await rm(home, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
 
 async function workspaceHome(rootCapable: boolean) {
   const home = await mkdtemp(join(tmpdir(), "coach-workspace-upgrade-"));
