@@ -17,6 +17,7 @@ import {
   type NativeOwnership,
   type NativeProbeEngine,
   type NativeProfile,
+  type RpcImage,
 } from "../sandbox/runtime.js";
 import {
   sweepWorkspaceSessions,
@@ -98,6 +99,8 @@ export interface HeadlessRun {
   /** A multi-attempt cycle owns final gateway drainage, not this container. */
   gatewayOwnership?: "cycle";
   message: string;
+  /** Host-acquired, validated images attached to the initial prompt. */
+  images?: RpcImage[];
   cycleMs: number;
   /** Absolute inference cutoff; never a fresh budget after runtime setup. */
   deadlineAt?: number;
@@ -403,7 +406,12 @@ export class HeadlessCycleRuntime {
       prompted = true;
       milestone(6);
       await Promise.race([
-        runtime.rpc({ id: promptId, type: "prompt", message: run.message }),
+        runtime.rpc({
+          id: promptId,
+          type: "prompt",
+          message: run.message,
+          ...(run.images?.length ? { images: run.images } : {}),
+        }),
         failed,
       ]);
       const reply = await Promise.race([accepted, failed]);

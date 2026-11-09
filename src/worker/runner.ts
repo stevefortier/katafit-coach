@@ -43,6 +43,11 @@ import { serializeContext } from "../katafit/context.js";
 import { effectivePrompt, fetchInstructions } from "../runtime/prompt.js";
 import { photoReviewGuidance } from "./photoReviewGuidance.js";
 import { acquireDayMeals } from "./dayMealEvidence.js";
+import { acquireTaskPhotos, photoEvidenceGuidance } from "./photoEvidence.js";
+import {
+  acquireRequestPhotos,
+  requestPhotoGuidance,
+} from "./requestPhotoEvidence.js";
 import {
   formatSkillBodies,
   skillForTask,
@@ -1484,12 +1489,34 @@ export class Worker {
             secrets: [this.options.token, ...(this.options.secrets ?? [])],
           })
         : undefined;
+      // A photo-review request reads the photos before the model, through the
+      // same request-scoped native tools and exact handles the model would use.
+      // Message attachments stay model-read so they keep the request image cap.
+      const photoGuidance = photoReviewGuidance(
+        current.message,
+        current.created_at,
+      );
+      const photos =
+        photoGuidance && current.attachment_count === 0
+          ? await bounded(
+              () =>
+                acquireRequestPhotos(reads.tools, {
+                  vision: this.options.vision === true,
+                  signal: inferenceSignal,
+                  anchor: new Date(
+                    Date.parse(current.created_at),
+                  ).toISOString(),
+                }),
+              modelSignal,
+            )
+          : undefined;
       const text = await bounded(
         () =>
           this.options.complete(
             JSON.stringify({
               ...JSON.parse(serialized),
               "Request data capabilities": reads.status,
+              ...(photos ? { acquired_photo_evidence: photos.evidence } : {}),
             }),
             inferenceSignal,
             effectivePrompt(this.options.system, instructions, [
@@ -1497,7 +1524,8 @@ export class Worker {
               ...(this.options.secrets ?? []),
             ]) +
               formatSkillBodies(selectedSkills, "worker") +
-              photoReviewGuidance(current.message, current.created_at) +
+              photoGuidance +
+              (photos ? requestPhotoGuidance(photos) : "") +
               formatRecall(memory?.recalled ?? [], "worker") +
               (memory?.partial
                 ? "\nMemory recall covered a bounded page. Use coach_memory_search and its continuation for deeper recall.\n"
@@ -1518,6 +1546,7 @@ export class Worker {
               deadlineAt,
               readBudget: reads.readBudget,
               trace: { origin: trace.origin, clock: trace.clock },
+              ...(photos?.images.length ? { images: photos.images } : {}),
             },
           ),
         modelSignal,
@@ -2061,13 +2090,32 @@ export class Worker {
           })
         : undefined;
       mealsAcquired?.();
+      // Seeded completed media are listed by ID and file count only. Read the
+      // actual photos before generation so the provider receives the pixels,
+      // under the same negotiated REST admission as the meal reads.
+      const photos =
+        ["daily_insight", "activity_reaction", "day_closure"].includes(
+          task.kind,
+        ) &&
+        admission.negotiated &&
+        context.capability.rest.available === true
+          ? await acquireTaskPhotos(capability, context.evidence, {
+              kind: task.kind,
+              subject: String(task.requester_id).toLowerCase(),
+              self: admission.subjectIsPrincipal,
+              vision: this.options.vision === true,
+              signal,
+            })
+          : undefined;
       const assembled = at(SPAN_CODES.promptAssemble);
-      const envelope = meals
-        ? JSON.stringify({
-            ...JSON.parse(serialized),
-            acquired_meal_evidence: meals,
-          })
-        : serialized;
+      const envelope =
+        meals || photos
+          ? JSON.stringify({
+              ...JSON.parse(serialized),
+              ...(meals ? { acquired_meal_evidence: meals } : {}),
+              ...(photos ? { acquired_photo_evidence: photos.evidence } : {}),
+            })
+          : serialized;
       const system =
         effectivePrompt(this.options.system, context.instructions, secrets) +
         formatSkillBodies(selectedSkills, "worker") +
@@ -2077,6 +2125,7 @@ export class Worker {
           : "") +
         CAPABILITY_GUIDANCE +
         (admission.subjectIsPrincipal ? "" : PRINCIPAL_REST_NOTE) +
+        (photos ? photoEvidenceGuidance(photos) : "") +
         "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON as an object, with no prose or Markdown code fences, matching this local result schema: " +
         JSON.stringify(taskSchema(task.kind, context.result_schema)) +
         (task.kind === "activity_reaction"
@@ -2141,6 +2190,8 @@ export class Worker {
               ...(trace
                 ? { trace: { origin: trace.origin, clock: trace.clock } }
                 : {}),
+              // The same acquired pixels accompany every output attempt.
+              ...(photos?.images.length ? { images: photos.images } : {}),
             },
           );
         }, signal);

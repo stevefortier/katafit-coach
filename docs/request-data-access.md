@@ -21,23 +21,37 @@ Successful, secret-checked read DTOs expose 19-character `mr:` handles instead o
 
 The private per-request map holds at most 256 distinct originals, each at most 4,096 base64url characters. Handles use 64 random bits in a namespace distinct from backend tokens. Only `coach_read_media.media_ref` resolves, by exact lookup, immediately before backend dispatch; unknown/stale handles fail closed. Pi retains the handle, never the resolved token. The original strict schema validates the resolved argument without coercion; provider guidance additionally accepts the handle syntax. No fuzzy repair, guessing or cross-request cache. Worker completion/failure and cancellation clear and close the map. Backend lease, Clear, consent and revocation checks remain authoritative. Result text is budgeted before aliasing, so shortening cannot bypass existing limits.
 
+### Automatic photo acquisition
+
+The model no longer decides whether to look. When a request's message asks for photo feedback (`photoReviewGuidance`) and `provider.vision` is on, Worker calls the same discovered tools before the first model turn (`src/worker/requestPhotoEvidence.ts`):
+
+1. `coach_list_activities {types:["media"], limit:10}`, with no statuses or dates, so the backend default window is anchored to the original `created_at`, including on retry.
+2. `coach_read_activity {section:"media_files"}` for up to three newest media activities, stopping once one delivers a photo.
+3. `coach_read_media` with each exact returned handle.
+
+This is a bounded default, not a search for the photo the message names: `current` is the newest listed media activity of any status that yielded a readable photo, which is not necessarily today's or a completed one. Each entry reports its `status` and `created_at`. The comparable is the next older same-named listed activity. The model can still read an explicitly requested older activity with its own tools.
+
+The bound is up to 4 current images, plus one older same-named comparable from the listed page, 5 in total. These calls are ordinary tool executions: the same fence, handle map, call budget and per-request image cap apply. The resulting `ImageContent` is attached to the initial user turn through `InferenceBudget.images`, and the context gains `acquired_photo_evidence`, which records the per-file `image_index` or a distinct `denied` / `not_found` / `limit` / `unavailable` / `empty` / `not_image` / `consent_required` / `unattempted_image_budget` status. Without vision, nothing is read and the evidence says `not_read_vision_disabled`.
+
+Typed tasks do the same through `InvocationCapability.acquireImage` and ordinary REST media routes (`src/worker/photoEvidence.ts`; see the backend `docs/coach-implementation-reference.md#automatic-photo-acquisition`). Images reach the provider on the host Pi path (`agent.prompt(text, images)`) and on the isolated path (RPC `prompt.images`, validated by `validRpc`). They stay attached on every correction attempt of the same generation. A provider without vision that is handed images fails with `VISION_UNSUPPORTED` instead of dropping them. On the isolated path, when the provider reports no usage, the gateway charges each turn (non-image wire bytes / 4) + 4,096 tokens per image sent instead of counting base64 as text; reported usage wins, and failed attempts are charged the same estimate.
+
 ## Fixed upper bounds
 
-| Boundary | Limit |
-| --- | --- |
-| Claimed lease | Request 120 seconds, no renewal; original backend deadline retained |
-| Discovery + model + reads | 90-second default main-chat model budget, bounded by the earlier request/lease deadline with a 12-second publication margin; typed-task leases remain shorter |
-| Each HTTP operation | 10 seconds, also cancelled by enclosing request/tool signal |
-| Provider turns | 24 maximum; exhaustion fails rather than publishing a partial tool turn |
-| Tool calls | 48 Pi-level attempts; 24 request-scoped read executions, sequential; Studio Operator retains its separate 12-execution/one-send guard; discovery separate and bounded |
-| Discovery | 100 tools, 10 continuation cursors, no duplicate names/cursors |
-| Schema / arguments | 16 KiB each; bounded schema depth; no remote references |
-| Descriptions | 4,096 characters |
-| Result text | 256 KiB per result; 512 KiB cumulative |
-| Provider text envelope | 1 MiB of serialized input per call; 24 MiB cumulative, excluding only validated base64 image data at provider image-part paths |
-| Provider output | `maxTokens: 2000` each turn; reported output usage capped at 48,000; streamed response transport capped at 2 MiB per call |
-| Image | 8 MiB decoded bytes each; 12 MiB encoded HTTP response |
-| Images per request | 4 total (stricter than the contract's per-turn maximum); 16 MiB total decoded bytes |
+| Boundary                  | Limit                                                                                                                                                                 |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claimed lease             | Request 120 seconds, no renewal; original backend deadline retained                                                                                                   |
+| Discovery + model + reads | 90-second default main-chat model budget, bounded by the earlier request/lease deadline with a 12-second publication margin; typed-task leases remain shorter         |
+| Each HTTP operation       | 10 seconds, also cancelled by enclosing request/tool signal                                                                                                           |
+| Provider turns            | 24 maximum; exhaustion fails rather than publishing a partial tool turn                                                                                               |
+| Tool calls                | 48 Pi-level attempts; 24 request-scoped read executions, sequential; Studio Operator retains its separate 12-execution/one-send guard; discovery separate and bounded |
+| Discovery                 | 100 tools, 10 continuation cursors, no duplicate names/cursors                                                                                                        |
+| Schema / arguments        | 16 KiB each; bounded schema depth; no remote references                                                                                                               |
+| Descriptions              | 4,096 characters                                                                                                                                                      |
+| Result text               | 256 KiB per result; 512 KiB cumulative                                                                                                                                |
+| Provider text envelope    | 1 MiB of serialized input per call; 24 MiB cumulative, excluding only validated base64 image data at provider image-part paths                                        |
+| Provider output           | `maxTokens: 2000` each turn; reported output usage capped at 48,000; streamed response transport capped at 2 MiB per call                                             |
+| Image                     | 8 MiB decoded bytes each; 12 MiB encoded HTTP response                                                                                                                |
+| Images per request        | 5 total, shared by automatic acquisition and model reads; 16 MiB total decoded bytes                                                                                  |
 
 The text-envelope cap measures the final provider payload (including model and tool definitions), not Pi's internal message metadata. Original image parts use the separate image caps. Model-facing schemas omit the root `$schema` annotation and replace generated date-time regexes with UTC ISO 8601 guidance; the original schema still validates every backend-bound tool argument without coercion. Consent and authorized tool membership are never narrowed to fit this budget. Media handles preserve the exact original privately rather than truncating or reconstructing tokens.
 

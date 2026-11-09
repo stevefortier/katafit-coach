@@ -180,11 +180,51 @@ export async function cleanupNativeProbe(
 }
 export const NATIVE_PROFILES = ["planner", "composer", "worker"] as const;
 export type NativeProfile = (typeof NATIVE_PROFILES)[number];
+export type RpcImage = { type: "image"; data: string; mimeType: string };
 export type RpcCommand =
-  | { type: "prompt"; message: string; id?: string }
+  | { type: "prompt"; message: string; id?: string; images?: RpcImage[] }
   | { type: "abort"; id?: string }
   | { type: "get_last_assistant_text"; id?: string };
 export const RPC_COMMAND_LIMIT = 1024 * 1024;
+/** Host-validated prompt images: at most five, 8 MiB each, 16 MiB total. */
+export const RPC_PROMPT_IMAGES = 5;
+const RPC_IMAGE_BYTES = 8 * 1024 * 1024;
+const RPC_IMAGE_AGGREGATE = 16 * 1024 * 1024;
+const RPC_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+/** Line bound for one command: images are budgeted separately from text. */
+export function rpcCommandLimit(command: RpcCommand) {
+  return command.type === "prompt" && command.images?.length
+    ? RPC_COMMAND_LIMIT + Math.ceil((RPC_IMAGE_AGGREGATE * 4) / 3) + 4096
+    : RPC_COMMAND_LIMIT;
+}
+function validImages(images: unknown) {
+  if (
+    !Array.isArray(images) ||
+    images.length < 1 ||
+    images.length > RPC_PROMPT_IMAGES
+  )
+    return false;
+  let total = 0;
+  for (const image of images) {
+    if (
+      !record(image) ||
+      Object.keys(image).sort().join() !== "data,mimeType,type" ||
+      image.type !== "image" ||
+      !RPC_IMAGE_TYPES.includes(image.mimeType as string) ||
+      typeof image.data !== "string" ||
+      image.data.length === 0 ||
+      image.data.length > Math.ceil((RPC_IMAGE_BYTES * 4) / 3) + 4 ||
+      /[^A-Za-z0-9+/=]/.test(image.data)
+    )
+      return false;
+    const bytes = Buffer.from(image.data, "base64");
+    if (bytes.toString("base64") !== image.data) return false;
+    total += bytes.length;
+    if (bytes.length > RPC_IMAGE_BYTES || total > RPC_IMAGE_AGGREGATE)
+      return false;
+  }
+  return true;
+}
 /** Only prompt, abort and final-text reads; never sessions, bash or models. */
 export function validRpc(command: any): command is RpcCommand {
   if (!record(command)) return false;
@@ -196,7 +236,7 @@ export function validRpc(command: any): command is RpcCommand {
       command.id.length <= 128);
   const allowed =
     command.type === "prompt"
-      ? ["type", "message", "id"]
+      ? ["type", "message", "id", "images"]
       : command.type === "abort" || command.type === "get_last_assistant_text"
         ? ["type", "id"]
         : undefined;
@@ -205,7 +245,9 @@ export function validRpc(command: any): command is RpcCommand {
     id &&
     keys.every((key) => allowed.includes(key)) &&
     (command.type !== "prompt" ||
-      (typeof command.message === "string" && command.message.length > 0))
+      (typeof command.message === "string" &&
+        command.message.length > 0 &&
+        (!keys.includes("images") || validImages(command.images))))
   );
 }
 /** Streams Docker's multiplexed frames, passing stdout payload bytes only. */
@@ -505,7 +547,7 @@ export class NativeRuntime {
     if (
       !socket ||
       socket.destroyed ||
-      Buffer.byteLength(line) > RPC_COMMAND_LIMIT ||
+      Buffer.byteLength(line) > rpcCommandLimit(command) ||
       socket.writableLength > RPC_COMMAND_LIMIT
     )
       throw new Error("RPC_BACKPRESSURE");

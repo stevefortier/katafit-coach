@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { NativeRuntime } from "../src/sandbox/runtime.js";
+import { NativeRuntime, validRpc } from "../src/sandbox/runtime.js";
 import { CleanupRegistry } from "../src/autonomy/cleanup.js";
 import { openProfileGateway } from "../src/sandbox/gateway.js";
 import { Store } from "../src/config/store.js";
@@ -256,6 +256,63 @@ test("headless: one cycle creates, prompts, reads the final text and removes its
   } finally {
     await fake.close();
   }
+});
+
+test("headless: host-acquired images ride the single prompt RPC unchanged; malformed images are refused", async () => {
+  const png = (n: number) => ({
+    type: "image" as const,
+    data: Buffer.from(`synthetic-image-${n}`).toString("base64"),
+    mimeType: "image/png",
+  });
+  const fake = await fakeEngine(obedient(finalOutcome));
+  const headless = new HeadlessCycleRuntime({
+    image: IMAGE,
+    engine: fake.engine,
+  });
+  try {
+    const images = [png(1), png(2)];
+    const result = await headless.run({
+      profile: "worker",
+      gateway: stubGateway(),
+      message: "synthetic task envelope",
+      images,
+      cycleMs: 5000,
+    });
+    assert.equal(result.text, finalOutcome);
+    assert.deepEqual(fake.commands[0], {
+      id: fake.commands[0].id,
+      type: "prompt",
+      message: "synthetic task envelope",
+      images,
+    });
+  } finally {
+    await fake.close();
+  }
+  const prompt = (images: unknown) => ({
+    id: "h1",
+    type: "prompt",
+    message: "m",
+    images,
+  });
+  assert.equal(validRpc(prompt([png(1)])), true);
+  assert.equal(validRpc(prompt([1, 2, 3, 4, 5].map(png))), true);
+  for (const bad of [
+    [],
+    [1, 2, 3, 4, 5, 6].map(png),
+    [{ ...png(1), mimeType: "image/svg+xml" }],
+    [{ ...png(1), extra: "smuggled" }],
+    [{ ...png(1), data: "not base64!" }],
+    [{ ...png(1), data: "QQ" }],
+    [{ ...png(1), data: "" }],
+    [{ ...png(1), type: "file" }],
+    [{ ...png(1), data: Buffer.alloc(8 * 1024 * 1024 + 1).toString("base64") }],
+    "not-an-array",
+  ])
+    assert.equal(validRpc(prompt(bad)), false);
+  assert.equal(
+    validRpc({ id: "h2", type: "get_last_assistant_text", images: [png(1)] }),
+    false,
+  );
 });
 
 test("headless: planner and composer cycles run in distinct containers with their own profile", async () => {
