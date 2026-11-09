@@ -2053,6 +2053,15 @@ button.persona-choice[aria-pressed="true"] {
 .persona-detail h3 {
   overflow-wrap: anywhere;
 }
+.persona-fields dt {
+  font-weight: 600;
+  margin-top: 16px;
+}
+.persona-fields dd {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .persona-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -1,0 +1,7 @@
+{
+  "src/config/store.ts": "f7d6266499f5af1c592c00870d5c3024e208bd41a388123b67da2259abd08d79",
+  "ui/app.js": "13aa886584c4e565947d6f35f387f2cc483a457e910345fef06067e72353c664",
+  "ui/index.html": "cbed6c2e5aa69153257ac6cf1195c44c1559ab31e3647d6c0044cd5e05698651",
+  "ui/style.css": "a6d79a88c1fe4cee00020f958cb60eeb7a56e53db58234df207e0b1ca3fb2efc",
+  "tests/persona-all-fields-browser.test.ts": "9ad2d10caa8ca03cce30ef9ee498b6d868e40761b3693477fa4737485979df2f"
+}

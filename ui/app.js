@@ -1350,6 +1350,9 @@ function resetPersonas() {
   $("personaBuiltins").replaceChildren();
   $("personaCustom").replaceChildren();
   $("personaDetail").hidden = true;
+  $("personaDescription").textContent = "";
+  for (const value of document.querySelectorAll("[data-persona-field]"))
+    value.textContent = "";
   $("retryPersonas").hidden = true;
 }
 function personaItem(persona) {
@@ -1423,7 +1426,10 @@ function showPersona(id, held) {
         : "Not saved yet. Save to add it to your custom personas.";
   if (builtin) {
     $("personaDescription").textContent = persona.description;
-    $("personaInstructions").textContent = persona.instructions;
+    for (const value of document.querySelectorAll("[data-persona-field]")) {
+      const text = persona.persona?.[value.dataset.personaField];
+      value.textContent = text || "Not separately specified";
+    }
     clearPersonaEditor();
   } else if (editable) {
     $("personaLabel").value = persona?.label ?? "";

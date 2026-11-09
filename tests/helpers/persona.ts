@@ -2,6 +2,7 @@ import type { Page } from "playwright-core";
 import type { Store } from "../../src/config/store.js";
 import {
   builtinPersonas,
+  builtinProjection,
   defaultPersonaId,
   type PersonaFields,
 } from "../../src/config/personas.js";
@@ -64,6 +65,7 @@ export function personaViewFixture(
       label: p.label,
       description: p.description,
       instructions: p.instructions,
+      persona: builtinProjection(p),
       readOnly: true,
     })),
     custom: custom.map((p) => ({ ...p, kind: "custom" })),

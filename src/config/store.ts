@@ -1005,6 +1005,7 @@ export class Store {
         label: p.label,
         description: p.description,
         instructions: p.instructions,
+        persona: builtinProjection(p),
         readOnly: true,
       })),
       custom: state.custom.map((p) => ({
