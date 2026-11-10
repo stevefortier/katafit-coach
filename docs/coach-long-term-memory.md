@@ -149,9 +149,12 @@ favorable subset of the evidence. Non-image uploads and source shapes outside
 the existing read contract remain unsupported.
 
 An otherwise authorized legacy context with unprovable ancestry remains usable
-by ordinary callers. `MEMORY_COVERAGE_UNAVAILABLE` explicitly disables durable
-capture for that execution, including later rereads; this is not an authority
-approval or completed retention. Source-proof budgets also fail closed without
+by ordinary callers. Incomplete source proofs disable durable capture for that
+execution, including later rereads: the backend opens its capture recall-only
+(regimen#1171), so existing memory is still recalled but commit is refused. This
+is not an authority approval or completed retention. A typed task's prompt names
+only the memory and integration tools actually offered, and member-visible text
+never narrates which tools or reads were unavailable. Source-proof budgets also fail closed without
 truncating a derivation. Image recovery evidence contains authorized metadata,
 not a persisted copy of image bytes; extraction must not invent visual facts.
 
