@@ -214,6 +214,27 @@ export const CAPABILITY_GUIDANCE =
   GENERATION_GUIDANCE +
   LIVING_CONTEXT_GUIDANCE;
 
+/**
+ * Fixed typed-task constraint: name only the optional tools this invocation
+ * really offers, and keep tool plumbing out of member-visible text. Placed
+ * after the backend's capability instructions, which ask to report denials.
+ */
+export function taskToolGuidance(o: {
+  memory: boolean;
+  integrations: boolean;
+}) {
+  return (
+    "\nTool availability for this task (fixed constraint; overrides earlier guidance to report denied or missing reads): " +
+    (o.memory
+      ? "Coach memory search (coach_memory_search) is offered. "
+      : "Coach memory search is not offered for this task; do not try to reach Coach memory another way. ") +
+    (o.integrations
+      ? "Configured integrations are offered. "
+      : "No integrations are configured for this task; do not look for them. ") +
+    "Member-visible text never describes tools, memory, integrations or reads you could or could not use. Mention a missing fact only when it changes the advice, and then say what is unknown (for example, today's meal target), never which tool or read was unavailable. Never invent the missing fact.\n"
+  );
+}
+
 /** Appended when REST authenticates as someone other than the requester. */
 export const PRINCIPAL_REST_NOTE =
   "REST calls authenticate as the principal account (the Dojo chief), not the requester. Account-scoped endpoints such as /api/user/targets describe the principal account; read requester facts only through documented Dojo/member surfaces and never attribute principal-account data to the requester. Principal-private memory is planning context and must never be copied into requester-visible text.\n";

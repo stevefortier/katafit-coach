@@ -71,6 +71,7 @@ import {
   CAPABILITY_PROTOCOL,
   InvocationCapability,
   PRINCIPAL_REST_NOTE,
+  taskToolGuidance,
   requestAdmission,
   type ActionLedger,
 } from "../capability/invocation.js";
@@ -2125,6 +2126,12 @@ export class Worker {
           : "") +
         CAPABILITY_GUIDANCE +
         (admission.subjectIsPrincipal ? "" : PRINCIPAL_REST_NOTE) +
+        taskToolGuidance({
+          memory: Boolean(memory),
+          integrations: capability
+            .tools()
+            .some((tool) => tool.name === "coach_discover_integrations"),
+        }) +
         (photos ? photoEvidenceGuidance(photos) : "") +
         "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON as an object, with no prose or Markdown code fences, matching this local result schema: " +
         JSON.stringify(taskSchema(task.kind, context.result_schema)) +
