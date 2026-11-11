@@ -331,6 +331,11 @@ type Incident = PendingTask & {
 };
 const DENIAL_CODES = ISOLATION_REASONS;
 const MAX_INCIDENTS = 32;
+// Automatic task feedback is time-bound and each search is a further model
+// turn plus a backend recall, so a task is not told to page memory for
+// completeness the way a conversation is.
+export const TASK_MEMORY_PAGE_NOTE =
+  "\nMemory recall covered a bounded page: the memories shown are its best matches for this task. Work from them. Call coach_memory_search only when this task needs a specific fact they do not cover, with one focused query; do not continue a search or repeat it for completeness.\n";
 // Pause before re-polling after claimed work, and how many may chain.
 const FOLLOW_UP_MS = 250;
 const MAX_FOLLOW_UPS = 10;
@@ -2129,9 +2134,7 @@ export class Worker {
         effectivePrompt(this.options.system, context.instructions, secrets) +
         formatSkillBodies(selectedSkills, "worker") +
         formatRecall(memory?.recalled ?? [], "worker") +
-        (memory?.partial
-          ? "\nMemory recall covered a bounded page. Use coach_memory_search and its continuation for deeper recall.\n"
-          : "") +
+        (memory?.partial ? TASK_MEMORY_PAGE_NOTE : "") +
         CAPABILITY_GUIDANCE +
         (admission.subjectIsPrincipal ? "" : PRINCIPAL_REST_NOTE) +
         taskToolGuidance({
