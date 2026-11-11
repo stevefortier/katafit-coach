@@ -336,6 +336,9 @@ const MAX_INCIDENTS = 32;
 // completeness the way a conversation is.
 export const TASK_MEMORY_PAGE_NOTE =
   "\nMemory recall covered a bounded page: the memories shown are its best matches for this task. Work from them. Call coach_memory_search only when this task needs a specific fact they do not cover, with one focused query; do not continue a search or repeat it for completeness.\n";
+// Pause before re-polling after claimed work, and how many may chain.
+const FOLLOW_UP_MS = 250;
+const MAX_FOLLOW_UPS = 10;
 // Presence report budgets: fresh initialize + initialized, then a fresh call.
 const PRESENCE_HANDSHAKE_MS = 4000;
 const PRESENCE_CALL_MS = 2000;
@@ -418,6 +421,9 @@ export class Worker {
     this.updateQuiesced = false;
   }
   private preferTask = true;
+  // Set when a poll claimed a task or request: more may be queued behind it.
+  private claimedWork = false;
+  private followUps = 0;
   private pendingTask?: PendingTask;
   private isolated: Incident[] = [];
   private typedCooldown = 0;
@@ -1278,6 +1284,7 @@ export class Worker {
           taskPlane.contextFailureDetails === true,
         );
         if (!handled) taskAttempt = false;
+        else this.claimedWork = true;
         return handled;
       };
       if (this.preferTask && (await tryTasks())) return;
@@ -1338,6 +1345,7 @@ export class Worker {
         this.update("idle");
         return;
       }
+      this.claimedWork = true;
       fence = {
         request_id: request.id,
         lease_generation: request.lease_generation,
@@ -2536,10 +2544,20 @@ export class Worker {
   }
   private async run() {
     let delay = this.options.pollMs ?? 5000;
+    let wait = delay;
     while (!this.controller.signal.aborted) {
       try {
+        this.claimedWork = false;
         if (!this.updateQuiesced) await this.pollOnce();
-        delay = this.options.pollMs ?? 5000;
+        wait = delay = this.options.pollMs ?? 5000;
+        // One claim per poll: after finishing claimed work, look for the next
+        // queued item at once instead of idling a full interval in front of
+        // it. Bounded, so work that keeps finishing instantly cannot spin; a
+        // failed poll never follows up and keeps its backoff.
+        if (this.claimedWork && this.followUps < MAX_FOLLOW_UPS) {
+          this.followUps++;
+          wait = Math.min(delay, FOLLOW_UP_MS);
+        } else this.followUps = 0;
       } catch (e: any) {
         if (!this.controller.signal.aborted)
           this.update(
@@ -2547,9 +2565,10 @@ export class Worker {
               ? "credential-rejected"
               : "connection-or-request-failed",
           );
-        delay = Math.min(60000, delay * 2);
+        this.followUps = 0;
+        wait = delay = Math.min(60000, delay * 2);
       }
-      await sleep(delay, undefined, { signal: this.controller.signal }).catch(
+      await sleep(wait, undefined, { signal: this.controller.signal }).catch(
         () => {},
       );
     }
