@@ -1059,6 +1059,47 @@ test("source denial isolates uncertain digest while queued tasks take priority o
     await f.close();
   }
 });
+test("an isolated result that stays denied is checked less and less often, never dropped", async () => {
+  const { incidentCheckDelay } = await import("../src/worker/runner.js");
+  assert.equal(incidentCheckDelay(60000, 1), 120000);
+  assert.equal(incidentCheckDelay(60000, 4), 960000);
+  assert.equal(incidentCheckDelay(60000, 20), 6 * 60 * 60 * 1000);
+  const options = {
+    dropComplete: true,
+    reconcileDenial: "TASK_SOURCE_CHANGED",
+  };
+  const f = await taskFixture(options);
+  const w = new Worker({
+    origin: f.origin,
+    token: "worker-secret",
+    system: "Coach",
+    isolationMs: 20,
+    complete: async () => '{"text":"generated"}',
+  });
+  const reads = () =>
+    f.calls.filter((c) => c.name === "coach_read_task_receipt").length;
+  try {
+    const first = f.enqueue();
+    f.deny(first.id);
+    await assert.rejects(w.pollOnce(), /DELIVERY_UNVERIFIED/);
+    assert.equal(w.incidents.length, 1);
+    await new Promise((r) => setTimeout(r, 25));
+    const before = reads();
+    await w.pollOnce();
+    assert.equal(reads(), before + 1);
+    // The next check is 40 ms out: one interval later it is not due yet.
+    await new Promise((r) => setTimeout(r, 25));
+    await w.pollOnce();
+    assert.equal(reads(), before + 1);
+    await new Promise((r) => setTimeout(r, 25));
+    await w.pollOnce();
+    assert.equal(reads(), before + 2);
+    assert.equal(w.incidents.length, 1);
+  } finally {
+    await w.stop();
+    await f.close();
+  }
+});
 test("transient reconcile error never isolates an unknown completion", async () => {
   const options = { dropComplete: true, receiptError: true };
   const f = await taskFixture(options);

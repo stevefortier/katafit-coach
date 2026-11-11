@@ -328,9 +328,17 @@ type Incident = PendingTask & {
   nextCheck: number;
   binding?: string;
   durable?: boolean;
+  /** Receipt checks made since this process isolated or restored it. */
+  checks?: number;
 };
 const DENIAL_CODES = ISOLATION_REASONS;
 const MAX_INCIDENTS = 32;
+// An isolated result is never given up on, but a receipt that stayed denied
+// rarely changes: each check doubles the wait up to this cap, so an old
+// incident costs a few backend reads a day instead of one every interval.
+const INCIDENT_CHECK_CAP_MS = 6 * 60 * 60 * 1000;
+export const incidentCheckDelay = (isolationMs: number, checks: number) =>
+  Math.min(INCIDENT_CHECK_CAP_MS, isolationMs * 2 ** Math.min(checks, 30));
 // Automatic task feedback is time-bound and each search is a further model
 // turn plus a backend recall, so a task is not told to page memory for
 // completeness the way a conversation is.
@@ -1240,7 +1248,10 @@ export class Worker {
               taskBinding(this.options.origin, this.options.token)),
       );
       if (due) {
-        due.nextCheck = Date.now() + (this.options.isolationMs ?? 60000);
+        due.checks = (due.checks ?? 0) + 1;
+        due.nextCheck =
+          Date.now() +
+          incidentCheckDelay(this.options.isolationMs ?? 60000, due.checks);
         try {
           await this.reconcileTask(due);
         } catch {
