@@ -36,6 +36,7 @@ test(
       await b.checkIn();
       const token = await b.credential(false);
       const p = await statusProvider(status ?? 200);
+      let inferenceCalls = 0;
       const w = new Worker({
         origin: b.origin,
         token,
@@ -44,14 +45,16 @@ test(
         complete:
           status === null
             ? // Inference that never answers: only the worker's own timer ends it.
-              (_context, signal) =>
-                new Promise<string>((_resolve, reject) =>
+              (_context, signal) => {
+                inferenceCalls++;
+                return new Promise<string>((_resolve, reject) =>
                   signal.addEventListener(
                     "abort",
                     () => reject(new Error("CANCELLED")),
                     { once: true },
                   ),
-                )
+                );
+              }
             : (context, signal, system, tools, _ref, budget) =>
                 complete(
                   {
@@ -69,7 +72,12 @@ test(
       });
       try {
         await assert.rejects(w.pollOnce());
-        return { state: w.state, lastError: w.lastError, row: await b.task() };
+        return {
+          state: w.state,
+          lastError: w.lastError,
+          row: await b.task(),
+          inferenceCalls,
+        };
       } finally {
         await w.stop();
         await p.close();
@@ -89,12 +97,17 @@ test(
     });
 
     await t.test("own model deadline", async () => {
-      const { state, lastError, row } = await run(null, { modelMs: 60 });
+      // Real preparation consumes part of the same budget. Prove entry into
+      // the completion callback before calling this a provider timeout.
+      const { state, lastError, row, inferenceCalls } = await run(null, {
+        modelMs: 2000,
+      });
+      assert.equal(inferenceCalls, 1);
       assert.equal(state, "task-failure-reported");
       assert.equal(lastError?.code, "PROVIDER_TIMEOUT");
       assert.equal(row.failure_detail_code, "PROVIDER_MODEL_DEADLINE");
-      assert.equal(row.failure_timing.budget_ms, 60);
-      assert.ok(row.failure_timing.elapsed_ms >= 55);
+      assert.equal(row.failure_timing.budget_ms, 2000);
+      assert.ok(row.failure_timing.elapsed_ms >= 1900);
     });
 
     await t.test("rate limited", async () => {

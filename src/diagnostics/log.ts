@@ -1,3 +1,4 @@
+import { safeProvenance, type Provenance } from "./provenance.js";
 import {
   appendFileSync,
   closeSync,
@@ -34,6 +35,8 @@ export const stages = [
   "provider-payload",
   "provider-response",
   "provider-accounting",
+  "provider-dispatch",
+  "inference-provenance",
   "provider-budget-refused",
   "acquisition-result",
   "autonomy-usage",
@@ -92,6 +95,7 @@ export interface LogInput {
   error?: unknown;
   metadata?: Record<string, unknown>;
   rejection?: { kind: string; attempt: number; reason: string; text: string };
+  provenance?: Provenance;
   preview?: string;
   shape?: ProviderShape;
   texts?: ModelText[];
@@ -135,6 +139,7 @@ export interface Entry {
   hint?: string;
   metadata: Record<string, number>;
   rejection?: { kind: string; attempt: number; reason: string; text: string };
+  provenance?: Provenance;
   preview?: string;
   shape?: ProviderShape;
   texts?: ModelText[];
@@ -407,6 +412,11 @@ function entry(input: LogInput, time = new Date().toISOString()): Entry {
       : {}),
     ...(error ? { code: error.code, hint: error.hint } : {}),
     metadata: numericMetadata({ ...error?.metadata, ...input.metadata }),
+    ...(((input.source === "provider" && input.stage === "provider-dispatch") ||
+      (input.source === "worker" && input.stage === "inference-provenance")) &&
+    safeProvenance(input.provenance)
+      ? { provenance: safeProvenance(input.provenance) }
+      : {}),
     ...(input.source === "backend" &&
     input.stage === "backend-call" &&
     safeBackendCall(input.backendCall)

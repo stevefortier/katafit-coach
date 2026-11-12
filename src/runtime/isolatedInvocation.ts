@@ -43,6 +43,7 @@ export function workerGatewayOptions(
     tools: call.tools,
     skills: true,
     onDiagnostic: call.onDiagnostic,
+    onProviderDispatch: call.budget?.onProviderDispatch,
     diagnosticRef: call.ref,
     ...(call.budget?.attribution
       ? { diagnosticAttribution: call.budget.attribution }
@@ -65,6 +66,9 @@ export function isolatedWorkerCompletion(
   context: () => Promise<RuntimeContext>,
 ): WorkerOptions["complete"] {
   return async (message, signal, prompt, tools, ref, budget) => {
+    try {
+      budget?.onPreparationStart?.();
+    } catch {}
     signal.throwIfAborted();
     if (budget?.images?.length && store.publicConfig().provider.vision !== true)
       throw new Error("VISION_UNSUPPORTED");
