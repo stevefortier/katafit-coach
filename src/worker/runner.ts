@@ -331,6 +331,17 @@ type Incident = PendingTask & {
   /** Receipt checks made since this process isolated or restored it. */
   checks?: number;
 };
+// An automatic set reaction: exercise guidance where no member message awaits
+// a reply (the conversation is empty or the Coach spoke last).
+export function isQuickSetFeedback(kind: string, evidence: any): boolean {
+  if (kind !== "exercise_suggestions") return false;
+  const conversation = evidence?.conversation;
+  if (!Array.isArray(conversation)) return false;
+  const last = conversation[conversation.length - 1];
+  return !last || last.role !== "user";
+}
+const QUICK_SET_FEEDBACK_GUIDANCE =
+  "\nTool availability for this task (fixed constraint; overrides earlier guidance): no tools are offered. Answer now from the supplied evidence and recalled memory only. Member-visible text never describes tools, memory, integrations or reads you could or could not use.";
 const DENIAL_CODES = ISOLATION_REASONS;
 const MAX_INCIDENTS = 32;
 // An isolated result is never given up on, but a receipt that stayed denied
@@ -2141,19 +2152,28 @@ export class Worker {
               ...(photos ? { acquired_photo_evidence: photos.evidence } : {}),
             })
           : serialized;
+      // A set was just completed and nobody wrote to the Coach: the member is
+      // resting and the reaction is only useful before the next set. Answer in
+      // one model turn from the supplied evidence and recalled memory, with no
+      // tools to call first.
+      const quickFeedback = isQuickSetFeedback(task.kind, context.evidence);
       const system =
         effectivePrompt(this.options.system, context.instructions, secrets) +
         formatSkillBodies(selectedSkills, "worker") +
         formatRecall(memory?.recalled ?? [], "worker") +
-        (memory?.partial ? TASK_MEMORY_PAGE_NOTE : "") +
-        CAPABILITY_GUIDANCE +
-        (admission.subjectIsPrincipal ? "" : PRINCIPAL_REST_NOTE) +
-        taskToolGuidance({
-          memory: Boolean(memory),
-          integrations: capability
-            .tools()
-            .some((tool) => tool.name === "coach_discover_integrations"),
-        }) +
+        (memory?.partial && !quickFeedback ? TASK_MEMORY_PAGE_NOTE : "") +
+        (quickFeedback ? "" : CAPABILITY_GUIDANCE) +
+        (admission.subjectIsPrincipal || quickFeedback
+          ? ""
+          : PRINCIPAL_REST_NOTE) +
+        (quickFeedback
+          ? QUICK_SET_FEEDBACK_GUIDANCE
+          : taskToolGuidance({
+              memory: Boolean(memory),
+              integrations: capability
+                .tools()
+                .some((tool) => tool.name === "coach_discover_integrations"),
+            })) +
         (photos ? photoEvidenceGuidance(photos) : "") +
         "\nThis is a generation task, not a user chat turn. Do not invent a user question. Return only JSON as an object, with no prose or Markdown code fences, matching this local result schema: " +
         JSON.stringify(taskSchema(task.kind, context.result_schema)) +
@@ -2179,10 +2199,14 @@ export class Worker {
       assembled();
       let repairHint = "";
       let result: any;
-      const tools = [
-        ...capability.tools(),
-        ...(memory ? [this.memorySearchTool(c, memory, budget, terminal)] : []),
-      ];
+      const tools = quickFeedback
+        ? []
+        : [
+            ...capability.tools(),
+            ...(memory
+              ? [this.memorySearchTool(c, memory, budget, terminal)]
+              : []),
+          ];
       for (let attempt = 0; attempt < 2; attempt++) {
         const inferred = at(SPAN_CODES.inferenceCall, {
           outputAttempt: attempt + 1,

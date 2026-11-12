@@ -1489,6 +1489,90 @@ test("strict local schemas deny coerced numbers, unknown fields, enums, secrets 
   ])
     assert.throws(() => parseTaskResult("activity_followup", raw, []));
 });
+test("an automatic set reaction is generated in one turn with no tools; a member message keeps them", async () => {
+  const { isQuickSetFeedback } = await import("../src/worker/runner.js");
+  assert.equal(
+    isQuickSetFeedback("exercise_suggestions", { conversation: [] }),
+    true,
+  );
+  assert.equal(
+    isQuickSetFeedback("exercise_suggestions", {
+      conversation: [
+        { role: "user", text: "q" },
+        { role: "coach", text: "a" },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    isQuickSetFeedback("exercise_suggestions", {
+      conversation: [
+        { role: "coach", text: "a" },
+        { role: "user", text: "q" },
+      ],
+    }),
+    false,
+  );
+  assert.equal(isQuickSetFeedback("exercise_suggestions", {}), false);
+  assert.equal(
+    isQuickSetFeedback("workout_suggestions", { conversation: [] }),
+    false,
+  );
+  for (const [conversation, quick] of [
+    [[], true],
+    [
+      [
+        {
+          role: "user",
+          text: "Should I add weight?",
+          created_at: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      false,
+    ],
+  ] as const) {
+    const f = await taskFixture({
+      evidence: {
+        timezone: "UTC",
+        conversation,
+        observations: [{ label: "Exercise", text: "Synthetic set evidence" }],
+      },
+    });
+    let seen: any;
+    const w = new Worker({
+      origin: f.origin,
+      token: "worker-secret",
+      system: "Coach",
+      complete: async (_context, _signal, system, tools) => {
+        seen = { system, tools };
+        return JSON.stringify({
+          summary: "",
+          reply_worthwhile: false,
+          reactions: [],
+        });
+      },
+    });
+    try {
+      f.enqueue("exercise_suggestions");
+      await w.pollOnce();
+      assert.equal(f.saved.length, 1);
+      if (quick) {
+        assert.equal(seen.tools.length, 0);
+        assert.match(seen.system, /no tools are offered/);
+        assert.doesNotMatch(
+          seen.system,
+          /Configured integrations are offered|coach_memory_search\) is offered/,
+        );
+      } else {
+        assert.ok(seen.tools.length > 0);
+        assert.doesNotMatch(seen.system, /no tools are offered/);
+      }
+    } finally {
+      await w.stop();
+      await f.close();
+    }
+  }
+});
 test("negotiated task lifecycle submits structured result once and accepts its matching ACK", async () => {
   const f = await taskFixture();
   let seen: any;
