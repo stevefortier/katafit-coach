@@ -1,3 +1,4 @@
+import { safeProvenance } from "../diagnostics/provenance.js";
 import type { InferenceTrace } from "../diagnostics/trace.js";
 import { SafeError, safeError, providerFailure } from "./errors.js";
 import { createHash } from "node:crypto";
@@ -23,6 +24,7 @@ import {
 export interface Provider {
   authorize?: () => Promise<void>;
   onDiagnostic?: (event: LogInput) => void;
+  providerId?: string;
   baseUrl: string;
   model: string;
   vision?: boolean;
@@ -237,6 +239,10 @@ const CALL_LIMIT = 64;
 const TOTAL_INPUT_LIMIT = 48 * 1024 * 1024;
 const OUTPUT_TOKEN_LIMIT = 48000;
 export interface InferenceBudget {
+  /** Host-only observed boundaries; callbacks never alter inference. */
+  onPreparationStart?: () => void;
+  onProviderDispatch?: () => void;
+
   deadlineAt?: number;
   /** Content-free Worker task-attempt binding for gateway receipts only. */
   attribution?: { attemptDigest: number; outputAttempt: number };
@@ -259,6 +265,9 @@ export async function complete(
   tools: AgentTool[] = [],
   budget: InferenceBudget = {},
 ): Promise<string> {
+  try {
+    budget.onPreparationStart?.();
+  } catch {}
   const cancellation = () =>
     new SafeError(
       signal.reason?.name === "TimeoutError" ? "PROVIDER_TIMEOUT" : "CANCELLED",
@@ -478,6 +487,25 @@ export async function complete(
           await provider.authorize?.();
           signal.throwIfAborted();
           const callStarted = performance.now();
+          try {
+            budget.onProviderDispatch?.();
+          } catch {}
+          try {
+            if (budget.attribution)
+              provider.onDiagnostic?.({
+                source: "provider",
+                stage: "provider-dispatch",
+                metadata: { ...budget.attribution },
+                provenance: safeProvenance(
+                  {
+                    api: "openai-completions",
+                    provider: provider.providerId,
+                    model: provider.model,
+                  },
+                  secrets,
+                ),
+              });
+          } catch {}
           try {
             response = await fetch(url, init);
           } catch {

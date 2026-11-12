@@ -1,3 +1,4 @@
+import { safeProvenance } from "../diagnostics/provenance.js";
 import { randomUUID, createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Ajv } from "ajv";
@@ -1192,6 +1193,8 @@ export interface ProfileGatewayOptions {
    * profile only; emits content-free `task-span` receipts under diagnosticRef.
    */
   diagnosticTrace?: InferenceTrace;
+  /** Host-only physical dispatch observation. */
+  onProviderDispatch?: () => void;
 }
 /** Physical provider-call marks on the trace clock (gateway-internal). */
 interface ProviderMarks {
@@ -1781,6 +1784,30 @@ export async function openProfileGateway(
     const timeout = AbortSignal.timeout(120000);
     let response: Response;
     if (trace) marks.dispatched = read(trace.clock);
+    try {
+      options.onProviderDispatch?.();
+    } catch {}
+    try {
+      if (worker)
+        options.onDiagnostic?.({
+          source: "provider",
+          stage: "provider-dispatch",
+          ref: diagnosticRef,
+          metadata: {
+            ...attribution,
+            requestOrdinal: used.provider_requests,
+            profileCode: worker ? 3 : planner ? 1 : 2,
+          },
+          provenance: safeProvenance(
+            {
+              api: "openai-completions",
+              provider: config.models?.active.provider,
+              model: config.provider.model,
+            },
+            secretValues,
+          ),
+        });
+    } catch {}
     try {
       response = await fetch(config.provider.baseUrl + "/chat/completions", {
         method: "POST",

@@ -1,3 +1,4 @@
+import { skillProvenance } from "../diagnostics/provenance.js";
 import type { Admission } from "../runtime/admission.js";
 import {
   IsolatedTaskJournal,
@@ -755,7 +756,12 @@ export class Worker {
         const settled = () => this.invocations.delete(invocation);
         void invocation.then(settled, (error) => {
           settled();
-          if (!granted) waited(spanOutcome(error, signal));
+          if (!granted) {
+            try {
+              rest[3]?.onPreparationStart?.();
+            } catch {}
+            waited(spanOutcome(error, signal));
+          }
         });
         return invocation;
       },
@@ -828,12 +834,18 @@ export class Worker {
     let started = performance.now();
     // One receipt per settled awaited phase; exactly one terminal receipt.
     // Codes and bounds are documented in docs/worker-preparation-diagnostics.md.
-    const settled = (outcome: number, subtype: number, terminal: number) => {
+    const settled = (
+      outcome: number,
+      subtype: number,
+      terminal: number,
+      evidence: Record<string, number> = {},
+    ) => {
       this.diagnostic({
         source: "worker",
         stage: "memory-preparation",
         ref,
         metadata: {
+          ...evidence,
           memoryPhaseCode: phase,
           memoryOutcomeCode: outcome,
           memorySubtypeCode: subtype,
@@ -867,7 +879,11 @@ export class Worker {
         secrets,
         budget(),
       );
-      settled(1, 0, 1);
+      settled(1, 0, 1, {
+        memoryItems: items.length,
+        memoryEvidenceCode: items.length ? 2 : 1,
+        memoryPartial: has_more ? 1 : 0,
+      });
       this.diagnostic({
         source: "worker",
         stage: "memory-recalled",
@@ -2143,7 +2159,7 @@ export class Worker {
           : {}),
       });
       prepared();
-      phase = "provider";
+      contextStep = "TASK_CONTEXT_PREPARE";
       const selectedSkills = this.options.skills
         ? skillForTask(this.options.skills, task.kind)
         : [];
@@ -2272,6 +2288,7 @@ export class Worker {
           outputAttempt: attempt + 1,
         });
         const text = await bounded(() => {
+          phase = "provider";
           if (task.kind === "exercise_suggestions")
             this.diagnostic({
               source: "worker",
@@ -2283,6 +2300,21 @@ export class Worker {
                 outputAttempt: attempt + 1,
               },
             });
+          this.diagnostic({
+            source: "worker",
+            stage: "inference-provenance",
+            ref,
+            metadata: {
+              attemptDigest: timing.attemptDigest!,
+              outputAttempt: attempt + 1,
+              ...(this.options.skills
+                ? { skillRevision: this.options.skills.revision }
+                : {}),
+            },
+            ...(this.options.skills
+              ? { provenance: skillProvenance(selectedSkills) }
+              : {}),
+          });
           return this.options.complete(
             envelope,
             signal,
@@ -2296,6 +2328,13 @@ export class Worker {
             // Provider receipts join this attempt and output turn exactly.
             {
               deadlineAt,
+              onPreparationStart: () => {
+                phase = "context";
+                contextStep = "TASK_CONTEXT_PREPARE";
+              },
+              onProviderDispatch: () => {
+                phase = "provider";
+              },
               attribution: {
                 attemptDigest: timing.attemptDigest!,
                 outputAttempt: attempt + 1,
