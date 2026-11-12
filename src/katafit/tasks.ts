@@ -1,7 +1,12 @@
 import { livingContext } from "./living-context.js";
 import { isDeepStrictEqual } from "node:util";
 import { Ajv } from "ajv";
-import { taskCatalog, legacyDailyInsightContract } from "./taskCatalog.js";
+import {
+  taskCatalog,
+  legacyDailyInsightContract,
+  nextSetOutcomesContract,
+  NEXT_SET_OUTCOMES,
+} from "./taskCatalog.js";
 import { Client } from "./client.js";
 import { assertNoSecrets } from "../config/store.js";
 import {
@@ -48,7 +53,11 @@ const ajv = new Ajv({
 const variants = new Map<string, any[]>(
   taskCatalog.contracts.map((c) => [
     c.kind,
-    c.kind === "daily_insight" ? [c, legacyDailyInsightContract] : [c],
+    c.kind === "daily_insight"
+      ? [c, legacyDailyInsightContract]
+      : c.kind === "exercise_suggestions"
+        ? [c, nextSetOutcomesContract]
+        : [c],
   ]),
 );
 const validators = new Map(
@@ -76,6 +85,8 @@ export async function discoverTaskPlane(c: Client): Promise<{
   contextFailureDetails?: boolean;
   /** How long an empty claim may wait for work (ms), when the backend offers it. */
   claimWaitMs?: number;
+  /** Extended results the backend offers with exactly this worker's schema. */
+  resultExtensions?: string[];
 }> {
   // Capability absence/mismatch never grants task authority or breaks legacy chat.
   try {
@@ -130,6 +141,19 @@ export async function discoverTaskPlane(c: Client): Promise<{
         : {}),
       ...(Number.isInteger(cap.claim_wait?.max_ms) && cap.claim_wait.max_ms > 0
         ? { claimWaitMs: Math.min(CLAIM_WAIT_MS, cap.claim_wait.max_ms) }
+        : {}),
+      ...(Array.isArray(cap.result_extensions) &&
+      kinds.includes(nextSetOutcomesContract.kind) &&
+      cap.result_extensions.some(
+        (x: any) =>
+          x?.name === NEXT_SET_OUTCOMES &&
+          x.kind === nextSetOutcomesContract.kind &&
+          isDeepStrictEqual(
+            x.result_schema,
+            nextSetOutcomesContract.result_schema,
+          ),
+      )
+        ? { resultExtensions: [NEXT_SET_OUTCOMES] }
         : {}),
     };
   } catch {

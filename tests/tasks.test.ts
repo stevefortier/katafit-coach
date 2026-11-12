@@ -1516,6 +1516,92 @@ test("an empty claim waits at the backend only when the backend offers it", asyn
     }
   }
 });
+test("the next set's outcomes are returned only when the backend offers that result with this worker's schema", async () => {
+  const { nextSetOutcomesContract } = await import(
+    "../src/katafit/taskCatalog.js"
+  );
+  const { isQuickSetFeedback } = await import("../src/worker/runner.js");
+  const offer = (result_schema: unknown) => [
+    {
+      name: "next_set_outcomes",
+      kind: "exercise_suggestions",
+      result_schema,
+    },
+  ];
+  const evidence = {
+    timezone: "UTC",
+    conversation: [],
+    observations: [
+      {
+        label: "Workout recommendations",
+        text: "Also prepare the member's next set of this exercise (set_index 1, planned 20 x 8): return next_set_outcomes with that set_index.",
+      },
+      { label: "Eligible reaction targets", text: "[]" },
+      {
+        label: "Exercise",
+        text: JSON.stringify({
+          workout_exercise_id: "e",
+          sets: [{ complete: true, repetitions: 8 }, { complete: false }],
+        }),
+      },
+    ],
+  };
+  // No target is left to react to, but the review still prepares a set.
+  assert.equal(isQuickSetFeedback("exercise_suggestions", evidence), true);
+  const result = {
+    summary: "",
+    reply_worthwhile: false,
+    reactions: [],
+    next_set_outcomes: {
+      set_index: 1,
+      met: { reaction: "bullseye" },
+      short: { reaction: "eyes", message: "{reps} at {weight}." },
+    },
+  };
+  for (const [resultExtensions, named] of [
+    [offer(nextSetOutcomesContract.result_schema), true],
+    // A different schema under the same name is not this worker's contract.
+    [offer({ type: "object" }), false],
+    [undefined, false],
+  ] as const) {
+    const f = await taskFixture({
+      ...(resultExtensions ? { resultExtensions } : {}),
+      evidence,
+      ...(named
+        ? { context: { result_schema: nextSetOutcomesContract.result_schema } }
+        : {}),
+    });
+    const w = new Worker({
+      origin: f.origin,
+      token: "worker-secret",
+      system: "Coach",
+      complete: async () => JSON.stringify(result),
+    });
+    try {
+      f.enqueue("exercise_suggestions");
+      if (named) await w.pollOnce();
+      else await assert.rejects(w.pollOnce(), { code: "TASK_OUTPUT_SCHEMA" });
+      const claims = f.calls.filter((c) => c.name === "coach_claim_task");
+      assert.deepEqual(
+        claims[0].args.result_extensions,
+        named ? ["next_set_outcomes"] : undefined,
+      );
+      // Under the base contract the same output is not an accepted result.
+      assert.equal(
+        f.saved.some((saved: any) => saved.result?.next_set_outcomes),
+        named,
+      );
+      if (named)
+        assert.deepEqual(
+          f.saved[0].result.next_set_outcomes,
+          result.next_set_outcomes,
+        );
+    } finally {
+      await w.stop();
+      await f.close();
+    }
+  }
+});
 test("an automatic set reaction is generated in one turn with no tools; anything else keeps them", async () => {
   const { isQuickSetFeedback } = await import("../src/worker/runner.js");
   const exercise = (complete: boolean) => ({

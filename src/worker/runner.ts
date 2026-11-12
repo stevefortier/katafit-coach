@@ -353,7 +353,18 @@ export function isQuickSetFeedback(kind: string, evidence: any): boolean {
   const targets = observations
     .filter((item: any) => item?.label === "Eligible reaction targets")
     .map((item: any) => parse(item.text));
-  if (!targets.some((list: any) => Array.isArray(list) && list.length > 0))
+  // A set already answered from a prepared reaction has no target left, but
+  // its review is still asked to prepare the next set: equally time-bound.
+  const preparesNextSet = observations.some(
+    (item: any) =>
+      item?.label === "Workout recommendations" &&
+      typeof item.text === "string" &&
+      item.text.includes("return next_set_outcomes"),
+  );
+  if (
+    !preparesNextSet &&
+    !targets.some((list: any) => Array.isArray(list) && list.length > 0)
+  )
     return false;
   const completed = observations
     .filter((item: any) => item?.label === "Exercise")
@@ -475,6 +486,7 @@ export class Worker {
   private claimedWork = false;
   /** Negotiated wait for an empty claim (ms); 0 when the backend has none. */
   private claimWaitMs = 0;
+  private resultExtensions: string[] = [];
   /** The last poll's claim waited at the backend and found nothing. */
   private claimWaited = false;
   private followUps = 0;
@@ -1014,6 +1026,7 @@ export class Worker {
       return this.discovered.value;
     const value = await discoverTaskPlane(c);
     this.claimWaitMs = value.claimWaitMs ?? 0;
+    this.resultExtensions = value.resultExtensions ?? [];
     this.discovered = value.kinds.length
       ? { at: Date.now(), value }
       : undefined;
@@ -1934,6 +1947,10 @@ export class Worker {
       protocol: TASK_PROTOCOL,
       kinds,
       ...(waitMs ? { wait_ms: waitMs } : {}),
+      // Named only when the backend offered them with this worker's schema.
+      ...(this.resultExtensions.length
+        ? { result_extensions: this.resultExtensions }
+        : {}),
       // The isolated Worker has the same 100s inference ceiling as main chat.
       // Claim enough time for context/native setup and the existing 12s
       // absolute-fence/publication reserve; never renew a claimed generation.

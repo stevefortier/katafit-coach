@@ -873,6 +873,52 @@ export const taskCatalog = {
 // Exact pre-extension daily_insight contract still advertised by backends that
 // predate nutrition_decision. Accepted only by exact equality with this local
 // copy (never compiled from remote input); its strict schema rejects the field.
+// exercise_suggestions with the optional next_set_outcomes extension
+// (backend capabilities.result_extensions). Delivered only on a lease whose
+// claim named the extension; accepted by exact equality with this local copy.
+const baseExerciseSuggestions = taskCatalog.contracts.find(
+  (c) => c.kind === "exercise_suggestions",
+)!;
+const reactionKeys = (baseExerciseSuggestions.result_schema as any).properties
+  .reactions.items.properties.reaction;
+const preparedOutcome = {
+  type: "object",
+  properties: {
+    reaction: reactionKeys,
+    message: {
+      anyOf: [{ type: "string", maxLength: 600 }, { type: "null" }],
+    },
+  },
+  required: ["reaction"],
+  additionalProperties: false,
+};
+export const NEXT_SET_OUTCOMES = "next_set_outcomes";
+export const nextSetOutcomesContract = {
+  ...baseExerciseSuggestions,
+  result_schema: {
+    ...(baseExerciseSuggestions.result_schema as any),
+    properties: {
+      ...(baseExerciseSuggestions.result_schema as any).properties,
+      next_set_outcomes: {
+        anyOf: [
+          {
+            type: "object",
+            properties: {
+              set_index: { type: "integer", minimum: 0, maximum: 999 },
+              met: preparedOutcome,
+              over: preparedOutcome,
+              short: preparedOutcome,
+              well_short: preparedOutcome,
+            },
+            required: ["set_index"],
+            additionalProperties: false,
+          },
+          { type: "null" },
+        ],
+      },
+    },
+  },
+};
 export const legacyDailyInsightContract = {
   kind: "daily_insight",
   schema_id: "coach.tasks.v1/daily_insight",
