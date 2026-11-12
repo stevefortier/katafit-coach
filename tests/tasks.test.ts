@@ -1516,6 +1516,112 @@ test("an empty claim waits at the backend only when the backend offers it", asyn
     }
   }
 });
+test("an automatic set reaction is generated in one turn with no tools; anything else keeps them", async () => {
+  const { isQuickSetFeedback } = await import("../src/worker/runner.js");
+  const exercise = (complete: boolean) => ({
+    label: "Exercise",
+    text: JSON.stringify({
+      workout_exercise_id: "e",
+      sets: [{ complete, repetitions: 8 }],
+    }),
+  });
+  const targets = (list: unknown[]) => ({
+    label: "Eligible reaction targets",
+    text: JSON.stringify(list),
+  });
+  const target = { target_event_key: "set-1", target_type: "set_completed" };
+  const reaction = (extra: any[] = [], conversation: any[] = []) => ({
+    timezone: "UTC",
+    conversation,
+    observations: [targets([target]), exercise(true), ...extra],
+  });
+  const user = {
+    role: "user",
+    text: "Should I add weight?",
+    created_at: "2026-01-01T00:00:00.000Z",
+  };
+  const coach = {
+    role: "coach",
+    text: "Hold it.",
+    created_at: "2026-01-01T00:00:01.000Z",
+  };
+  assert.equal(isQuickSetFeedback("exercise_suggestions", reaction()), true);
+  assert.equal(
+    isQuickSetFeedback("exercise_suggestions", reaction([], [user, coach])),
+    true,
+  );
+  // A member message awaiting a reply.
+  assert.equal(
+    isQuickSetFeedback("exercise_suggestions", reaction([], [coach, user])),
+    false,
+  );
+  // Initial guidance: nothing completed, or no set awaiting a reaction.
+  assert.equal(
+    isQuickSetFeedback("exercise_suggestions", {
+      conversation: [],
+      observations: [targets([target]), exercise(false)],
+    }),
+    false,
+  );
+  assert.equal(
+    isQuickSetFeedback("exercise_suggestions", {
+      conversation: [],
+      observations: [targets([]), exercise(true)],
+    }),
+    false,
+  );
+  // History that was withheld or cut short can still be fetched.
+  for (const note of [
+    "Recent sessions were withheld from this evidence to fit its size budget: a missing recent_sessions does not mean there is no earlier history.",
+    "Recent-session history reached its scan limit: an exercise may have older sessions that are not listed.",
+  ])
+    assert.equal(
+      isQuickSetFeedback(
+        "exercise_suggestions",
+        reaction([{ label: "Exercise history", text: note }]),
+      ),
+      false,
+    );
+  assert.equal(isQuickSetFeedback("exercise_suggestions", {}), false);
+  assert.equal(isQuickSetFeedback("workout_suggestions", reaction()), false);
+  for (const [evidence, quick] of [
+    [reaction(), true],
+    [reaction([], [user]), false],
+  ] as const) {
+    const f = await taskFixture({ evidence });
+    let seen: any;
+    const w = new Worker({
+      origin: f.origin,
+      token: "worker-secret",
+      system: "Coach",
+      complete: async (_context, _signal, system, tools) => {
+        seen = { system, tools };
+        return JSON.stringify({
+          summary: "Hold 50 lb for 10 controlled reps.",
+          target_weight: 50,
+          target_reps: 10,
+          reply_worthwhile: true,
+          reactions: [{ target_event_key: "set-1", reaction: "eyes" }],
+        });
+      },
+    });
+    try {
+      f.enqueue("exercise_suggestions");
+      await w.pollOnce();
+      assert.equal(f.saved.length, 1);
+      if (quick) {
+        assert.equal(seen.tools.length, 0);
+        assert.match(seen.system, /no tools are offered/);
+      } else {
+        assert.ok(seen.tools.length > 0);
+        assert.doesNotMatch(seen.system, /no tools are offered/);
+      }
+    } finally {
+      await w.stop();
+      await f.close();
+    }
+  }
+});
 test("negotiated task lifecycle submits structured result once and accepts its matching ACK", async () => {
   const f = await taskFixture();
   let seen: any;
