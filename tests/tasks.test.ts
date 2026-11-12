@@ -1489,6 +1489,33 @@ test("strict local schemas deny coerced numbers, unknown fields, enums, secrets 
   ])
     assert.throws(() => parseTaskResult("activity_followup", raw, []));
 });
+test("an empty claim waits at the backend only when the backend offers it", async () => {
+  for (const [claimWait, expected] of [
+    [undefined, undefined],
+    [5000, 4000],
+    [1500, 1500],
+  ] as const) {
+    const f = await taskFixture(claimWait ? { claimWait } : {});
+    const w = new Worker({
+      origin: f.origin,
+      token: "worker-secret",
+      system: "Coach",
+      complete: async () => '{"text":"generated"}',
+    });
+    try {
+      await w.pollOnce();
+      const claims = f.calls.filter((c) => c.name === "coach_claim_task");
+      assert.equal(claims.length, 1);
+      assert.equal(claims[0].args.wait_ms, expected);
+      f.enqueue();
+      await w.pollOnce();
+      assert.equal(f.saved.length, 1);
+    } finally {
+      await w.stop();
+      await f.close();
+    }
+  }
+});
 test("an automatic set reaction is generated in one turn with no tools; anything else keeps them", async () => {
   const { isQuickSetFeedback } = await import("../src/worker/runner.js");
   const exercise = (complete: boolean) => ({

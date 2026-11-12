@@ -431,6 +431,9 @@ export async function taskFixture(options: any = {}) {
         limits,
         direct_mutations_forbidden: true,
         completion_is_publication: false,
+        ...(options.claimWait
+          ? { claim_wait: { max_ms: options.claimWait } }
+          : {}),
         ...(options.failureDetails
           ? {
               failure_details: {

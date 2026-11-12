@@ -65,12 +65,17 @@ export async function discoverTasks(c: Client): Promise<string[]> {
  * (coach.capability.v1) and its task action journal. Never sent unadvertised:
  * a strict older backend would reject the unknown claim field.
  */
+// The longest this worker lets an empty claim wait for work. Short enough that
+// a chat message, a stop request or an update never waits long behind it.
+export const CLAIM_WAIT_MS = 4000;
 export async function discoverTaskPlane(c: Client): Promise<{
   kinds: string[];
   capability: boolean;
   invocation?: boolean;
   failureDetails?: boolean;
   contextFailureDetails?: boolean;
+  /** How long an empty claim may wait for work (ms), when the backend offers it. */
+  claimWaitMs?: number;
 }> {
   // Capability absence/mismatch never grants task authority or breaks legacy chat.
   try {
@@ -122,6 +127,9 @@ export async function discoverTaskPlane(c: Client): Promise<{
       ...(failureDetailsNegotiated(cap) ? { failureDetails: true } : {}),
       ...(contextFailureDetailsNegotiated(cap)
         ? { contextFailureDetails: true }
+        : {}),
+      ...(Number.isInteger(cap.claim_wait?.max_ms) && cap.claim_wait.max_ms > 0
+        ? { claimWaitMs: Math.min(CLAIM_WAIT_MS, cap.claim_wait.max_ms) }
         : {}),
     };
   } catch {

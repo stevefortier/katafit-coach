@@ -387,6 +387,7 @@ export const TASK_MEMORY_PAGE_NOTE =
   "\nMemory recall covered a bounded page: the memories shown are its best matches for this task. Work from them. Call coach_memory_search only when this task needs a specific fact they do not cover, with one focused query; do not continue a search or repeat it for completeness.\n";
 // Pause before re-polling after claimed work, and how many may chain.
 const FOLLOW_UP_MS = 250;
+const AFTER_CLAIM_WAIT_MS = 500;
 const MAX_FOLLOW_UPS = 10;
 // Presence report budgets: fresh initialize + initialized, then a fresh call.
 const PRESENCE_HANDSHAKE_MS = 4000;
@@ -472,6 +473,10 @@ export class Worker {
   private preferTask = true;
   // Set when a poll claimed a task or request: more may be queued behind it.
   private claimedWork = false;
+  /** Negotiated wait for an empty claim (ms); 0 when the backend has none. */
+  private claimWaitMs = 0;
+  /** The last poll's claim waited at the backend and found nothing. */
+  private claimWaited = false;
   private followUps = 0;
   private pendingTask?: PendingTask;
   private isolated: Incident[] = [];
@@ -1008,6 +1013,7 @@ export class Worker {
     if (this.discovered && Date.now() - this.discovered.at < ttl)
       return this.discovered.value;
     const value = await discoverTaskPlane(c);
+    this.claimWaitMs = value.claimWaitMs ?? 0;
     this.discovered = value.kinds.length
       ? { at: Date.now(), value }
       : undefined;
@@ -1921,9 +1927,13 @@ export class Worker {
   ) {
     if (this.updateQuiesced || this.statsPollPauses) return false;
     const claimStarted = c.trace ? read(c.trace.clock) : NaN;
+    // With a negotiated wait the backend holds an empty claim until work
+    // arrives, so a new task does not sit until the next poll.
+    const waitMs = this.claimWaitMs;
     const { task } = await c.call("coach_claim_task", {
       protocol: TASK_PROTOCOL,
       kinds,
+      ...(waitMs ? { wait_ms: waitMs } : {}),
       // The isolated Worker has the same 100s inference ceiling as main chat.
       // Claim enough time for context/native setup and the existing 12s
       // absolute-fence/publication reserve; never renew a claimed generation.
@@ -1946,7 +1956,10 @@ export class Worker {
           }
         : {}),
     });
-    if (!task) return false;
+    if (!task) {
+      this.claimWaited = waitMs > 0;
+      return false;
+    }
     validateTask(task, kinds);
     if (
       this.isolated.some(
@@ -2613,8 +2626,13 @@ export class Worker {
     while (!this.controller.signal.aborted) {
       try {
         this.claimedWork = false;
+        this.claimWaited = false;
         if (!this.updateQuiesced) await this.pollOnce();
         wait = delay = this.options.pollMs ?? 5000;
+        // The claim already waited at the backend: poll again soon so the
+        // next task is also met by an open claim, not by an idle interval.
+        if (this.claimWaited && !this.claimedWork)
+          wait = Math.min(delay, AFTER_CLAIM_WAIT_MS);
         // One claim per poll: after finishing claimed work, look for the next
         // queued item at once instead of idling a full interval in front of
         // it. Bounded, so work that keeps finishing instantly cannot spin; a
