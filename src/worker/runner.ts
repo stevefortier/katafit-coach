@@ -331,14 +331,44 @@ type Incident = PendingTask & {
   /** Receipt checks made since this process isolated or restored it. */
   checks?: number;
 };
-// An automatic set reaction: exercise guidance where no member message awaits
-// a reply (the conversation is empty or the Coach spoke last).
+// An automatic set reaction: exercise guidance where a completed set awaits
+// its reaction, no member message awaits a reply, and the supplied history is
+// whole. Initial guidance (no completed set yet) and evidence whose history
+// was withheld or cut short keep their tools, so it can still be fetched.
 export function isQuickSetFeedback(kind: string, evidence: any): boolean {
   if (kind !== "exercise_suggestions") return false;
   const conversation = evidence?.conversation;
-  if (!Array.isArray(conversation)) return false;
+  const observations = evidence?.observations;
+  if (!Array.isArray(conversation) || !Array.isArray(observations))
+    return false;
   const last = conversation[conversation.length - 1];
-  return !last || last.role !== "user";
+  if (last && last.role === "user") return false;
+  const parse = (text: unknown) => {
+    try {
+      return JSON.parse(String(text));
+    } catch {
+      return undefined;
+    }
+  };
+  const targets = observations
+    .filter((item: any) => item?.label === "Eligible reaction targets")
+    .map((item: any) => parse(item.text));
+  if (!targets.some((list: any) => Array.isArray(list) && list.length > 0))
+    return false;
+  const completed = observations
+    .filter((item: any) => item?.label === "Exercise")
+    .map((item: any) => parse(item.text))
+    .some(
+      (exercise: any) =>
+        Array.isArray(exercise?.sets) &&
+        exercise.sets.some((set: any) => set?.complete === true),
+    );
+  if (!completed) return false;
+  return !observations.some(
+    (item: any) =>
+      typeof item?.text === "string" &&
+      /withheld from this evidence|reached its scan limit/.test(item.text),
+  );
 }
 const QUICK_SET_FEEDBACK_GUIDANCE =
   "\nTool availability for this task (fixed constraint; overrides earlier guidance): no tools are offered. Answer now from the supplied evidence and recalled memory only. Member-visible text never describes tools, memory, integrations or reads you could or could not use.";

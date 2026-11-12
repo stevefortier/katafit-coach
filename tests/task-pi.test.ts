@@ -81,29 +81,9 @@ async function provider(reply: (body: any) => string) {
     },
   };
 }
-// Exercise guidance with a member message awaiting a reply keeps the full
-// tool set; the no-tools path for automatic set reactions has its own test.
-const awaitingReply = (kind: string) =>
-  kind === "exercise_suggestions"
-    ? {
-        evidence: {
-          timezone: "UTC",
-          observations: [
-            { label: "Activity", text: "Synthetic training evidence" },
-          ],
-          conversation: [
-            {
-              role: "user",
-              text: "Should I add weight?",
-              created_at: "2026-01-01T00:00:00.000Z",
-            },
-          ],
-        },
-      }
-    : {};
 for (const [kind, result] of Object.entries(results))
   test(`actual Pi + synthetic HTTP typed lifecycle: ${kind}`, async () => {
-    const f = await taskFixture(awaitingReply(kind));
+    const f = await taskFixture();
     const p = await provider(() => JSON.stringify(result));
     const w = new Worker({
       origin: f.origin,
