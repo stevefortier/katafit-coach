@@ -61,12 +61,33 @@ test("capability protocol", () => {
   assert.equal(CAPABILITY_PROTOCOL, "coach.capability.v1");
 });
 
+// Exercise guidance with a member message awaiting a reply keeps the full
+// tool set; the no-tools path for automatic set reactions has its own test.
+const awaitingReply = (kind: string) =>
+  kind === "exercise_suggestions"
+    ? {
+        evidence: {
+          timezone: "UTC",
+          observations: [
+            { label: "Activity", text: "Synthetic training evidence" },
+          ],
+          conversation: [
+            {
+              role: "user",
+              text: "Should I add weight?",
+              created_at: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        },
+      }
+    : {};
 for (const negotiate of [true, false])
   test(`every advertised task kind gets the shared capability, and correction keeps it (${negotiate ? "negotiated" : "legacy"} DTO)`, async () => {
     const kinds = taskCatalog.contracts.map((c) => c.kind);
     assert.equal(kinds.length, 9);
     for (const kind of kinds) {
       const f = await taskFixture({
+        ...awaitingReply(kind),
         negotiate,
         memory: true,
         rest: async (c: any) =>
