@@ -5,9 +5,13 @@ import {
   constants,
   fchmodSync,
   fstatSync,
+  lstatSync,
+  mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
 } from "node:fs";
 import {
   safeBackendCall,
@@ -152,6 +156,15 @@ export const LOG_ENTRIES = 20000;
 export const LOG_MEMORY_BYTES = 16 * 1024 * 1024;
 // Large existing provider/task excerpts remain subject to this byte bound.
 export const LOG_FILE_BYTES = 16 * 1024 * 1024;
+// Rotated files are kept for a month so an incident reported days later can
+// still be read. The two live files hold about a day; older ones move to
+// diagnostics-archive/, named by the time they were archived. The count bound
+// only stops a runaway writer from filling the disk.
+export const LOG_ARCHIVE_DIR = "diagnostics-archive";
+export const LOG_ARCHIVE_DAYS = 30;
+export const LOG_ARCHIVE_MAX_FILES = 512;
+const ARCHIVE_NAME =
+  /^diagnostics-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.jsonl$/;
 const credentialPattern =
   /(?:(?:kcoach_|rgn_coach_)[a-z0-9_\-]+|Bearer\s+\S+|-----BEGIN[^-]*PRIVATE KEY|sk-[a-z0-9_-]{12,}|redacted:sk-)/i;
 const toolNamePattern = /^(?:coach_|studio_operator_)[a-z_]{1,48}$/;
@@ -552,6 +565,7 @@ export class Diagnostics {
       if (fstatSync(fd).size + Buffer.byteLength(line) > LOG_FILE_BYTES) {
         closeSync(fd);
         fd = undefined;
+        this.archivePrevious();
         renameSync(this.path, this.path + ".1");
         fd = openSync(
           this.path,
@@ -567,6 +581,49 @@ export class Diagnostics {
       this.persistence = false;
     } finally {
       if (fd !== undefined) closeSync(fd);
+    }
+  }
+  /**
+   * Moves the file about to be overwritten into the archive and drops archives
+   * past their age. Best effort: a failure here never stops logging, it only
+   * loses that one rotated file as before.
+   */
+  private archivePrevious(now = Date.now()) {
+    try {
+      const previous = this.path + ".1";
+      const dir =
+        this.path.slice(0, this.path.lastIndexOf("/") + 1) + LOG_ARCHIVE_DIR;
+      let found;
+      try {
+        found = lstatSync(previous);
+      } catch {
+        return;
+      }
+      if (!found.isFile()) return;
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (!lstatSync(dir).isDirectory()) return;
+      const stamp = new Date(now).toISOString().replace(/[:.]/g, "-");
+      renameSync(previous, `${dir}/diagnostics-${stamp}.jsonl`);
+      const names = readdirSync(dir)
+        .filter((name) => ARCHIVE_NAME.test(name))
+        .sort();
+      const cutoff = now - LOG_ARCHIVE_DAYS * 86400000;
+      names.forEach((name, index) => {
+        const file = `${dir}/${name}`;
+        try {
+          const stat = lstatSync(file);
+          if (!stat.isFile()) return;
+          if (
+            stat.mtimeMs < cutoff ||
+            index < names.length - LOG_ARCHIVE_MAX_FILES
+          )
+            unlinkSync(file);
+        } catch {
+          /* Another file's failure does not stop the sweep. */
+        }
+      });
+    } catch {
+      /* Archiving is optional. */
     }
   }
   snapshot() {
