@@ -348,3 +348,70 @@ for (const kind of ["symlink", "fifo", "malformed"] as const) {
     }
   });
 }
+
+test("rotated history is archived for a month instead of being overwritten", async () => {
+  const { readdir, utimes, mkdir } = await import("node:fs/promises");
+  const { LOG_ARCHIVE_DIR, LOG_ARCHIVE_DAYS } = await import(
+    "../src/diagnostics/log.js"
+  );
+  const dir = await mkdtemp(tmpdir() + "/coach-archive-");
+  try {
+    const archive = `${dir}/${LOG_ARCHIVE_DIR}`;
+    await mkdir(archive, { mode: 0o700 });
+    const old = `${archive}/diagnostics-2026-01-01T00-00-00-000Z.jsonl`;
+    const recent = `${archive}/diagnostics-2026-01-02T00-00-00-000Z.jsonl`;
+    const foreign = `${archive}/notes.txt`;
+    for (const file of [old, recent, foreign])
+      await writeFile(file, "{}\n", { mode: 0o600 });
+    const past = new Date(Date.now() - (LOG_ARCHIVE_DAYS + 1) * 86400000);
+    await utimes(old, past, past);
+    await utimes(foreign, past, past);
+    // A full previous file and a nearly full current one: the next record rotates.
+    await writeFile(`${dir}/diagnostics.jsonl.1`, "PREVIOUS\n", {
+      mode: 0o600,
+    });
+    await writeFile(
+      `${dir}/diagnostics.jsonl`,
+      "x".repeat(LOG_FILE_BYTES - 10),
+      { mode: 0o600 },
+    );
+    const log = new Diagnostics(dir);
+    log.record({ source: "worker", stage: "idle" });
+    assert.equal(log.persistence, true);
+    const names = (await readdir(archive)).sort();
+    // The month-old archive is gone; the recent one, the new one and the
+    // unrelated file remain.
+    assert.equal(
+      names.includes("diagnostics-2026-01-01T00-00-00-000Z.jsonl"),
+      false,
+    );
+    assert.equal(
+      names.includes("diagnostics-2026-01-02T00-00-00-000Z.jsonl"),
+      true,
+    );
+    assert.equal(names.includes("notes.txt"), true);
+    const added = names.filter(
+      (name) =>
+        /^diagnostics-/.test(name) &&
+        name !== "diagnostics-2026-01-02T00-00-00-000Z.jsonl",
+    );
+    assert.equal(added.length, 1);
+    assert.equal(
+      await readFile(`${archive}/${added[0]}`, "utf8"),
+      "PREVIOUS\n",
+    );
+    assert.equal((await stat(`${archive}/${added[0]}`)).mode & 0o777, 0o600);
+    assert.equal((await stat(archive)).mode & 0o777, 0o700);
+    // The live pair still rotated as before.
+    assert.equal(
+      (await stat(`${dir}/diagnostics.jsonl.1`)).size,
+      LOG_FILE_BYTES - 10,
+    );
+    assert.match(
+      await readFile(`${dir}/diagnostics.jsonl`, "utf8"),
+      /"stage":"idle"/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
