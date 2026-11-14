@@ -106,6 +106,18 @@ const server = createServer(async (req, res) => {
             },
           },
           { name: "coach_get_capabilities" },
+          {
+            name: "coach_list_request_attachments",
+            inputSchema: {
+              type: "object",
+              properties: {
+                request_id: { type: "string" },
+                lease_generation: { type: "integer" },
+              },
+              required: ["request_id", "lease_generation"],
+              additionalProperties: false,
+            },
+          },
           { name: "coach_read_media", inputSchema },
           { name: "coach_respond", inputSchema },
         ],
@@ -139,10 +151,14 @@ const server = createServer(async (req, res) => {
           assert.equal(a.lease_generation, 1);
           v = {
             contract_version: 2,
-            allowed_tools: ["coach_read_media", "coach_respond"],
+            allowed_tools: ["coach_list_request_attachments", "coach_read_media", "coach_respond"],
             domains: { media: { available: true } },
             limits: {},
           };
+          break;
+        case "coach_list_request_attachments":
+          assert.deepEqual(a, { request_id: request.id, lease_generation: 1 });
+          v = { items: [{ media_ref: "opaque-original" }] };
           break;
         case "coach_read_media":
           assert.deepEqual(a, {
@@ -183,7 +199,7 @@ const worker = new Worker({
   secrets: ["synthetic-private-provider"],
   system: "Coach",
   vision: true,
-  complete: (context, signal, system, tools) =>
+  complete: (context, signal, system, tools, _ref, budget) =>
     complete(
       {
         baseUrl: origin + "/v1",
@@ -195,6 +211,7 @@ const worker = new Worker({
       context,
       signal,
       tools,
+      { images: budget?.images },
     ),
 });
 try {
@@ -204,13 +221,25 @@ try {
   assert.equal(payloads.length, 2);
   assert.deepEqual(
     payloads[0].tools.map((t) => t.function.name),
-    ["coach_read_media", "katafit_rest_request"],
+    ["coach_list_request_attachments", "coach_read_media", "katafit_rest_request"],
   );
+  const firstImages = payloads[0].messages.flatMap((m) =>
+    Array.isArray(m.content) ? m.content.filter((c) => c.type === "image_url") : [],
+  );
+  assert.equal(firstImages.length, 1);
+  assert.equal(firstImages[0].image_url.url, `data:image/png;base64,${image}`);
+  assert.equal(calls.filter((name) => name === "coach_list_request_attachments").length, 1);
+  assert.equal(calls.filter((name) => name === "coach_read_media").length, 2);
   const blocks = payloads[1].messages.flatMap((m) =>
     Array.isArray(m.content) ? m.content : [],
   );
+  const secondImages = blocks.filter((c) => c.type === "image_url");
+  assert.equal(secondImages.length, 2);
+  for (const part of secondImages) {
+    assert.equal(part.image_url.url, `data:image/png;base64,${image}`);
+  }
   const actual = Buffer.from(
-    blocks.find((c) => c.type === "image_url").image_url.url.split(",")[1],
+    secondImages[1].image_url.url.split(",")[1],
     "base64",
   );
   assert.deepEqual(actual, Buffer.from(image, "base64"));
