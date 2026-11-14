@@ -663,6 +663,7 @@ test("context attachments fail closed before inference", async () => {
       origin: f.origin,
       token: "synthetic-token",
       system: "Coach",
+      vision: true,
       complete: async () => {
         called = true;
         return "no";
@@ -824,7 +825,8 @@ test("worker offers negotiated media only inside claimed request budget", async 
   let exposed: any;
   try {
     f.enqueue("original photo");
-    f.current.attachment_count = 1;
+    // Discovery/tool lifetime also applies to an ordinary text request.
+    f.current.attachment_count = 0;
     const w = new Worker({
       origin: f.origin,
       token: "synthetic-token",

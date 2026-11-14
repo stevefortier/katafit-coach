@@ -28,6 +28,7 @@ import {
 import { SafeError, safeError } from "../runtime/errors.js";
 import type { LogInput, Stage } from "../diagnostics/log.js";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { acquireRequestAttachments } from "./requestAttachments.js";
 import { discoverReads } from "../katafit/readTools.js";
 import {
   COMMITMENT_GUIDANCE,
@@ -1501,11 +1502,25 @@ export class Worker {
       );
       disposeReads = reads.dispose;
       stage("reads-ready");
+      if (current.attachment_count > 0 && this.options.vision !== true)
+        throw new Error("VISION_UNSUPPORTED");
       if (
         current.attachment_count !== 0 &&
         !reads.tools.some((t) => t.name === "coach_read_media")
       )
         throw new Error("CONTEXT_REJECTED");
+      const attached =
+        current.attachment_count > 0
+          ? await bounded(
+              () =>
+                acquireRequestAttachments(
+                  reads.tools,
+                  current.attachment_count,
+                  inferenceSignal,
+                ),
+              modelSignal,
+            )
+          : undefined;
       const selectedSkills = this.options.skills
         ? skillsForRequest(this.options.skills, current.message)
         : [];
@@ -1592,7 +1607,7 @@ export class Worker {
         : undefined;
       // A photo-review request reads the photos before the model, through the
       // same request-scoped native tools and exact handles the model would use.
-      // Message attachments stay model-read so they keep the request image cap.
+      // Attached photos were acquired above through the same per-request image budget.
       const photoGuidance = photoReviewGuidance(
         current.message,
         current.created_at,
@@ -1618,6 +1633,9 @@ export class Worker {
               ...JSON.parse(serialized),
               "Request data capabilities": reads.status,
               ...(photos ? { acquired_photo_evidence: photos.evidence } : {}),
+              ...(attached
+                ? { attached_photo_evidence: attached.evidence }
+                : {}),
             }),
             inferenceSignal,
             effectivePrompt(this.options.system, instructions, [
@@ -1627,6 +1645,9 @@ export class Worker {
               formatSkillBodies(selectedSkills, "worker") +
               photoGuidance +
               (photos ? requestPhotoGuidance(photos) : "") +
+              (attached
+                ? "\nThe member attached these photos to this message. They are included as images in attachment order; answer using what you can actually see.\n"
+                : "") +
               formatRecall(memory?.recalled ?? [], "worker") +
               (memory?.partial
                 ? "\nMemory recall covered a bounded page. Use coach_memory_search and its continuation for deeper recall.\n"
@@ -1647,7 +1668,11 @@ export class Worker {
               deadlineAt,
               readBudget: reads.readBudget,
               trace: { origin: trace.origin, clock: trace.clock },
-              ...(photos?.images.length ? { images: photos.images } : {}),
+              ...(attached
+                ? { images: attached.images }
+                : photos?.images.length
+                  ? { images: photos.images }
+                  : {}),
             },
           ),
         modelSignal,
