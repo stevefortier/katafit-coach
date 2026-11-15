@@ -7,6 +7,7 @@ import { assertNoSecrets } from "../config/store.js";
 
 export const READ_NAMES = new Set([
   "coach_read_profile",
+  "coach_list_request_attachments",
   "coach_list_activities",
   "coach_read_activity",
   "coach_list_records",

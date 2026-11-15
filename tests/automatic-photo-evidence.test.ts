@@ -662,6 +662,7 @@ const fenced = (properties: Record<string, any>) => ({
   additionalProperties: false,
 });
 const READ_SCHEMAS: Record<string, any> = {
+  coach_list_request_attachments: fenced({}),
   coach_list_activities: fenced({
     types: { type: "array", items: { type: "string" } },
     statuses: { type: "array", items: { type: "string" } },
@@ -1026,7 +1027,7 @@ test("request photo denial and unavailability stay distinct and the model is tol
   });
 });
 
-test("request photo acquisition is skipped for non-photo or attachment-carrying requests and reads nothing when provider vision is off", async () => {
+test("ordinary chat skips activity photos; attached photos reach the first model turn; activity reads need vision", async () => {
   const none = await requestRun("How was my meal yesterday?", () =>
     assert.fail("no host photo read for a non-photo request"),
   );
@@ -1036,14 +1037,37 @@ test("request photo acquisition is skipped for non-photo or attachment-carrying 
     JSON.stringify(none.bodies[0]),
     /acquired_photo_evidence/,
   );
+  const shots = [await png(1), await png(2)];
   const attached = await requestRun(
-    "Please review these photos",
-    () => assert.fail("message attachments keep the model-read image budget"),
+    "What should I get?",
+    (name, args) =>
+      name === "coach_list_request_attachments"
+        ? {
+            structuredContent: {
+              items: shots.map((_, i) => ({ media_ref: `attached-${i}` })),
+            },
+          }
+        : name === "coach_read_media" && /^attached-[01]$/.test(args.media_ref)
+          ? {
+              content: [
+                {
+                  type: "image",
+                  data: shots[Number(args.media_ref.at(-1))].toString("base64"),
+                  mimeType: "image/png",
+                },
+              ],
+            }
+          : mcpError("READ_NOT_FOUND"),
     true,
     2,
   );
   assert.equal(attached.status, "completed");
-  assert.deepEqual(attached.calls, []);
+  assert.deepEqual(
+    attached.calls.map((c) => c.name),
+    ["coach_list_request_attachments", "coach_read_media", "coach_read_media"],
+  );
+  assert.equal(attached.callsAtFirstTurn, 3);
+  assert.deepEqual(images(attached.bodies[0]), shots);
   assert.doesNotMatch(
     JSON.stringify(attached.bodies[0]),
     /acquired_photo_evidence/,

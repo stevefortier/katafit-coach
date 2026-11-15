@@ -4,7 +4,7 @@ This is a data-only expansion. Persona defaults and coaching tone are unchanged.
 
 ## Authority and compatibility
 
-- After claim/start/context, paginate standard MCP `tools/list`, then call `coach_get_capabilities` with the current request ID and lease generation. Model exposure is the intersection of `allowed_tools` and the fixed 12-name read allowlist, never MCP annotations.
+- After claim/start/context, paginate standard MCP `tools/list`, then call `coach_get_capabilities` with the current request ID and lease generation. Model exposure is the intersection of `allowed_tools` and the fixed read allowlist, never MCP annotations.
 - Lifecycle, publication, proposals, mutations, arbitrary HTTP/DB dispatch, shell and filesystem tools are never model tools. Each read injects the worker's fence. Forged authority fields are rejected, including nested fields. JSON schema is validated without coercion **before Pi's own argument validation**.
 - v1 servers without the capability tool retain zero-tool, text-only inference. Invalid discovery or capability errors fail closed, not an authorization bypass. Preview has no claimed request and never negotiates/exposes reads.
 - Backend credentials and server-side sharing authority still determine scopes, ownership, Clear, audience, membership and media access. Chief-managed dojo Coaches use existing Dojo Chief per-category sharing rather than a separate external-agent member grant; personal credentials retain requester consent. The worker's allowlist is not a replacement for those backend checks. No private results or schemas are cached between requests.
@@ -85,3 +85,14 @@ COACH_CDP=http://127.0.0.1:9222 npm run test:browser
 - `docs/evidence/data-vision-desktop.png`, `data-vision-mobile.png`, `data-preview.png`: real studio UI, vision save/rollback, explicit preview authority wording; browser asserts narrow-screen containment and no page errors.
 
 The broader backend all-domain/cross-user/Dojo/Clear/grant-revocation matrix belongs to the backend change and parent integration. These receipts establish the standalone path, not blanket backend coverage. Final packed/backend proof and authorized live-model original-image validation are documented in `docs/evidence/data-final-integration.md` and `data-live-packed-receipt.json`, including an unsuccessful bounded live attempt under the prior limits. Earlier text-only live receipts remain historical evidence, not verification of this budget change or a deployed Studio instance.
+
+
+## Attached chat photos
+
+The worker acquires current-message photos automatically before inference, even when the member writes only “What should I get?”. After normal capability discovery, `coach_list_request_attachments` returns the exact current request's sealed image handles. `requestAttachments.ts` requires the complete bounded set (1–4), then calls each `coach_read_media` through the normal discovered tools. Alias resolution, lease/grant authority, cancellation, deadline, call and image budgets are shared with model reads. Attachment photos take precedence over automatic activity-photo discovery; they do not broaden the search to the member's history.
+
+Images enter the initial provider turn through the existing `complete(..., { images })` path. Backend originals remain unchanged; the existing model-image preparation may resize transient provider inputs. Vision must already be enabled for the configured model. Missing vision, missing tools, inconsistent counts or a failed photo read stops the request visibly instead of answering without its photos. No model selection, permission expansion or hosted fallback occurs.
+
+Backend admission retains originals privately, independent of upload temporary files, and binds upload IDs into idempotency. The new backend fences per-image read receipts at publication and invalidates them on retry. Both backend and worker updates are required: an older worker cannot publish an attachment answer without the required receipts; a new worker against an older backend still handles text and fails closed if an attachment set cannot be listed.
+
+Executed paired regression lives in regimen's `routes/coach.externalAttachments.integration.test.js`: build this checkout, point `COACH_ATTACHMENT_DIST` at its `dist`, and run the suite in-band. It launches the actual compiled worker/provider adapter against real loopback MCP and replica-set Mongo, with synthetic model HTTP output. It checks personal/Dojo original bytes, four-image ordering, denied reads/publication, cleanup survival, retry, and no-vision failure. This is not live installed-model or Android acceptance.

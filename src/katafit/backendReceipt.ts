@@ -33,6 +33,7 @@ export const backendTools = [
   "coach_read_daily_summary",
   "coach_read_dojo",
   "coach_read_exercise_history",
+  "coach_list_request_attachments",
   "coach_read_media",
   "coach_read_invocation_action",
   "coach_read_profile",
