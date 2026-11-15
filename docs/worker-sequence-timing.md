@@ -158,6 +158,27 @@ carry `profileCode=3`.
 
 ## Failure and call provenance
 
+### In-inference memory search failures
+
+`memory-search-failed` records an on-demand `coach_memory_search` failure (the backend call is `coach_memory_recall`) under the worker poll `ref`. This is separate from initial `memory-preparation`. It contains only `memorySearchFailureCode` and `memoryTerminal`, not the query, capture, memory prose or error payload. Join the poll to its task-attempt receipts and backend request receipt; the code is not proof of an underlying database cause.
+
+| memorySearchFailureCode | Observed classification       |
+| ----------------------- | ----------------------------- |
+| 1                       | MEMORY_UNAVAILABLE            |
+| 2                       | MEMORY_NOT_AUTHORIZED         |
+| 3                       | MEMORY_CHANGED                |
+| 4                       | MEMORY_EPOCH_CHANGED          |
+| 5                       | LEASE_LOST                    |
+| 6                       | MEMORY_CONFLICT               |
+| 7                       | MEMORY_COVERAGE_UNAVAILABLE   |
+| 8                       | MEMORY_LIMIT                  |
+| 9                       | MEMORY_INVALID                |
+| 10                      | MEMORY_RESULT_REJECTED        |
+| 11                      | CREDENTIAL_REJECTED           |
+| 12                      | Unclassified or other failure |
+
+`memoryTerminal=1` means the existing on-demand search path aborts inference; `0` means it throws the existing nonterminal tool error for the runtime to report to the model. Only an actual `ToolFailure(MEMORY_UNAVAILABLE)` gets `0`. This diagnostic changes no recovery policy, retry count, memory ledger or publication fence. In particular, unavailable initial preparation and unavailable in-inference search have different paths; do not infer that every memory failure is optional. Authority, source and forgotten/already-used memory denials remain terminal. Historical generic `MCP_TOOL_FAILED`/`PROVIDER_TOOL_ABORTED` receipts cannot be retroactively classified using this new field.
+
 Task context preparation now includes initial memory/MCP preparation, evidence acquisition and prompt assembly. A failure there reports `TASK_CONTEXT_UNAVAILABLE`; `TASK_CONTEXT_PREPARE` is sent only when the backend advertises the existing closed context-detail vocabulary. No new wire subtype is required. The installed isolated completion and direct Pi adapter mark their local preparation and physical HTTP dispatch boundaries, so native setup, local input rejection and admission failure before dispatch retain preparation attribution. Genuine provider HTTP failures retain provider subtypes. Custom completion callbacks without these observations retain their legacy classification; absence of a dispatch log alone is not proof that no provider was called. Failure-report timing cannot overwrite an already settled cause, and ambiguous completion never triggers a failure mutation.
 
 `provider-dispatch` is emitted immediately at an actual outbound provider fetch, before its result is known. It carries the validated model identifier and, when available, the pinned configured provider registry ID, plus API family `openai-completions`. It does not record an endpoint or imply knowledge of the provider's internal model alias resolution. Installed worker gateway receipts carry the poll ref, attempt digest, output attempt and request ordinal; direct Pi adapter receipts carry available attempt attribution. A later settings change never retroactively identifies an earlier call. No dispatch means no new model identity receipt.

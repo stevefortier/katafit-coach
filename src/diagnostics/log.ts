@@ -72,6 +72,7 @@ export const stages = [
   "preview-completed",
   "memory-recalled",
   "memory-preparation",
+  "memory-search-failed",
   "memory-unavailable",
   "memory-retained",
   "memory-retention-skipped",

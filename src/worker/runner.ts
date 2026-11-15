@@ -947,6 +947,7 @@ export class Worker {
     memory: { capture: MemoryCapture; recalled: MemoryItem[] },
     budget: () => number,
     terminal: AbortController,
+    ref: string,
   ): AgentTool {
     const secrets = [this.options.token, ...(this.options.secrets ?? [])];
     return {
@@ -987,11 +988,41 @@ export class Worker {
           secrets,
           budget(),
         ).catch((error) => {
-          if (
+          const terminalFailure =
             !(error instanceof ToolFailure) ||
-            error.code !== "MEMORY_UNAVAILABLE"
-          )
-            terminal.abort(error);
+            error.code !== "MEMORY_UNAVAILABLE";
+          // Observe the already-decided disposition; never disclose payloads,
+          // infer a historical cause, retry, or relax a recall denial.
+          const code =
+            error instanceof ToolFailure || error instanceof SafeError
+              ? error.code
+              : undefined;
+          this.diagnostic({
+            source: "worker",
+            stage: "memory-search-failed",
+            level: "warn",
+            ref,
+            metadata: {
+              memorySearchFailureCode:
+                (
+                  {
+                    MEMORY_UNAVAILABLE: 1,
+                    MEMORY_NOT_AUTHORIZED: 2,
+                    MEMORY_CHANGED: 3,
+                    MEMORY_EPOCH_CHANGED: 4,
+                    LEASE_LOST: 5,
+                    MEMORY_CONFLICT: 6,
+                    MEMORY_COVERAGE_UNAVAILABLE: 7,
+                    MEMORY_LIMIT: 8,
+                    MEMORY_INVALID: 9,
+                    MEMORY_RESULT_REJECTED: 10,
+                    CREDENTIAL_REJECTED: 11,
+                  } as Record<string, number>
+                )[code ?? ""] ?? 12,
+              memoryTerminal: terminalFailure ? 1 : 0,
+            },
+          });
+          if (terminalFailure) terminal.abort(error);
           throw error;
         });
         for (const item of items)
@@ -1659,7 +1690,7 @@ export class Worker {
               ...reads.tools,
               ...(commitment ? [commitment] : []),
               ...(memory
-                ? [this.memorySearchTool(c, memory, budget, terminal)]
+                ? [this.memorySearchTool(c, memory, budget, terminal, ref)]
                 : []),
               ...capability.tools(),
             ],
@@ -2305,7 +2336,7 @@ export class Worker {
         : [
             ...capability.tools(),
             ...(memory
-              ? [this.memorySearchTool(c, memory, budget, terminal)]
+              ? [this.memorySearchTool(c, memory, budget, terminal, ref)]
               : []),
           ];
       for (let attempt = 0; attempt < 2; attempt++) {
